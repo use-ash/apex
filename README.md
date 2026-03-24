@@ -1,0 +1,36 @@
+# LocalChat
+
+Private Claude chat interface — native iOS client + Python server. Runs over WireGuard VPN with mTLS client certificate auth.
+
+## Structure
+
+```
+localchat/
+├── server/           # FastAPI + WebSocket + Claude Agent SDK
+│   ├── localchat.py  # Single-file server (port 8300)
+│   └── launch_localchat.sh
+├── ios/              # SwiftUI native client (in progress)
+├── production/       # Deployment configs, cron, systemd
+├── docs/             # Design docs, debug logs, plans
+└── state/            # Runtime data (not committed)
+    ├── localchat.db  # SQLite chat database
+    ├── ssl/          # mTLS certs (ca, server, client)
+    └── uploads/      # Temporary file uploads
+```
+
+## Quick Start
+
+```bash
+# Server
+cd server && bash launch_localchat.sh
+
+# State directory must exist with SSL certs
+# See docs/TROUBLESHOOTING.md for cert generation
+```
+
+## Architecture
+
+- **Server:** FastAPI, persistent Claude SDK sessions, SQLite, WebSocket streaming
+- **iOS Client:** SwiftUI, URLSessionWebSocketTask, mTLS, background survival
+- **Auth:** mTLS client certificates over WireGuard VPN
+- **Protocol:** JSON over WebSocket (see docs/IOS_NATIVE_PLAN.md for full spec)

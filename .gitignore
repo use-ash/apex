@@ -1,0 +1,37 @@
+# State — runtime data, never commit
+state/
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# SSL certs and keys — NEVER commit
+*.p12
+*.key
+*.crt
+*.csr
+*.srl
+*.cnf
+ssl/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Xcode
+ios/*/DerivedData/
+ios/*/*.xcuserdata
+ios/*/*.xcworkspace/xcuserdata/
+ios/*/build/
+
+# macOS
+.DS_Store
+*.swp
+*~
+
+# Environment
+.env
+.env.*
