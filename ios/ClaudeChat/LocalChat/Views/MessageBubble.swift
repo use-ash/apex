@@ -149,6 +149,84 @@ struct MessageBubble: View {
     }
 }
 
+/// UITextView wrapper — gives native iOS partial text selection with drag handles.
+/// SwiftUI Text + .textSelection(.enabled) only allows full-text copy and conflicts
+/// with .contextMenu, so we drop to UIKit for the message body.
+struct SelectableTextView: UIViewRepresentable {
+    let content: String
+    let uiFont: UIFont
+    let textColor: UIColor
+
+    func makeUIView(context: Context) -> UITextView {
+        let tv = UITextView()
+        tv.isEditable = false
+        tv.isScrollEnabled = false
+        tv.backgroundColor = .clear
+        tv.textContainerInset = .zero
+        tv.textContainer.lineFragmentPadding = 0
+        tv.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        tv.adjustsFontForContentSizeCategory = true
+        tv.isSelectable = true
+        tv.dataDetectorTypes = []
+        // Disable the scroll view's pan gesture — scrolling is off anyway,
+        // and this pan eats horizontal swipes meant for the parent DragGesture.
+        // Text selection uses long-press + drag (separate gesture), unaffected.
+        tv.panGestureRecognizer.isEnabled = false
+        return tv
+    }
+
+    func updateUIView(_ tv: UITextView, context: Context) {
+        let styled = styledAttributedString()
+        if tv.attributedText.string != styled.string {
+            tv.attributedText = styled
+        } else if tv.font != uiFont || tv.textColor != textColor {
+            tv.attributedText = styled
+        }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+        let width = proposal.width ?? 280
+        return uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+    }
+
+    private func styledAttributedString() -> NSAttributedString {
+        if let md = try? NSMutableAttributedString(
+            markdown: content,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        ) {
+            let fullRange = NSRange(location: 0, length: md.length)
+            md.enumerateAttribute(.inlinePresentationIntent, in: fullRange, options: []) { value, range, _ in
+                guard let raw = (value as? NSNumber)?.intValue else { return }
+                let intent = InlinePresentationIntent(rawValue: UInt(raw))
+                var traits: UIFontDescriptor.SymbolicTraits = []
+                if intent.contains(.stronglyEmphasized) { traits.insert(.traitBold) }
+                if intent.contains(.emphasized) { traits.insert(.traitItalic) }
+                if intent.contains(.code) {
+                    let mono = UIFont.monospacedSystemFont(ofSize: uiFont.pointSize, weight: .regular)
+                    md.addAttribute(.font, value: mono, range: range)
+                    return
+                }
+                if !traits.isEmpty, let desc = uiFont.fontDescriptor.withSymbolicTraits(traits) {
+                    md.addAttribute(.font, value: UIFont(descriptor: desc, size: uiFont.pointSize), range: range)
+                } else {
+                    md.addAttribute(.font, value: uiFont, range: range)
+                }
+            }
+            md.enumerateAttribute(.font, in: fullRange, options: []) { value, range, _ in
+                if value == nil {
+                    md.addAttribute(.font, value: uiFont, range: range)
+                }
+            }
+            md.addAttribute(.foregroundColor, value: textColor, range: fullRange)
+            return md
+        }
+        return NSAttributedString(string: content, attributes: [
+            .font: uiFont,
+            .foregroundColor: textColor,
+        ])
+    }
+}
+
 struct ToolEventDisplayItem: Identifiable, Equatable {
     let id: String
     let name: String

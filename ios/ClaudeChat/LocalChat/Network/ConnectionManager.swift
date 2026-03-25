@@ -20,6 +20,8 @@ final class ConnectionManager {
     private var wantsConnection = false
     private let delegate: TLSDelegate
     private let pathMonitor = NWPathMonitor()
+    private var connectionGeneration: UInt64 = 0
+    private var pathMonitorDebounceWork: DispatchWorkItem?
 
     var baseURL: String {
         normalizedBaseURL(UserDefaults.standard.string(forKey: "server_url") ?? "https://10.8.0.2:8300")
@@ -33,9 +35,13 @@ final class ConnectionManager {
             guard let self else { return }
             guard path.status == .satisfied else { return }
             guard self.wantsConnection, !self.isConnected, self.webSocketTask == nil else { return }
-            DispatchQueue.main.async {
+            self.pathMonitorDebounceWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.wantsConnection, !self.isConnected, self.webSocketTask == nil else { return }
                 self.connect()
             }
+            self.pathMonitorDebounceWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
         }
         pathMonitor.start(queue: .main)
     }
@@ -52,6 +58,10 @@ final class ConnectionManager {
         wantsConnection = true
         intentionalDisconnect = false
         connectionError = nil
+
+        connectionGeneration &+= 1
+        let gen = connectionGeneration
+
         let wsURL = baseURL
             .replacingOccurrences(of: "https://", with: "wss://")
             .replacingOccurrences(of: "http://", with: "ws://")
@@ -63,7 +73,7 @@ final class ConnectionManager {
 
         webSocketTask = session.webSocketTask(with: url)
         webSocketTask?.resume()
-        receiveLoop()
+        receiveLoop(generation: gen)
         startPingTimer()
         startPongTimer()
         send(.ping)
@@ -94,33 +104,38 @@ final class ConnectionManager {
     func send(_ message: ClientMessage) {
         guard let data = try? JSONEncoder().encode(message),
               let string = String(data: data, encoding: .utf8) else { return }
+        let currentTask = webSocketTask
         webSocketTask?.send(.string(string)) { [weak self] error in
             if let error {
                 print("WS send error: \(error)")
-                self?.handleDisconnect()
+                self?.handleDisconnect(for: currentTask)
             }
         }
     }
 
     // MARK: - Receive Loop
 
-    private func receiveLoop() {
+    private func receiveLoop(generation: UInt64) {
+        let currentTask = webSocketTask
         webSocketTask?.receive { [weak self] result in
             guard let self else { return }
+            guard generation == self.connectionGeneration else {
+                return
+            }
             switch result {
             case .success(.string(let text)):
                 self.handleText(text)
-                self.receiveLoop()
+                self.receiveLoop(generation: generation)
             case .success(.data(let data)):
                 if let text = String(data: data, encoding: .utf8) {
                     self.handleText(text)
                 }
-                self.receiveLoop()
+                self.receiveLoop(generation: generation)
             case .failure(let error):
                 print("WS receive error: \(error)")
-                self.handleDisconnect()
+                self.handleDisconnect(for: currentTask)
             default:
-                self.receiveLoop()
+                self.receiveLoop(generation: generation)
             }
         }
     }
@@ -216,9 +231,10 @@ final class ConnectionManager {
 
     private func startPongTimer() {
         pongTimer?.invalidate()
+        let currentTask = webSocketTask
         pongTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: false) { [weak self] _ in
             print("WS: Pong timeout — forcing reconnect")
-            self?.handleDisconnect()
+            self?.handleDisconnect(for: currentTask)
         }
     }
 
@@ -236,9 +252,10 @@ final class ConnectionManager {
 
     // MARK: - Reconnect
 
-    private func handleDisconnect() {
+    private func handleDisconnect(for task: URLSessionWebSocketTask?) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            guard task === self.webSocketTask else { return }
             let wasConnected = self.isConnected || self.webSocketTask != nil
             self.isConnected = false
             self.stopTimers()

@@ -94,11 +94,218 @@ WHISPER_BIN = os.environ.get("LOCALCHAT_WHISPER_BIN", shutil.which("whisper") or
 SDK_QUERY_TIMEOUT = 30
 SDK_STREAM_TIMEOUT = 300
 ENABLE_SUBCONSCIOUS_WHISPER = os.environ.get("LOCALCHAT_ENABLE_WHISPER", "").lower() in {"1", "true", "yes"}
+ENABLE_SKILL_DISPATCH = True  # server-side /recall, /codex, /grok dispatch
+
+# ---------------------------------------------------------------------------
+# Workspace context injection — CLAUDE.md + MEMORY.md on first message
+# ---------------------------------------------------------------------------
+_session_context_sent: set[str] = set()  # chat_ids that already got context
+
+def _get_workspace_context(chat_id: str) -> str:
+    """Load CLAUDE.md + MEMORY.md + skills catalog once per session for Claude Code parity."""
+    if chat_id in _session_context_sent:
+        return ""
+    parts: list[str] = []
+    claude_md = WORKSPACE / "CLAUDE.md"
+    memory_md = WORKSPACE / "memory" / "MEMORY.md"
+    skills_dir = WORKSPACE / "skills"
+    if claude_md.exists():
+        parts.append(f"<system-reminder>\n# CLAUDE.md (project instructions)\n{claude_md.read_text()[:8000]}\n</system-reminder>")
+    if memory_md.exists():
+        parts.append(f"<system-reminder>\n# MEMORY.md (persistent memory)\n{memory_md.read_text()[:4000]}\n</system-reminder>")
+    # Build skills catalog from SKILL.md files
+    if skills_dir.is_dir():
+        skill_entries: list[str] = []
+        for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
+            skill_name = skill_md.parent.name
+            content = skill_md.read_text()
+            # Extract description from frontmatter
+            desc = ""
+            for line in content.split("\n"):
+                if line.strip().startswith("description:"):
+                    desc = line.split(":", 1)[1].strip().strip('"')
+                    break
+            # For thinking skills (no run script), include the full instructions
+            run_scripts = list(skill_md.parent.glob("run_*"))
+            if not run_scripts:
+                # Thinking skill — include full SKILL.md (truncated)
+                skill_entries.append(f"### /{skill_name}\n{content[:2000]}")
+            else:
+                skill_entries.append(f"- `/{skill_name}` — {desc}")
+        if skill_entries:
+            catalog = "\n".join(skill_entries)
+            parts.append(f"<system-reminder>\n# Available Skills\nYou can use these skills. For /recall, /codex, /grok the server handles dispatch automatically. For thinking skills, follow the instructions below.\n\n{catalog[:6000]}\n</system-reminder>")
+    if parts:
+        _session_context_sent.add(chat_id)
+        log(f"Workspace context injected for chat={chat_id} (CLAUDE.md + MEMORY.md + skills)")
+        return "\n\n".join(parts) + "\n\n"
+    return ""
 
 # ---------------------------------------------------------------------------
 # Subconscious whisper — inject guidance from background memory system
 # Throttled: first message per chat + every WHISPER_INTERVAL seconds after.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Skill dispatch — server-side /recall, /codex, /grok, /claude routing
+# ---------------------------------------------------------------------------
+import subprocess
+import re as _re
+
+def _parse_skill_command(prompt: str) -> tuple[str, str] | None:
+    """Parse /skill-name args from prompt. Returns (skill, args) or None."""
+    m = _re.match(r"^/([\w-]+)\s*(.*)", prompt.strip(), _re.DOTALL)
+    if not m:
+        return None
+    return m.group(1).lower(), m.group(2).strip()
+
+
+_RECALL_STOP_WORDS = frozenset(
+    "a about all also am an and any are as at be been being but by can could"
+    " did do does don doing done each for from get got had has have having he"
+    " her here him his how i if in into is it its just know let like me might"
+    " mine more my no not now of on one or our out over own please re really"
+    " remember say she so some still tell than that the their them then there"
+    " these they this those to up us very want was we were what when where"
+    " which who will with would you your gonna gotta wanna".split()
+)
+
+def _extract_recall_terms(raw: str) -> str:
+    """Strip stop words and punctuation to get meaningful search terms."""
+    words = _re.findall(r"[a-zA-Z0-9$%]+", raw.lower())
+    meaningful = [w for w in words if w not in _RECALL_STOP_WORDS and len(w) > 1]
+    return " ".join(meaningful) if meaningful else raw
+
+
+def _run_recall(args: str) -> str:
+    """Run transcript search and return formatted results."""
+    if not args:
+        return "Usage: /recall <search query>"
+    query = _extract_recall_terms(args)
+    script = WORKSPACE / "skills" / "recall" / "search_transcripts.py"
+    if not script.exists():
+        return "Recall skill not found."
+    log(f"Recall search terms: {query!r}")
+    try:
+        result = subprocess.run(
+            ["/opt/homebrew/bin/python3", str(script), query, "--top", "8", "--context", "800"],
+            capture_output=True, text=True, timeout=15, cwd=str(WORKSPACE),
+        )
+        output = result.stdout.strip()
+        if result.returncode != 0:
+            return f"Recall error: {result.stderr.strip()}"
+        return output or f"No results found for: {args}"
+    except subprocess.TimeoutExpired:
+        return "Recall timed out."
+    except Exception as e:
+        return f"Recall error: {e}"
+
+
+def _run_codex_background(args: str, chat_id: str) -> str:
+    """Launch codex as a background task. Returns status message."""
+    if not args:
+        return "Usage: /codex <prompt for codex>"
+    prompt_file = WORKSPACE / f"codex_localchat_{chat_id[:8]}.md"
+    response_file = WORKSPACE / f"codex_localchat_{chat_id[:8]}_response.md"
+    prompt_file.write_text(args)
+    script = WORKSPACE / "skills" / "codex" / "run_codex.sh"
+    if not script.exists():
+        return "Codex skill not found."
+    try:
+        subprocess.Popen(
+            ["bash", str(script), str(prompt_file.relative_to(WORKSPACE)),
+             str(response_file.relative_to(WORKSPACE)), "", "--network"],
+            cwd=str(WORKSPACE),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return f"Codex task launched in background.\nPrompt: `{prompt_file.name}`\nResponse will be at: `{response_file.name}`\n\nI'll check the response when it's ready. You can also ask me to check with: \"check codex response\""
+    except Exception as e:
+        return f"Codex launch error: {e}"
+
+
+def _run_grok(args: str, chat_id: str) -> str:
+    """Launch grok research. Returns status message."""
+    if not args:
+        return "Usage: /grok <research question>"
+    prompt_file = WORKSPACE / f"grok_localchat_{chat_id[:8]}.md"
+    response_file = WORKSPACE / f"grok_localchat_{chat_id[:8]}_response.md"
+    prompt_file.write_text(args)
+    script = WORKSPACE / "skills" / "grok" / "run_grok.sh"
+    if not script.exists():
+        return "Grok skill not found."
+    try:
+        subprocess.Popen(
+            ["bash", str(script), str(prompt_file.relative_to(WORKSPACE)),
+             str(response_file.relative_to(WORKSPACE))],
+            cwd=str(WORKSPACE),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return f"Grok research launched in background.\nResponse will be at: `{response_file.name}`"
+    except Exception as e:
+        return f"Grok launch error: {e}"
+
+
+_DIRECT_SKILL_HANDLERS = {
+    "codex": _run_codex_background,
+    "grok": _run_grok,
+}
+
+# Skills that search + feed context into Claude for synthesis
+_CONTEXT_SKILLS = {"recall"}
+
+# Thinking skills — inject SKILL.md instructions as context, Claude executes
+_THINKING_SKILLS = {"first-principles", "simplify"}
+
+
+async def _handle_skill(websocket, chat_id: str, skill: str, args: str, display_prompt: str) -> bool:
+    """Handle a skill invocation. Returns True if handled, False to fall through to Claude."""
+    # --- Context skills: search, then let Claude synthesize ---
+    if skill in _CONTEXT_SKILLS:
+        if skill == "recall":
+            log(f"Skill dispatch: /recall (context mode) args={args[:80]!r} chat={chat_id}")
+            recall_results = await asyncio.to_thread(_run_recall, args)
+            if not recall_results or "No results" in recall_results:
+                # Fall through to Claude with a note
+                return False
+            # Rewrite the prompt: inject recall results as context, ask Claude to synthesize
+            # This goes through normal Claude SDK path with the context prepended
+            return False, recall_results  # signal caller to inject context
+        return False
+
+    # --- Direct skills: run and return output directly ---
+    handler = _DIRECT_SKILL_HANDLERS.get(skill)
+    if not handler:
+        return False
+
+    log(f"Skill dispatch: /{skill} (direct) args={args[:80]!r} chat={chat_id}")
+
+    # Save the user's message
+    _save_message(chat_id, "user", display_prompt)
+
+    # Send stream start
+    _chat_ws[chat_id] = websocket
+    _reset_stream_buffer(chat_id)
+    await _send_stream_event(chat_id, {"type": "stream_start", "chat_id": chat_id})
+
+    # Run the skill
+    try:
+        result_text = await asyncio.to_thread(handler, args, chat_id)
+    except Exception as e:
+        result_text = f"Skill error: {e}"
+
+    # Stream the result as text
+    await _send_stream_event(chat_id, {"type": "text", "text": result_text})
+
+    # Save assistant message
+    _save_message(chat_id, "assistant", result_text, cost_usd=0, tokens_in=0, tokens_out=0)
+
+    # Send result + stream end
+    await _send_stream_event(chat_id, {
+        "type": "result", "cost_usd": 0, "tokens_in": 0, "tokens_out": 0, "session_id": None,
+    })
+    await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id})
+    return True
+
+
 WHISPER_INTERVAL = 300  # seconds between whisper injections (5 min)
 _whisper_last: dict[str, float] = {}  # chat_id -> last whisper timestamp
 
@@ -319,10 +526,12 @@ def _build_turn_payload(chat_id: str, prompt: str, attachments: list[dict]) -> t
         for item in loaded
         if item["type"] == "image"
     ]
+    workspace_ctx = _get_workspace_context(chat_id)
     whisper = _get_whisper_text(chat_id) if ENABLE_SUBCONSCIOUS_WHISPER else ""
+    prefix = f"{workspace_ctx}{whisper}".strip()
     final_prompt = query_prompt or ("What do you see?" if image_blocks else "")
-    if whisper:
-        final_prompt = f"{whisper}{final_prompt}".strip() if final_prompt else whisper.strip()
+    if prefix:
+        final_prompt = f"{prefix}\n\n{final_prompt}".strip() if final_prompt else prefix
 
     if image_blocks:
         saved_blocks = list(image_blocks) + [{"type": "text", "text": final_prompt}]
@@ -422,12 +631,17 @@ def _save_message(chat_id: str, role: str, content: str, tool_events: str = "[]"
     return mid
 
 
-def _get_messages(chat_id: str) -> list[dict]:
+def _get_messages(chat_id: str, days: int | None = None) -> list[dict]:
     with _db_lock:
         conn = _get_db()
-        rows = conn.execute(
-            "SELECT id, role, content, tool_events, thinking, cost_usd, tokens_in, tokens_out, created_at FROM messages WHERE chat_id = ? ORDER BY created_at",
-            (chat_id,)).fetchall()
+        if days and days > 0:
+            rows = conn.execute(
+                "SELECT id, role, content, tool_events, thinking, cost_usd, tokens_in, tokens_out, created_at FROM messages WHERE chat_id = ? AND created_at >= datetime('now', ?) ORDER BY created_at",
+                (chat_id, f"-{days} days")).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, role, content, tool_events, thinking, cost_usd, tokens_in, tokens_out, created_at FROM messages WHERE chat_id = ? ORDER BY created_at",
+                (chat_id,)).fetchall()
         conn.close()
     return [{"id": r[0], "role": r[1], "content": r[2], "tool_events": r[3],
              "thinking": r[4], "cost_usd": r[5], "tokens_in": r[6],
@@ -766,8 +980,8 @@ async def api_new_chat(request: Request):
 
 
 @app.get("/api/chats/{chat_id}/messages")
-async def api_messages(chat_id: str, request: Request):
-    return JSONResponse(_get_messages(chat_id))
+async def api_messages(chat_id: str, request: Request, days: int | None = 3):
+    return JSONResponse(_get_messages(chat_id, days=days))
 
 
 @app.get("/health")
@@ -990,6 +1204,42 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
     if not (prompt or attachments) or not chat_id:
         return
 
+    # --- Skill dispatch: intercept /recall, /codex, /grok before SDK ---
+    _recall_context = ""
+    if ENABLE_SKILL_DISPATCH and prompt and not attachments:
+        parsed = _parse_skill_command(prompt)
+        if parsed:
+            skill, skill_args = parsed
+            if skill in _CONTEXT_SKILLS:
+                # Context skill (recall): search, inject results into Claude prompt
+                if skill == "recall" and skill_args:
+                    log(f"Recall context: extracting terms from {skill_args[:60]!r}")
+                    recall_output = await asyncio.to_thread(_run_recall, skill_args)
+                    if recall_output and "No results" not in recall_output:
+                        _recall_context = (
+                            f"<system-reminder>\nThe user asked to recall a past conversation. "
+                            f"Here are the most relevant transcript excerpts:\n\n{recall_output}\n\n"
+                            f"Synthesize these results into a clear answer to the user's question. "
+                            f"Focus on what was discussed, decided, and any key numbers/conclusions.\n</system-reminder>\n\n"
+                        )
+                        # Rewrite prompt to be the natural language question (strip /recall)
+                        prompt = skill_args
+            elif skill in _THINKING_SKILLS:
+                # Thinking skill: inject SKILL.md instructions as context
+                skill_md = WORKSPACE / "skills" / skill / "SKILL.md"
+                if skill_md.exists():
+                    instructions = skill_md.read_text()[:4000]
+                    _recall_context = (
+                        f"<system-reminder>\nThe user invoked the /{skill} skill. "
+                        f"Follow these instructions to execute it:\n\n{instructions}\n</system-reminder>\n\n"
+                    )
+                    prompt = skill_args or prompt
+                    log(f"Thinking skill dispatch: /{skill} args={skill_args[:60]!r}")
+            elif skill in _DIRECT_SKILL_HANDLERS:
+                handled = await _handle_skill(websocket, chat_id, skill, skill_args, prompt)
+                if handled:
+                    return
+
     chat = _get_chat(chat_id)
     if not chat:
         await _safe_ws_send_json(websocket, {"type": "error", "message": "Chat not found"}, chat_id=chat_id)
@@ -1007,8 +1257,15 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         return
 
     try:
+        # Inject recall context if /recall was used
+        user_visible_prompt = prompt
+        if _recall_context:
+            prompt = f"{_recall_context}{prompt}"
+
         try:
             display_prompt, make_query_input = _build_turn_payload(chat_id, prompt, attachments)
+            if _recall_context:
+                display_prompt = user_visible_prompt  # show clean prompt in chat history
         except ValueError as e:
             await _safe_ws_send_json(websocket, {"type": "error", "message": str(e)}, chat_id=chat_id)
             return

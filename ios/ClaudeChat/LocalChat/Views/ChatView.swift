@@ -27,17 +27,19 @@ struct ChatView: View {
     @State private var reactions: [String: String] = [:]
     @State private var replyingToMessage: Message?
     @State private var stopButtonScale: CGFloat = 1.0
+    @AppStorage("chatFontScale") private var fontScale: Double = 1.0
     @FocusState private var isInputFocused: Bool
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 8) {
+                VStack(spacing: 8) {
                     ForEach(appState.messages) { message in
                         MessageBubble(
                             message: message,
                             isHighlighted: highlightedMessageIDs.contains(message.id),
                             reaction: reactions[message.id],
+                            fontScale: CGFloat(fontScale),
                             onReact: { emoji in
                                 updateReaction(emoji, for: message)
                             },
@@ -59,18 +61,6 @@ struct ChatView: View {
             .scrollDismissesKeyboard(.interactively)
             .safeAreaInset(edge: .bottom) {
                 composeBar
-            }
-            .onChange(of: appState.messages.count) {
-                scrollToBottom(proxy: proxy)
-            }
-            .onChange(of: streamingText) {
-                scrollToBottom(proxy: proxy)
-            }
-            .onChange(of: streamingThinking) {
-                scrollToBottom(proxy: proxy)
-            }
-            .onChange(of: streamingToolEvents) {
-                scrollToBottom(proxy: proxy)
             }
             .onChange(of: isInputFocused) { _, focused in
                 if focused {
@@ -116,23 +106,34 @@ struct ChatView: View {
     private var streamingBubble: some View {
         HStack {
             VStack(alignment: .leading, spacing: 6) {
-                if !streamingThinking.isEmpty {
-                    ThinkingDisclosureView(text: streamingThinking, showsActivity: isStreaming)
+                // Compact thinking indicator — just a single line, not the full text
+                if !streamingThinking.isEmpty && streamingText.isEmpty {
+                    HStack(spacing: 6) {
+                        Image(systemName: "brain")
+                        ThinkingActivityDots()
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 }
 
+                // Compact tool status — one line instead of N expanding cards
                 if !streamingToolEvents.isEmpty {
-                    ToolEventListView(
-                        events: streamingToolEvents.map {
-                            ToolEventDisplayItem(
-                                id: $0.id,
-                                name: $0.name,
-                                input: $0.input,
-                                result: $0.result,
-                                isError: $0.isError,
-                                isComplete: $0.isComplete
-                            )
+                    let completed = streamingToolEvents.filter(\.isComplete).count
+                    let total = streamingToolEvents.count
+                    let latest = streamingToolEvents.last
+                    HStack(spacing: 6) {
+                        if completed < total {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                                .font(.caption)
                         }
-                    )
+                        Text("\(humanReadableToolName(latest?.name ?? "Tool")) (\(completed)/\(total))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
 
                 if streamingText.isEmpty && streamingThinking.isEmpty && streamingToolEvents.isEmpty {
@@ -142,13 +143,14 @@ struct ChatView: View {
                     Text(streamingText)
                         .font(.subheadline)
                         .foregroundStyle(.primary)
+                        .textSelection(.enabled)
                 }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(Color(.systemGray5))
             .clipShape(RoundedRectangle(cornerRadius: 18))
-            .frame(maxWidth: UIScreen.main.bounds.width * 0.75, alignment: .leading)
+            .frame(maxWidth: 300, alignment: .leading)
 
             Spacer(minLength: 60)
         }
@@ -250,7 +252,7 @@ struct ChatView: View {
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 8)
-        .background(.regularMaterial)
+        .background(Color(.systemBackground))
         .overlay(alignment: .top) { Divider() }
     }
 
@@ -599,9 +601,7 @@ struct ChatView: View {
 
     private func scrollToBottom(proxy: ScrollViewProxy) {
         if isStreaming {
-            withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo("streaming", anchor: .bottom)
-            }
+            proxy.scrollTo("streaming", anchor: .bottom)
         } else if let lastId = appState.messages.last?.id {
             withAnimation(.easeOut(duration: 0.2)) {
                 proxy.scrollTo(lastId, anchor: .bottom)
@@ -662,10 +662,12 @@ struct ChatView: View {
             streamingToolEvents[index].isComplete = true
         case .result:
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            resetStreamingState()
+            // Keep streaming bubble visible until saved messages load
+            // to prevent empty-screen flash
             Task {
                 await appState.loadMessages(chatId)
                 await appState.refreshPersistentChat()
+                resetStreamingState()
             }
         case .streamEnd(let streamChatId):
             guard streamChatId == chatId else { break }
@@ -702,6 +704,19 @@ struct ChatView: View {
             }
         default:
             break
+        }
+    }
+}
+
+private struct ThinkingActivityDots: View {
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.45)) { context in
+            let n = Int(context.date.timeIntervalSinceReferenceDate * 2).quotientAndRemainder(dividingBy: 4).remainder
+            HStack(spacing: 0) {
+                Text("Thinking")
+                Text(String(repeating: ".", count: n))
+                    .monospacedDigit()
+            }
         }
     }
 }

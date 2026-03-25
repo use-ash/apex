@@ -17,8 +17,8 @@ final class APIClient {
     init(certificateManager: CertificateManager) {
         delegate = TLSDelegate(certificateManager: certificateManager)
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForResource = 30
-        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 60
+        config.timeoutIntervalForRequest = 30
         session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }
 
@@ -34,8 +34,8 @@ final class APIClient {
         return try JSONDecoder().decode(CreateChatResponse.self, from: data).id
     }
 
-    func fetchMessages(chatId: String) async throws -> [Message] {
-        let data = try await request("GET", path: "/api/chats/\(chatId)/messages")
+    func fetchMessages(chatId: String, days: Int = 3) async throws -> [Message] {
+        let data = try await request("GET", path: "/api/chats/\(chatId)/messages?days=\(days)")
         return try JSONDecoder().decode([Message].self, from: data)
     }
 
