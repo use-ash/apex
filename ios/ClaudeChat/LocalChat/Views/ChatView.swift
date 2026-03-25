@@ -106,33 +106,55 @@ struct ChatView: View {
     private var streamingBubble: some View {
         HStack {
             VStack(alignment: .leading, spacing: 6) {
-                // Compact thinking indicator — just a single line, not the full text
+                // Compact thinking indicator — preview of what Claude is thinking
                 if !streamingThinking.isEmpty && streamingText.isEmpty {
-                    HStack(spacing: 6) {
-                        Image(systemName: "brain")
-                        ThinkingActivityDots()
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "brain")
+                            ThinkingActivityDots()
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+
+                        // Show last ~100 chars of thinking as preview
+                        let preview = String(streamingThinking.suffix(120))
+                            .replacingOccurrences(of: "\n", with: " ")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !preview.isEmpty {
+                            Text(preview)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(2)
+                        }
                     }
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
                 }
 
-                // Compact tool status — one line instead of N expanding cards
+                // Compact tool status — name + input detail + progress
                 if !streamingToolEvents.isEmpty {
                     let completed = streamingToolEvents.filter(\.isComplete).count
                     let total = streamingToolEvents.count
                     let latest = streamingToolEvents.last
-                    HStack(spacing: 6) {
-                        if completed < total {
-                            ProgressView().controlSize(.mini)
-                        } else {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            if completed < total {
+                                ProgressView().controlSize(.mini)
+                            } else {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                                    .font(.caption)
+                            }
+                            Text("\(humanReadableToolName(latest?.name ?? "Tool")) (\(completed)/\(total))")
                                 .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
-                        Text("\(humanReadableToolName(latest?.name ?? "Tool")) (\(completed)/\(total))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                        // Show what tool is working on
+                        if let input = latest?.input, !input.isEmpty {
+                            Text(input)
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                        }
                     }
                 }
 

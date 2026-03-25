@@ -282,7 +282,7 @@ async def _handle_skill(websocket, chat_id: str, skill: str, args: str, display_
     _save_message(chat_id, "user", display_prompt)
 
     # Send stream start
-    _chat_ws[chat_id] = websocket
+    _chat_ws.setdefault(chat_id, set()).add(websocket)
     _reset_stream_buffer(chat_id)
     await _send_stream_event(chat_id, {"type": "stream_start", "chat_id": chat_id})
 
@@ -653,7 +653,7 @@ def _get_messages(chat_id: str, days: int | None = None) -> list[dict]:
 # ---------------------------------------------------------------------------
 _clients: dict[str, ClaudeSDKClient] = {}
 _chat_locks: dict[str, asyncio.Lock] = {}
-_chat_ws: dict[str, WebSocket] = {}  # chat_id -> current WebSocket (for stream re-attach)
+_chat_ws: dict[str, set[WebSocket]] = {}  # chat_id -> ALL connected WebSockets (multi-viewer)
 _stream_buffers: dict[str, deque[tuple[int, dict]]] = {}
 _stream_seq: dict[str, int] = {}
 _chat_send_locks: dict[str, asyncio.Lock] = {}
@@ -721,11 +721,17 @@ async def _send_stream_event(chat_id: str, payload: dict) -> None:
     _buffer_stream_event(chat_id, payload)
     send_lock = _get_chat_send_lock(chat_id)
     async with send_lock:
-        ws = _chat_ws.get(chat_id)
-        if not ws:
+        ws_set = _chat_ws.get(chat_id)
+        if not ws_set:
             return
-        ok = await _safe_ws_send_json(ws, payload, chat_id=chat_id)
-        if not ok and _chat_ws.get(chat_id) is ws:
+        dead: list[WebSocket] = []
+        for ws in list(ws_set):
+            ok = await _safe_ws_send_json(ws, payload, chat_id=chat_id)
+            if not ok:
+                dead.append(ws)
+        for ws in dead:
+            ws_set.discard(ws)
+        if not ws_set:
             _chat_ws.pop(chat_id, None)
 
 
@@ -877,6 +883,7 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
                         })
 
             elif isinstance(msg, ResultMessage):
+                log(f"ResultMessage usage dict: {msg.usage}")
                 result_info = {
                     "session_id": msg.session_id,
                     "text": msg.result or result_text,
@@ -1135,18 +1142,20 @@ async def websocket_endpoint(websocket: WebSocket):
                                 if not replay_ok:
                                     break
                             if replay_ok:
-                                _chat_ws[attach_id] = websocket
+                                _chat_ws.setdefault(attach_id, set()).add(websocket)
                                 replay_ok = await _safe_ws_send_json(
                                     websocket,
                                     {"type": "stream_reattached", "chat_id": attach_id},
                                     chat_id=attach_id,
                                 )
-                            if not replay_ok and _chat_ws.get(attach_id) is websocket:
-                                _chat_ws.pop(attach_id, None)
+                            if not replay_ok:
+                                ws_set = _chat_ws.get(attach_id)
+                                if ws_set:
+                                    ws_set.discard(websocket)
                         if replay_ok:
                             log(f"WS re-attached for chat={attach_id} (stream active, replayed={replayed})")
                     else:
-                        _chat_ws[attach_id] = websocket
+                        _chat_ws.setdefault(attach_id, set()).add(websocket)
                         # No active stream — tell client it's safe to reload from DB
                         await _safe_ws_send_json(
                             websocket,
@@ -1282,7 +1291,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
 
         # Register this WS in the registry so the stream can find it
         original_ws = websocket
-        _chat_ws[chat_id] = websocket
+        _chat_ws.setdefault(chat_id, set()).add(websocket)
         _reset_stream_buffer(chat_id)
         await _send_stream_event(chat_id, {"type": "stream_start", "chat_id": chat_id})
 
@@ -1320,12 +1329,12 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 except Exception as fresh_error:
                     if DEBUG: log(f"DBG RECOVERY: fresh ALSO FAILED: {type(fresh_error).__name__}: {fresh_error}")
                     await _disconnect_client(chat_id)
-                    ws = _chat_ws.get(chat_id, websocket)
-                    await _safe_ws_send_json(
-                        ws,
-                        {"type": "error", "message": f"Claude request failed: {fresh_error}"},
-                        chat_id=chat_id,
-                    )
+                    for ws in list(_chat_ws.get(chat_id, {websocket})):
+                        await _safe_ws_send_json(
+                            ws,
+                            {"type": "error", "message": f"Claude request failed: {fresh_error}"},
+                            chat_id=chat_id,
+                        )
                     return
 
         if not result:
@@ -1349,20 +1358,23 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 tokens_out=result.get("tokens_out", 0),
             )
 
-        # If WS was swapped mid-stream (user reconnected), tell the new WS
-        # to reload the chat from DB so it gets the complete response
-        current_ws = _chat_ws.get(chat_id)
-        if current_ws and current_ws is not original_ws:
-            log(f"WS swapped during stream for chat={chat_id}, sending reload")
-            await _safe_ws_send_json(
-                current_ws,
-                {"type": "stream_complete_reload", "chat_id": chat_id},
-                chat_id=chat_id,
-            )
+        # If new viewers joined mid-stream, tell them to reload from DB
+        ws_set = _chat_ws.get(chat_id, set())
+        new_viewers = ws_set - {original_ws}
+        if new_viewers:
+            log(f"New viewers during stream for chat={chat_id}, sending reload to {len(new_viewers)}")
+            for nws in new_viewers:
+                await _safe_ws_send_json(
+                    nws,
+                    {"type": "stream_complete_reload", "chat_id": chat_id},
+                    chat_id=chat_id,
+                )
     finally:
         chat_lock.release()
-        ws = _chat_ws.pop(chat_id, websocket)
-        await _safe_ws_send_json(ws, {"type": "stream_end", "chat_id": chat_id}, chat_id=chat_id)
+        # Send stream_end to ALL connected viewers
+        ws_set = _chat_ws.get(chat_id, set())
+        for ws in list(ws_set):
+            await _safe_ws_send_json(ws, {"type": "stream_end", "chat_id": chat_id}, chat_id=chat_id)
         _stream_buffers.pop(chat_id, None)
         _stream_seq.pop(chat_id, None)
 
@@ -1372,7 +1384,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     html = CHAT_HTML.replace("{{MODE_CLASS}}", "mtls").replace("{{MODE_LABEL}}", "mTLS")
-    return HTMLResponse(html)
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
 # --- PWA endpoints ---
