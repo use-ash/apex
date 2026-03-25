@@ -4,12 +4,26 @@ import UIKit
 
 struct MessageBubble: View {
     private static let reactionOptions = ["👍", "❤️", "😂", "😮", "😢", "🔥"]
+    private static let iso8601FormatterWithFractionalSeconds: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let iso8601Formatter = ISO8601DateFormatter()
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter
+    }()
 
     let message: Message
     var isHighlighted: Bool = false
     var reaction: String?
     var onReact: ((String?) -> Void)?
     var onReply: (() -> Void)?
+
+    @State private var dragOffset: CGFloat = 0
 
     private var parsedToolEvents: [ToolEventDisplayItem] {
         parseSavedToolEventItems(from: message.toolEvents)
@@ -23,6 +37,29 @@ struct MessageBubble: View {
                 bubbleContent
 
                 if message.isAssistant { Spacer(minLength: 60) }
+            }
+            .offset(x: dragOffset)
+            .gesture(
+                DragGesture(minimumDistance: 20)
+                    .onChanged { value in
+                        if value.translation.width < 0 {
+                            dragOffset = max(value.translation.width, -80)
+                        }
+                    }
+                    .onEnded { _ in
+                        withAnimation(.spring(response: 0.3)) {
+                            dragOffset = 0
+                        }
+                    }
+            )
+            .overlay(alignment: .trailing) {
+                if dragOffset < -10, let timestamp = formattedTime(message.createdAt) {
+                    Text(timestamp)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .offset(x: 90 + dragOffset)
+                        .allowsHitTesting(false)
+                }
             }
 
             if let reaction, !reaction.isEmpty {
@@ -39,37 +76,36 @@ struct MessageBubble: View {
     }
 
     private var bubbleContent: some View {
-        ZoomableContent {
-            VStack(alignment: message.isUser ? .trailing : .leading, spacing: 6) {
-                messageText
+        VStack(alignment: message.isUser ? .trailing : .leading, spacing: 6) {
+            messageText
 
-                if !message.thinking.isEmpty {
-                    ThinkingDisclosureView(text: message.thinking)
-                }
-
-                if !parsedToolEvents.isEmpty {
-                    ToolEventListView(events: parsedToolEvents)
-                }
-
-                if message.costUsd > 0 {
-                    Text("$\(message.costUsd, specifier: "%.4f") · \(message.tokensIn + message.tokensOut)t")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
+            if !message.thinking.isEmpty {
+                ThinkingDisclosureView(text: message.thinking)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(message.isUser ? Color.blue : Color(.systemGray5))
-            .background {
-                if isHighlighted {
-                    RoundedRectangle(cornerRadius: 22)
-                        .fill(Color.yellow.opacity(0.35))
-                        .padding(-4)
-                }
+
+            if !parsedToolEvents.isEmpty {
+                ToolEventListView(events: parsedToolEvents)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 18))
-            .frame(maxWidth: UIScreen.main.bounds.width * 0.75, alignment: message.isUser ? .trailing : .leading)
+
+            if message.costUsd > 0 {
+                Text("$\(message.costUsd, specifier: "%.4f") · \(message.tokensIn + message.tokensOut)t")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(message.isUser ? Color.blue : Color(.systemGray5))
+        .background {
+            if isHighlighted {
+                RoundedRectangle(cornerRadius: 22)
+                    .fill(Color.yellow.opacity(0.35))
+                    .padding(-4)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .contentShape(RoundedRectangle(cornerRadius: 18))
+        .frame(maxWidth: UIScreen.main.bounds.width * 0.75, alignment: message.isUser ? .trailing : .leading)
         .contextMenu {
             ForEach(Self.reactionOptions, id: \.self) { emoji in
                 Button(emoji) {
@@ -93,6 +129,13 @@ struct MessageBubble: View {
         }
     }
 
+    private func formattedTime(_ createdAt: String) -> String? {
+        let date = Self.iso8601FormatterWithFractionalSeconds.date(from: createdAt)
+            ?? Self.iso8601Formatter.date(from: createdAt)
+        guard let date else { return nil }
+        return Self.timeFormatter.string(from: date)
+    }
+
     @ViewBuilder
     private var messageText: some View {
         if message.isAssistant {
@@ -112,42 +155,6 @@ struct MessageBubble: View {
                 frameAlignment: .trailing
             )
         }
-    }
-}
-
-private struct ZoomableContent<Content: View>: View {
-    @State private var scale: CGFloat = 1.0
-    @State private var lastScale: CGFloat = 1.0
-
-    let content: () -> Content
-
-    var body: some View {
-        content()
-            .scaleEffect(scale)
-            .gesture(
-                MagnifyGesture()
-                    .onChanged { value in
-                        scale = lastScale * value.magnification
-                    }
-                    .onEnded { value in
-                        let finalScale = lastScale * value.magnification
-                        lastScale = max(1.0, min(finalScale, 3.0))
-                        scale = lastScale
-                        if lastScale < 1.05 {
-                            withAnimation {
-                                scale = 1.0
-                                lastScale = 1.0
-                            }
-                        }
-                    }
-            )
-            .onTapGesture(count: 2) {
-                withAnimation(.spring(response: 0.3)) {
-                    scale = scale > 1.05 ? 1.0 : 2.0
-                    lastScale = scale
-                }
-            }
-            }
     }
 }
 

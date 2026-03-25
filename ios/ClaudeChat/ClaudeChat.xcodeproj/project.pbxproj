@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXFileReference section */
+		37B33AC42F73C109004AE5BC /* ClaudeChat-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "ClaudeChat-Info.plist"; sourceTree = "<group>"; };
 		37D7847F2F739F9300B6537E /* ClaudeChat.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClaudeChat.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -32,6 +33,7 @@
 		37D784762F739F9300B6537E = {
 			isa = PBXGroup;
 			children = (
+				37B33AC42F73C109004AE5BC /* ClaudeChat-Info.plist */,
 				37D784A02F73A01300B6537E /* LocalChat */,
 				37D784802F739F9300B6537E /* Products */,
 			);
@@ -256,6 +258,9 @@
 				DEVELOPMENT_TEAM = XN3L9CXKAV;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "ClaudeChat-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "";
+				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -288,6 +293,9 @@
 				DEVELOPMENT_TEAM = XN3L9CXKAV;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "ClaudeChat-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "";
+				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

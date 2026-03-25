@@ -17,6 +17,7 @@ struct ChatView: View {
     @State private var streamingText: String = ""
     @State private var streamingThinking: String = ""
     @State private var streamingToolEvents: [StreamingToolEvent] = []
+    @State private var streamingTimeoutToken: UUID?
     @State private var pendingAttachments: [PendingAttachment] = []
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var isShowingPhotoPicker: Bool = false
@@ -52,6 +53,7 @@ struct ChatView: View {
                 }
                 .padding(.vertical, 8)
             }
+            .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
             .safeAreaInset(edge: .bottom) {
                 composeBar
@@ -67,6 +69,11 @@ struct ChatView: View {
             }
             .onChange(of: streamingToolEvents) {
                 scrollToBottom(proxy: proxy)
+            }
+            .onChange(of: isInputFocused) { _, focused in
+                if focused {
+                    scrollToBottom(proxy: proxy)
+                }
             }
             .onAppear {
                 scrollToBottom(proxy: proxy)
@@ -366,6 +373,7 @@ struct ChatView: View {
             streamingText = ""
             streamingThinking = ""
             streamingToolEvents = []
+            armStreamingTimeout()
 
             appState.connectionManager.send(
                 .send(chatId: chatId, prompt: composedPrompt, attachments: uploadedAttachments.isEmpty ? nil : uploadedAttachments)
@@ -571,6 +579,27 @@ struct ChatView: View {
         }
     }
 
+    private func armStreamingTimeout() {
+        let token = UUID()
+        streamingTimeoutToken = token
+
+        Task {
+            try? await Task.sleep(for: .seconds(120))
+            await MainActor.run {
+                guard streamingTimeoutToken == token, isStreaming else { return }
+                resetStreamingState()
+            }
+        }
+    }
+
+    private func resetStreamingState() {
+        streamingTimeoutToken = nil
+        isStreaming = false
+        streamingText = ""
+        streamingThinking = ""
+        streamingToolEvents = []
+    }
+
     // MARK: - Message Handler
 
     private func handleStreamMessage(_ message: ServerMessage) {
@@ -602,36 +631,26 @@ struct ChatView: View {
             streamingToolEvents[index].isError = isError
             streamingToolEvents[index].isComplete = true
         case .result:
-            isStreaming = false
-            streamingText = ""
-            streamingThinking = ""
-            streamingToolEvents = []
+            resetStreamingState()
             Task {
                 await appState.loadMessages(chatId)
                 await appState.refreshPersistentChat()
             }
         case .streamEnd(let streamChatId):
             guard streamChatId == chatId else { break }
-            if !isStreaming { break }
-            isStreaming = false
-            streamingText = ""
-            streamingThinking = ""
-            streamingToolEvents = []
+            resetStreamingState()
+        case .attachOk(let streamChatId):
+            guard streamChatId == chatId else { break }
+            resetStreamingState()
         case .streamCompleteReload(let streamChatId):
             guard streamChatId == chatId else { break }
-            isStreaming = false
-            streamingText = ""
-            streamingThinking = ""
-            streamingToolEvents = []
+            resetStreamingState()
             Task {
                 await appState.loadMessages(chatId)
                 await appState.refreshPersistentChat()
             }
         case .error(let msg):
-            isStreaming = false
-            streamingText = ""
-            streamingThinking = ""
-            streamingToolEvents = []
+            resetStreamingState()
             appState.error = msg
             Task {
                 await appState.loadMessages(chatId)

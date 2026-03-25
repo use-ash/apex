@@ -1,7 +1,6 @@
 import BackgroundTasks
 import Foundation
 
-@MainActor
 enum BackgroundManager {
     static let keepAliveTaskIdentifier = "com.openclaw.localchat.keepalive"
 
@@ -18,9 +17,7 @@ enum BackgroundManager {
                 return
             }
 
-            Task { @MainActor in
-                handleKeepAlive(task: refreshTask)
-            }
+            handleKeepAlive(task: refreshTask)
         }
     }
 
@@ -44,7 +41,9 @@ enum BackgroundManager {
             task.setTaskCompleted(success: false)
         }
 
-        connectionManager?.sendBackgroundPing()
-        task.setTaskCompleted(success: true)
+        DispatchQueue.main.async {
+            connectionManager?.sendBackgroundPing()
+            task.setTaskCompleted(success: true)
+        }
     }
 }
