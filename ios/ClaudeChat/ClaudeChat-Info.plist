@@ -3,7 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
-	<array/>
+	<array>
+		<string>com.openclaw.localchat.keepalive</string>
+	</array>
 	<key>CFBundleGetInfoString</key>
 	<string></string>
 </dict>

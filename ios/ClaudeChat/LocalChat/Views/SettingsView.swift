@@ -16,6 +16,7 @@ struct SettingsView: View {
     @State private var selectedModel: String
     @State private var isShowingFilePicker: Bool = false
     @State private var isApplyingServerURL: Bool = false
+    @AppStorage("chatFontScale") private var fontScale: Double = 1.0
 
     init(appState: AppState) {
         self.appState = appState
@@ -119,6 +120,23 @@ struct SettingsView: View {
                         : "Changes will be sent when the app reconnects.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                }
+
+                Section("Text Size") {
+                    HStack {
+                        Text("Font Scale")
+                        Spacer()
+                        Text("\(Int(fontScale * 100))%")
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Slider(value: $fontScale, in: 0.7...2.0, step: 0.1)
+
+                    if fontScale != 1.0 {
+                        Button("Reset to Default") {
+                            fontScale = 1.0
+                        }
+                    }
                 }
 
                 Section("About") {

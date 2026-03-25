@@ -20,6 +20,7 @@ struct MessageBubble: View {
     let message: Message
     var isHighlighted: Bool = false
     var reaction: String?
+    var fontScale: CGFloat = 1.0
     var onReact: ((String?) -> Void)?
     var onReply: (() -> Void)?
 
@@ -105,7 +106,7 @@ struct MessageBubble: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 18))
         .contentShape(RoundedRectangle(cornerRadius: 18))
-        .frame(maxWidth: UIScreen.main.bounds.width * 0.75, alignment: message.isUser ? .trailing : .leading)
+        .frame(maxWidth: 300, alignment: message.isUser ? .trailing : .leading)
         .contextMenu {
             ForEach(Self.reactionOptions, id: \.self) { emoji in
                 Button(emoji) {
@@ -138,22 +139,12 @@ struct MessageBubble: View {
 
     @ViewBuilder
     private var messageText: some View {
+        let baseFont = UIFont.preferredFont(forTextStyle: .subheadline)
+        let scaledFont = baseFont.withSize(baseFont.pointSize * fontScale)
         if message.isAssistant {
-            MarkdownMessageText(
-                content: message.content,
-                font: .subheadline,
-                foregroundColor: .primary,
-                textAlignment: .leading,
-                frameAlignment: .leading
-            )
+            SelectableTextView(content: message.content, uiFont: scaledFont, textColor: UIColor.label)
         } else {
-            MarkdownMessageText(
-                content: message.content,
-                font: .subheadline,
-                foregroundColor: .white,
-                textAlignment: .leading,
-                frameAlignment: .leading
-            )
+            SelectableTextView(content: message.content, uiFont: scaledFont, textColor: .white)
         }
     }
 }

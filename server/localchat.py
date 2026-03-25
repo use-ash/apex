@@ -1,19 +1,24 @@
-#!/opt/homebrew/bin/python3
-"""LocalChat — Local web chat for Claude Code over WireGuard.
+#!/usr/bin/env python3
+"""LocalChat — Local web chat for Claude Code.
 
 Zero third-party data flow. FastAPI + WebSocket + Claude Agent SDK.
 All conversation data stays on this machine. Persistent sessions — no
 subprocess respawning per turn. Auth via mTLS (client certificate).
 
 Usage:
-    ./scripts/launch_localchat.sh
+    python3 localchat.py
+    # or via setup wizard: python3 setup_localchat.py
 
 Env vars:
-    LOCALCHAT_SSL_CERT  — server certificate
-    LOCALCHAT_SSL_KEY   — server private key
-    LOCALCHAT_SSL_CA    — CA cert for client verification (mTLS)
-    LOCALCHAT_HOST      — bind address (default: 0.0.0.0)
-    LOCALCHAT_PORT      — port (default: 8300)
+    LOCALCHAT_SSL_CERT       — server certificate
+    LOCALCHAT_SSL_KEY        — server private key
+    LOCALCHAT_SSL_CA         — CA cert for client verification (mTLS)
+    LOCALCHAT_HOST           — bind address (default: 0.0.0.0)
+    LOCALCHAT_PORT           — port (default: 8300)
+    LOCALCHAT_MODEL          — Claude model (default: claude-sonnet-4-6)
+    LOCALCHAT_WORKSPACE      — working directory for Claude SDK (default: cwd)
+    LOCALCHAT_PERMISSION_MODE — SDK permission mode (default: acceptEdits)
+    LOCALCHAT_DEBUG          — enable verbose debug logging (default: false)
 """
 
 from __future__ import annotations
@@ -71,8 +76,10 @@ SSL_CERT = os.environ.get("LOCALCHAT_SSL_CERT", "")
 SSL_KEY = os.environ.get("LOCALCHAT_SSL_KEY", "")
 SSL_CA = os.environ.get("LOCALCHAT_SSL_CA", "")
 LOCALCHAT_ROOT = Path(os.environ.get("LOCALCHAT_ROOT", Path(__file__).resolve().parent.parent))
-WORKSPACE = Path("/Users/dana/.openclaw/workspace")  # for Claude SDK working dir
-MODEL = os.environ.get("LOCALCHAT_MODEL", "claude-opus-4-6")
+WORKSPACE = Path(os.environ.get("LOCALCHAT_WORKSPACE", os.getcwd()))
+MODEL = os.environ.get("LOCALCHAT_MODEL", "claude-sonnet-4-6")
+PERMISSION_MODE = os.environ.get("LOCALCHAT_PERMISSION_MODE", "acceptEdits")
+DEBUG = os.environ.get("LOCALCHAT_DEBUG", "").lower() in {"1", "true", "yes"}
 DB_PATH = LOCALCHAT_ROOT / "state" / "localchat.db"
 LOG_PATH = LOCALCHAT_ROOT / "state" / "localchat.log"
 LOG_MAX = 5 * 1024 * 1024  # 5MB
@@ -83,7 +90,7 @@ TEXT_TYPES = {"txt", "py", "json", "csv", "md", "yaml", "yml", "toml", "cfg", "i
 MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB
 MAX_TEXT_SIZE = 1 * 1024 * 1024    # 1MB
 MAX_AUDIO_SIZE = 10 * 1024 * 1024  # 10MB
-WHISPER_BIN = "/opt/homebrew/bin/whisper"
+WHISPER_BIN = os.environ.get("LOCALCHAT_WHISPER_BIN", shutil.which("whisper") or "whisper")
 SDK_QUERY_TIMEOUT = 30
 SDK_STREAM_TIMEOUT = 300
 ENABLE_SUBCONSCIOUS_WHISPER = os.environ.get("LOCALCHAT_ENABLE_WHISPER", "").lower() in {"1", "true", "yes"}
@@ -444,7 +451,7 @@ def _make_options(session_id: str | None = None) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(
         model=MODEL,
         cwd=str(WORKSPACE),
-        permission_mode="bypassPermissions",
+        permission_mode=PERMISSION_MODE,
         max_turns=50,
         resume=session_id,
         setting_sources=["user"],  # loads ~/.claude/settings.json hooks
@@ -547,21 +554,32 @@ def _normalize_response_stream(response):
     return _wrap_response()
 
 
+_ws_send_count: dict[str, int] = {}
+_ws_fail_count: dict[str, int] = {}
+
 async def _safe_ws_send_json(ws: WebSocket, payload: dict, *, chat_id: str) -> bool:
     try:
         await ws.send_json(payload)
+        _ws_send_count[chat_id] = _ws_send_count.get(chat_id, 0) + 1
         return True
     except Exception as e:
-        log(f"websocket send failed: chat={chat_id} type={payload.get('type')} {e}")
+        _ws_fail_count[chat_id] = _ws_fail_count.get(chat_id, 0) + 1
+        fc = _ws_fail_count[chat_id]
+        sc = _ws_send_count.get(chat_id, 0)
+        if DEBUG: log(f"DBG ws_send FAIL #{fc} (ok={sc}): chat={chat_id} type={payload.get('type')} {type(e).__name__}: {e}")
         return False
 
 
 async def _run_query_turn(client: ClaudeSDKClient, make_query_input,
                           chat_id: str) -> dict:
+    if DEBUG: log(f"DBG query_turn: chat={chat_id} sending query...")
     await asyncio.wait_for(client.query(make_query_input()), timeout=SDK_QUERY_TIMEOUT)
+    if DEBUG: log(f"DBG query_turn: chat={chat_id} query sent, streaming response...")
     result = await asyncio.wait_for(_stream_response(client, chat_id), timeout=SDK_STREAM_TIMEOUT)
     if result.get("stream_failed"):
+        if DEBUG: log(f"DBG query_turn: chat={chat_id} STREAM FAILED: {result.get('error')}")
         raise RuntimeError(result.get("error") or "SDK stream failed")
+    if DEBUG: log(f"DBG query_turn: chat={chat_id} done. text={len(result.get('text',''))}chars tools={result.get('tool_events','[]').count('tool_use_id')} session={result.get('session_id','?')[:8] if result.get('session_id') else 'none'}")
     return result
 
 
@@ -587,9 +605,15 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
         """Send to current WS from registry. Removes dead entries."""
         await _send_stream_event(chat_id, payload)
 
+    _stream_event_count = 0
+    _stream_start = time.monotonic()
     try:
         response = _normalize_response_stream(client.receive_response())
         async for msg in response:
+            _stream_event_count += 1
+            elapsed = time.monotonic() - _stream_start
+            if _stream_event_count <= 3 or _stream_event_count % 20 == 0:
+                if DEBUG: log(f"DBG stream event #{_stream_event_count} ({elapsed:.0f}s): chat={chat_id} type={type(msg).__name__}")
             if isinstance(msg, SystemMessage):
                 if msg.subtype == "init":
                     data = msg.data if isinstance(msg.data, dict) else {}
@@ -659,10 +683,20 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
                     "tokens_out": result_info["tokens_out"],
                     "session_id": msg.session_id,
                 })
+                elapsed = time.monotonic() - _stream_start
+                if DEBUG: log(f"DBG stream COMPLETE: chat={chat_id} events={_stream_event_count} time={elapsed:.0f}s session={msg.session_id[:8] if msg.session_id else '?'} cost=${result_info['cost_usd']:.4f}")
                 # receive_response() stops after ResultMessage
 
+    except asyncio.TimeoutError:
+        if DEBUG: log(f"DBG stream TIMEOUT: chat={chat_id} after {SDK_STREAM_TIMEOUT}s. text={len(result_text)}chars thinking={len(thinking_text)}chars tools={len(tool_events)}")
+        result_info["text"] = result_text
+        result_info["thinking"] = thinking_text
+        result_info["tool_events"] = json.dumps(tool_events)
+        result_info["error"] = f"Stream timeout after {SDK_STREAM_TIMEOUT}s"
+        result_info["stream_failed"] = True
+        await _disconnect_client(chat_id)
     except Exception as e:
-        log(f"SDK stream error: chat={chat_id} {e}")
+        if DEBUG: log(f"DBG stream ERROR: chat={chat_id} {type(e).__name__}: {e}. text={len(result_text)}chars thinking={len(thinking_text)}chars tools={len(tool_events)}")
         result_info["text"] = result_text
         result_info["thinking"] = thinking_text
         result_info["tool_events"] = json.dumps(tool_events)
@@ -843,7 +877,8 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=1008)
         return
     await websocket.accept()
-    log("websocket connected")
+    ws_id = uuid.uuid4().hex[:6]
+    log(f"websocket connected ws={ws_id} remote={websocket.client.host if websocket.client else '?'}")
     active_tasks: set[asyncio.Task] = set()
 
     def _track_task(task: asyncio.Task) -> None:
@@ -911,6 +946,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 if not model:
                     await websocket.send_json({"type": "error", "message": "Model is required"})
                     continue
+                if model == MODEL:
+                    # Same model — skip teardown, just acknowledge
+                    await websocket.send_json({
+                        "type": "system",
+                        "subtype": "model_changed",
+                        "model": model,
+                    })
+                    continue
                 await _set_model(model)
                 await websocket.send_json({
                     "type": "system",
@@ -931,13 +974,13 @@ async def websocket_endpoint(websocket: WebSocket):
                     except Exception:
                         pass
 
-    except WebSocketDisconnect:
-        log("websocket disconnected")
+    except WebSocketDisconnect as wd:
+        log(f"websocket disconnected ws={ws_id} code={wd.code if hasattr(wd, 'code') else '?'}")
     except Exception as e:
-        log(f"websocket error: {e}")
+        log(f"websocket error ws={ws_id}: {type(e).__name__}: {e}")
     finally:
         if active_tasks:
-            log(f"websocket cleanup: {len(active_tasks)} send task(s) continue in background")
+            log(f"websocket cleanup ws={ws_id}: {len(active_tasks)} send task(s) continue in background")
 
 
 async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
@@ -991,32 +1034,34 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             client = await _get_or_create_client(chat_id)
             result = await _run_query_turn(client, make_query_input, chat_id)
         except Exception as first_error:
-            log(f"SDK error: {first_error}, reconnecting chat={chat_id}")
+            if DEBUG: log(f"DBG RECOVERY: chat={chat_id} first error: {type(first_error).__name__}: {first_error}")
             await _disconnect_client(chat_id)
 
             # Try to RESUME the existing session first (preserves context, saves tokens)
             chat = _get_chat(chat_id)
             existing_session = chat.get("claude_session_id") if chat else None
+            if DEBUG: log(f"DBG RECOVERY: attempting resume session={existing_session or 'NONE'}")
             try:
                 options = _make_options(session_id=existing_session)
                 client = ClaudeSDKClient(options)
                 await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
                 _clients[chat_id] = client
                 result = await _run_query_turn(client, make_query_input, chat_id)
-                log(f"resumed session OK: chat={chat_id} session={existing_session or 'new'}")
+                if DEBUG: log(f"DBG RECOVERY: resume OK chat={chat_id} session={existing_session or 'new'}")
             except Exception as resume_error:
-                log(f"resume failed ({resume_error}), creating fresh session for chat={chat_id}")
+                if DEBUG: log(f"DBG RECOVERY: resume FAILED: {type(resume_error).__name__}: {resume_error}")
                 await _disconnect_client(chat_id)
-                # Only NOW nuke the session ID — resume genuinely failed
                 _update_chat(chat_id, claude_session_id=None)
+                if DEBUG: log(f"DBG RECOVERY: session_id NUKED, trying fresh...")
                 try:
                     options = _make_options(session_id=None)
                     client = ClaudeSDKClient(options)
                     await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
                     _clients[chat_id] = client
                     result = await _run_query_turn(client, make_query_input, chat_id)
+                    if DEBUG: log(f"DBG RECOVERY: fresh session OK chat={chat_id}")
                 except Exception as fresh_error:
-                    log(f"fresh SDK client failed: chat={chat_id} {fresh_error}")
+                    if DEBUG: log(f"DBG RECOVERY: fresh ALSO FAILED: {type(fresh_error).__name__}: {fresh_error}")
                     await _disconnect_client(chat_id)
                     ws = _chat_ws.get(chat_id, websocket)
                     await _safe_ws_send_json(
@@ -1151,7 +1196,7 @@ display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--card);min-
 
 /* Messages */
 .messages{flex:1;overflow-y:auto;padding:12px 16px;-webkit-overflow-scrolling:touch}
-.msg{margin-bottom:12px;max-width:85%}
+.msg{margin-bottom:12px;max-width:85%;-webkit-user-select:text;user-select:text}
 .msg.user{margin-left:auto;background:var(--accent);color:white;padding:10px 14px;
 border-radius:16px 16px 4px 16px;font-size:15px;line-height:1.4;word-break:break-word}
 .msg.assistant{margin-right:auto}
@@ -1173,7 +1218,7 @@ margin-bottom:6px;overflow:hidden}
 .thinking-header{padding:8px 12px;font-size:12px;color:var(--yellow);cursor:pointer;
 display:flex;align-items:center;gap:6px;user-select:none}
 .thinking-body{padding:0 12px 8px 12px;font-size:12px;color:var(--dim);
-line-height:1.4;display:none;white-space:pre-wrap}
+line-height:1.4;display:none;white-space:pre-wrap;-webkit-user-select:text;user-select:text}
 .thinking-block.open .thinking-body{display:block}
 .thinking-header .arrow{transition:transform 0.2s}
 .thinking-block.open .thinking-header .arrow{transform:rotate(90deg)}

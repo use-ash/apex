@@ -10,7 +10,7 @@ SSL_DIR="$LOCALCHAT_ROOT/state/ssl"
 if [ ! -f "$SSL_DIR/client.p12" ]; then
     echo "Generating client certificate..."
     openssl genrsa -out "$SSL_DIR/client.key" 2048 2>/dev/null
-    openssl req -new -key "$SSL_DIR/client.key" -subj "/CN=dana-localchat" \
+    openssl req -new -key "$SSL_DIR/client.key" -subj "/CN=localchat-client" \
       | openssl x509 -req -CA "$SSL_DIR/ca.crt" -CAkey "$SSL_DIR/ca.key" \
         -CAcreateserial -days 825 -sha256 \
         -extfile <(printf "basicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=clientAuth") \
@@ -35,4 +35,4 @@ export LOCALCHAT_SSL_CA="$SSL_DIR/ca.crt"
 export LOCALCHAT_ROOT="$LOCALCHAT_ROOT"
 
 echo "Starting LocalChat with mTLS..."
-/opt/homebrew/bin/python3 "$SCRIPT_DIR/localchat.py"
+python3 "$SCRIPT_DIR/localchat.py"

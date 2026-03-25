@@ -1,6 +1,7 @@
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
+import UIKit
 
 struct ChatView: View {
     private static let imageExtensions = ["jpg", "jpeg", "png", "gif", "webp", "heic", "heif"]
@@ -25,6 +26,7 @@ struct ChatView: View {
     @State private var isUploadingAttachments: Bool = false
     @State private var reactions: [String: String] = [:]
     @State private var replyingToMessage: Message?
+    @State private var stopButtonScale: CGFloat = 1.0
     @FocusState private var isInputFocused: Bool
 
     var body: some View {
@@ -212,6 +214,17 @@ struct ChatView: View {
                             .frame(width: 32, height: 32)
                             .background(.red)
                             .clipShape(Circle())
+                            .shadow(color: .red.opacity(0.4), radius: 4)
+                    }
+                    .scaleEffect(stopButtonScale)
+                    .onAppear {
+                        stopButtonScale = 1.0
+                        withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                            stopButtonScale = 1.15
+                        }
+                    }
+                    .onDisappear {
+                        stopButtonScale = 1.0
                     }
                 } else if isUploadingAttachments {
                     ProgressView()
@@ -370,6 +383,7 @@ struct ChatView: View {
             appState.messages.append(userMessage)
 
             isStreaming = true
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             streamingText = ""
             streamingThinking = ""
             streamingToolEvents = []
@@ -647,6 +661,7 @@ struct ChatView: View {
             streamingToolEvents[index].isError = isError
             streamingToolEvents[index].isComplete = true
         case .result:
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
             resetStreamingState()
             Task {
                 await appState.loadMessages(chatId)
