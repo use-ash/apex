@@ -991,25 +991,40 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             client = await _get_or_create_client(chat_id)
             result = await _run_query_turn(client, make_query_input, chat_id)
         except Exception as first_error:
-            log(f"SDK error: {first_error}, creating fresh client for chat={chat_id}")
+            log(f"SDK error: {first_error}, reconnecting chat={chat_id}")
             await _disconnect_client(chat_id)
-            _update_chat(chat_id, claude_session_id=None)
+
+            # Try to RESUME the existing session first (preserves context, saves tokens)
+            chat = _get_chat(chat_id)
+            existing_session = chat.get("claude_session_id") if chat else None
             try:
-                options = _make_options(session_id=None)
+                options = _make_options(session_id=existing_session)
                 client = ClaudeSDKClient(options)
                 await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
                 _clients[chat_id] = client
                 result = await _run_query_turn(client, make_query_input, chat_id)
-            except Exception as retry_error:
-                log(f"fresh SDK client failed: chat={chat_id} {retry_error}")
+                log(f"resumed session OK: chat={chat_id} session={existing_session or 'new'}")
+            except Exception as resume_error:
+                log(f"resume failed ({resume_error}), creating fresh session for chat={chat_id}")
                 await _disconnect_client(chat_id)
-                ws = _chat_ws.get(chat_id, websocket)
-                await _safe_ws_send_json(
-                    ws,
-                    {"type": "error", "message": f"Claude request failed: {retry_error}"},
-                    chat_id=chat_id,
-                )
-                return
+                # Only NOW nuke the session ID — resume genuinely failed
+                _update_chat(chat_id, claude_session_id=None)
+                try:
+                    options = _make_options(session_id=None)
+                    client = ClaudeSDKClient(options)
+                    await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
+                    _clients[chat_id] = client
+                    result = await _run_query_turn(client, make_query_input, chat_id)
+                except Exception as fresh_error:
+                    log(f"fresh SDK client failed: chat={chat_id} {fresh_error}")
+                    await _disconnect_client(chat_id)
+                    ws = _chat_ws.get(chat_id, websocket)
+                    await _safe_ws_send_json(
+                        ws,
+                        {"type": "error", "message": f"Claude request failed: {fresh_error}"},
+                        chat_id=chat_id,
+                    )
+                    return
 
         if not result:
             return

@@ -151,8 +151,8 @@ struct MessageBubble: View {
                 content: message.content,
                 font: .subheadline,
                 foregroundColor: .white,
-                textAlignment: .trailing,
-                frameAlignment: .trailing
+                textAlignment: .leading,
+                frameAlignment: .leading
             )
         }
     }

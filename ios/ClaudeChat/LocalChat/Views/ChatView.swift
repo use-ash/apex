@@ -3,7 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ChatView: View {
-    private static let imageExtensions = ["jpg", "jpeg", "png", "gif", "webp"]
+    private static let imageExtensions = ["jpg", "jpeg", "png", "gif", "webp", "heic", "heif"]
     private static let textExtensions = ["txt", "py", "json", "csv", "md", "yaml", "yml", "toml", "cfg", "ini", "log", "html", "css", "js", "ts", "sh"]
     private static let maxImageSize = 10 * 1024 * 1024
     private static let maxTextSize = 1 * 1024 * 1024
@@ -475,12 +475,28 @@ struct ChatView: View {
     private func importPhotoItems(_ items: [PhotosPickerItem]) async {
         for (index, item) in items.enumerated() {
             do {
-                guard let data = try await item.loadTransferable(type: Data.self) else {
+                guard let rawData = try await item.loadTransferable(type: Data.self) else {
                     continue
                 }
+
+                // Convert HEIC/HEIF to JPEG for maximum server compatibility
+                let filename = generatedPhotoFilename(for: item, index: index)
+                let ext = URL(fileURLWithPath: filename).pathExtension.lowercased()
+                let (data, resolvedFilename): (Data, String)
+                if ["heic", "heif"].contains(ext),
+                   let uiImage = UIImage(data: rawData),
+                   let jpegData = uiImage.jpegData(compressionQuality: 0.85) {
+                    let base = URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent
+                    data = jpegData
+                    resolvedFilename = "\(base).jpg"
+                } else {
+                    data = rawData
+                    resolvedFilename = filename
+                }
+
                 let attachment = try makeAttachment(
                     data: data,
-                    filename: generatedPhotoFilename(for: item, index: index)
+                    filename: resolvedFilename
                 )
                 await MainActor.run {
                     pendingAttachments.append(attachment)
@@ -639,9 +655,23 @@ struct ChatView: View {
         case .streamEnd(let streamChatId):
             guard streamChatId == chatId else { break }
             resetStreamingState()
+        case .streamReattached(let streamChatId):
+            guard streamChatId == chatId else { break }
+            // Server confirms an active stream exists — resume streaming UI
+            // Clear accumulated state since server will replay events
+            if !isStreaming {
+                isStreaming = true
+                streamingText = ""
+                streamingThinking = ""
+                streamingToolEvents = []
+                armStreamingTimeout()
+            }
         case .attachOk(let streamChatId):
             guard streamChatId == chatId else { break }
-            resetStreamingState()
+            // Only reset if we're not mid-stream — avoids nuking state on app foreground
+            if !isStreaming {
+                resetStreamingState()
+            }
         case .streamCompleteReload(let streamChatId):
             guard streamChatId == chatId else { break }
             resetStreamingState()
