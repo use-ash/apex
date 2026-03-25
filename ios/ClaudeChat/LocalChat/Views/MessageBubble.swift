@@ -269,11 +269,14 @@ struct ThinkingDisclosureView: View {
 
     var body: some View {
         DisclosureGroup {
-            Text(text)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
+            ScrollView {
+                Text(text)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .frame(maxHeight: 200)
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "brain")
@@ -283,7 +286,7 @@ struct ThinkingDisclosureView: View {
                     Text("Thinking")
                 }
             }
-            .font(.caption2)
+            .font(.caption)
             .foregroundStyle(.secondary)
         }
         .padding(8)
@@ -537,29 +540,58 @@ func compactToolInputDescription(name: String? = nil, input: Any, maxLength: Int
         let filePath = stringValue(dict["file_path"] ?? dict["path"])
         let pattern = stringValue(dict["pattern"] ?? dict["query"] ?? dict["search"])
         let command = stringValue(dict["command"] ?? dict["cmd"])
+        let description = stringValue(dict["description"])
 
         switch normalizedName {
         case "read", "edit", "write":
             if let filePath {
-                return truncated("\"\(filePath)\"", to: maxLength)
+                let short = shortPath(filePath)
+                return truncated(short, to: maxLength)
             }
         case "grep", "search":
             if let pattern, let filePath {
-                return truncated("\"\(pattern)\" in \"\(filePath)\"", to: maxLength)
+                return truncated("\"\(pattern)\" in \(shortPath(filePath))", to: maxLength)
             }
             if let pattern {
                 return truncated("\"\(pattern)\"", to: maxLength)
             }
         case "bash", "run", "command":
+            if let description {
+                return truncated(description, to: maxLength)
+            }
             if let command {
                 return truncated(command, to: maxLength)
+            }
+        case "glob":
+            if let pattern {
+                return truncated(pattern, to: maxLength)
+            }
+        case "agent":
+            if let description {
+                return truncated(description, to: maxLength)
+            }
+            if let prompt = stringValue(dict["prompt"]) {
+                return truncated(prompt, to: maxLength)
+            }
+        case "skill":
+            if let skill = stringValue(dict["skill"]) {
+                let args = stringValue(dict["args"])
+                return truncated(args != nil ? "\(skill) \(args!)" : skill, to: maxLength)
+            }
+        case "webfetch":
+            if let url = stringValue(dict["url"]) {
+                return truncated(url, to: maxLength)
+            }
+        case "websearch":
+            if let query = stringValue(dict["query"]) {
+                return truncated("\"\(query)\"", to: maxLength)
             }
         default:
             break
         }
 
         if let filePath {
-            return truncated("\"\(filePath)\"", to: maxLength)
+            return truncated(shortPath(filePath), to: maxLength)
         }
         if let pattern {
             return truncated("\"\(pattern)\"", to: maxLength)
@@ -582,15 +614,25 @@ func humanReadableToolName(_ name: String) -> String {
     case "read":
         return "Reading file"
     case "grep", "search":
-        return "Searching"
-    case "edit", "write":
+        return "Searching code"
+    case "edit":
         return "Editing file"
+    case "write":
+        return "Writing file"
     case "bash", "run", "command":
         return "Running command"
     case "glob":
         return "Finding files"
     case "ls":
         return "Listing files"
+    case "webfetch":
+        return "Fetching URL"
+    case "websearch":
+        return "Web search"
+    case "agent":
+        return "Sub-agent"
+    case "skill":
+        return "Running skill"
     default:
         return name.isEmpty ? "Tool" : name
     }
@@ -602,12 +644,22 @@ func toolIconName(for name: String) -> String {
         return "doc.text.magnifyingglass"
     case "grep", "search":
         return "magnifyingglass"
-    case "edit", "write":
+    case "edit":
         return "square.and.pencil"
+    case "write":
+        return "doc.badge.plus"
     case "bash", "run", "command":
         return "terminal"
     case "glob", "ls":
         return "folder"
+    case "webfetch":
+        return "globe"
+    case "websearch":
+        return "globe.badge.chevron.backward"
+    case "agent":
+        return "person.2"
+    case "skill":
+        return "bolt.fill"
     default:
         return "wrench.and.screwdriver"
     }
@@ -626,23 +678,37 @@ func toolResultSummary(for event: ToolEventDisplayItem) -> String {
         return "Completed"
     }
 
-    let lineCount = max(event.resultText.components(separatedBy: .newlines).count, 1)
+    let lines = event.resultText.components(separatedBy: .newlines)
+    let nonEmptyLines = lines.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    let lineCount = max(lines.count, 1)
     switch event.name.lowercased() {
     case "read":
         return "\(lineCount) \(lineCount == 1 ? "line" : "lines")"
     case "grep", "search":
-        let matchCount = event.resultText
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .count
+        let matchCount = nonEmptyLines.count
         return "\(matchCount) \(matchCount == 1 ? "match" : "matches")"
+    case "glob":
+        let fileCount = nonEmptyLines.count
+        return "\(fileCount) \(fileCount == 1 ? "file" : "files")"
+    case "bash", "run", "command":
+        if lineCount <= 3 {
+            return truncated(event.resultText.replacingOccurrences(of: "\n", with: " "), to: 60)
+        }
+        return "\(lineCount) lines of output"
+    case "agent":
+        return "Completed"
     default:
         if lineCount > 1 {
             return "\(lineCount) \(lineCount == 1 ? "line" : "lines")"
         }
         return truncated(event.resultText.replacingOccurrences(of: "\n", with: " "), to: 60)
     }
+}
+
+private func shortPath(_ path: String) -> String {
+    let components = path.split(separator: "/")
+    if components.count <= 2 { return path }
+    return components.suffix(2).joined(separator: "/")
 }
 
 func truncated(_ value: String, to limit: Int) -> String {

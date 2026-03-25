@@ -26,6 +26,8 @@ final class AppState {
     var error: String?
     var scenePhase: ScenePhase = .active
     var streamMessageHandler: ((ServerMessage) -> Void)?
+    var usageData: UsageResponse?
+    private var usagePollingTask: Task<Void, Never>?
     var selectedModel: String {
         didSet {
             UserDefaults.standard.set(selectedModel, forKey: Self.selectedModelKey)
@@ -173,6 +175,31 @@ final class AppState {
         }
     }
 
+    // MARK: - Usage
+
+    func startUsagePolling() {
+        usagePollingTask?.cancel()
+        usagePollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.fetchUsage()
+                try? await Task.sleep(for: .seconds(60))
+            }
+        }
+    }
+
+    func stopUsagePolling() {
+        usagePollingTask?.cancel()
+        usagePollingTask = nil
+    }
+
+    func fetchUsage() async {
+        do {
+            usageData = try await apiClient.fetchUsage()
+        } catch {
+            // Silently fail — banner just won't show
+        }
+    }
+
     static func friendlyModelName(_ model: String?) -> String {
         guard let model, !model.isEmpty else { return "Model" }
         if let option = supportedModels.first(where: { $0.id == model }) {
@@ -251,6 +278,7 @@ final class AppState {
                 )
             }
             streamingResponsePreview = ""
+            Task { await fetchUsage() }
         case .streamEnd:
             streamingResponsePreview = ""
         case .error(let msg):

@@ -48,6 +48,11 @@ final class APIClient {
         return try JSONDecoder().decode(HealthResponse.self, from: data).ok
     }
 
+    func fetchUsage() async throws -> UsageResponse {
+        let data = try await request("GET", path: "/api/usage")
+        return try JSONDecoder().decode(UsageResponse.self, from: data)
+    }
+
     func uploadFile(data: Data, filename: String) async throws -> UploadResponse {
         let boundary = "Boundary-\(UUID().uuidString)"
         let body = makeMultipartBody(data: data, filename: filename, boundary: boundary)
@@ -161,6 +166,27 @@ private struct CreateChatResponse: Decodable {
 
 private struct HealthResponse: Decodable {
     let ok: Bool
+}
+
+// MARK: - Usage
+
+struct UsageResponse: Decodable {
+    let plan: String?
+    let session: UsageBucket
+    let weekly: UsageBucket
+    let models: [String: UsageBucket]?
+
+    struct UsageBucket: Decodable {
+        let utilization: Int
+        let resetsAt: String
+        let resetsIn: String
+
+        enum CodingKeys: String, CodingKey {
+            case utilization
+            case resetsAt = "resets_at"
+            case resetsIn = "resets_in"
+        }
+    }
 }
 
 private extension Data {

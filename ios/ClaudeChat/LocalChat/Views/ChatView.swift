@@ -684,11 +684,12 @@ struct ChatView: View {
             streamingToolEvents[index].isComplete = true
         case .result:
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            // Keep streaming bubble visible until saved messages load
-            // to prevent empty-screen flash
+            // Immediately stop streaming UI — don't wait for message reload
+            isStreaming = false
             Task {
                 await appState.loadMessages(chatId)
                 await appState.refreshPersistentChat()
+                // Final cleanup (clears text buffers)
                 resetStreamingState()
             }
         case .streamEnd(let streamChatId):

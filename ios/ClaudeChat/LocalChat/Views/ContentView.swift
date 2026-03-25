@@ -12,7 +12,13 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             ZStack(alignment: .top) {
-                chatContent
+                VStack(spacing: 0) {
+                    if let usage = appState.usageData {
+                        UsageBannerView(usage: usage)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                    chatContent
+                }
 
                 if isShowingSearch {
                     SearchOverlay(
@@ -78,6 +84,12 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isShowingSettings) {
             SettingsView(appState: appState)
+        }
+        .onAppear {
+            appState.startUsagePolling()
+        }
+        .onDisappear {
+            appState.stopUsagePolling()
         }
     }
 

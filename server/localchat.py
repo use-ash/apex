@@ -38,6 +38,7 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+import urllib.request
 
 import base64
 import contextlib
@@ -96,16 +97,213 @@ SDK_STREAM_TIMEOUT = 300
 ENABLE_SUBCONSCIOUS_WHISPER = os.environ.get("LOCALCHAT_ENABLE_WHISPER", "").lower() in {"1", "true", "yes"}
 ENABLE_SKILL_DISPATCH = True  # server-side /recall, /codex, /grok dispatch
 
+# Auto-compaction — rotate SDK session when cumulative input tokens get too high
+COMPACTION_THRESHOLD = int(os.environ.get("LOCALCHAT_COMPACTION_THRESHOLD", "100000"))  # input tokens
+COMPACTION_OLLAMA_MODEL = os.environ.get("LOCALCHAT_COMPACTION_MODEL", "gemma3:27b")
+COMPACTION_OLLAMA_URL = "http://localhost:11434/api/generate"
+COMPACTION_OLLAMA_TIMEOUT = 30
+
+# ---------------------------------------------------------------------------
+# Auto-compaction — session rotation when token usage gets too high
+# ---------------------------------------------------------------------------
+_compaction_summaries: dict[str, str] = {}  # chat_id -> summary text from last compaction
+_last_compacted_at: dict[str, str] = {}  # chat_id -> ISO timestamp of last compaction
+
+
+def _get_cumulative_tokens_in(chat_id: str) -> int:
+    """Sum tokens_in for messages in a chat since last compaction."""
+    since = _last_compacted_at.get(chat_id)
+    with _db_lock:
+        conn = _get_db()
+        if since:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(tokens_in), 0) FROM messages "
+                "WHERE chat_id = ? AND created_at > ?",
+                (chat_id, since),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(tokens_in), 0) FROM messages WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+        conn.close()
+    return row[0] if row else 0
+
+
+def _get_recent_messages_text(chat_id: str, limit: int = 30) -> str:
+    """Get recent message content for summarization (last N messages)."""
+    with _db_lock:
+        conn = _get_db()
+        rows = conn.execute(
+            "SELECT role, content FROM messages WHERE chat_id = ? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (chat_id, limit),
+        ).fetchall()
+        conn.close()
+    rows.reverse()  # chronological order
+    lines = []
+    for role, content in rows:
+        # Truncate long messages for the summary prompt
+        text = (content or "")[:500]
+        lines.append(f"[{role}] {text}")
+    return "\n".join(lines)
+
+
+def _generate_compaction_summary(transcript: str) -> str:
+    """Call Ollama to generate a conversation summary for compaction."""
+    prompt = (
+        "Summarize this conversation in 3-5 bullet points. Focus on:\n"
+        "- What the user was working on\n"
+        "- Key decisions made\n"
+        "- Unfinished tasks or pending items\n"
+        "- Any corrections the user gave\n\n"
+        "Be concise. This summary will be injected into a fresh AI session "
+        "so the assistant can continue seamlessly.\n\n"
+        f"Conversation:\n{transcript}"
+    )
+    payload = json.dumps({
+        "model": COMPACTION_OLLAMA_MODEL,
+        "stream": False,
+        "prompt": prompt,
+    }).encode()
+    req = urllib.request.Request(
+        COMPACTION_OLLAMA_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=COMPACTION_OLLAMA_TIMEOUT)
+        body = json.loads(resp.read().decode())
+        return body.get("response", "").strip()
+    except Exception as e:
+        log(f"compaction summary failed: {e}")
+        return ""
+
+
+async def _maybe_compact_chat(chat_id: str) -> bool:
+    """Check if chat needs compaction. If so, summarize + rotate session.
+
+    Returns True if compaction was performed.
+    """
+    if COMPACTION_THRESHOLD <= 0:
+        return False
+
+    cumulative = await asyncio.to_thread(_get_cumulative_tokens_in, chat_id)
+    if cumulative < COMPACTION_THRESHOLD:
+        return False
+
+    log(f"compaction triggered: chat={chat_id} tokens_in={cumulative} threshold={COMPACTION_THRESHOLD}")
+
+    # Generate summary from recent messages via Ollama
+    transcript = await asyncio.to_thread(_get_recent_messages_text, chat_id, 30)
+    summary = await asyncio.to_thread(_generate_compaction_summary, transcript)
+
+    if summary:
+        _compaction_summaries[chat_id] = summary
+        log(f"compaction summary generated: chat={chat_id} len={len(summary)}")
+    else:
+        # Fallback: use last few user messages as context
+        _compaction_summaries[chat_id] = (
+            "(Auto-compaction occurred but summary generation failed. "
+            "The user's recent conversation history is in the database.)"
+        )
+        log(f"compaction summary fallback: chat={chat_id}")
+
+    # Record compaction timestamp so token counter resets
+    _last_compacted_at[chat_id] = _now()
+
+    # Disconnect SDK client — kills the long context session
+    await _disconnect_client(chat_id)
+
+    # Clear session_id so next message creates a fresh session
+    _update_chat(chat_id, claude_session_id=None)
+
+    # Clear the workspace context sent flag so CLAUDE.md gets re-injected
+    _session_context_sent.discard(chat_id)
+
+    # Notify connected WebSocket viewers
+    await _send_stream_event(chat_id, {
+        "type": "system",
+        "subtype": "compaction",
+        "message": f"Session auto-compacted ({cumulative:,} input tokens). Context preserved via summary.",
+    })
+
+    log(f"compaction complete: chat={chat_id}")
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Workspace context injection — CLAUDE.md + MEMORY.md on first message
 # ---------------------------------------------------------------------------
 _session_context_sent: set[str] = set()  # chat_ids that already got context
 
+def _get_recent_exchange_context(chat_id: str, pairs: int = 2) -> str:
+    """Get the last N user/assistant exchange pairs for session continuity.
+    Returns a formatted block showing what was recently discussed."""
+    with _db_lock:
+        conn = _get_db()
+        rows = conn.execute(
+            "SELECT role, content, created_at FROM messages WHERE chat_id = ? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (chat_id, pairs * 2 + 4),  # fetch extra to find enough pairs
+        ).fetchall()
+        conn.close()
+    if not rows:
+        return ""
+    rows.reverse()  # chronological
+    # Extract the last N user→assistant pairs
+    exchanges: list[str] = []
+    i = len(rows) - 1
+    while i >= 0 and len(exchanges) < pairs * 2:
+        role, content, ts = rows[i]
+        if role in ("user", "assistant") and content and content.strip():
+            text = content.strip()[:600]
+            if role == "assistant":
+                text = text[:400]  # assistant responses can be verbose
+            exchanges.append(f"[{role}] {text}")
+        i -= 1
+    if not exchanges:
+        return ""
+    exchanges.reverse()
+    block = "\n\n".join(exchanges)
+    return (
+        f"<system-reminder>\n# Recent Conversation (last {pairs} exchanges)\n"
+        f"Here are the most recent messages from this chat for continuity:\n\n"
+        f"{block}\n\n"
+        f"Use this context to maintain conversational continuity. "
+        f"Do not repeat or summarize these messages — just continue naturally.\n</system-reminder>"
+    )
+
+
 def _get_workspace_context(chat_id: str) -> str:
-    """Load CLAUDE.md + MEMORY.md + skills catalog once per session for Claude Code parity."""
+    """Load CLAUDE.md + MEMORY.md + skills catalog once per session for Claude Code parity.
+    Also injects compaction summary if the session was just auto-compacted."""
     if chat_id in _session_context_sent:
+        # Even after context was sent, check for compaction summary (one-shot injection)
+        summary = _compaction_summaries.pop(chat_id, None)
+        if summary:
+            log(f"Injecting compaction summary for chat={chat_id}")
+            recent = _get_recent_exchange_context(chat_id, pairs=2)
+            ctx = (
+                f"<system-reminder>\n# Session Continuity (auto-compacted)\n"
+                f"This conversation was automatically compacted to save tokens. "
+                f"Here is the summary of the prior conversation:\n\n{summary}\n\n"
+                f"Continue seamlessly from where the conversation left off.\n</system-reminder>"
+            )
+            if recent:
+                ctx += "\n\n" + recent
+            return ctx + "\n\n"
         return ""
     parts: list[str] = []
+    # Inject compaction summary if present (first message after compaction + session reset)
+    summary = _compaction_summaries.pop(chat_id, None)
+    if summary:
+        parts.append(
+            f"<system-reminder>\n# Session Continuity (auto-compacted)\n"
+            f"This conversation was automatically compacted to save tokens. "
+            f"Here is the summary of the prior conversation:\n\n{summary}\n\n"
+            f"Continue seamlessly from where the conversation left off.\n</system-reminder>"
+        )
     claude_md = WORKSPACE / "CLAUDE.md"
     memory_md = WORKSPACE / "memory" / "MEMORY.md"
     skills_dir = WORKSPACE / "skills"
@@ -135,9 +333,13 @@ def _get_workspace_context(chat_id: str) -> str:
         if skill_entries:
             catalog = "\n".join(skill_entries)
             parts.append(f"<system-reminder>\n# Available Skills\nYou can use these skills. For /recall, /codex, /grok the server handles dispatch automatically. For thinking skills, follow the instructions below.\n\n{catalog[:6000]}\n</system-reminder>")
+    # Inject recent conversation exchanges for continuity
+    recent = _get_recent_exchange_context(chat_id, pairs=2)
+    if recent:
+        parts.append(recent)
     if parts:
         _session_context_sent.add(chat_id)
-        log(f"Workspace context injected for chat={chat_id} (CLAUDE.md + MEMORY.md + skills)")
+        log(f"Workspace context injected for chat={chat_id} (CLAUDE.md + MEMORY.md + skills + recent exchanges)")
         return "\n\n".join(parts) + "\n\n"
     return ""
 
@@ -150,6 +352,28 @@ def _get_workspace_context(chat_id: str) -> str:
 # ---------------------------------------------------------------------------
 import subprocess
 import re as _re
+import time as _time
+
+# Metrics collection — Phase 1 of gated skill loop
+sys.path.insert(0, str(WORKSPACE))
+try:
+    from skills.lib.metrics import log_invocation as _log_skill_invocation
+    _METRICS_ENABLED = True
+except ImportError:
+    _METRICS_ENABLED = False
+    def _log_skill_invocation(*a, **kw): pass
+
+# Gate — Phase 2 of gated skill loop
+try:
+    from skills.lib.gate import (
+        get_pending_approvals as _get_pending_approvals,
+        resolve_approval as _resolve_approval,
+    )
+    _GATE_ENABLED = True
+except ImportError:
+    _GATE_ENABLED = False
+    def _get_pending_approvals(): return []
+    def _resolve_approval(*a, **kw): return None
 
 def _parse_skill_command(prompt: str) -> tuple[str, str] | None:
     """Parse /skill-name args from prompt. Returns (skill, args) or None."""
@@ -185,19 +409,72 @@ def _run_recall(args: str) -> str:
     if not script.exists():
         return "Recall skill not found."
     log(f"Recall search terms: {query!r}")
+    t0 = _time.monotonic()
     try:
         result = subprocess.run(
             ["/opt/homebrew/bin/python3", str(script), query, "--top", "8", "--context", "800"],
             capture_output=True, text=True, timeout=15, cwd=str(WORKSPACE),
         )
+        elapsed = _time.monotonic() - t0
         output = result.stdout.strip()
         if result.returncode != 0:
+            _log_skill_invocation("recall", success=False, duration_sec=elapsed, error=result.stderr.strip()[:200], context=query[:80], source="localchat")
             return f"Recall error: {result.stderr.strip()}"
+        success = bool(output) and "No results" not in output
+        _log_skill_invocation("recall", success=success, duration_sec=elapsed, context=query[:80], source="localchat")
         return output or f"No results found for: {args}"
     except subprocess.TimeoutExpired:
+        _log_skill_invocation("recall", success=False, duration_sec=15.0, error="timeout", context=query[:80], source="localchat")
         return "Recall timed out."
     except Exception as e:
+        _log_skill_invocation("recall", success=False, duration_sec=_time.monotonic() - t0, error=str(e)[:200], context=query[:80], source="localchat")
         return f"Recall error: {e}"
+
+
+def _run_improve(args: str) -> str:
+    """Run skill-improver analysis. Returns structured JSON report for Claude synthesis."""
+    if not args:
+        return "Usage: /improve <skill_name> — Analyze a skill's metrics and propose improvements"
+    skill_name = args.split()[0].strip().lower()
+    # Validate skill exists
+    skill_dir = WORKSPACE / "skills" / skill_name
+    if not skill_dir.exists():
+        available = sorted(
+            d.name for d in (WORKSPACE / "skills").iterdir()
+            if d.is_dir() and (d / "SKILL.md").exists() and d.name != "lib"
+        )
+        return f"Skill '{skill_name}' not found. Available: {', '.join(available)}"
+
+    analyze_script = WORKSPACE / "skills" / "skill-improver" / "analyze.py"
+    if not analyze_script.exists():
+        return "Skill-improver not installed. Expected: skills/skill-improver/analyze.py"
+
+    log(f"Skill-improver: analyzing '{skill_name}'")
+    t0 = _time.monotonic()
+    try:
+        result = subprocess.run(
+            ["/opt/homebrew/bin/python3", str(analyze_script), skill_name,
+             "--workspace", str(WORKSPACE), "--days", "30"],
+            capture_output=True, text=True, timeout=30, cwd=str(WORKSPACE),
+        )
+        elapsed = _time.monotonic() - t0
+        output = result.stdout.strip()
+        if result.returncode != 0:
+            _log_skill_invocation("skill-improver", success=False, duration_sec=elapsed,
+                                  error=result.stderr.strip()[:200], context=skill_name, source="localchat")
+            return f"Analysis error: {result.stderr.strip()}"
+        _log_skill_invocation("skill-improver", success=True, duration_sec=elapsed,
+                              context=skill_name, source="localchat")
+        return output
+    except subprocess.TimeoutExpired:
+        _log_skill_invocation("skill-improver", success=False, duration_sec=30.0,
+                              error="timeout", context=skill_name, source="localchat")
+        return "Skill analysis timed out."
+    except Exception as e:
+        _log_skill_invocation("skill-improver", success=False,
+                              duration_sec=_time.monotonic() - t0, error=str(e)[:200],
+                              context=skill_name, source="localchat")
+        return f"Analysis error: {e}"
 
 
 def _run_codex_background(args: str, chat_id: str) -> str:
@@ -217,8 +494,10 @@ def _run_codex_background(args: str, chat_id: str) -> str:
             cwd=str(WORKSPACE),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+        _log_skill_invocation("codex", success=True, context=args[:80], source="localchat")
         return f"Codex task launched in background.\nPrompt: `{prompt_file.name}`\nResponse will be at: `{response_file.name}`\n\nI'll check the response when it's ready. You can also ask me to check with: \"check codex response\""
     except Exception as e:
+        _log_skill_invocation("codex", success=False, error=str(e)[:200], context=args[:80], source="localchat")
         return f"Codex launch error: {e}"
 
 
@@ -239,18 +518,96 @@ def _run_grok(args: str, chat_id: str) -> str:
             cwd=str(WORKSPACE),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+        _log_skill_invocation("grok", success=True, context=args[:80], source="localchat")
         return f"Grok research launched in background.\nResponse will be at: `{response_file.name}`"
     except Exception as e:
+        _log_skill_invocation("grok", success=False, error=str(e)[:200], context=args[:80], source="localchat")
         return f"Grok launch error: {e}"
+
+
+def _run_approve(args: str, chat_id: str = "") -> str:
+    """Approve a pending skill gate. Usage: /approve [id] or just /approve for single pending."""
+    if not _GATE_ENABLED:
+        return "Gate not available."
+    pending = _get_pending_approvals()
+    if not pending:
+        return "No pending approvals."
+    approval_id = args.strip() if args.strip() else None
+    if not approval_id:
+        if len(pending) == 1:
+            approval_id = str(pending[0].get("message_id", ""))
+        else:
+            lines = ["Multiple pending approvals. Specify an ID:\n"]
+            for p in pending:
+                mid = p.get("message_id", "?")
+                skill = p.get("skill", "?")
+                ts = p.get("ts", "?")[:16]
+                reasons = ", ".join(p.get("reasons", [])[:2])
+                lines.append(f"  /approve {mid} — {skill} ({reasons}) [{ts}]")
+            return "\n".join(lines)
+    result = _resolve_approval(approval_id, "approved")
+    if result:
+        _log_skill_invocation("gate", success=True, context=f"approved:{result.get('skill','?')}", source="localchat")
+        return f"✅ Approved: {result.get('skill', '?')}"
+    return f"Approval ID '{approval_id}' not found or already resolved."
+
+
+def _run_reject(args: str, chat_id: str = "") -> str:
+    """Reject a pending skill gate. Usage: /reject [id] or just /reject for single pending."""
+    if not _GATE_ENABLED:
+        return "Gate not available."
+    pending = _get_pending_approvals()
+    if not pending:
+        return "No pending approvals."
+    approval_id = args.strip() if args.strip() else None
+    if not approval_id:
+        if len(pending) == 1:
+            approval_id = str(pending[0].get("message_id", ""))
+        else:
+            lines = ["Multiple pending approvals. Specify an ID:\n"]
+            for p in pending:
+                mid = p.get("message_id", "?")
+                skill = p.get("skill", "?")
+                lines.append(f"  /reject {mid} — {skill}")
+            return "\n".join(lines)
+    result = _resolve_approval(approval_id, "rejected")
+    if result:
+        _log_skill_invocation("gate", success=True, context=f"rejected:{result.get('skill','?')}", source="localchat")
+        return f"❌ Rejected: {result.get('skill', '?')}"
+    return f"Approval ID '{approval_id}' not found or already resolved."
+
+
+def _run_pending(args: str, chat_id: str = "") -> str:
+    """Show pending skill gate approvals."""
+    if not _GATE_ENABLED:
+        return "Gate not available."
+    pending = _get_pending_approvals()
+    if not pending:
+        return "No pending approvals."
+    lines = [f"Pending approvals ({len(pending)}):\n"]
+    for p in pending:
+        mid = p.get("message_id", "?")
+        skill = p.get("skill", "?")
+        tier = p.get("tier", "?")
+        ts = p.get("ts", "?")[:16]
+        reasons = ", ".join(p.get("reasons", [])[:3])
+        lines.append(f"  [{mid}] {skill} (tier {tier}) — {reasons}")
+        lines.append(f"         {ts}")
+        lines.append(f"         /approve {mid}  |  /reject {mid}")
+        lines.append("")
+    return "\n".join(lines)
 
 
 _DIRECT_SKILL_HANDLERS = {
     "codex": _run_codex_background,
     "grok": _run_grok,
+    "approve": _run_approve,
+    "reject": _run_reject,
+    "pending": _run_pending,
 }
 
 # Skills that search + feed context into Claude for synthesis
-_CONTEXT_SKILLS = {"recall"}
+_CONTEXT_SKILLS = {"recall", "improve"}
 
 # Thinking skills — inject SKILL.md instructions as context, Claude executes
 _THINKING_SKILLS = {"first-principles", "simplify"}
@@ -996,6 +1353,156 @@ async def health():
     return JSONResponse({"ok": True, "clients": len(_clients), "chats": len(_get_chats())})
 
 
+# --- Usage meter (replicates terminal statusline) -------------------------
+
+_USAGE_CACHE: dict = {}
+_USAGE_CACHE_TS: float = 0
+_USAGE_CACHE_TTL = 60
+_PLAN_NAMES = {
+    "default_claude_ai": "Pro",
+    "default_claude_max_5x": "Max 5x",
+    "default_claude_max_20x": "Max 20x",
+}
+
+
+def _get_oauth_credentials() -> tuple[str | None, str]:
+    creds_path = Path.home() / ".claude" / ".credentials.json"
+    try:
+        data = json.loads(creds_path.read_text())
+        oauth = data.get("claudeAiOauth", {})
+        token = oauth.get("accessToken")
+        if token:
+            tier = oauth.get("rateLimitTier", "")
+            plan = _PLAN_NAMES.get(tier, tier.replace("default_claude_", "").replace("_", " ").title())
+            return token, plan
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        pass
+    if sys.platform == "darwin":
+        try:
+            import subprocess as _sp
+            r = _sp.run(
+                ["/usr/bin/security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                data = json.loads(r.stdout.strip())
+                oauth = data.get("claudeAiOauth", {})
+                token = oauth.get("accessToken")
+                if token:
+                    tier = oauth.get("rateLimitTier", "")
+                    plan = _PLAN_NAMES.get(tier, tier.replace("default_claude_", "").replace("_", " ").title())
+                    return token, plan
+        except Exception:
+            pass
+    return None, ""
+
+
+_USAGE_DISK_CACHE = Path.home() / ".claude" / ".usage_cache.json"
+
+
+def _fetch_usage_data(token: str) -> dict | None:
+    global _USAGE_CACHE, _USAGE_CACHE_TS
+    now = time.time()
+    # In-memory cache
+    if now - _USAGE_CACHE_TS < _USAGE_CACHE_TTL and _USAGE_CACHE:
+        return _USAGE_CACHE
+    # Shared disk cache (same file as claude_usage.py terminal statusline)
+    try:
+        disk = json.loads(_USAGE_DISK_CACHE.read_text())
+        if now - disk.get("_ts", 0) < _USAGE_CACHE_TTL:
+            _USAGE_CACHE = disk
+            _USAGE_CACHE_TS = now
+            return disk
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    # Fresh API call
+    try:
+        req = urllib.request.Request(
+            "https://api.anthropic.com/api/oauth/usage",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "anthropic-beta": "oauth-2025-04-20",
+                "Accept": "application/json",
+                "User-Agent": "localchat/1.0",
+            },
+        )
+        resp = urllib.request.urlopen(req, timeout=10)
+        data = json.loads(resp.read(1_000_000))
+        _USAGE_CACHE = data
+        _USAGE_CACHE_TS = now
+        # Write to disk cache for sharing with terminal statusline
+        try:
+            data["_ts"] = now
+            _USAGE_DISK_CACHE.write_text(json.dumps(data))
+        except OSError:
+            pass
+        return data
+    except Exception as e:
+        log(f"usage API error: {type(e).__name__}: {e}")
+        return _USAGE_CACHE or None
+
+
+def _format_countdown(resets_at_str: str) -> str:
+    if not resets_at_str:
+        return "?"
+    try:
+        resets_at = datetime.fromisoformat(resets_at_str)
+        secs = int((resets_at - datetime.now(timezone.utc)).total_seconds())
+        if secs <= 0:
+            return "now"
+        h, m = secs // 3600, (secs % 3600) // 60
+        return f"{h}h{m:02d}m" if h > 0 else f"{m}m"
+    except (ValueError, TypeError):
+        return "?"
+
+
+@app.get("/api/usage")
+async def api_usage():
+    token, plan = _get_oauth_credentials()
+    if not token:
+        return JSONResponse({"error": "no credentials"}, status_code=401)
+    usage = _fetch_usage_data(token)
+    if not usage:
+        return JSONResponse({"error": "fetch failed"}, status_code=502)
+
+    five = usage.get("five_hour", {})
+    seven = usage.get("seven_day", {})
+
+    result = {
+        "plan": plan,
+        "session": {
+            "utilization": round(five.get("utilization") or 0),
+            "resets_at": five.get("resets_at", ""),
+            "resets_in": _format_countdown(five.get("resets_at")),
+        },
+        "weekly": {
+            "utilization": round(seven.get("utilization") or 0),
+            "resets_at": seven.get("resets_at", ""),
+            "resets_in": _format_countdown(seven.get("resets_at")),
+        },
+        "models": {},
+    }
+
+    for key, label in [("seven_day_opus", "opus"), ("seven_day_sonnet", "sonnet")]:
+        model = usage.get(key)
+        if model and model.get("utilization"):
+            result["models"][label] = {
+                "utilization": round(model["utilization"]),
+                "resets_at": model.get("resets_at", ""),
+                "resets_in": _format_countdown(model.get("resets_at")),
+            }
+
+    extra = usage.get("extra_usage", {})
+    if extra and extra.get("is_enabled"):
+        result["extra_credits"] = {
+            "used": extra.get("used_credits", 0),
+            "limit": extra.get("monthly_limit", 0),
+            "remaining": extra.get("monthly_limit", 0) - extra.get("used_credits", 0),
+        }
+
+    return JSONResponse(result)
+
+
 # --- File upload ---
 
 @app.post("/api/upload")
@@ -1213,6 +1720,27 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
     if not (prompt or attachments) or not chat_id:
         return
 
+    # --- Inline approval: bare "approve" or "reject" resolves single pending ---
+    if _GATE_ENABLED and prompt and not attachments:
+        lower = prompt.strip().lower()
+        if lower in ("approve", "approved", "yes", "ship it", "reject", "rejected", "no", "deny"):
+            pending = _get_pending_approvals()
+            if len(pending) == 1:
+                decision = "approved" if lower in ("approve", "approved", "yes", "ship it") else "rejected"
+                mid = str(pending[0].get("message_id", ""))
+                result = _resolve_approval(mid, decision)
+                if result:
+                    emoji = "✅" if decision == "approved" else "❌"
+                    reply = f"{emoji} {decision.title()}: {result.get('skill', '?')}"
+                    _save_message(chat_id, "user", prompt)
+                    _save_message(chat_id, "assistant", reply)
+                    _chat_ws.setdefault(chat_id, set()).add(websocket)
+                    await _safe_ws_send_json(websocket, {"type": "stream_start", "chat_id": chat_id}, chat_id=chat_id)
+                    await _safe_ws_send_json(websocket, {"type": "stream_delta", "chat_id": chat_id, "delta": reply}, chat_id=chat_id)
+                    await _safe_ws_send_json(websocket, {"type": "stream_end", "chat_id": chat_id}, chat_id=chat_id)
+                    _log_skill_invocation("gate", success=True, context=f"{decision}:{result.get('skill','?')}", source="localchat")
+                    return
+
     # --- Skill dispatch: intercept /recall, /codex, /grok before SDK ---
     _recall_context = ""
     if ENABLE_SKILL_DISPATCH and prompt and not attachments:
@@ -1233,6 +1761,20 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                         )
                         # Rewrite prompt to be the natural language question (strip /recall)
                         prompt = skill_args
+                elif skill == "improve" and skill_args:
+                    log(f"Skill-improver: analyzing {skill_args[:60]!r}")
+                    improve_output = await asyncio.to_thread(_run_improve, skill_args)
+                    # Load the SKILL.md instructions for the improver
+                    improver_md = WORKSPACE / "skills" / "skill-improver" / "SKILL.md"
+                    instructions = improver_md.read_text()[:4000] if improver_md.exists() else ""
+                    _recall_context = (
+                        f"<system-reminder>\nThe user invoked /improve {skill_args}. "
+                        f"Here is the structured analysis report from analyze.py:\n\n"
+                        f"```json\n{improve_output}\n```\n\n"
+                        f"Follow these instructions to synthesize the report into actionable proposals:\n\n"
+                        f"{instructions}\n</system-reminder>\n\n"
+                    )
+                    prompt = f"Analyze the skill '{skill_args.split()[0]}' and propose improvements based on the data above."
             elif skill in _THINKING_SKILLS:
                 # Thinking skill: inject SKILL.md instructions as context
                 skill_md = WORKSPACE / "skills" / skill / "SKILL.md"
@@ -1244,6 +1786,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                     )
                     prompt = skill_args or prompt
                     log(f"Thinking skill dispatch: /{skill} args={skill_args[:60]!r}")
+                    _log_skill_invocation(skill, success=True, context=(skill_args or "")[:80], source="localchat")
             elif skill in _DIRECT_SKILL_HANDLERS:
                 handled = await _handle_skill(websocket, chat_id, skill, skill_args, prompt)
                 if handled:
@@ -1358,23 +1901,36 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 tokens_out=result.get("tokens_out", 0),
             )
 
-        # If new viewers joined mid-stream, tell them to reload from DB
+        # Auto-compaction check — rotate session if token usage too high
+        try:
+            await _maybe_compact_chat(chat_id)
+        except Exception as compact_err:
+            log(f"compaction error: chat={chat_id} {compact_err}")
+
+        # Tell ALL other viewers to reload from DB (they didn't see the stream)
         ws_set = _chat_ws.get(chat_id, set())
-        new_viewers = ws_set - {original_ws}
-        if new_viewers:
-            log(f"New viewers during stream for chat={chat_id}, sending reload to {len(new_viewers)}")
-            for nws in new_viewers:
+        other_viewers = ws_set - {original_ws}
+        if other_viewers:
+            log(f"Notifying {len(other_viewers)} other viewer(s) to reload chat={chat_id}")
+            for ows in other_viewers:
                 await _safe_ws_send_json(
-                    nws,
+                    ows,
                     {"type": "stream_complete_reload", "chat_id": chat_id},
                     chat_id=chat_id,
                 )
     finally:
         chat_lock.release()
-        # Send stream_end to ALL connected viewers
+        # Send stream_end to ALL connected viewers — also add to buffer for replay
+        end_event = {"type": "stream_end", "chat_id": chat_id}
+        buf = _stream_buffers.get(chat_id)
+        if buf is not None:
+            seq = _stream_seq.get(chat_id, 0) + 1
+            end_event["seq"] = seq
+            buf.append(end_event)
         ws_set = _chat_ws.get(chat_id, set())
         for ws in list(ws_set):
-            await _safe_ws_send_json(ws, {"type": "stream_end", "chat_id": chat_id}, chat_id=chat_id)
+            await _safe_ws_send_json(ws, end_event, chat_id=chat_id)
+        log(f"stream_end sent: chat={chat_id} viewers={len(ws_set)}")
         _stream_buffers.pop(chat_id, None)
         _stream_seq.pop(chat_id, None)
 
@@ -1486,8 +2042,9 @@ margin:8px 0;font-size:13px;line-height:1.4}
 margin-bottom:6px;overflow:hidden}
 .thinking-header{padding:8px 12px;font-size:12px;color:var(--yellow);cursor:pointer;
 display:flex;align-items:center;gap:6px;user-select:none}
-.thinking-body{padding:0 12px 8px 12px;font-size:12px;color:var(--dim);
-line-height:1.4;display:none;white-space:pre-wrap;-webkit-user-select:text;user-select:text}
+.thinking-body{padding:0 12px 8px 12px;font-size:13px;color:var(--dim);
+line-height:1.5;display:none;white-space:pre-wrap;-webkit-user-select:text;user-select:text;
+max-height:300px;overflow-y:auto}
 .thinking-block.open .thinking-body{display:block}
 .thinking-header .arrow{transition:transform 0.2s}
 .thinking-block.open .thinking-header .arrow{transform:rotate(90deg)}
@@ -1497,6 +2054,8 @@ line-height:1.4;display:none;white-space:pre-wrap;-webkit-user-select:text;user-
 margin-bottom:6px;overflow:hidden}
 .tool-header{padding:8px 12px;font-size:12px;color:var(--accent);cursor:pointer;
 display:flex;align-items:center;gap:6px;user-select:none}
+.tool-summary{font-size:12px;color:var(--dim);padding:4px 12px 6px;line-height:1.4}
+.tool-summary code{background:var(--surface);padding:1px 4px;border-radius:3px;font-size:11px}
 .tool-body{padding:0 12px 8px 12px;font-size:12px;color:var(--dim);
 line-height:1.4;display:none}
 .tool-block.open .tool-body{display:block}
@@ -1555,6 +2114,21 @@ font-size:14px;color:var(--dim);min-height:44px;display:flex;align-items:center}
 .sidebar .new-btn{padding:12px 16px;color:var(--accent);cursor:pointer;font-size:14px;
 font-weight:600;border-bottom:1px solid var(--bg);min-height:44px;display:flex;align-items:center}
 
+/* Usage bar */
+.usage-bar{background:var(--surface);padding:4px 16px 6px;border-bottom:1px solid var(--card);
+display:flex;gap:12px;flex-shrink:0;display:none}
+.usage-bar.visible{display:flex}
+.usage-bucket{flex:1;min-width:0}
+.usage-bucket .label-row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px}
+.usage-bucket .label{font-size:10px;font-weight:600;color:var(--dim)}
+.usage-bucket .pct{font-size:10px;font-weight:700;font-variant-numeric:tabular-nums}
+.usage-bucket .reset{font-size:9px;color:var(--dim);opacity:0.6}
+.usage-track{height:3px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden}
+.usage-fill{height:100%;border-radius:2px;transition:width 0.4s ease,background 0.4s ease}
+.usage-fill.green{background:var(--green)}
+.usage-fill.orange{background:var(--yellow)}
+.usage-fill.red{background:var(--red)}
+
 /* Debug bar */
 .debugbar{background:#111827;border-top:1px solid #233047;padding:6px 12px;flex-shrink:0}
 .debug-state{color:#93C5FD;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
@@ -1571,6 +2145,23 @@ line-height:1.35;max-height:88px;overflow-y:auto;white-space:pre-wrap;margin-top
   <span class="status ok" id="statusDot"></span>
   <span class="mode-badge {{MODE_CLASS}}" id="modeBadge">{{MODE_LABEL}}</span>
   <button class="btn-icon" id="refreshBtn" title="Refresh" onclick="window.location.reload()">&#8635;</button>
+</div>
+
+<div class="usage-bar" id="usageBar">
+  <div class="usage-bucket" id="usageSession">
+    <div class="label-row">
+      <span class="label">Session</span>
+      <span><span class="pct" id="usageSessionPct">-</span> <span class="reset" id="usageSessionReset"></span></span>
+    </div>
+    <div class="usage-track"><div class="usage-fill green" id="usageSessionFill" style="width:0%"></div></div>
+  </div>
+  <div class="usage-bucket" id="usageWeekly">
+    <div class="label-row">
+      <span class="label">Weekly</span>
+      <span><span class="pct" id="usageWeeklyPct">-</span> <span class="reset" id="usageWeeklyReset"></span></span>
+    </div>
+    <div class="usage-track"><div class="usage-fill green" id="usageWeeklyFill" style="width:0%"></div></div>
+  </div>
 </div>
 
 <div class="sidebar" id="sidebar">
@@ -1933,28 +2524,32 @@ function handleEvent(msg) {
       let tb = currentBubble.querySelector('.thinking-block:last-of-type');
       if (!tb || tb.classList.contains('closed')) {
         tb = document.createElement('div');
-        tb.className = 'thinking-block';
-        tb.innerHTML = `<div class="thinking-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> &#129504; Thinking</div><div class="thinking-body"></div>`;
+        tb.className = 'thinking-block open';
+        tb.innerHTML = `<div class="thinking-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> &#129504; Thinking...</div><div class="thinking-body"></div>`;
         currentBubble.insertBefore(tb, currentBubble.querySelector('.bubble'));
       }
       tb.querySelector('.thinking-body').textContent += msg.text;
+      tb.querySelector('.thinking-body').scrollTop = tb.querySelector('.thinking-body').scrollHeight;
       markStreamActivity('thinking');
       scrollBottom();
       break;
 
-    case 'tool_use':
+    case 'tool_use': {
       if (!currentBubble) currentBubble = addAssistantMsg();
       const toolBlock = document.createElement('div');
       toolBlock.className = 'tool-block';
       toolBlock.id = 'tool-' + msg.id;
       const inputStr = typeof msg.input === 'string' ? msg.input : JSON.stringify(msg.input, null, 2);
-      toolBlock.innerHTML = `<div class="tool-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> &#128295; ${escHtml(msg.name)}<span class="tool-status">&#9203;</span></div><div class="tool-body"><b>Input:</b><pre>${escHtml(inputStr)}</pre><div class="tool-result-area"></div></div>`;
+      const summary = toolSummary(msg.name, msg.input);
+      const summaryHtml = summary ? `<div class="tool-summary">${summary}</div>` : '';
+      toolBlock.innerHTML = `<div class="tool-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> ${toolIcon(msg.name)} ${escHtml(toolLabel(msg.name))}<span class="tool-status">&#9203;</span></div>${summaryHtml}<div class="tool-body"><b>Input:</b><pre>${escHtml(inputStr)}</pre><div class="tool-result-area"></div></div>`;
       currentBubble.insertBefore(toolBlock, currentBubble.querySelector('.bubble'));
       markStreamActivity('tool-use');
       scrollBottom();
       break;
+    }
 
-    case 'tool_result':
+    case 'tool_result': {
       const tb2 = document.getElementById('tool-' + msg.tool_use_id);
       if (tb2) {
         const area = tb2.querySelector('.tool-result-area');
@@ -1963,13 +2558,28 @@ function handleEvent(msg) {
         const icon = tb2.querySelector('.tool-status');
         icon.textContent = msg.is_error ? '\u2717' : '\u2713';
         icon.style.color = msg.is_error ? 'var(--red)' : 'var(--green)';
+        // Update summary with result info
+        const summaryEl = tb2.querySelector('.tool-summary');
+        const toolName = tb2.querySelector('.tool-header')?.textContent?.trim();
+        const origName = Object.keys(TOOL_META).find(k => toolLabel(k) === toolName?.replace(/[^a-zA-Z ]/g, '').trim()) || '';
+        const resultNote = toolResultSummary(origName, content);
+        if (resultNote && summaryEl) {
+          summaryEl.innerHTML += ` — ${escHtml(resultNote)}`;
+        }
       }
       markStreamActivity('tool-result');
       scrollBottom();
       break;
+    }
 
     case 'result':
       if (currentBubble) {
+        // Collapse thinking blocks and update label
+        currentBubble.querySelectorAll('.thinking-block.open').forEach(tb => {
+          tb.classList.remove('open');
+          const hdr = tb.querySelector('.thinking-header');
+          if (hdr) hdr.innerHTML = hdr.innerHTML.replace('Thinking...', 'Thinking');
+        });
         const costEl = document.createElement('div');
         costEl.className = 'cost';
         const cost = msg.cost_usd ? `$${msg.cost_usd.toFixed(4)}` : '';
@@ -1980,6 +2590,7 @@ function handleEvent(msg) {
         renderMarkdown(currentBubble.querySelector('.bubble'));
       }
       markStreamActivity('result');
+      fetchUsage();
       refreshDebugState('result');
       break;
 
@@ -2098,6 +2709,87 @@ function escHtml(s) {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
+}
+
+const TOOL_META = {
+  Read:     {icon: '📄', label: 'Read File'},
+  Edit:     {icon: '✏️', label: 'Edit File'},
+  Write:    {icon: '📝', label: 'Write File'},
+  Bash:     {icon: '💻', label: 'Run Command'},
+  Grep:     {icon: '🔍', label: 'Search Code'},
+  Glob:     {icon: '📂', label: 'Find Files'},
+  WebFetch: {icon: '🌐', label: 'Fetch URL'},
+  WebSearch:{icon: '🔎', label: 'Web Search'},
+  Agent:    {icon: '🤖', label: 'Sub-Agent'},
+  Skill:    {icon: '⚡', label: 'Skill'},
+};
+
+function toolIcon(name) { return (TOOL_META[name] || {}).icon || '🔧'; }
+function toolLabel(name) { return (TOOL_META[name] || {}).label || name; }
+
+function toolSummary(name, input) {
+  const o = typeof input === 'string' ? (() => { try { return JSON.parse(input); } catch(e) { return {}; } })() : (input || {});
+  switch (name) {
+    case 'Read': {
+      const p = o.file_path || '';
+      const short = p.split('/').slice(-2).join('/');
+      let s = `Reading <code>${escHtml(short)}</code>`;
+      if (o.offset) s += ` from line ${o.offset}`;
+      if (o.limit) s += ` (${o.limit} lines)`;
+      return s;
+    }
+    case 'Edit': {
+      const p = (o.file_path || '').split('/').slice(-2).join('/');
+      return `Editing <code>${escHtml(p)}</code>`;
+    }
+    case 'Write': {
+      const p = (o.file_path || '').split('/').slice(-2).join('/');
+      return `Writing <code>${escHtml(p)}</code>`;
+    }
+    case 'Bash': {
+      const cmd = o.command || '';
+      const short = cmd.length > 80 ? cmd.substring(0, 77) + '...' : cmd;
+      const desc = o.description || '';
+      if (desc) return `${escHtml(desc)}`;
+      return `<code>${escHtml(short)}</code>`;
+    }
+    case 'Grep': {
+      const pat = o.pattern || '';
+      const path = o.path ? o.path.split('/').slice(-2).join('/') : '';
+      let s = `Searching for <code>${escHtml(pat)}</code>`;
+      if (path) s += ` in ${escHtml(path)}`;
+      return s;
+    }
+    case 'Glob': {
+      const pat = o.pattern || '';
+      return `Finding files matching <code>${escHtml(pat)}</code>`;
+    }
+    case 'Agent': {
+      return escHtml(o.description || o.prompt?.substring(0, 80) || 'Running sub-agent');
+    }
+    case 'Skill': {
+      return `Running skill <code>${escHtml(o.skill || '')}</code>`;
+    }
+    case 'WebSearch': {
+      return `Searching: <code>${escHtml(o.query || '')}</code>`;
+    }
+    default: return null;
+  }
+}
+
+function toolResultSummary(name, content) {
+  if (!content) return null;
+  const s = typeof content === 'string' ? content : JSON.stringify(content);
+  if (name === 'Grep' || name === 'Glob') {
+    const lines = s.trim().split('\\n').filter(Boolean);
+    if (lines.length > 0) return `${lines.length} result${lines.length === 1 ? '' : 's'}`;
+  }
+  if (name === 'Bash') {
+    const lines = s.trim().split('\\n');
+    if (lines.length <= 3) return null;
+    return `${lines.length} lines of output`;
+  }
+  return null;
 }
 
 function renderInlineMarkdown(text) {
@@ -2446,7 +3138,11 @@ async function selectChat(id, title) {
           const resultStr = t.result ? (typeof t.result.content === 'string' ? t.result.content : JSON.stringify(t.result.content)) : '';
           const icon = t.result && t.result.is_error ? '\u2717' : '\u2713';
           const color = t.result && t.result.is_error ? 'var(--red)' : 'var(--green)';
-          inner += `<div class="tool-block"><div class="tool-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> &#128295; ${escHtml(t.name)}<span class="tool-status" style="color:${color}">${icon}</span></div><div class="tool-body"><b>Input:</b><pre>${escHtml(inputStr)}</pre><b>Result:</b><pre>${escHtml(resultStr.substring(0, 2000))}</pre></div></div>`;
+          const summary = toolSummary(t.name, t.input);
+          const resultNote = toolResultSummary(t.name, resultStr);
+          const summaryParts = [summary, resultNote ? escHtml(resultNote) : null].filter(Boolean).join(' — ');
+          const summaryHtml = summaryParts ? `<div class="tool-summary">${summaryParts}</div>` : '';
+          inner += `<div class="tool-block"><div class="tool-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> ${toolIcon(t.name)} ${escHtml(toolLabel(t.name))}<span class="tool-status" style="color:${color}">${icon}</span></div>${summaryHtml}<div class="tool-body"><b>Input:</b><pre>${escHtml(inputStr)}</pre><b>Result:</b><pre>${escHtml(resultStr.substring(0, 2000))}</pre></div></div>`;
         });
       } catch(e) {}
       inner += `<div class="bubble"></div>`;
@@ -2723,6 +3419,41 @@ window.addEventListener('error', (e) => {
 window.addEventListener('unhandledrejection', (e) => {
   reportError('unhandledrejection', e.reason);
 });
+
+// --- Usage bar ---
+function usageColor(pct) { return pct >= 90 ? 'red' : pct >= 70 ? 'orange' : 'green'; }
+
+function renderUsage(data) {
+  const bar = document.getElementById('usageBar');
+  if (!bar || !data || !data.session) { if (bar) bar.classList.remove('visible'); return; }
+  bar.classList.add('visible');
+  const s = data.session, w = data.weekly;
+  document.getElementById('usageSessionPct').textContent = s.utilization + '%';
+  document.getElementById('usageSessionReset').textContent = '(' + s.resets_in + ')';
+  const sf = document.getElementById('usageSessionFill');
+  sf.style.width = Math.min(s.utilization, 100) + '%';
+  sf.className = 'usage-fill ' + usageColor(s.utilization);
+  document.getElementById('usageSessionPct').style.color =
+    s.utilization >= 90 ? 'var(--red)' : s.utilization >= 70 ? 'var(--yellow)' : 'var(--green)';
+
+  document.getElementById('usageWeeklyPct').textContent = w.utilization + '%';
+  document.getElementById('usageWeeklyReset').textContent = '(' + w.resets_in + ')';
+  const wf = document.getElementById('usageWeeklyFill');
+  wf.style.width = Math.min(w.utilization, 100) + '%';
+  wf.className = 'usage-fill ' + usageColor(w.utilization);
+  document.getElementById('usageWeeklyPct').style.color =
+    w.utilization >= 90 ? 'var(--red)' : w.utilization >= 70 ? 'var(--yellow)' : 'var(--green)';
+}
+
+async function fetchUsage() {
+  try {
+    const r = await fetch('/api/usage');
+    if (r.ok) renderUsage(await r.json());
+  } catch (e) { dbg('usage fetch error:', e.message); }
+}
+
+fetchUsage();
+setInterval(fetchUsage, 60000);
 
 connect();
 setTimeout(() => { ensureInitialized('timer-fallback').catch(() => {}); }, 1500);
