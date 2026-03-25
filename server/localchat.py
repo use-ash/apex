@@ -516,6 +516,19 @@ async def _disconnect_client(chat_id: str) -> None:
         await client.disconnect()
 
 
+async def _set_model(model: str) -> None:
+    global MODEL
+    MODEL = model
+    with _db_lock:
+        conn = _get_db()
+        conn.execute("UPDATE chats SET claude_session_id = NULL WHERE claude_session_id IS NOT NULL")
+        conn.commit()
+        conn.close()
+    for chat_id in list(_clients):
+        await _disconnect_client(chat_id)
+    log(f"model changed to {MODEL}")
+
+
 def _normalize_response_stream(response):
     if hasattr(response, "__aiter__"):
         return response
@@ -891,6 +904,19 @@ async def websocket_endpoint(websocket: WebSocket):
                             {"type": "attach_ok", "chat_id": attach_id},
                             chat_id=attach_id,
                         )
+                continue
+
+            if action == "set_model":
+                model = str(data.get("model", "")).strip()
+                if not model:
+                    await websocket.send_json({"type": "error", "message": "Model is required"})
+                    continue
+                await _set_model(model)
+                await websocket.send_json({
+                    "type": "system",
+                    "subtype": "model_changed",
+                    "model": model,
+                })
                 continue
 
             if action == "send":
