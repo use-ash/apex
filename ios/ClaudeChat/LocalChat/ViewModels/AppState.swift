@@ -31,6 +31,8 @@ final class AppState {
         }
         return models
     }
+    var connectionProfiles: [ConnectionProfile] = ConnectionProfile.loadAll()
+    var activeProfileId: String? = ConnectionProfile.activeProfileId
     var isLoadingMessages: Bool = false
     var isEnsuringPersistentChat: Bool = false
     var error: String?
@@ -176,8 +178,21 @@ final class AppState {
         apiClient.baseURL = value
     }
 
+    func switchProfile(_ profile: ConnectionProfile) {
+        activeProfileId = profile.id
+        ConnectionProfile.activeProfileId = profile.id
+        disconnect()
+        updateServerURL(profile.serverURL)
+        connect()
+        Task { await ensurePersistentChat() }
+    }
+
+    func saveProfiles() {
+        ConnectionProfile.saveAll(connectionProfiles)
+    }
+
     func updateSelectedModel(_ model: String) {
-        guard Self.supportedModels.contains(where: { $0.id == model }) else { return }
+        guard allModels.contains(where: { $0.id == model }) else { return }
         selectedModel = model
         connectionManager.serverModel = model
         if connectionManager.isConnected {
@@ -192,7 +207,7 @@ final class AppState {
         usagePollingTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.fetchUsage()
-                try? await Task.sleep(for: .seconds(60))
+                try? await Task.sleep(for: .seconds(300))
             }
         }
     }

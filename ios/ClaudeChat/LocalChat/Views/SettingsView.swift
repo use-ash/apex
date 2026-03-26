@@ -27,7 +27,30 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Server URL") {
+                Section("Connection") {
+                    ForEach(appState.connectionProfiles) { profile in
+                        Button {
+                            appState.switchProfile(profile)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(profile.name)
+                                        .foregroundStyle(.primary)
+                                    Text(profile.serverURL)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if appState.activeProfileId == profile.id {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(.green)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Section("Custom URL") {
                     TextField("https://10.8.0.2:8300", text: $serverURL)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
