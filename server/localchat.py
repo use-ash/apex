@@ -3659,7 +3659,7 @@ function showAlertDetail(alertId) {
     }
     actions += `<button style="background:${color};color:#fff" onclick="detailAlertAction('ack','${a.id}')">Ack</button>`;
   }
-  actions += `<button style="background:#333;color:#ccc" onclick="navigator.clipboard.writeText(${JSON.stringify(a.body||'')})">Copy</button>`;
+  actions += `<button style="background:#333;color:#ccc" onclick="copyAlertBody('${a.id}')">Copy</button>`;
   const overlay = document.createElement('div');
   overlay.className = 'alert-detail-overlay';
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
@@ -3678,6 +3678,10 @@ function showAlertDetail(alertId) {
     <div class="ad-actions">${actions}</div>
   </div>`;
   document.body.appendChild(overlay);
+}
+function copyAlertBody(alertId) {
+  const a = channelAlertsData.find(x => x.id === alertId) || alertsCache.find(x => x.id === alertId);
+  if (a) navigator.clipboard.writeText(a.body || a.title || '');
 }
 function detailAlertAction(action, alertId) {
   fetch('/api/alerts/' + alertId + '/' + action, {method:'POST'}).then(r => {
