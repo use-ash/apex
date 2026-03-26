@@ -146,7 +146,12 @@ struct AlertBubble: View {
             }
         }
         .padding(12)
-        .background(severityColor.opacity(alert.acked ? 0.05 : 0.12))
+        .background {
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(.systemBackground))
+            RoundedRectangle(cornerRadius: 12)
+                .fill(severityColor.opacity(alert.acked ? 0.05 : 0.12))
+        }
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
