@@ -457,8 +457,11 @@ final class AppState {
                 }
             }
             alerts.insert(alert, at: 0)
-            withAnimation(.easeInOut(duration: 0.3)) {
-                toastAlert = alert  // Show toast overlay on any screen
+            // Only show toast if NOT already viewing an alerts channel
+            if currentChat?.type != "alerts" {
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    toastAlert = alert
+                }
             }
             if scenePhase == .background || scenePhase == .inactive {
                 enqueueAlertNotification(alert)
