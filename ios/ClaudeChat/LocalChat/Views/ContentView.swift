@@ -41,9 +41,11 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
-                        isShowingSettings = true
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            isShowingChannels = true
+                        }
                     } label: {
-                        Image(systemName: "gearshape")
+                        Image(systemName: "line.3.horizontal")
                     }
                 }
 
@@ -74,11 +76,9 @@ struct ContentView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack(spacing: 16) {
                         Button {
-                            withAnimation(.easeOut(duration: 0.25)) {
-                                isShowingChannels = true
-                            }
+                            isShowingSettings = true
                         } label: {
-                            Image(systemName: "line.3.horizontal")
+                            Image(systemName: "gearshape")
                         }
 
                         Button {
@@ -119,15 +119,15 @@ struct ContentView: View {
                 channelDrawer
             }
         }
-        .gesture(
-            DragGesture()
+        .simultaneousGesture(
+            DragGesture(coordinateSpace: .global)
                 .onChanged { value in
-                    if value.startLocation.x < 30 && value.translation.width > 0 {
+                    if value.startLocation.x < 50 && value.translation.width > 0 {
                         channelDragOffset = value.translation.width
                     }
                 }
                 .onEnded { value in
-                    if value.startLocation.x < 30 && value.translation.width > 80 {
+                    if value.startLocation.x < 50 && value.translation.width > 60 {
                         withAnimation(.easeOut(duration: 0.25)) {
                             isShowingChannels = true
                             channelDragOffset = 0

@@ -53,7 +53,7 @@ final class APIClient {
     }
 
     func deleteChat(chatId: String) async throws {
-        throw APIError.unsupportedEndpoint("DELETE /api/chats/{id}")
+        _ = try await request("DELETE", path: "/api/chats/\(chatId)")
     }
 
     func healthCheck(baseURLOverride: String? = nil) async throws -> Bool {
@@ -78,13 +78,16 @@ final class APIClient {
         return try JSONDecoder().decode(UploadResponse.self, from: response)
     }
 
-    func fetchAlerts(since: String? = nil, unackedOnly: Bool = false) async throws -> [Alert] {
+    func fetchAlerts(since: String? = nil, unackedOnly: Bool = false, category: String? = nil) async throws -> [Alert] {
         var path = "/api/alerts?"
         if let since = since {
             path += "since=\(since.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? since)&"
         }
         if unackedOnly {
             path += "unacked=true&"
+        }
+        if let category = category {
+            path += "category=\(category)&"
         }
         let data = try await request("GET", path: path)
         return try JSONDecoder().decode([Alert].self, from: data)
@@ -96,6 +99,14 @@ final class APIClient {
 
     func allowAlert(alertId: String) async throws {
         _ = try await request("POST", path: "/api/alerts/\(alertId)/allow")
+    }
+
+    func deleteAlert(alertId: String) async throws {
+        _ = try await request("DELETE", path: "/api/alerts/\(alertId)")
+    }
+
+    func deleteAllAlerts() async throws {
+        _ = try await request("DELETE", path: "/api/alerts")
     }
 
     func fetchLocalModels() async throws -> [LocalModel] {

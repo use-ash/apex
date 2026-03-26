@@ -61,9 +61,15 @@ struct LocalChatApp: App {
     }
 
     private func requestNotificationAuthorizationIfNeeded() async {
-        guard !didRequestNotificationPermission else { return }
-        didRequestNotificationPermission = true
-        _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        if settings.authorizationStatus == .notDetermined {
+            do {
+                try await center.requestAuthorization(options: [.alert, .sound, .badge])
+            } catch {
+                print("Notification auth error: \(error)")
+            }
+        }
     }
 
     private func registerNotificationCategories() {

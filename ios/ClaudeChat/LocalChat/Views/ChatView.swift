@@ -15,6 +15,7 @@ struct ChatView: View {
 
     @State private var inputText: String = ""
     @State private var isStreaming: Bool = false
+    @State private var streamingForChatId: String?  // tracks which chat owns the active stream
     @State private var streamingText: String = ""
     @State private var streamingThinking: String = ""
     @State private var streamingToolEvents: [StreamingToolEvent] = []
@@ -27,6 +28,7 @@ struct ChatView: View {
     @State private var reactions: [String: String] = [:]
     @State private var replyingToMessage: Message?
     @State private var stopButtonScale: CGFloat = 1.0
+    @State private var showClearAlerts: Bool = false
     @AppStorage("chatFontScale") private var fontScale: Double = 1.0
     @FocusState private var isInputFocused: Bool
 
@@ -39,19 +41,74 @@ struct ChatView: View {
     }
 
     var body: some View {
+        if isAlertsChannel {
+            alertsListView
+        } else {
+            chatScrollView
+        }
+    }
+
+    // MARK: - Alerts List (supports swipe-to-delete)
+
+    private var alertsListView: some View {
+        List {
+            ForEach(appState.alerts) { alert in
+                AlertBubble(
+                    alert: alert,
+                    onAck: { Task { await appState.ackAlert(alert.id) } },
+                    onAllow: { Task { await appState.allowAlert(alert.id) } }
+                )
+                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                .listRowSeparator(.hidden)
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        Task { await appState.deleteAlert(alert.id) }
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+            }
+        }
+        .listStyle(.plain)
+        .safeAreaInset(edge: .bottom) {
+            if !appState.alerts.isEmpty {
+                HStack {
+                    Spacer()
+                    Button(role: .destructive) {
+                        showClearAlerts = true
+                    } label: {
+                        Label("Clear All", systemImage: "trash")
+                            .font(.subheadline)
+                    }
+                    Spacer()
+                }
+                .padding(.vertical, 8)
+                .background(Color(.systemBackground))
+                .overlay(alignment: .top) { Divider() }
+            }
+        }
+        .alert("Clear All Alerts", isPresented: $showClearAlerts) {
+            Button("Clear All", role: .destructive) {
+                Task { await appState.deleteAllAlerts() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Delete all alerts? This cannot be undone.")
+        }
+        .onAppear {
+            appState.streamMessageHandler = handleStreamMessage
+        }
+        .onDisappear {
+            appState.streamMessageHandler = nil
+        }
+    }
+
+    // MARK: - Chat Scroll View
+
+    private var chatScrollView: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 8) {
-                    if isAlertsChannel {
-                        ForEach(appState.alerts) { alert in
-                            AlertBubble(
-                                alert: alert,
-                                onAck: { Task { await appState.ackAlert(alert.id) } },
-                                onAllow: { Task { await appState.allowAlert(alert.id) } }
-                            )
-                            .id("alert-\(alert.id)")
-                        }
-                    } else {
                         ForEach(timelineItems) { item in
                             if case .message(let message) = item {
                                 MessageBubble(
@@ -75,15 +132,12 @@ struct ChatView: View {
                                 .id("streaming")
                         }
                     }
-                }
                 .padding(.vertical, 8)
             }
             .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
             .safeAreaInset(edge: .bottom) {
-                if !isAlertsChannel {
-                    composeBar
-                }
+                composeBar
             }
             .onChange(of: isInputFocused) { _, focused in
                 if focused {
@@ -121,6 +175,10 @@ struct ChatView: View {
         }
         .onDisappear {
             appState.streamMessageHandler = nil
+        }
+        .onChange(of: chatId) {
+            resetStreamingState()
+            appState.streamMessageHandler = handleStreamMessage
         }
     }
 
@@ -669,6 +727,7 @@ struct ChatView: View {
 
     private func resetStreamingState() {
         streamingTimeoutToken = nil
+        streamingForChatId = nil
         isStreaming = false
         streamingText = ""
         streamingThinking = ""
@@ -681,15 +740,19 @@ struct ChatView: View {
         switch message {
         case .streamStart(let streamChatId):
             guard streamChatId == chatId else { break }
+            streamingForChatId = chatId
             isStreaming = true
             streamingText = ""
             streamingThinking = ""
             streamingToolEvents = []
         case .text(let text):
+            guard streamingForChatId == chatId else { break }
             streamingText += text
         case .thinking(let text):
+            guard streamingForChatId == chatId else { break }
             streamingThinking += text
         case .toolUse(let id, let name, let input):
+            guard streamingForChatId == chatId else { break }
             streamingToolEvents.append(
                 StreamingToolEvent(
                     id: id,
@@ -701,18 +764,19 @@ struct ChatView: View {
                 )
             )
         case .toolResult(let toolUseId, let content, let isError):
+            guard streamingForChatId == chatId else { break }
             guard let index = streamingToolEvents.firstIndex(where: { $0.id == toolUseId }) else { break }
             streamingToolEvents[index].result = content
             streamingToolEvents[index].isError = isError
             streamingToolEvents[index].isComplete = true
         case .result:
+            guard streamingForChatId == chatId else { break }
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            // Immediately stop streaming UI — don't wait for message reload
             isStreaming = false
+            streamingForChatId = nil
             Task {
                 await appState.loadMessages(chatId)
                 await appState.refreshPersistentChat()
-                // Final cleanup (clears text buffers)
                 resetStreamingState()
             }
         case .streamEnd(let streamChatId):
@@ -720,8 +784,7 @@ struct ChatView: View {
             resetStreamingState()
         case .streamReattached(let streamChatId):
             guard streamChatId == chatId else { break }
-            // Server confirms an active stream exists — resume streaming UI
-            // Clear accumulated state since server will replay events
+            streamingForChatId = chatId
             if !isStreaming {
                 isStreaming = true
                 streamingText = ""
@@ -731,7 +794,6 @@ struct ChatView: View {
             }
         case .attachOk(let streamChatId):
             guard streamChatId == chatId else { break }
-            // Only reset if we're not mid-stream — avoids nuking state on app foreground
             if !isStreaming {
                 resetStreamingState()
             }

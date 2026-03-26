@@ -1014,6 +1014,21 @@ def _update_chat(chat_id: str, **kwargs) -> None:
         conn.close()
 
 
+def _delete_chat(chat_id: str) -> bool:
+    with _db_lock:
+        conn = _get_db()
+        # Delete messages first — FK constraint requires it
+        conn.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
+        cur = conn.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+        if cur.rowcount:
+            conn.commit()
+            conn.close()
+            return True
+        conn.commit()
+        conn.close()
+        return False
+
+
 def _save_message(chat_id: str, role: str, content: str, tool_events: str = "[]",
                   thinking: str = "", cost_usd: float = 0, tokens_in: int = 0,
                   tokens_out: int = 0) -> str:
@@ -1061,7 +1076,12 @@ def _create_alert(source: str, severity: str, title: str, body: str, metadata: d
             "body": body, "acked": False, "metadata": meta, "created_at": now}
 
 
-def _get_alerts(since: str | None = None, unacked_only: bool = False, limit: int = 100) -> list[dict]:
+def _get_alerts(since: str | None = None, unacked_only: bool = False,
+                category: str | None = None, limit: int = 100) -> list[dict]:
+    # Map category to matching sources
+    category_sources = None
+    if category:
+        category_sources = [src for src, cat in ALERT_CATEGORY_MAP.items() if cat == category]
     with _db_lock:
         conn = _get_db()
         query = "SELECT id, source, severity, title, body, acked, created_at, metadata FROM alerts"
@@ -1072,6 +1092,10 @@ def _get_alerts(since: str | None = None, unacked_only: bool = False, limit: int
             params.append(since)
         if unacked_only:
             conditions.append("acked = 0")
+        if category_sources is not None:
+            placeholders = ", ".join("?" for _ in category_sources)
+            conditions.append(f"source IN ({placeholders})")
+            params.extend(category_sources)
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY created_at DESC LIMIT ?"
@@ -1160,6 +1184,7 @@ def _attach_ws(ws: WebSocket, chat_id: str) -> None:
             old_set.discard(ws)
             if not old_set:
                 _chat_ws.pop(old, None)
+        log(f"ws detached from chat={old} -> attaching to chat={chat_id}")
     _chat_ws.setdefault(chat_id, set()).add(ws)
     _ws_chat[ws] = chat_id
 
@@ -1584,6 +1609,21 @@ async def api_update_chat(chat_id: str, request: Request):
     return JSONResponse({"ok": True})
 
 
+@app.delete("/api/chats/{chat_id}")
+async def api_delete_chat(chat_id: str):
+    # Disconnect any active SDK client for this chat
+    if chat_id in _clients:
+        await _disconnect_client(chat_id)
+    if not _delete_chat(chat_id):
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    # Broadcast so all clients refresh their sidebar
+    payload = {"type": "chat_deleted", "chat_id": chat_id}
+    for cid, ws_set in list(_chat_ws.items()):
+        for ws in list(ws_set):
+            await _safe_ws_send_json(ws, payload, chat_id=cid)
+    return JSONResponse({"ok": True})
+
+
 @app.get("/api/chats/{chat_id}/messages")
 async def api_messages(chat_id: str, request: Request, days: int | None = 3):
     return JSONResponse(_get_messages(chat_id, days=days))
@@ -1618,8 +1658,8 @@ async def api_create_alert(request: Request):
 
 
 @app.get("/api/alerts")
-async def api_get_alerts(since: str | None = None, unacked: bool = False):
-    return JSONResponse(_get_alerts(since=since, unacked_only=unacked))
+async def api_get_alerts(since: str | None = None, unacked: bool = False, category: str | None = None):
+    return JSONResponse(_get_alerts(since=since, unacked_only=unacked, category=category))
 
 
 @app.post("/api/alerts/{alert_id}/ack")
@@ -1627,6 +1667,32 @@ async def api_ack_alert(alert_id: str):
     if _ack_alert(alert_id):
         return JSONResponse({"ok": True})
     return JSONResponse({"error": "Not found or already acked"}, status_code=404)
+
+
+@app.delete("/api/alerts/{alert_id}")
+async def api_delete_alert(alert_id: str):
+    with _db_lock:
+        conn = _get_db()
+        cur = conn.execute("DELETE FROM alerts WHERE id = ?", (alert_id,))
+        conn.commit()
+        deleted = cur.rowcount > 0
+        conn.close()
+    if not deleted:
+        return JSONResponse({"error": "Alert not found"}, status_code=404)
+    log(f"alert deleted: id={alert_id}")
+    return JSONResponse({"ok": True})
+
+
+@app.delete("/api/alerts")
+async def api_delete_all_alerts():
+    with _db_lock:
+        conn = _get_db()
+        cur = conn.execute("DELETE FROM alerts")
+        conn.commit()
+        count = cur.rowcount
+        conn.close()
+    log(f"alerts cleared: {count} deleted")
+    return JSONResponse({"ok": True, "deleted": count})
 
 
 @app.post("/api/alerts/{alert_id}/allow")
@@ -3153,6 +3219,14 @@ function handleEvent(msg) {
       refreshDebugState('chat-updated');
       break;
 
+    case 'chat_deleted':
+      loadChats().then(chats => {
+        if (currentChat === msg.chat_id && chats.length > 0) {
+          selectChat(chats[0].id, chats[0].title).catch(() => {});
+        }
+      }).catch(err => reportError('chat_deleted loadChats', err));
+      break;
+
     case 'system':
       break;
 
@@ -3594,6 +3668,7 @@ async function loadChats() {
     d.dataset.title = c.title || 'Untitled';
     d.onclick = () => selectChat(c.id, c.title).catch(err => reportError('selectChat click', err));
     d.ondblclick = (e) => { e.stopPropagation(); startRenameChat(d, c.id, c.title || 'Untitled'); };
+    d.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteChat(c.id, c.title || 'Untitled'); };
     list.appendChild(d);
   });
   setActiveChatUI();
@@ -3626,6 +3701,23 @@ function startRenameChat(el, chatId, currentTitle) {
   };
   // Prevent the click from triggering selectChat
   el.onclick = (e) => e.stopPropagation();
+}
+
+function confirmDeleteChat(chatId, title) {
+  if (!confirm(`Delete "${title}"? This removes all messages.`)) return;
+  deleteChat(chatId);
+}
+
+async function deleteChat(chatId) {
+  try {
+    const r = await fetch(`/api/chats/${chatId}`, {
+      method: 'DELETE', credentials: 'same-origin'
+    });
+    if (!r.ok) dbg('ERROR: deleteChat failed:', r.status);
+  } catch (e) {
+    dbg('ERROR: deleteChat:', e);
+  }
+  // chat_deleted WS event will trigger loadChats
 }
 
 async function renameChat(chatId, newTitle) {

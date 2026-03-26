@@ -34,5 +34,12 @@ export LOCALCHAT_SSL_CA="$SSL_DIR/ca.crt"
 
 export LOCALCHAT_ROOT="$LOCALCHAT_ROOT"
 
+# Source credentials (.env has XAI_API_KEY, LOCALCHAT_ALERT_TOKEN, etc.)
+if [ -f "$HOME/.openclaw/.env" ]; then
+    set -a
+    source "$HOME/.openclaw/.env"
+    set +a
+fi
+
 echo "Starting LocalChat with mTLS..."
 python3 "$SCRIPT_DIR/localchat.py"

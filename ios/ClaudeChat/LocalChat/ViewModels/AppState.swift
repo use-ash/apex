@@ -102,7 +102,7 @@ final class AppState {
         connectionManager.onConnected = { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
-                self.connectionManager.send(.setModel(model: self.selectedModel))
+                // Don't send global set_model — each chat has its own model in the DB
                 guard let chatId = self.persistentChatId else { return }
                 self.connectionManager.send(.attach(chatId: chatId))
             }
@@ -198,11 +198,15 @@ final class AppState {
 
     func updateSelectedModel(_ model: String) {
         guard allModels.contains(where: { $0.id == model }) else { return }
-        selectedModel = model
-        connectionManager.serverModel = model
+        // Only update the current chat's model — not the global default
+        guard let chatId = persistentChatId else { return }
         if connectionManager.isConnected {
-            connectionManager.send(.setModel(model: model))
+            connectionManager.send(.setChatModel(chatId: chatId, model: model))
         }
+        if let idx = chats.firstIndex(where: { $0.id == chatId }) {
+            chats[idx].model = model
+        }
+        currentChat?.model = model
     }
 
     // MARK: - Channels
@@ -242,6 +246,24 @@ final class AppState {
         }
     }
 
+    func deleteChannel(_ chatId: String) async {
+        do {
+            try await apiClient.deleteChat(chatId: chatId)
+            chats.removeAll { $0.id == chatId }
+            if currentChat?.id == chatId {
+                if let first = chats.first {
+                    switchToChat(first)
+                } else {
+                    currentChat = nil
+                    persistentChatId = nil
+                    messages = []
+                }
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
     func createAlertsChannel(category: String? = nil) async {
         do {
             _ = try await apiClient.createChat(type: "alerts", category: category)
@@ -257,6 +279,9 @@ final class AppState {
         messages = []
         connectionManager.send(.attach(chatId: chat.id))
         Task { await loadMessages(chat.id) }
+        if chat.type == "alerts" {
+            Task { await loadAlerts() }
+        }
     }
 
     // MARK: - Usage
@@ -281,6 +306,19 @@ final class AppState {
             usageData = try await apiClient.fetchUsage()
         } catch {
             // Silently fail — banner just won't show
+        }
+    }
+
+    static func alertCategory(for source: String) -> String {
+        switch source {
+        case "plan_h", "plan_c", "plan_h_backstop", "plan_m", "plan_alpha", "regime":
+            return "trading"
+        case "guardrail", "watchdog", "system":
+            return "system"
+        case "test":
+            return "test"
+        default:
+            return "other"
         }
     }
 
@@ -349,6 +387,17 @@ final class AppState {
                 chats[idx].title = title
                 if let model { chats[idx].model = model }
             }
+        case .chatDeleted(let chatId):
+            chats.removeAll { $0.id == chatId }
+            if currentChat?.id == chatId {
+                if let first = chats.first {
+                    switchToChat(first)
+                } else {
+                    currentChat = nil
+                    persistentChatId = nil
+                    messages = []
+                }
+            }
         case .attachOk(let chatId):
             guard persistentChatId == chatId else { break }
             Task { await loadMessages(chatId) }
@@ -380,6 +429,17 @@ final class AppState {
             break
         case .alert(let id, let source, let severity, let title, let body, let createdAt, let metadata):
             let alert = Alert(id: id, source: source, severity: severity, title: title, body: body, acked: false, createdAt: createdAt, metadata: metadata)
+            // Only insert if it matches the current channel's category filter
+            if let channelCategory = currentChat?.category {
+                let sourceCategory = Self.alertCategory(for: source)
+                if sourceCategory != channelCategory {
+                    // Still notify even if not displayed
+                    if scenePhase == .background || scenePhase == .inactive {
+                        enqueueAlertNotification(alert)
+                    }
+                    break
+                }
+            }
             alerts.insert(alert, at: 0)
             if scenePhase == .background || scenePhase == .inactive {
                 enqueueAlertNotification(alert)
@@ -423,7 +483,8 @@ final class AppState {
 
     func loadAlerts() async {
         do {
-            alerts = try await apiClient.fetchAlerts()
+            let category = currentChat?.type == "alerts" ? currentChat?.category : nil
+            alerts = try await apiClient.fetchAlerts(category: category)
         } catch {
             // Alerts are supplementary — silent fail
         }
@@ -456,6 +517,24 @@ final class AppState {
             }
         } catch {
             self.error = "Failed to allow: \(error.localizedDescription)"
+        }
+    }
+
+    func deleteAlert(_ alertId: String) async {
+        do {
+            try await apiClient.deleteAlert(alertId: alertId)
+            alerts.removeAll { $0.id == alertId }
+        } catch {
+            self.error = "Failed to delete alert: \(error.localizedDescription)"
+        }
+    }
+
+    func deleteAllAlerts() async {
+        do {
+            try await apiClient.deleteAllAlerts()
+            alerts.removeAll()
+        } catch {
+            self.error = "Failed to clear alerts: \(error.localizedDescription)"
         }
     }
 

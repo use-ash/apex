@@ -21,7 +21,7 @@ struct SettingsView: View {
     init(appState: AppState) {
         self.appState = appState
         _serverURL = State(initialValue: appState.serverURL)
-        _selectedModel = State(initialValue: appState.selectedModel)
+        _selectedModel = State(initialValue: appState.currentChat?.model ?? appState.selectedModel)
     }
 
     var body: some View {

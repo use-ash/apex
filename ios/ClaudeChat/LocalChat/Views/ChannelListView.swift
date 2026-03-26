@@ -6,6 +6,7 @@ struct ChannelListView: View {
     @State private var isCreatingChannel = false
     @State private var renamingChatId: String?
     @State private var renameText = ""
+    @State private var pendingDeleteId: String?
 
     /// Optional callback for drawer mode; when nil, falls back to sheet dismiss.
     var onSelect: (() -> Void)?
@@ -59,7 +60,12 @@ struct ChannelListView: View {
                                 }
                             }
                         }
-                        .swipeActions(edge: .trailing) {
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                pendingDeleteId = chat.id
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
                             Button {
                                 renameText = chat.title
                                 renamingChatId = chat.id
@@ -88,6 +94,11 @@ struct ChannelListView: View {
             .sheet(isPresented: $isCreatingChannel) {
                 NewChannelView(appState: appState)
             }
+        }
+        .onChange(of: pendingDeleteId) {
+            guard let id = pendingDeleteId else { return }
+            pendingDeleteId = nil
+            Task { await appState.deleteChannel(id) }
         }
     }
 

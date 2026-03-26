@@ -208,6 +208,8 @@ final class ConnectionManager {
                 title: json["title"] as? String ?? "",
                 model: json["model"] as? String
             )
+        case "chat_deleted":
+            return .chatDeleted(chatId: json["chat_id"] as? String ?? "")
         case "error":
             return .error(message: json["message"] as? String ?? "Unknown error")
         case "system":
@@ -311,6 +313,7 @@ enum ServerMessage {
     case attachOk(chatId: String)
     case streamCompleteReload(chatId: String)
     case chatUpdated(chatId: String, title: String, model: String?)
+    case chatDeleted(chatId: String)
     case error(message: String)
     case system(subtype: String, model: String?)
     case alert(id: String, source: String, severity: String, title: String, body: String, createdAt: String, metadata: [String: String]?)
