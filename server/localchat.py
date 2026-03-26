@@ -1628,6 +1628,8 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
                     "stream_failed": False,
                     "is_error": bool(msg.is_error),
                 }
+                # Include cumulative context info for the frontend meter
+                _ctx_in = _get_cumulative_tokens_in(chat_id) + result_info["tokens_in"]
                 await _send({
                     "type": "result",
                     "is_error": msg.is_error,
@@ -1635,6 +1637,8 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
                     "tokens_in": result_info["tokens_in"],
                     "tokens_out": result_info["tokens_out"],
                     "session_id": msg.session_id,
+                    "context_tokens_in": _ctx_in,
+                    "compaction_threshold": COMPACTION_THRESHOLD,
                 })
                 elapsed = time.monotonic() - _stream_start
                 if DEBUG: log(f"DBG stream COMPLETE: chat={chat_id} events={_stream_event_count} time={elapsed:.0f}s session={msg.session_id[:8] if msg.session_id else '?'} cost=${result_info['cost_usd']:.4f}")
@@ -1763,6 +1767,39 @@ async def api_delete_chat(chat_id: str):
 @app.get("/api/chats/{chat_id}/messages")
 async def api_messages(chat_id: str, request: Request, days: int | None = 3):
     return JSONResponse(_get_messages(chat_id, days=days))
+
+
+@app.get("/api/chats/{chat_id}/context")
+async def api_context(chat_id: str, request: Request):
+    """Return context window usage for a chat."""
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    chat_model = chat.get("model") or MODEL
+    cumulative_in = _get_cumulative_tokens_in(chat_id)
+    # Total output tokens since last compaction
+    since = _last_compacted_at.get(chat_id)
+    with _db_lock:
+        conn = _get_db()
+        if since:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(tokens_out), 0) FROM messages "
+                "WHERE chat_id = ? AND created_at > ?", (chat_id, since),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(tokens_out), 0) FROM messages WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+        conn.close()
+    cumulative_out = row[0] if row else 0
+    return JSONResponse({
+        "chat_id": chat_id,
+        "model": chat_model,
+        "tokens_in": cumulative_in,
+        "tokens_out": cumulative_out,
+        "compaction_threshold": COMPACTION_THRESHOLD,
+    })
 
 
 @app.get("/health")
@@ -2901,6 +2938,18 @@ writing-mode:vertical-lr;text-orientation:mixed;align-self:center;opacity:0.5}
 .usage-fill.orange{background:var(--yellow)}
 .usage-fill.red{background:var(--red)}
 
+/* Context bar */
+.context-bar{display:none;flex-shrink:0;align-items:center;justify-content:flex-end;
+gap:6px;padding:2px 16px 3px;background:var(--bg)}
+.context-bar.visible{display:flex}
+.context-detail{font-size:9px;font-weight:600;color:var(--dim);font-variant-numeric:tabular-nums;
+white-space:nowrap;opacity:0.7}
+.context-track{width:60px;height:2px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden}
+.context-fill{height:100%;border-radius:2px;transition:width 0.4s ease,background 0.4s ease}
+.context-fill.green{background:var(--green)}
+.context-fill.orange{background:var(--yellow)}
+.context-fill.red{background:var(--red)}
+
 /* Debug bar */
 .debugbar{background:#111827;border-top:1px solid #233047;padding:6px 12px;flex-shrink:0}
 .debug-state{color:#93C5FD;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
@@ -3046,6 +3095,12 @@ font-weight:600;font-size:13px;cursor:pointer}
 
 <div id="attachPreview" class="attach-preview"></div>
 <div id="transcribeStatus" class="transcribing" style="display:none"></div>
+<div class="context-bar" id="contextBar">
+  <span class="context-detail" id="contextDetail">--</span>
+  <div class="context-track">
+    <div class="context-fill green" id="contextFill" style="width:0%"></div>
+  </div>
+</div>
 <div class="composer" id="composerBar">
   <label class="btn-compose" id="attachBtn" title="Attach file" style="cursor:pointer">
     &#128206;
@@ -3469,6 +3524,12 @@ function handleEvent(msg) {
         renderMarkdown(currentBubble.querySelector('.bubble'));
       }
       markStreamActivity('result');
+      // Update context bar from inline data or fallback to API
+      if (msg.context_tokens_in != null && msg.compaction_threshold) {
+        updateContextBar(msg.context_tokens_in, msg.compaction_threshold);
+      } else {
+        fetchContext(currentChat);
+      }
       fetchUsage();
       refreshDebugState('result');
       break;
@@ -4368,8 +4429,9 @@ async function selectChat(id, title, chatType, category) {
     const alerts = await r.json();
     if (seq !== selectChatSeq || currentChat !== id) return;
     renderAlertsList(alerts);
-    // Hide input bar for alerts channels
+    // Hide input bar and context bar for alerts channels
     document.getElementById('composerBar').style.display = 'none';
+    document.getElementById('contextBar').classList.remove('visible');
     return;
   }
   // Show input bar for regular chats
@@ -4426,6 +4488,7 @@ async function selectChat(id, title, chatType, category) {
     }
   });
   scrollBottom();
+  fetchContext(id);
   refreshDebugState('messages-loaded');
 }
 
@@ -4686,6 +4749,37 @@ window.addEventListener('error', (e) => {
 window.addEventListener('unhandledrejection', (e) => {
   reportError('unhandledrejection', e.reason);
 });
+
+// --- Context bar ---
+function formatTokenCount(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+  return String(n);
+}
+
+function updateContextBar(tokensIn, threshold) {
+  const bar = document.getElementById('contextBar');
+  if (!bar) return;
+  const pct = threshold > 0 ? Math.min((tokensIn / threshold) * 100, 100) : 0;
+  const fill = document.getElementById('contextFill');
+  const detail = document.getElementById('contextDetail');
+  fill.style.width = pct.toFixed(1) + '%';
+  fill.className = 'context-fill ' + (pct >= 80 ? 'red' : pct >= 50 ? 'orange' : 'green');
+  detail.textContent = formatTokenCount(tokensIn) + ' / ' + formatTokenCount(threshold) + ' tokens (' + Math.round(pct) + '%)';
+  detail.style.color = pct >= 80 ? 'var(--red)' : pct >= 50 ? 'var(--yellow)' : 'var(--dim)';
+  bar.classList.add('visible');
+}
+
+async function fetchContext(chatId) {
+  if (!chatId) return;
+  try {
+    const r = await fetch('/api/chats/' + chatId + '/context');
+    if (r.ok) {
+      const d = await r.json();
+      updateContextBar(d.tokens_in, d.compaction_threshold);
+    }
+  } catch (e) { dbg('context fetch error:', e.message); }
+}
 
 // --- Usage bar ---
 function usageColor(pct) { return pct >= 90 ? 'red' : pct >= 70 ? 'orange' : 'green'; }

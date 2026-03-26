@@ -85,6 +85,7 @@ struct StreamDetailView<ToolEvent: StreamDetailToolEventRepresentable>: View {
                     // If bottom anchor is within 150pt of the visible area, user is "near bottom"
                     isNearBottom = maxY < 900
                 }
+                
                 .background(Color(.systemGroupedBackground))
                 .navigationTitle(isStreaming ? "Live Details" : "Response Details")
                 .navigationBarTitleDisplayMode(.inline)
