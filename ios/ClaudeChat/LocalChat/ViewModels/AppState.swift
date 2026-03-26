@@ -463,6 +463,10 @@ final class AppState {
             if scenePhase == .background || scenePhase == .inactive {
                 enqueueAlertNotification(alert)
             }
+        case .alertAcked(let alertId):
+            if let idx = alerts.firstIndex(where: { $0.id == alertId }) {
+                alerts[idx].acked = true
+            }
         default:
             break
         }

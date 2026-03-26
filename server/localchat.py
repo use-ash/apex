@@ -1800,9 +1800,15 @@ async def api_get_alerts(since: str | None = None, unacked: bool = False, catego
 
 @app.post("/api/alerts/{alert_id}/ack")
 async def api_ack_alert(alert_id: str):
-    if _ack_alert(alert_id):
-        return JSONResponse({"ok": True})
-    return JSONResponse({"error": "Not found or already acked"}, status_code=404)
+    _ack_alert(alert_id)  # Idempotent — already acked is fine
+    # Broadcast ack to all connected clients so they update local state
+    payload = {"type": "alert_acked", "alert_id": alert_id}
+    all_ws: set = set()
+    for ws_set in _chat_ws.values():
+        all_ws.update(ws_set)
+    for ws in list(all_ws):
+        await _safe_ws_send_json(ws, payload, chat_id=_ws_chat.get(ws, ""))
+    return JSONResponse({"ok": True})
 
 
 @app.delete("/api/alerts/{alert_id}")
@@ -3460,6 +3466,11 @@ function handleEvent(msg) {
 
     case 'alert':
       showAlertToast(msg);
+      break;
+
+    case 'alert_acked':
+      // Another client acked this alert — dismiss toast if it's showing
+      hideAlertToast();
       break;
 
     case 'system':

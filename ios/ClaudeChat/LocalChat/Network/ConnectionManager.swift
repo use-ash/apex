@@ -232,6 +232,8 @@ final class ConnectionManager {
                 createdAt: json["created_at"] as? String ?? "",
                 metadata: json["metadata"] as? [String: String]
             )
+        case "alert_acked":
+            return .alertAcked(alertId: json["alert_id"] as? String ?? "")
         default:
             return .error(message: "Unknown message type: \(type)")
         }
@@ -323,6 +325,7 @@ enum ServerMessage {
     case error(message: String)
     case system(subtype: String, model: String?)
     case alert(id: String, source: String, severity: String, title: String, body: String, createdAt: String, metadata: [String: String]?)
+    case alertAcked(alertId: String)
 }
 
 enum ClientMessage: Encodable {
