@@ -78,8 +78,6 @@ struct MessageBubble: View {
 
     private var bubbleContent: some View {
         VStack(alignment: message.isUser ? .trailing : .leading, spacing: 6) {
-            messageText
-
             if !message.thinking.isEmpty {
                 ThinkingDisclosureView(text: message.thinking)
             }
@@ -87,6 +85,8 @@ struct MessageBubble: View {
             if !parsedToolEvents.isEmpty {
                 ToolEventListView(events: parsedToolEvents)
             }
+
+            messageText
 
             if message.costUsd > 0 {
                 Text("$\(message.costUsd, specifier: "%.4f") · \(message.tokensIn + message.tokensOut)t")

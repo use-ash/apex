@@ -144,6 +144,11 @@ struct ChatView: View {
                     scrollToBottom(proxy: proxy)
                 }
             }
+            .onChange(of: appState.isLoadingMessages) { _, isLoading in
+                if !isLoading && !appState.messages.isEmpty {
+                    scrollToBottom(proxy: proxy)
+                }
+            }
             .onAppear {
                 scrollToBottom(proxy: proxy)
             }

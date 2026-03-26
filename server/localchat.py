@@ -513,25 +513,76 @@ def _run_codex_background(args: str, chat_id: str) -> str:
         return f"Codex launch error: {e}"
 
 
-def _run_grok(args: str, chat_id: str) -> str:
-    """Launch grok research. Returns status message."""
+def _run_grok(args: str, chat_id: str) -> str | dict:
+    """Launch grok research. Returns status message (or dict with bg process info).
+
+    Supports flags forwarded to run_grok.sh:
+      --bookmarks [N]   Fetch X bookmarks and inline them (default 20)
+      --search          Activate live web search
+      --research        Full multi-source research mode
+      --thinking LEVEL  Reasoning depth: off|minimal|low|medium|high|xhigh
+    """
     if not args:
-        return "Usage: /grok <research question>"
+        return "Usage: /grok <research question> [--bookmarks [N]] [--search] [--research] [--thinking LEVEL]"
+
+    # Parse flags from args, leaving the rest as the prompt text
+    import shlex
+    try:
+        tokens = shlex.split(args)
+    except ValueError:
+        tokens = args.split()
+
+    extra_flags: list[str] = []
+    prompt_tokens: list[str] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok == "--bookmarks":
+            extra_flags.append("--bookmarks")
+            # Optional numeric limit follows
+            if i + 1 < len(tokens) and tokens[i + 1].isdigit():
+                i += 1
+                extra_flags.append(tokens[i])
+        elif tok == "--search":
+            extra_flags.append("--search")
+        elif tok == "--research":
+            extra_flags.append("--research")
+        elif tok == "--thinking" and i + 1 < len(tokens):
+            extra_flags.append("--thinking")
+            i += 1
+            extra_flags.append(tokens[i])
+        else:
+            prompt_tokens.append(tok)
+        i += 1
+
+    prompt_text = " ".join(prompt_tokens)
+    if not prompt_text:
+        return "Usage: /grok <research question> [--bookmarks [N]] [--search] [--research] [--thinking LEVEL]"
+
     prompt_file = WORKSPACE / f"grok_localchat_{chat_id[:8]}.md"
     response_file = WORKSPACE / f"grok_localchat_{chat_id[:8]}_response.md"
-    prompt_file.write_text(args)
+    # Clear stale response file so watcher doesn't read old data
+    if response_file.exists():
+        response_file.unlink()
+    prompt_file.write_text(prompt_text)
     script = WORKSPACE / "skills" / "grok" / "run_grok.sh"
     if not script.exists():
         return "Grok skill not found."
     try:
-        subprocess.Popen(
-            ["bash", str(script), str(prompt_file.relative_to(WORKSPACE)),
-             str(response_file.relative_to(WORKSPACE))],
+        cmd = ["bash", str(script), str(prompt_file.relative_to(WORKSPACE)),
+               str(response_file.relative_to(WORKSPACE))] + extra_flags
+        proc = subprocess.Popen(
+            cmd,
             cwd=str(WORKSPACE),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+        flags_str = f" ({' '.join(extra_flags)})" if extra_flags else ""
         _log_skill_invocation("grok", success=True, context=args[:80], source="localchat")
-        return f"Grok research launched in background.\nResponse will be at: `{response_file.name}`"
+        return {
+            "status": f"Grok research launched in background{flags_str}...",
+            "bg_proc": proc,
+            "bg_response_file": str(response_file),
+        }
     except Exception as e:
         _log_skill_invocation("grok", success=False, error=str(e)[:200], context=args[:80], source="localchat")
         return f"Grok launch error: {e}"
@@ -625,6 +676,37 @@ _CONTEXT_SKILLS = {"recall", "improve"}
 _THINKING_SKILLS = {"first-principles", "simplify"}
 
 
+async def _watch_bg_skill(proc, response_file: str, chat_id: str, skill_name: str):
+    """Watch a background skill process and push the result into the chat when done."""
+    try:
+        # Wait for subprocess in a thread (up to 5 minutes)
+        exit_code = await asyncio.to_thread(proc.wait, 300)
+        rpath = Path(response_file)
+        if rpath.exists():
+            content = rpath.read_text().strip()
+            if content:
+                label = f"**{skill_name.capitalize()} response:**\n\n{content}"
+            else:
+                label = f"⚠️ {skill_name.capitalize()} returned empty response."
+        else:
+            label = f"⚠️ {skill_name.capitalize()} response file not found (exit code {exit_code})."
+    except subprocess.TimeoutExpired:
+        label = f"⚠️ {skill_name.capitalize()} timed out after 5 minutes."
+        proc.kill()
+    except Exception as e:
+        label = f"⚠️ {skill_name.capitalize()} watcher error: {e}"
+
+    # Push result into the chat as a new assistant message
+    _save_message(chat_id, "assistant", label, cost_usd=0, tokens_in=0, tokens_out=0)
+    await _send_stream_event(chat_id, {"type": "stream_start", "chat_id": chat_id})
+    await _send_stream_event(chat_id, {"type": "text", "text": label})
+    await _send_stream_event(chat_id, {
+        "type": "result", "cost_usd": 0, "tokens_in": 0, "tokens_out": 0, "session_id": None,
+    })
+    await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id})
+    log(f"BG skill complete: /{skill_name} chat={chat_id} len={len(label)}")
+
+
 async def _handle_skill(websocket, chat_id: str, skill: str, args: str, display_prompt: str) -> bool:
     """Handle a skill invocation. Returns True if handled, False to fall through to Claude."""
     # --- Context skills: search, then let Claude synthesize ---
@@ -656,8 +738,15 @@ async def _handle_skill(websocket, chat_id: str, skill: str, args: str, display_
     await _send_stream_event(chat_id, {"type": "stream_start", "chat_id": chat_id})
 
     # Run the skill
+    bg_info = None
     try:
-        result_text = await asyncio.to_thread(handler, args, chat_id)
+        result = await asyncio.to_thread(handler, args, chat_id)
+        # Handlers can return a dict with bg process info for async completion
+        if isinstance(result, dict) and "bg_proc" in result:
+            bg_info = result
+            result_text = result["status"]
+        else:
+            result_text = result
     except Exception as e:
         result_text = f"Skill error: {e}"
 
@@ -672,6 +761,14 @@ async def _handle_skill(websocket, chat_id: str, skill: str, args: str, display_
         "type": "result", "cost_usd": 0, "tokens_in": 0, "tokens_out": 0, "session_id": None,
     })
     await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id})
+
+    # Spawn background watcher if the handler returned a process to monitor
+    if bg_info and "bg_proc" in bg_info:
+        asyncio.create_task(_watch_bg_skill(
+            bg_info["bg_proc"], bg_info["bg_response_file"],
+            chat_id, skill
+        ))
+
     return True
 
 
@@ -1173,6 +1270,7 @@ _clients: dict[str, ClaudeSDKClient] = {}
 _chat_locks: dict[str, asyncio.Lock] = {}
 _chat_ws: dict[str, set[WebSocket]] = {}  # chat_id -> ALL connected WebSockets (multi-viewer)
 _ws_chat: dict[WebSocket, str] = {}  # reverse: ws -> current chat_id (for detach on re-attach)
+_active_send_tasks: dict[str, asyncio.Task] = {}  # chat_id -> running send task (for stop/cancel)
 
 
 def _attach_ws(ws: WebSocket, chat_id: str) -> None:
@@ -2224,16 +2322,31 @@ async def websocket_endpoint(websocket: WebSocket):
                 continue
 
             if action == "send":
+                send_chat_id = data.get("chat_id", "")
                 task = asyncio.create_task(_handle_send_action(websocket, data))
+                if send_chat_id:
+                    _active_send_tasks[send_chat_id] = task
+                    task.add_done_callback(
+                        lambda t, cid=send_chat_id: _active_send_tasks.pop(cid, None)
+                        if _active_send_tasks.get(cid) is t else None
+                    )
                 _track_task(task)
 
             elif action == "stop":
                 chat_id = data.get("chat_id", "")
-                if chat_id and chat_id in _clients:
-                    try:
-                        await _clients[chat_id].interrupt()
-                    except Exception:
-                        pass
+                if chat_id:
+                    if chat_id in _clients:
+                        # Claude SDK — interrupt triggers graceful stream end
+                        try:
+                            await _clients[chat_id].interrupt()
+                        except Exception:
+                            pass
+                    else:
+                        # Local/xAI model — cancel the send task directly
+                        send_task = _active_send_tasks.pop(chat_id, None)
+                        if send_task and not send_task.done():
+                            send_task.cancel()
+                            await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id})
 
     except WebSocketDisconnect as wd:
         log(f"websocket disconnected ws={ws_id} code={wd.code if hasattr(wd, 'code') else '?'}")
@@ -3740,6 +3853,10 @@ async function selectChat(id, title) {
   const seq = ++selectChatSeq;
   setCurrentChat(id, title || 'LocalChat');
   closeSidebar();
+  // Attach WS to the selected chat so we receive live stream events
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({action: 'attach', chat_id: id}));
+  }
   // Load messages
   const r = await fetch(`/api/chats/${id}/messages`, {credentials: 'same-origin'});
   if (!r.ok) {
