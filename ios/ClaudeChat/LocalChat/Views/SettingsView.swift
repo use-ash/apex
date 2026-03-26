@@ -102,17 +102,27 @@ struct SettingsView: View {
                         ForEach(AppState.supportedModels) { model in
                             Text(model.displayName).tag(model.id)
                         }
+                        if !appState.localModels.isEmpty {
+                            Section("Local (Ollama)") {
+                                ForEach(appState.localModels) { model in
+                                    Text("\(model.displayName) (\(model.sizeGb, specifier: "%.0f")GB)")
+                                        .tag(model.id)
+                                }
+                            }
+                        }
                     }
                     .onChange(of: selectedModel) { _, newValue in
                         appState.updateSelectedModel(newValue)
                     }
 
-                    LabeledContent("Display") {
+                    LabeledContent("Active") {
                         Text(appState.modelDisplayName)
                     }
 
-                    LabeledContent("Server Model") {
-                        Text(appState.modelDescription)
+                    if appState.localModels.isEmpty {
+                        Button("Refresh Local Models") {
+                            Task { await appState.loadLocalModels() }
+                        }
                     }
 
                     Text(appState.connectionManager.isConnected

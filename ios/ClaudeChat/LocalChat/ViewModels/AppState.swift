@@ -23,6 +23,14 @@ final class AppState {
     var messages: [Message] = []
     var alerts: [Alert] = []
     var unackedAlertCount: Int { alerts.filter { !$0.acked }.count }
+    var localModels: [LocalModel] = []
+    var allModels: [ModelOption] {
+        var models = Self.supportedModels
+        for lm in localModels {
+            models.append(ModelOption(id: lm.id, displayName: "\(lm.displayName) (\(lm.sizeGb)GB)"))
+        }
+        return models
+    }
     var isLoadingMessages: Bool = false
     var isEnsuringPersistentChat: Bool = false
     var error: String?
@@ -336,6 +344,14 @@ final class AppState {
             alerts = try await apiClient.fetchAlerts()
         } catch {
             // Alerts are supplementary — silent fail
+        }
+    }
+
+    func loadLocalModels() async {
+        do {
+            localModels = try await apiClient.fetchLocalModels()
+        } catch {
+            // Local models are optional — silent fail
         }
     }
 

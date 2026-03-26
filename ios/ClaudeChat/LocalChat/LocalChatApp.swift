@@ -47,6 +47,7 @@ struct LocalChatApp: App {
                         appState.connectionManager.send(.attach(chatId: chatId))
                     }
                     Task { await appState.loadAlerts() }
+                    Task { await appState.loadLocalModels() }
                 case .background:
                     BackgroundManager.scheduleKeepAlive()
                 case .inactive:

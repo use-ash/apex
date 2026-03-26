@@ -101,7 +101,8 @@ ENABLE_SKILL_DISPATCH = True  # server-side /recall, /codex, /grok dispatch
 # Auto-compaction — rotate SDK session when cumulative input tokens get too high
 COMPACTION_THRESHOLD = int(os.environ.get("LOCALCHAT_COMPACTION_THRESHOLD", "100000"))  # input tokens
 COMPACTION_OLLAMA_MODEL = os.environ.get("LOCALCHAT_COMPACTION_MODEL", "gemma3:27b")
-COMPACTION_OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_BASE_URL = os.environ.get("LOCALCHAT_OLLAMA_URL", "http://localhost:11434")
+COMPACTION_OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/generate"
 COMPACTION_OLLAMA_TIMEOUT = 30
 
 # ---------------------------------------------------------------------------
@@ -1460,6 +1461,106 @@ async def api_ack_alert(alert_id: str):
     return JSONResponse({"error": "Not found or already acked"}, status_code=404)
 
 
+# --- Local models (Ollama) ------------------------------------------------
+
+def _is_local_model(model: str) -> bool:
+    """True if the model should be routed through Ollama instead of Claude SDK."""
+    return not model.startswith("claude-")
+
+
+def _get_ollama_models() -> list[dict]:
+    """Query Ollama for available local models."""
+    try:
+        req = urllib.request.Request(f"{OLLAMA_BASE_URL}/api/tags")
+        resp = urllib.request.urlopen(req, timeout=5)
+        data = json.loads(resp.read().decode())
+        models = []
+        for m in data.get("models", []):
+            name = m.get("name", "")
+            size_gb = round(m.get("size", 0) / 1e9, 1)
+            models.append({"id": name, "displayName": name, "sizeGb": size_gb, "local": True})
+        return models
+    except Exception as e:
+        log(f"ollama model list failed: {e}")
+        return []
+
+
+@app.get("/api/models/local")
+async def api_local_models():
+    models = await asyncio.to_thread(_get_ollama_models)
+    return JSONResponse(models)
+
+
+async def _run_ollama_chat(chat_id: str, prompt: str) -> dict:
+    """Stream a chat response from Ollama and broadcast via WebSocket."""
+    # Build message history from recent DB messages
+    recent = _get_messages(chat_id, days=1)
+    messages = []
+    for m in recent[-20:]:  # last 20 messages for context
+        messages.append({"role": m["role"], "content": m["content"]})
+    messages.append({"role": "user", "content": prompt})
+
+    payload = json.dumps({
+        "model": MODEL,
+        "messages": messages,
+        "stream": True,
+    }).encode()
+
+    # Run blocking HTTP in a thread, collect chunks via queue
+    chunk_queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+    def _stream_ollama():
+        try:
+            req = urllib.request.Request(
+                f"{OLLAMA_BASE_URL}/api/chat",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            resp = urllib.request.urlopen(req, timeout=300)
+            for line in resp:
+                if not line.strip():
+                    continue
+                chunk = json.loads(line.decode())
+                if chunk.get("done"):
+                    break
+                content = chunk.get("message", {}).get("content", "")
+                if content:
+                    chunk_queue.put_nowait(content)
+        except Exception as e:
+            chunk_queue.put_nowait(f"__ERROR__:{e}")
+        finally:
+            chunk_queue.put_nowait(None)  # sentinel
+
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _stream_ollama)
+
+    result_text = ""
+    is_error = False
+    error_msg = ""
+    while True:
+        chunk = await chunk_queue.get()
+        if chunk is None:
+            break
+        if chunk.startswith("__ERROR__:"):
+            error_msg = chunk[10:]
+            is_error = True
+            log(f"ollama error: {error_msg}")
+            await _send_stream_event(chat_id, {"type": "error", "message": f"Ollama: {error_msg}"})
+            break
+        result_text += chunk
+        await _send_stream_event(chat_id, {"type": "text", "text": chunk})
+
+    await _send_stream_event(chat_id, {
+        "type": "result", "is_error": is_error,
+        "cost_usd": 0, "tokens_in": 0, "tokens_out": 0,
+        "session_id": None,
+    })
+
+    return {"text": result_text, "is_error": is_error, "error": error_msg or None,
+            "cost_usd": 0, "tokens_in": 0, "tokens_out": 0,
+            "session_id": None, "thinking": "", "tool_events": "[]"}
+
+
 # --- Usage meter (replicates terminal statusline) -------------------------
 
 _USAGE_CACHE: dict = {}
@@ -1923,13 +2024,19 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         if _recall_context:
             prompt = f"{_recall_context}{prompt}"
 
-        try:
-            display_prompt, make_query_input = _build_turn_payload(chat_id, prompt, attachments)
-            if _recall_context:
-                display_prompt = user_visible_prompt  # show clean prompt in chat history
-        except ValueError as e:
-            await _safe_ws_send_json(websocket, {"type": "error", "message": str(e)}, chat_id=chat_id)
-            return
+        display_prompt = prompt
+        make_query_input = None
+        if _is_local_model(MODEL):
+            # Local models use raw prompt — no SDK payload needed
+            display_prompt = user_visible_prompt if _recall_context else prompt
+        else:
+            try:
+                display_prompt, make_query_input = _build_turn_payload(chat_id, prompt, attachments)
+                if _recall_context:
+                    display_prompt = user_visible_prompt  # show clean prompt in chat history
+            except ValueError as e:
+                await _safe_ws_send_json(websocket, {"type": "error", "message": str(e)}, chat_id=chat_id)
+                return
 
         _save_message(chat_id, "user", display_prompt)
 
@@ -1948,46 +2055,61 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         await _send_stream_event(chat_id, {"type": "stream_start", "chat_id": chat_id})
 
         result: dict | None = None
-        try:
-            client = await _get_or_create_client(chat_id)
-            result = await _run_query_turn(client, make_query_input, chat_id)
-        except Exception as first_error:
-            if DEBUG: log(f"DBG RECOVERY: chat={chat_id} first error: {type(first_error).__name__}: {first_error}")
-            await _disconnect_client(chat_id)
 
-            # Try to RESUME the existing session first (preserves context, saves tokens)
-            chat = _get_chat(chat_id)
-            existing_session = chat.get("claude_session_id") if chat else None
-            if DEBUG: log(f"DBG RECOVERY: attempting resume session={existing_session or 'NONE'}")
+        # --- Local model path (Ollama) ---
+        if _is_local_model(MODEL):
             try:
-                options = _make_options(session_id=existing_session)
-                client = ClaudeSDKClient(options)
-                await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
-                _clients[chat_id] = client
+                result = await _run_ollama_chat(chat_id, prompt)
+            except Exception as ollama_err:
+                log(f"ollama chat error: {ollama_err}")
+                for ws in list(_chat_ws.get(chat_id, {websocket})):
+                    await _safe_ws_send_json(
+                        ws, {"type": "error", "message": f"Local model error: {ollama_err}"},
+                        chat_id=chat_id,
+                    )
+                return
+        else:
+            # --- Claude SDK path ---
+            try:
+                client = await _get_or_create_client(chat_id)
                 result = await _run_query_turn(client, make_query_input, chat_id)
-                if DEBUG: log(f"DBG RECOVERY: resume OK chat={chat_id} session={existing_session or 'new'}")
-            except Exception as resume_error:
-                if DEBUG: log(f"DBG RECOVERY: resume FAILED: {type(resume_error).__name__}: {resume_error}")
+            except Exception as first_error:
+                if DEBUG: log(f"DBG RECOVERY: chat={chat_id} first error: {type(first_error).__name__}: {first_error}")
                 await _disconnect_client(chat_id)
-                _update_chat(chat_id, claude_session_id=None)
-                if DEBUG: log(f"DBG RECOVERY: session_id NUKED, trying fresh...")
+
+                # Try to RESUME the existing session first (preserves context, saves tokens)
+                chat = _get_chat(chat_id)
+                existing_session = chat.get("claude_session_id") if chat else None
+                if DEBUG: log(f"DBG RECOVERY: attempting resume session={existing_session or 'NONE'}")
                 try:
-                    options = _make_options(session_id=None)
+                    options = _make_options(session_id=existing_session)
                     client = ClaudeSDKClient(options)
                     await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
                     _clients[chat_id] = client
                     result = await _run_query_turn(client, make_query_input, chat_id)
-                    if DEBUG: log(f"DBG RECOVERY: fresh session OK chat={chat_id}")
-                except Exception as fresh_error:
-                    if DEBUG: log(f"DBG RECOVERY: fresh ALSO FAILED: {type(fresh_error).__name__}: {fresh_error}")
+                    if DEBUG: log(f"DBG RECOVERY: resume OK chat={chat_id} session={existing_session or 'new'}")
+                except Exception as resume_error:
+                    if DEBUG: log(f"DBG RECOVERY: resume FAILED: {type(resume_error).__name__}: {resume_error}")
                     await _disconnect_client(chat_id)
-                    for ws in list(_chat_ws.get(chat_id, {websocket})):
-                        await _safe_ws_send_json(
-                            ws,
-                            {"type": "error", "message": f"Claude request failed: {fresh_error}"},
-                            chat_id=chat_id,
-                        )
-                    return
+                    _update_chat(chat_id, claude_session_id=None)
+                    if DEBUG: log(f"DBG RECOVERY: session_id NUKED, trying fresh...")
+                    try:
+                        options = _make_options(session_id=None)
+                        client = ClaudeSDKClient(options)
+                        await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
+                        _clients[chat_id] = client
+                        result = await _run_query_turn(client, make_query_input, chat_id)
+                        if DEBUG: log(f"DBG RECOVERY: fresh session OK chat={chat_id}")
+                    except Exception as fresh_error:
+                        if DEBUG: log(f"DBG RECOVERY: fresh ALSO FAILED: {type(fresh_error).__name__}: {fresh_error}")
+                        await _disconnect_client(chat_id)
+                        for ws in list(_chat_ws.get(chat_id, {websocket})):
+                            await _safe_ws_send_json(
+                                ws,
+                                {"type": "error", "message": f"Claude request failed: {fresh_error}"},
+                                chat_id=chat_id,
+                            )
+                        return
 
         if not result:
             return
@@ -2010,11 +2132,12 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 tokens_out=result.get("tokens_out", 0),
             )
 
-        # Auto-compaction check — rotate session if token usage too high
-        try:
-            await _maybe_compact_chat(chat_id)
-        except Exception as compact_err:
-            log(f"compaction error: chat={chat_id} {compact_err}")
+        # Auto-compaction check — rotate session if token usage too high (Claude only)
+        if not _is_local_model(MODEL):
+            try:
+                await _maybe_compact_chat(chat_id)
+            except Exception as compact_err:
+                log(f"compaction error: chat={chat_id} {compact_err}")
 
         # Tell ALL other viewers to reload from DB (they didn't see the stream)
         ws_set = _chat_ws.get(chat_id, set())

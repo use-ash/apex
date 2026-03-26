@@ -81,6 +81,11 @@ final class APIClient {
         _ = try await request("POST", path: "/api/alerts/\(alertId)/ack")
     }
 
+    func fetchLocalModels() async throws -> [LocalModel] {
+        let data = try await request("GET", path: "/api/models/local")
+        return try JSONDecoder().decode([LocalModel].self, from: data)
+    }
+
     // MARK: - Private
 
     private func request(
@@ -182,6 +187,21 @@ private struct CreateChatResponse: Decodable {
 
 private struct HealthResponse: Decodable {
     let ok: Bool
+}
+
+// MARK: - Local Models
+
+struct LocalModel: Identifiable, Decodable {
+    let id: String
+    let displayName: String
+    let sizeGb: Double
+    let local: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id, local
+        case displayName = "displayName"
+        case sizeGb = "sizeGb"
+    }
 }
 
 // MARK: - Usage
