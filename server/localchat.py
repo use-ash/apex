@@ -52,6 +52,14 @@ except ImportError:
     print("pip install fastapi uvicorn python-multipart", file=sys.stderr)
     sys.exit(1)
 
+# Local model tool calling
+sys.path.insert(0, str(Path.home() / ".openclaw"))
+try:
+    from local_model.tool_loop import run_tool_loop
+    _TOOL_LOOP_AVAILABLE = True
+except ImportError:
+    _TOOL_LOOP_AVAILABLE = False
+
 try:
     from claude_agent_sdk import (
         ClaudeSDKClient,
@@ -1492,28 +1500,48 @@ async def api_local_models():
 
 
 async def _run_ollama_chat(chat_id: str, prompt: str) -> dict:
-    """Stream a chat response from Ollama and broadcast via WebSocket."""
+    """Run a chat response from Ollama with tool-calling support."""
     # Build message history from recent DB messages
     recent = _get_messages(chat_id, days=1)
-    messages = []
-    for m in recent[-20:]:  # last 20 messages for context
-        messages.append({"role": m["role"], "content": m["content"]})
+    messages = [{"role": "system", "content": f"You are {MODEL}, a local AI model running via Ollama. You are NOT Claude, NOT made by Anthropic. You have access to tools: bash, read_file, write_file, list_files, search_files. Use them when the user asks you to do something that requires interacting with the system. Be helpful and concise."}]
+    for m in recent[-20:]:
+        content = m["content"]
+        if "<system-reminder>" in content:
+            continue
+        messages.append({"role": m["role"], "content": content})
     messages.append({"role": "user", "content": prompt})
 
-    payload = json.dumps({
-        "model": MODEL,
-        "messages": messages,
-        "stream": True,
-    }).encode()
+    # Use tool loop if available
+    if _TOOL_LOOP_AVAILABLE:
+        async def emit(event: dict):
+            await _send_stream_event(chat_id, event)
 
-    # Run blocking HTTP in a thread, collect chunks via queue
+        result = await run_tool_loop(
+            ollama_url=OLLAMA_BASE_URL,
+            model=MODEL,
+            messages=messages,
+            emit_event=emit,
+            workspace=str(WORKSPACE),
+        )
+
+        # Send result event (tool loop emits text/tool events but not the final result)
+        await _send_stream_event(chat_id, {
+            "type": "result", "is_error": result.get("is_error", False),
+            "cost_usd": 0, "tokens_in": 0, "tokens_out": 0,
+            "session_id": None,
+        })
+        return result
+
+    # Fallback: plain text streaming (no tool support)
+    payload = json.dumps({
+        "model": MODEL, "messages": messages, "stream": True,
+    }).encode()
     chunk_queue: asyncio.Queue[str | None] = asyncio.Queue()
 
     def _stream_ollama():
         try:
             req = urllib.request.Request(
-                f"{OLLAMA_BASE_URL}/api/chat",
-                data=payload,
+                f"{OLLAMA_BASE_URL}/api/chat", data=payload,
                 headers={"Content-Type": "application/json"},
             )
             resp = urllib.request.urlopen(req, timeout=300)
@@ -1529,14 +1557,10 @@ async def _run_ollama_chat(chat_id: str, prompt: str) -> dict:
         except Exception as e:
             chunk_queue.put_nowait(f"__ERROR__:{e}")
         finally:
-            chunk_queue.put_nowait(None)  # sentinel
+            chunk_queue.put_nowait(None)
 
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, _stream_ollama)
-
-    result_text = ""
-    is_error = False
-    error_msg = ""
+    asyncio.get_event_loop().run_in_executor(None, _stream_ollama)
+    result_text, is_error, error_msg = "", False, ""
     while True:
         chunk = await chunk_queue.get()
         if chunk is None:
@@ -1552,10 +1576,8 @@ async def _run_ollama_chat(chat_id: str, prompt: str) -> dict:
 
     await _send_stream_event(chat_id, {
         "type": "result", "is_error": is_error,
-        "cost_usd": 0, "tokens_in": 0, "tokens_out": 0,
-        "session_id": None,
+        "cost_usd": 0, "tokens_in": 0, "tokens_out": 0, "session_id": None,
     })
-
     return {"text": result_text, "is_error": is_error, "error": error_msg or None,
             "cost_usd": 0, "tokens_in": 0, "tokens_out": 0,
             "session_id": None, "thinking": "", "tool_events": "[]"}
@@ -1565,7 +1587,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str) -> dict:
 
 _USAGE_CACHE: dict = {}
 _USAGE_CACHE_TS: float = 0
-_USAGE_CACHE_TTL = 60
+_USAGE_CACHE_TTL = 300  # 5 minutes — avoid 429s from Anthropic
 _PLAN_NAMES = {
     "default_claude_ai": "Pro",
     "default_claude_max_5x": "Max 5x",
@@ -3685,7 +3707,7 @@ async function fetchUsage() {
 }
 
 fetchUsage();
-setInterval(fetchUsage, 60000);
+setInterval(fetchUsage, 300000);
 
 connect();
 setTimeout(() => { ensureInitialized('timer-fallback').catch(() => {}); }, 1500);
