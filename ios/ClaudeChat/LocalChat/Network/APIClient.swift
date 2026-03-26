@@ -29,8 +29,15 @@ final class APIClient {
         return try JSONDecoder().decode([Chat].self, from: data)
     }
 
-    func createChat() async throws -> String {
-        let data = try await request("POST", path: "/api/chats")
+    func createChat(model: String? = nil, type: String? = nil) async throws -> String {
+        var body: Data? = nil
+        if model != nil || type != nil {
+            var dict: [String: String] = [:]
+            if let model { dict["model"] = model }
+            if let type { dict["type"] = type }
+            body = try JSONSerialization.data(withJSONObject: dict)
+        }
+        let data = try await request("POST", path: "/api/chats", body: body)
         return try JSONDecoder().decode(CreateChatResponse.self, from: data).id
     }
 

@@ -12,7 +12,11 @@ final class AppState {
         ModelOption(id: "claude-opus-4-6", displayName: "Opus 4.6"),
         ModelOption(id: "claude-sonnet-4-6", displayName: "Sonnet 4.6"),
         ModelOption(id: "claude-haiku-4-5-20251001", displayName: "Haiku 4.5"),
+        ModelOption(id: "grok-4-fast", displayName: "Grok 4 Fast"),
+        ModelOption(id: "grok-4", displayName: "Grok 4"),
     ]
+
+    var chats: [Chat] = []
 
     var persistentChatId: String? {
         didSet {
@@ -74,11 +78,11 @@ final class AppState {
     }
 
     var modelDisplayName: String {
-        Self.friendlyModelName(connectionManager.serverModel ?? selectedModel)
+        Self.friendlyModelName(currentChat?.model ?? connectionManager.serverModel ?? selectedModel)
     }
 
     var modelDescription: String {
-        connectionManager.serverModel ?? selectedModel
+        currentChat?.model ?? connectionManager.serverModel ?? selectedModel
     }
 
     init() {
@@ -116,6 +120,7 @@ final class AppState {
 
         do {
             let chats = try await apiClient.fetchChats().sorted()
+            self.chats = chats
             let resolvedChat = try await resolvePersistentChat(from: chats)
 
             persistentChatId = resolvedChat.id
@@ -200,6 +205,45 @@ final class AppState {
         }
     }
 
+    // MARK: - Channels
+
+    func loadChats() async {
+        do {
+            chats = try await apiClient.fetchChats().sorted()
+        } catch {
+            // Silent fail
+        }
+    }
+
+    func createChannel(name: String, model: String) async {
+        do {
+            let chatId = try await apiClient.createChat(model: model)
+            await loadChats()
+            if let chat = chats.first(where: { $0.id == chatId }) {
+                switchToChat(chat)
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    func createAlertsChannel() async {
+        do {
+            _ = try await apiClient.createChat(type: "alerts")
+            await loadChats()
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    func switchToChat(_ chat: Chat) {
+        persistentChatId = chat.id
+        currentChat = chat
+        messages = []
+        connectionManager.send(.attach(chatId: chat.id))
+        Task { await loadMessages(chat.id) }
+    }
+
     // MARK: - Usage
 
     func startUsagePolling() {
@@ -234,6 +278,7 @@ final class AppState {
         if lowercased.contains("opus") { return "Opus" }
         if lowercased.contains("sonnet") { return "Sonnet" }
         if lowercased.contains("haiku") { return "Haiku" }
+        if lowercased.contains("grok") { return "Grok" }
         return model
     }
 
@@ -263,6 +308,8 @@ final class AppState {
         return Chat(
             id: id,
             title: "New Chat",
+            model: nil,
+            type: nil,
             claudeSessionId: nil,
             createdAt: now,
             updatedAt: now
@@ -277,11 +324,16 @@ final class AppState {
             streamingResponsePreview = ""
         case .text(let text):
             streamingResponsePreview += text
-        case .chatUpdated(let chatId, let title):
+        case .chatUpdated(let chatId, let title, let model):
             guard currentChat?.id == chatId else { break }
-            guard var currentChat = currentChat else { break }
-            currentChat.title = title
-            self.currentChat = currentChat
+            guard var updatedChat = currentChat else { break }
+            updatedChat.title = title
+            if let model { updatedChat.model = model }
+            self.currentChat = updatedChat
+            if let idx = chats.firstIndex(where: { $0.id == chatId }) {
+                chats[idx].title = title
+                if let model { chats[idx].model = model }
+            }
         case .attachOk(let chatId):
             guard persistentChatId == chatId else { break }
             Task { await loadMessages(chatId) }

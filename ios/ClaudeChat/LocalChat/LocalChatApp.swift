@@ -48,6 +48,7 @@ struct LocalChatApp: App {
                     }
                     Task { await appState.loadAlerts() }
                     Task { await appState.loadLocalModels() }
+                    Task { await appState.loadChats() }
                 case .background:
                     BackgroundManager.scheduleKeepAlive()
                 case .inactive:

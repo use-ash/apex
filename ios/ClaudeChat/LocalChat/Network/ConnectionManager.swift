@@ -205,7 +205,8 @@ final class ConnectionManager {
         case "chat_updated":
             return .chatUpdated(
                 chatId: json["chat_id"] as? String ?? "",
-                title: json["title"] as? String ?? ""
+                title: json["title"] as? String ?? "",
+                model: json["model"] as? String
             )
         case "error":
             return .error(message: json["message"] as? String ?? "Unknown error")
@@ -308,7 +309,7 @@ enum ServerMessage {
     case streamReattached(chatId: String)
     case attachOk(chatId: String)
     case streamCompleteReload(chatId: String)
-    case chatUpdated(chatId: String, title: String)
+    case chatUpdated(chatId: String, title: String, model: String?)
     case error(message: String)
     case system(subtype: String, model: String?)
     case alert(id: String, source: String, severity: String, title: String, body: String, createdAt: String)
@@ -319,6 +320,7 @@ enum ClientMessage: Encodable {
     case attach(chatId: String)
     case send(chatId: String, prompt: String, attachments: [[String: String]]? = nil)
     case setModel(model: String)
+    case setChatModel(chatId: String, model: String)
     case stop(chatId: String)
 
     func encode(to encoder: Encoder) throws {
@@ -338,6 +340,10 @@ enum ClientMessage: Encodable {
             }
         case .setModel(let model):
             try container.encode("set_model", forKey: .action)
+            try container.encode(model, forKey: .model)
+        case .setChatModel(let chatId, let model):
+            try container.encode("set_chat_model", forKey: .action)
+            try container.encode(chatId, forKey: .chatId)
             try container.encode(model, forKey: .model)
         case .stop(let chatId):
             try container.encode("stop", forKey: .action)

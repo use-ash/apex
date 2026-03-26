@@ -36,37 +36,50 @@ struct ChatView: View {
         return (messageItems + alertItems).sorted { $0.createdAt < $1.createdAt }
     }
 
+    private var isAlertsChannel: Bool {
+        appState.currentChat?.type == "alerts"
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 8) {
-                    ForEach(timelineItems) { item in
-                        switch item {
-                        case .message(let message):
-                            MessageBubble(
-                                message: message,
-                                isHighlighted: highlightedMessageIDs.contains(message.id),
-                                reaction: reactions[message.id],
-                                fontScale: CGFloat(fontScale),
-                                onReact: { emoji in
-                                    updateReaction(emoji, for: message)
-                                },
-                                onReply: {
-                                    setReplyTarget(message)
-                                }
-                            )
-                            .id(item.id)
-                        case .alert(let alert):
+                    if isAlertsChannel {
+                        ForEach(appState.alerts) { alert in
                             AlertBubble(alert: alert) {
                                 Task { await appState.ackAlert(alert.id) }
                             }
-                            .id(item.id)
+                            .id("alert-\(alert.id)")
                         }
-                    }
+                    } else {
+                        ForEach(timelineItems) { item in
+                            switch item {
+                            case .message(let message):
+                                MessageBubble(
+                                    message: message,
+                                    isHighlighted: highlightedMessageIDs.contains(message.id),
+                                    reaction: reactions[message.id],
+                                    fontScale: CGFloat(fontScale),
+                                    onReact: { emoji in
+                                        updateReaction(emoji, for: message)
+                                    },
+                                    onReply: {
+                                        setReplyTarget(message)
+                                    }
+                                )
+                                .id(item.id)
+                            case .alert(let alert):
+                                AlertBubble(alert: alert) {
+                                    Task { await appState.ackAlert(alert.id) }
+                                }
+                                .id(item.id)
+                            }
+                        }
 
-                    if isStreaming {
-                        streamingBubble
-                            .id("streaming")
+                        if isStreaming {
+                            streamingBubble
+                                .id("streaming")
+                        }
                     }
                 }
                 .padding(.vertical, 8)
@@ -74,7 +87,9 @@ struct ChatView: View {
             .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
             .safeAreaInset(edge: .bottom) {
-                composeBar
+                if !isAlertsChannel {
+                    composeBar
+                }
             }
             .onChange(of: isInputFocused) { _, focused in
                 if focused {

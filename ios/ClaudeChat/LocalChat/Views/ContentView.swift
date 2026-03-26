@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var isShowingConnectionDetails: Bool = false
     @State private var isShowingSettings: Bool = false
     @State private var isShowingSearch: Bool = false
+    @State private var isShowingChannels: Bool = false
     @State private var searchText: String = ""
     @State private var openSettingsAfterConnectionSheet: Bool = false
 
@@ -64,15 +65,23 @@ struct ContentView: View {
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        withAnimation {
-                            isShowingSearch.toggle()
-                            if !isShowingSearch {
-                                searchText = ""
-                            }
+                    HStack(spacing: 16) {
+                        Button {
+                            isShowingChannels = true
+                        } label: {
+                            Image(systemName: "line.3.horizontal")
                         }
-                    } label: {
-                        Image(systemName: isShowingSearch ? "xmark.circle.fill" : "magnifyingglass")
+
+                        Button {
+                            withAnimation {
+                                isShowingSearch.toggle()
+                                if !isShowingSearch {
+                                    searchText = ""
+                                }
+                            }
+                        } label: {
+                            Image(systemName: isShowingSearch ? "xmark.circle.fill" : "magnifyingglass")
+                        }
                     }
                 }
             }
@@ -95,6 +104,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isShowingSettings) {
             SettingsView(appState: appState)
+        }
+        .sheet(isPresented: $isShowingChannels) {
+            ChannelListView(appState: appState)
         }
         .onAppear {
             appState.startUsagePolling()

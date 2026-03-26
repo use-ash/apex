@@ -3,12 +3,14 @@ import Foundation
 struct Chat: Identifiable, Codable, Comparable {
     let id: String
     var title: String
+    var model: String?
+    var type: String?           // "chat" or "alerts"
     let claudeSessionId: String?
     let createdAt: String
     let updatedAt: String
 
     enum CodingKeys: String, CodingKey {
-        case id, title
+        case id, title, model, type
         case claudeSessionId = "claude_session_id"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
