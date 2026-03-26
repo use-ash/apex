@@ -5,12 +5,13 @@ struct Chat: Identifiable, Codable, Comparable {
     var title: String
     var model: String?
     var type: String?           // "chat" or "alerts"
+    var category: String?       // alert filter: "trading", "system", nil = all
     let claudeSessionId: String?
     let createdAt: String
     let updatedAt: String
 
     enum CodingKeys: String, CodingKey {
-        case id, title, model, type
+        case id, title, model, type, category
         case claudeSessionId = "claude_session_id"
         case createdAt = "created_at"
         case updatedAt = "updated_at"

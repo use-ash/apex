@@ -227,9 +227,24 @@ final class AppState {
         }
     }
 
-    func createAlertsChannel() async {
+    func renameChannel(_ chatId: String, to newTitle: String) async {
         do {
-            _ = try await apiClient.createChat(type: "alerts")
+            try await apiClient.renameChat(chatId: chatId, title: newTitle)
+            // Server broadcasts chat_updated via WS — but update local state immediately
+            if let idx = chats.firstIndex(where: { $0.id == chatId }) {
+                chats[idx].title = newTitle
+            }
+            if currentChat?.id == chatId {
+                currentChat?.title = newTitle
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    func createAlertsChannel(category: String? = nil) async {
+        do {
+            _ = try await apiClient.createChat(type: "alerts", category: category)
             await loadChats()
         } catch {
             self.error = error.localizedDescription
@@ -363,8 +378,8 @@ final class AppState {
             error = msg
         case .system(_, _):
             break
-        case .alert(let id, let source, let severity, let title, let body, let createdAt):
-            let alert = Alert(id: id, source: source, severity: severity, title: title, body: body, acked: false, createdAt: createdAt)
+        case .alert(let id, let source, let severity, let title, let body, let createdAt, let metadata):
+            let alert = Alert(id: id, source: source, severity: severity, title: title, body: body, acked: false, createdAt: createdAt, metadata: metadata)
             alerts.insert(alert, at: 0)
             if scenePhase == .background || scenePhase == .inactive {
                 enqueueAlertNotification(alert)
@@ -430,6 +445,17 @@ final class AppState {
             }
         } catch {
             self.error = "Failed to ack alert: \(error.localizedDescription)"
+        }
+    }
+
+    func allowAlert(_ alertId: String) async {
+        do {
+            try await apiClient.allowAlert(alertId: alertId)
+            if let idx = alerts.firstIndex(where: { $0.id == alertId }) {
+                alerts[idx].acked = true
+            }
+        } catch {
+            self.error = "Failed to allow: \(error.localizedDescription)"
         }
     }
 

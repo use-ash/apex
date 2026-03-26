@@ -12,7 +12,8 @@ _TOKEN = os.environ.get("LOCALCHAT_ALERT_TOKEN", "")
 
 
 def send_localchat_alert(
-    source: str, severity: str, title: str, body: str = "", *, timeout: int = 5
+    source: str, severity: str, title: str, body: str = "",
+    *, metadata: dict | None = None, timeout: int = 5
 ) -> bool:
     """Post alert to LocalChat. Returns True on success."""
     if not _TOKEN:
@@ -20,9 +21,10 @@ def send_localchat_alert(
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
-    data = json.dumps(
-        {"source": source, "severity": severity, "title": title, "body": body}
-    ).encode()
+    payload = {"source": source, "severity": severity, "title": title, "body": body}
+    if metadata:
+        payload["metadata"] = metadata
+    data = json.dumps(payload).encode()
     req = urllib.request.Request(
         f"{_SERVER}/api/alerts",
         data=data,

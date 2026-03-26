@@ -4,34 +4,69 @@ struct ChannelListView: View {
     @Bindable var appState: AppState
     @Environment(\.dismiss) private var dismiss
     @State private var isCreatingChannel = false
+    @State private var renamingChatId: String?
+    @State private var renameText = ""
+
+    /// Optional callback for drawer mode; when nil, falls back to sheet dismiss.
+    var onSelect: (() -> Void)?
+
+    private func close() {
+        if let onSelect { onSelect() } else { dismiss() }
+    }
 
     var body: some View {
         NavigationStack {
             List {
                 ForEach(appState.chats) { chat in
-                    Button {
-                        appState.switchToChat(chat)
-                        dismiss()
-                    } label: {
+                    if renamingChatId == chat.id {
                         HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(chat.title)
-                                    .foregroundStyle(.primary)
-                                if chat.type == "alerts" {
-                                    Text("Alerts")
+                            TextField("Chat name", text: $renameText)
+                                .textFieldStyle(.roundedBorder)
+                                .onSubmit { commitRename(chat) }
+                            Button("Save") { commitRename(chat) }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                            Button("Cancel") { renamingChatId = nil }
+                                .controlSize(.small)
+                        }
+                    } else {
+                        Button {
+                            appState.switchToChat(chat)
+                            close()
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(chat.title)
+                                        .foregroundStyle(.primary)
+                                    if chat.type == "alerts" {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "bell.fill")
+                                                .font(.caption2)
+                                            Text(alertChannelSubtitle(chat))
+                                        }
                                         .font(.caption)
                                         .foregroundStyle(.orange)
-                                } else if let model = chat.model {
-                                    Text(AppState.friendlyModelName(model))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                    } else if let model = chat.model {
+                                        Text(AppState.friendlyModelName(model))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                if appState.persistentChatId == chat.id {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(.blue)
                                 }
                             }
-                            Spacer()
-                            if appState.persistentChatId == chat.id {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(.blue)
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button {
+                                renameText = chat.title
+                                renamingChatId = chat.id
+                            } label: {
+                                Label("Rename", systemImage: "pencil")
                             }
+                            .tint(.blue)
                         }
                     }
                 }
@@ -40,7 +75,7 @@ struct ChannelListView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Done") { dismiss() }
+                    Button("Done") { close() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -54,5 +89,24 @@ struct ChannelListView: View {
                 NewChannelView(appState: appState)
             }
         }
+    }
+
+    private func alertChannelSubtitle(_ chat: Chat) -> String {
+        switch chat.category {
+        case "trading": return "Trading"
+        case "system": return "System"
+        case "test": return "Test"
+        default: return "All"
+        }
+    }
+
+    private func commitRename(_ chat: Chat) {
+        let newTitle = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newTitle.isEmpty, newTitle != chat.title else {
+            renamingChatId = nil
+            return
+        }
+        renamingChatId = nil
+        Task { await appState.renameChannel(chat.id, to: newTitle) }
     }
 }

@@ -31,6 +31,7 @@ struct SettingsView: View {
                     ForEach(appState.connectionProfiles) { profile in
                         Button {
                             appState.switchProfile(profile)
+                            serverURL = profile.serverURL
                         } label: {
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {

@@ -4,7 +4,15 @@ struct UsageBannerView: View {
     let usage: UsageResponse
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
+            Text("Claude")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(.secondary.opacity(0.5))
+                .textCase(.uppercase)
+                .rotationEffect(.degrees(-90))
+                .fixedSize()
+                .frame(width: 10)
+
             usageBar(
                 label: "Session",
                 pct: usage.session.utilization,

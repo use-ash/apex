@@ -7,14 +7,17 @@ struct ContentView: View {
     @State private var isShowingSettings: Bool = false
     @State private var isShowingSearch: Bool = false
     @State private var isShowingChannels: Bool = false
+    @State private var channelDragOffset: CGFloat = 0
     @State private var searchText: String = ""
     @State private var openSettingsAfterConnectionSheet: Bool = false
+    @State private var showUsageBanner: Bool = false
+    @State private var usageHideTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
             ZStack(alignment: .top) {
                 VStack(spacing: 0) {
-                    if let usage = appState.usageData {
+                    if showUsageBanner, let usage = appState.usageData {
                         UsageBannerView(usage: usage)
                             .transition(.move(edge: .top).combined(with: .opacity))
                     }
@@ -46,7 +49,11 @@ struct ContentView: View {
 
                 ToolbarItem(placement: .principal) {
                     Button {
-                        isShowingConnectionDetails = true
+                        if appState.usageData != nil {
+                            flashUsageBanner()
+                        } else {
+                            isShowingConnectionDetails = true
+                        }
                     } label: {
                         HStack(spacing: 6) {
                             connectionPill
@@ -67,7 +74,9 @@ struct ContentView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack(spacing: 16) {
                         Button {
-                            isShowingChannels = true
+                            withAnimation(.easeOut(duration: 0.25)) {
+                                isShowingChannels = true
+                            }
                         } label: {
                             Image(systemName: "line.3.horizontal")
                         }
@@ -105,14 +114,47 @@ struct ContentView: View {
         .sheet(isPresented: $isShowingSettings) {
             SettingsView(appState: appState)
         }
-        .sheet(isPresented: $isShowingChannels) {
-            ChannelListView(appState: appState)
+        .overlay {
+            if isShowingChannels || channelDragOffset > 0 {
+                channelDrawer
+            }
         }
+        .gesture(
+            DragGesture()
+                .onChanged { value in
+                    if value.startLocation.x < 30 && value.translation.width > 0 {
+                        channelDragOffset = value.translation.width
+                    }
+                }
+                .onEnded { value in
+                    if value.startLocation.x < 30 && value.translation.width > 80 {
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            isShowingChannels = true
+                            channelDragOffset = 0
+                        }
+                    } else {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            channelDragOffset = 0
+                        }
+                    }
+                }
+        )
         .onAppear {
             appState.startUsagePolling()
+            flashUsageBanner()
         }
         .onDisappear {
             appState.stopUsagePolling()
+        }
+    }
+
+    private func flashUsageBanner() {
+        usageHideTask?.cancel()
+        withAnimation { showUsageBanner = true }
+        usageHideTask = Task {
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.3)) { showUsageBanner = false }
         }
     }
 
@@ -139,6 +181,54 @@ struct ContentView: View {
             ProgressView("Preparing chat...")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    // MARK: - Channel Drawer
+
+    private let drawerWidth: CGFloat = 300
+
+    private var channelDrawer: some View {
+        let openOffset: CGFloat = 0
+        let closedOffset: CGFloat = -drawerWidth
+        let currentOffset: CGFloat = isShowingChannels
+            ? openOffset
+            : closedOffset + min(channelDragOffset, drawerWidth)
+
+        return ZStack(alignment: .leading) {
+            // Scrim
+            Color.black.opacity(scrimOpacity)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        isShowingChannels = false
+                    }
+                }
+
+            // Drawer panel
+            ChannelListView(appState: appState, onSelect: {
+                withAnimation(.easeOut(duration: 0.25)) {
+                    isShowingChannels = false
+                }
+            })
+            .frame(width: drawerWidth)
+            .background(.ultraThickMaterial)
+            .offset(x: currentOffset)
+            .gesture(
+                DragGesture()
+                    .onEnded { value in
+                        if value.translation.width < -60 {
+                            withAnimation(.easeOut(duration: 0.25)) {
+                                isShowingChannels = false
+                            }
+                        }
+                    }
+            )
+        }
+    }
+
+    private var scrimOpacity: Double {
+        if isShowingChannels { return 0.4 }
+        return Double(min(channelDragOffset / drawerWidth, 1.0)) * 0.4
     }
 
     // MARK: - Toolbar

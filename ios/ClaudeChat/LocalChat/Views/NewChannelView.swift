@@ -48,20 +48,10 @@ struct NewChannelView: View {
                     }
                 }
 
-                Section("Special") {
-                    Button {
-                        Task {
-                            await appState.createAlertsChannel()
-                            dismiss()
-                        }
-                    } label: {
-                        HStack {
-                            Image(systemName: "bell.fill")
-                                .foregroundStyle(.orange)
-                            Text("Alerts Channel")
-                                .foregroundStyle(.primary)
-                        }
-                    }
+                Section("Alerts") {
+                    alertChannelButton(label: "All Alerts", icon: "bell.fill", category: nil)
+                    alertChannelButton(label: "Trading Alerts", icon: "chart.xyaxis.line", category: "trading")
+                    alertChannelButton(label: "System Alerts", icon: "lock.shield.fill", category: "system")
                 }
             }
             .navigationTitle("New Channel")
@@ -78,6 +68,22 @@ struct NewChannelView: View {
         Task {
             await appState.createChannel(name: "New Chat", model: model)
             dismiss()
+        }
+    }
+
+    private func alertChannelButton(label: String, icon: String, category: String?) -> some View {
+        Button {
+            Task {
+                await appState.createAlertsChannel(category: category)
+                dismiss()
+            }
+        } label: {
+            HStack {
+                Image(systemName: icon)
+                    .foregroundStyle(.orange)
+                Text(label)
+                    .foregroundStyle(.primary)
+            }
         }
     }
 }

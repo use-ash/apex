@@ -29,12 +29,13 @@ final class APIClient {
         return try JSONDecoder().decode([Chat].self, from: data)
     }
 
-    func createChat(model: String? = nil, type: String? = nil) async throws -> String {
+    func createChat(model: String? = nil, type: String? = nil, category: String? = nil) async throws -> String {
         var body: Data? = nil
-        if model != nil || type != nil {
+        if model != nil || type != nil || category != nil {
             var dict: [String: String] = [:]
             if let model { dict["model"] = model }
             if let type { dict["type"] = type }
+            if let category { dict["category"] = category }
             body = try JSONSerialization.data(withJSONObject: dict)
         }
         let data = try await request("POST", path: "/api/chats", body: body)
@@ -44,6 +45,11 @@ final class APIClient {
     func fetchMessages(chatId: String, days: Int = 3) async throws -> [Message] {
         let data = try await request("GET", path: "/api/chats/\(chatId)/messages?days=\(days)")
         return try JSONDecoder().decode([Message].self, from: data)
+    }
+
+    func renameChat(chatId: String, title: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["title": title])
+        _ = try await request("PATCH", path: "/api/chats/\(chatId)", body: body)
     }
 
     func deleteChat(chatId: String) async throws {
@@ -86,6 +92,10 @@ final class APIClient {
 
     func ackAlert(alertId: String) async throws {
         _ = try await request("POST", path: "/api/alerts/\(alertId)/ack")
+    }
+
+    func allowAlert(alertId: String) async throws {
+        _ = try await request("POST", path: "/api/alerts/\(alertId)/allow")
     }
 
     func fetchLocalModels() async throws -> [LocalModel] {

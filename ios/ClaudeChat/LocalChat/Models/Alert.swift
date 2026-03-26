@@ -8,9 +8,10 @@ struct Alert: Identifiable, Codable {
     let body: String
     var acked: Bool
     let createdAt: String
+    let metadata: [String: String]?
 
     enum CodingKeys: String, CodingKey {
-        case id, source, severity, title, body, acked
+        case id, source, severity, title, body, acked, metadata
         case createdAt = "created_at"
     }
 }

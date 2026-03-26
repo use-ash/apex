@@ -5,15 +5,15 @@ struct ConnectionProfile: Identifiable, Codable, Hashable {
     var name: String
     var serverURL: String
 
-    init(name: String, serverURL: String) {
-        self.id = UUID().uuidString
+    init(id: String = UUID().uuidString, name: String, serverURL: String) {
+        self.id = id
         self.name = name
         self.serverURL = serverURL
     }
 
     static let defaultProfiles: [ConnectionProfile] = [
-        ConnectionProfile(name: "VPN", serverURL: "https://10.8.0.2:8300"),
-        ConnectionProfile(name: "WiFi", serverURL: "https://192.168.86.214:8300"),
+        ConnectionProfile(id: "vpn", name: "VPN", serverURL: "https://10.8.0.2:8300"),
+        ConnectionProfile(id: "wifi", name: "WiFi", serverURL: "https://192.168.86.214:8300"),
     ]
 
     // MARK: - Persistence

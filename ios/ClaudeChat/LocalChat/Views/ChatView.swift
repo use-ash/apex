@@ -31,9 +31,7 @@ struct ChatView: View {
     @FocusState private var isInputFocused: Bool
 
     private var timelineItems: [TimelineItem] {
-        let messageItems = appState.messages.map { TimelineItem.message($0) }
-        let alertItems = appState.alerts.map { TimelineItem.alert($0) }
-        return (messageItems + alertItems).sorted { $0.createdAt < $1.createdAt }
+        appState.messages.map { TimelineItem.message($0) }
     }
 
     private var isAlertsChannel: Bool {
@@ -46,15 +44,16 @@ struct ChatView: View {
                 VStack(spacing: 8) {
                     if isAlertsChannel {
                         ForEach(appState.alerts) { alert in
-                            AlertBubble(alert: alert) {
-                                Task { await appState.ackAlert(alert.id) }
-                            }
+                            AlertBubble(
+                                alert: alert,
+                                onAck: { Task { await appState.ackAlert(alert.id) } },
+                                onAllow: { Task { await appState.allowAlert(alert.id) } }
+                            )
                             .id("alert-\(alert.id)")
                         }
                     } else {
                         ForEach(timelineItems) { item in
-                            switch item {
-                            case .message(let message):
+                            if case .message(let message) = item {
                                 MessageBubble(
                                     message: message,
                                     isHighlighted: highlightedMessageIDs.contains(message.id),
@@ -67,11 +66,6 @@ struct ChatView: View {
                                         setReplyTarget(message)
                                     }
                                 )
-                                .id(item.id)
-                            case .alert(let alert):
-                                AlertBubble(alert: alert) {
-                                    Task { await appState.ackAlert(alert.id) }
-                                }
                                 .id(item.id)
                             }
                         }

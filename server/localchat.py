@@ -651,7 +651,7 @@ async def _handle_skill(websocket, chat_id: str, skill: str, args: str, display_
     _save_message(chat_id, "user", display_prompt)
 
     # Send stream start
-    _chat_ws.setdefault(chat_id, set()).add(websocket)
+    _attach_ws(websocket, chat_id)
     _reset_stream_buffer(chat_id)
     await _send_stream_event(chat_id, {"type": "stream_start", "chat_id": chat_id})
 
@@ -798,6 +798,16 @@ def _init_db() -> None:
             conn.execute(f"ALTER TABLE chats ADD COLUMN {col} TEXT DEFAULT {default}")
         except Exception:
             pass  # column already exists
+    # Migration: add metadata column to alerts if missing
+    try:
+        conn.execute("ALTER TABLE alerts ADD COLUMN metadata TEXT DEFAULT '{}'")
+    except Exception:
+        pass
+    # Migration: add category column to chats (for alerts channel filtering)
+    try:
+        conn.execute("ALTER TABLE chats ADD COLUMN category TEXT DEFAULT NULL")
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
@@ -956,14 +966,15 @@ def _websocket_origin_allowed(websocket: WebSocket) -> bool:
 # Chat DB operations
 # ---------------------------------------------------------------------------
 
-def _create_chat(title: str = "New Chat", model: str | None = None, chat_type: str = "chat") -> str:
+def _create_chat(title: str = "New Chat", model: str | None = None, chat_type: str = "chat",
+                  category: str | None = None) -> str:
     cid = str(uuid.uuid4())[:8]
     now = _now()
     with _db_lock:
         conn = _get_db()
         conn.execute(
-            "INSERT INTO chats (id, title, model, type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (cid, title, model, chat_type, now, now),
+            "INSERT INTO chats (id, title, model, type, category, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (cid, title, model, chat_type, category, now, now),
         )
         conn.commit()
         conn.close()
@@ -974,23 +985,23 @@ def _get_chats() -> list[dict]:
     with _db_lock:
         conn = _get_db()
         rows = conn.execute(
-            "SELECT id, title, claude_session_id, created_at, updated_at, model, type FROM chats ORDER BY updated_at DESC"
+            "SELECT id, title, claude_session_id, created_at, updated_at, model, type, category FROM chats ORDER BY updated_at DESC"
         ).fetchall()
         conn.close()
     return [{"id": r[0], "title": r[1], "claude_session_id": r[2],
-             "created_at": r[3], "updated_at": r[4], "model": r[5], "type": r[6]} for r in rows]
+             "created_at": r[3], "updated_at": r[4], "model": r[5], "type": r[6], "category": r[7]} for r in rows]
 
 
 def _get_chat(chat_id: str) -> dict | None:
     with _db_lock:
         conn = _get_db()
-        row = conn.execute("SELECT id, title, claude_session_id, created_at, updated_at, model, type FROM chats WHERE id = ?",
+        row = conn.execute("SELECT id, title, claude_session_id, created_at, updated_at, model, type, category FROM chats WHERE id = ?",
                            (chat_id,)).fetchone()
         conn.close()
     if not row:
         return None
     return {"id": row[0], "title": row[1], "claude_session_id": row[2],
-            "created_at": row[3], "updated_at": row[4], "model": row[5], "type": row[6]}
+            "created_at": row[3], "updated_at": row[4], "model": row[5], "type": row[6], "category": row[7]}
 
 
 def _update_chat(chat_id: str, **kwargs) -> None:
@@ -1034,25 +1045,26 @@ def _get_messages(chat_id: str, days: int | None = None) -> list[dict]:
              "tokens_out": r[7], "created_at": r[8]} for r in rows]
 
 
-def _create_alert(source: str, severity: str, title: str, body: str) -> dict:
+def _create_alert(source: str, severity: str, title: str, body: str, metadata: dict | None = None) -> dict:
     aid = uuid.uuid4().hex[:8]
     now = _now()
+    meta = metadata or {}
     with _db_lock:
         conn = _get_db()
         conn.execute(
-            "INSERT INTO alerts (id, source, severity, title, body, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (aid, source, severity, title, body, now),
+            "INSERT INTO alerts (id, source, severity, title, body, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (aid, source, severity, title, body, json.dumps(meta), now),
         )
         conn.commit()
         conn.close()
     return {"id": aid, "source": source, "severity": severity, "title": title,
-            "body": body, "acked": False, "created_at": now}
+            "body": body, "acked": False, "metadata": meta, "created_at": now}
 
 
 def _get_alerts(since: str | None = None, unacked_only: bool = False, limit: int = 100) -> list[dict]:
     with _db_lock:
         conn = _get_db()
-        query = "SELECT id, source, severity, title, body, acked, created_at FROM alerts"
+        query = "SELECT id, source, severity, title, body, acked, created_at, metadata FROM alerts"
         params: list = []
         conditions: list[str] = []
         if since:
@@ -1066,8 +1078,16 @@ def _get_alerts(since: str | None = None, unacked_only: bool = False, limit: int
         params.append(limit)
         rows = conn.execute(query, params).fetchall()
         conn.close()
-    return [{"id": r[0], "source": r[1], "severity": r[2], "title": r[3],
-             "body": r[4], "acked": bool(r[5]), "created_at": r[6]} for r in rows]
+    results = []
+    for r in rows:
+        meta = {}
+        try:
+            meta = json.loads(r[7]) if r[7] else {}
+        except Exception:
+            pass
+        results.append({"id": r[0], "source": r[1], "severity": r[2], "title": r[3],
+                         "body": r[4], "acked": bool(r[5]), "created_at": r[6], "metadata": meta})
+    return results
 
 
 def _ack_alert(alert_id: str) -> bool:
@@ -1080,29 +1100,134 @@ def _ack_alert(alert_id: str) -> bool:
     return changed
 
 
+def _get_alert(alert_id: str) -> dict | None:
+    with _db_lock:
+        conn = _get_db()
+        row = conn.execute(
+            "SELECT id, source, severity, title, body, acked, created_at, metadata FROM alerts WHERE id = ?",
+            (alert_id,),
+        ).fetchone()
+        conn.close()
+    if not row:
+        return None
+    meta = {}
+    try:
+        meta = json.loads(row[7]) if row[7] else {}
+    except Exception:
+        pass
+    return {"id": row[0], "source": row[1], "severity": row[2], "title": row[3],
+            "body": row[4], "acked": bool(row[5]), "created_at": row[6], "metadata": meta}
+
+
+GUARDRAIL_WHITELIST = LOCALCHAT_ROOT / "state" / "guardrail_whitelist.json"
+
+
+def _add_whitelist_entry(tool: str, target: str, alert_id: str, ttl_seconds: int = 3600) -> dict:
+    """Add a time-limited guardrail exemption."""
+    from datetime import datetime, timedelta, timezone
+    expires = (datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)).isoformat()
+    entry = {"tool": tool, "target": target, "alert_id": alert_id, "expires_at": expires}
+    entries = []
+    if GUARDRAIL_WHITELIST.exists():
+        try:
+            entries = json.loads(GUARDRAIL_WHITELIST.read_text())
+        except Exception:
+            pass
+    # Prune expired
+    now = datetime.now(timezone.utc).isoformat()
+    entries = [e for e in entries if e.get("expires_at", "") > now]
+    entries.append(entry)
+    GUARDRAIL_WHITELIST.parent.mkdir(parents=True, exist_ok=True)
+    GUARDRAIL_WHITELIST.write_text(json.dumps(entries, indent=2))
+    return entry
+
+
 # ---------------------------------------------------------------------------
 # Claude Agent SDK — persistent sessions, no subprocess respawning
 # ---------------------------------------------------------------------------
 _clients: dict[str, ClaudeSDKClient] = {}
 _chat_locks: dict[str, asyncio.Lock] = {}
 _chat_ws: dict[str, set[WebSocket]] = {}  # chat_id -> ALL connected WebSockets (multi-viewer)
+_ws_chat: dict[WebSocket, str] = {}  # reverse: ws -> current chat_id (for detach on re-attach)
+
+
+def _attach_ws(ws: WebSocket, chat_id: str) -> None:
+    """Register ws for chat_id, removing it from any previous chat first."""
+    old = _ws_chat.get(ws)
+    if old and old != chat_id:
+        old_set = _chat_ws.get(old)
+        if old_set:
+            old_set.discard(ws)
+            if not old_set:
+                _chat_ws.pop(old, None)
+    _chat_ws.setdefault(chat_id, set()).add(ws)
+    _ws_chat[ws] = chat_id
+
+
+def _detach_ws(ws: WebSocket) -> None:
+    """Remove ws from all tracking."""
+    old = _ws_chat.pop(ws, None)
+    if old:
+        old_set = _chat_ws.get(old)
+        if old_set:
+            old_set.discard(ws)
+            if not old_set:
+                _chat_ws.pop(old, None)
+
+
 _stream_buffers: dict[str, deque[tuple[int, dict]]] = {}
 _stream_seq: dict[str, int] = {}
 _chat_send_locks: dict[str, asyncio.Lock] = {}
 _STREAM_BUFFER_MAX = 200
-_alert_ws: set[WebSocket] = set()  # ALL connected WebSockets for alert broadcast
+ALERT_CATEGORY_MAP = {
+    "plan_h": "trading",
+    "plan_c": "trading",
+    "plan_h_backstop": "trading",
+    "plan_m": "trading",
+    "plan_alpha": "trading",
+    "regime": "trading",
+    "guardrail": "system",
+    "watchdog": "system",
+    "system": "system",
+    "test": "test",
+}
+
+
+def _alert_category(source: str) -> str:
+    """Map an alert source to its category."""
+    return ALERT_CATEGORY_MAP.get(source, "other")
+
+
+def _get_alerts_channels() -> list[dict]:
+    """Return alerts-type chats with their category filter."""
+    with _db_lock:
+        conn = _get_db()
+        rows = conn.execute("SELECT id, category FROM chats WHERE type = 'alerts'").fetchall()
+        conn.close()
+    return [{"id": r[0], "category": r[1]} for r in rows]
 
 
 async def _broadcast_alert(alert: dict) -> None:
-    """Send alert to ALL connected WebSockets."""
+    """Send alert to matching alerts-type chats based on category."""
     payload = {"type": "alert", **alert}
-    dead: list[WebSocket] = []
-    for ws in list(_alert_ws):
-        ok = await _safe_ws_send_json(ws, payload, chat_id="__alerts__")
-        if not ok:
-            dead.append(ws)
-    for ws in dead:
-        _alert_ws.discard(ws)
+    category = _alert_category(alert.get("source", ""))
+    for ch in _get_alerts_channels():
+        # Channel with no category = catch-all (receives everything)
+        if ch["category"] and ch["category"] != category:
+            continue
+        cid = ch["id"]
+        ws_set = _chat_ws.get(cid)
+        if not ws_set:
+            continue
+        dead: list[WebSocket] = []
+        for ws in list(ws_set):
+            ok = await _safe_ws_send_json(ws, payload, chat_id=cid)
+            if not ok:
+                dead.append(ws)
+        for ws in dead:
+            ws_set.discard(ws)
+        if not ws_set:
+            _chat_ws.pop(cid, None)
 
 
 def _make_options(model: str | None = None, session_id: str | None = None) -> ClaudeAgentOptions:
@@ -1428,8 +1553,35 @@ async def api_new_chat(request: Request):
         pass
     model = data.get("model")
     chat_type = data.get("type", "chat")
-    cid = _create_chat(model=model, chat_type=chat_type)
-    return JSONResponse({"id": cid, "model": model, "type": chat_type})
+    category = data.get("category") if chat_type == "alerts" else None
+    CATEGORY_TITLES = {"trading": "Trading Alerts", "system": "System Alerts", "test": "Test Alerts"}
+    if chat_type == "alerts":
+        title = CATEGORY_TITLES.get(category, "All Alerts")
+    else:
+        title = "New Chat"
+    cid = _create_chat(title=title, model=model, chat_type=chat_type, category=category)
+    return JSONResponse({"id": cid, "model": model, "type": chat_type, "category": category})
+
+
+@app.patch("/api/chats/{chat_id}")
+async def api_update_chat(chat_id: str, request: Request):
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    data = await request.json()
+    title = data.get("title")
+    if title is not None:
+        title = str(title).strip()[:100]  # cap at 100 chars
+        if not title:
+            return JSONResponse({"error": "Title cannot be empty"}, status_code=400)
+        _update_chat(chat_id, title=title)
+        # Broadcast to all connected WebSockets so sidebar updates everywhere
+        payload = {"type": "chat_updated", "chat_id": chat_id,
+                   "title": title, "model": chat.get("model")}
+        for cid, ws_set in list(_chat_ws.items()):
+            for ws in list(ws_set):
+                await _safe_ws_send_json(ws, payload, chat_id=cid)
+    return JSONResponse({"ok": True})
 
 
 @app.get("/api/chats/{chat_id}/messages")
@@ -1454,9 +1606,12 @@ async def api_create_alert(request: Request):
         severity = "info"
     title = str(data.get("title", ""))
     body = str(data.get("body", ""))
+    metadata = data.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        metadata = None
     if not title:
         return JSONResponse({"error": "title is required"}, status_code=400)
-    alert = _create_alert(source, severity, title, body)
+    alert = _create_alert(source, severity, title, body, metadata=metadata)
     await _broadcast_alert(alert)
     log(f"alert: id={alert['id']} src={source} sev={severity} title={title[:50]}")
     return JSONResponse(alert, status_code=201)
@@ -1472,6 +1627,25 @@ async def api_ack_alert(alert_id: str):
     if _ack_alert(alert_id):
         return JSONResponse({"ok": True})
     return JSONResponse({"error": "Not found or already acked"}, status_code=404)
+
+
+@app.post("/api/alerts/{alert_id}/allow")
+async def api_allow_alert(alert_id: str):
+    """Whitelist a guardrail-blocked action for retry (1hr TTL)."""
+    alert = _get_alert(alert_id)
+    if not alert:
+        return JSONResponse({"error": "Alert not found"}, status_code=404)
+    if alert["source"] != "guardrail":
+        return JSONResponse({"error": "Only guardrail alerts can be whitelisted"}, status_code=400)
+    meta = alert.get("metadata", {})
+    tool = meta.get("tool", "")
+    target = meta.get("target", "")
+    if not tool:
+        return JSONResponse({"error": "Alert metadata missing tool info"}, status_code=400)
+    entry = _add_whitelist_entry(tool, target, alert_id)
+    _ack_alert(alert_id)
+    log(f"guardrail allow: alert={alert_id} tool={tool} target={target[:60]} expires={entry['expires_at']}")
+    return JSONResponse({"ok": True, "expires_at": entry["expires_at"]})
 
 
 # --- Local models (Ollama) ------------------------------------------------
@@ -1539,12 +1713,13 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None) 
         # Route to xAI or Ollama based on model backend
         if _get_model_backend(effective_model) == "xai":
             result = await run_tool_loop(
-                ollama_url="https://api.x.ai/v1",
+                ollama_url=OLLAMA_BASE_URL,
                 model=effective_model,
                 messages=messages,
                 emit_event=emit,
                 workspace=str(WORKSPACE),
                 api_key=XAI_API_KEY,
+                api_url="https://api.x.ai/v1",
             )
         else:
             result = await run_tool_loop(
@@ -1668,12 +1843,14 @@ def _fetch_usage_data(token: str) -> dict | None:
     if now - _USAGE_CACHE_TS < _USAGE_CACHE_TTL and _USAGE_CACHE:
         return _USAGE_CACHE
     # Shared disk cache (same file as claude_usage.py terminal statusline)
+    stale_disk: dict | None = None
     try:
         disk = json.loads(_USAGE_DISK_CACHE.read_text())
         if now - disk.get("_ts", 0) < _USAGE_CACHE_TTL:
             _USAGE_CACHE = disk
             _USAGE_CACHE_TS = now
             return disk
+        stale_disk = disk  # keep for fallback on API failure
     except (FileNotFoundError, json.JSONDecodeError):
         pass
     # Fresh API call
@@ -1700,7 +1877,19 @@ def _fetch_usage_data(token: str) -> dict | None:
         return data
     except Exception as e:
         log(f"usage API error: {type(e).__name__}: {e}")
-        return _USAGE_CACHE or None
+        # On 429 or network error, return stale data rather than nothing
+        fallback = _USAGE_CACHE or stale_disk
+        if fallback:
+            _USAGE_CACHE = fallback
+            _USAGE_CACHE_TS = now  # suppress retries for another TTL cycle
+            # Refresh disk cache ts so subsequent restarts find fresh-enough data
+            try:
+                fallback["_ts"] = now
+                _USAGE_DISK_CACHE.write_text(json.dumps(fallback))
+            except OSError:
+                pass
+            return fallback
+        return None
 
 
 def _format_countdown(resets_at_str: str) -> str:
@@ -1866,7 +2055,6 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=1008)
         return
     await websocket.accept()
-    _alert_ws.add(websocket)
     ws_id = uuid.uuid4().hex[:6]
     log(f"websocket connected ws={ws_id} remote={websocket.client.host if websocket.client else '?'}")
     active_tasks: set[asyncio.Task] = set()
@@ -1911,20 +2099,18 @@ async def websocket_endpoint(websocket: WebSocket):
                                 if not replay_ok:
                                     break
                             if replay_ok:
-                                _chat_ws.setdefault(attach_id, set()).add(websocket)
+                                _attach_ws(websocket, attach_id)
                                 replay_ok = await _safe_ws_send_json(
                                     websocket,
                                     {"type": "stream_reattached", "chat_id": attach_id},
                                     chat_id=attach_id,
                                 )
                             if not replay_ok:
-                                ws_set = _chat_ws.get(attach_id)
-                                if ws_set:
-                                    ws_set.discard(websocket)
+                                _detach_ws(websocket)
                         if replay_ok:
                             log(f"WS re-attached for chat={attach_id} (stream active, replayed={replayed})")
                     else:
-                        _chat_ws.setdefault(attach_id, set()).add(websocket)
+                        _attach_ws(websocket, attach_id)
                         # No active stream — tell client it's safe to reload from DB
                         await _safe_ws_send_json(
                             websocket,
@@ -1988,7 +2174,7 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         log(f"websocket error ws={ws_id}: {type(e).__name__}: {e}")
     finally:
-        _alert_ws.discard(websocket)
+        _detach_ws(websocket)
         if active_tasks:
             log(f"websocket cleanup ws={ws_id}: {len(active_tasks)} send task(s) continue in background")
 
@@ -2014,7 +2200,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                     reply = f"{emoji} {decision.title()}: {result.get('skill', '?')}"
                     _save_message(chat_id, "user", prompt)
                     _save_message(chat_id, "assistant", reply)
-                    _chat_ws.setdefault(chat_id, set()).add(websocket)
+                    _attach_ws(websocket, chat_id)
                     await _safe_ws_send_json(websocket, {"type": "stream_start", "chat_id": chat_id}, chat_id=chat_id)
                     await _safe_ws_send_json(websocket, {"type": "stream_delta", "chat_id": chat_id, "delta": reply}, chat_id=chat_id)
                     await _safe_ws_send_json(websocket, {"type": "stream_end", "chat_id": chat_id}, chat_id=chat_id)
@@ -2124,7 +2310,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
 
         # Register this WS in the registry so the stream can find it
         original_ws = websocket
-        _chat_ws.setdefault(chat_id, set()).add(websocket)
+        _attach_ws(websocket, chat_id)
         _reset_stream_buffer(chat_id)
         await _send_stream_event(chat_id, {"type": "stream_start", "chat_id": chat_id})
 
@@ -2422,8 +2608,12 @@ font-weight:600;border-bottom:1px solid var(--bg);min-height:44px;display:flex;a
 
 /* Usage bar */
 .usage-bar{background:var(--surface);padding:4px 16px 6px;border-bottom:1px solid var(--card);
-display:flex;gap:12px;flex-shrink:0;display:none}
+display:none;gap:12px;flex-shrink:0;cursor:pointer;
+transition:opacity 0.3s ease,max-height 0.3s ease;overflow:hidden;max-height:60px}
 .usage-bar.visible{display:flex}
+.usage-bar.fading{opacity:0;max-height:0;padding:0 16px}
+.usage-label{font-size:9px;font-weight:700;color:var(--dim);letter-spacing:0.5px;text-transform:uppercase;
+writing-mode:vertical-lr;text-orientation:mixed;align-self:center;opacity:0.5}
 .usage-bucket{flex:1;min-width:0}
 .usage-bucket .label-row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px}
 .usage-bucket .label{font-size:10px;font-weight:600;color:var(--dim)}
@@ -2454,6 +2644,7 @@ line-height:1.35;max-height:88px;overflow-y:auto;white-space:pre-wrap;margin-top
 </div>
 
 <div class="usage-bar" id="usageBar">
+  <span class="usage-label">Claude</span>
   <div class="usage-bucket" id="usageSession">
     <div class="label-row">
       <span class="label">Session</span>
@@ -3402,11 +3593,54 @@ async function loadChats() {
     d.dataset.id = c.id;
     d.dataset.title = c.title || 'Untitled';
     d.onclick = () => selectChat(c.id, c.title).catch(err => reportError('selectChat click', err));
+    d.ondblclick = (e) => { e.stopPropagation(); startRenameChat(d, c.id, c.title || 'Untitled'); };
     list.appendChild(d);
   });
   setActiveChatUI();
   refreshDebugState('loadChats');
   return chats;
+}
+
+function startRenameChat(el, chatId, currentTitle) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = currentTitle;
+  input.className = 'rename-input';
+  input.style.cssText = 'width:100%;padding:4px 8px;font-size:14px;border:1px solid var(--accent);border-radius:4px;background:var(--bg);color:var(--fg);outline:none;';
+  el.textContent = '';
+  el.appendChild(input);
+  input.focus();
+  input.select();
+  const commit = async () => {
+    const newTitle = input.value.trim();
+    if (newTitle && newTitle !== currentTitle) {
+      await renameChat(chatId, newTitle);
+    } else {
+      el.textContent = currentTitle;
+    }
+  };
+  input.onblur = () => commit();
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { input.value = currentTitle; input.blur(); }
+  };
+  // Prevent the click from triggering selectChat
+  el.onclick = (e) => e.stopPropagation();
+}
+
+async function renameChat(chatId, newTitle) {
+  try {
+    const r = await fetch(`/api/chats/${chatId}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      credentials: 'same-origin',
+      body: JSON.stringify({title: newTitle})
+    });
+    if (!r.ok) dbg('ERROR: renameChat failed:', r.status);
+  } catch (e) {
+    dbg('ERROR: renameChat:', e);
+  }
+  // chat_updated WS event will trigger loadChats
 }
 
 async function selectChat(id, title) {
@@ -3728,11 +3962,25 @@ window.addEventListener('unhandledrejection', (e) => {
 
 // --- Usage bar ---
 function usageColor(pct) { return pct >= 90 ? 'red' : pct >= 70 ? 'orange' : 'green'; }
+let _usageHideTimer = null;
+let _lastUsageData = null;
+
+function showUsageBar() {
+  const bar = document.getElementById('usageBar');
+  if (!bar || !_lastUsageData) return;
+  bar.classList.add('visible');
+  bar.classList.remove('fading');
+  clearTimeout(_usageHideTimer);
+  _usageHideTimer = setTimeout(() => {
+    bar.classList.add('fading');
+    setTimeout(() => { bar.classList.remove('visible', 'fading'); }, 350);
+  }, 5000);
+}
 
 function renderUsage(data) {
   const bar = document.getElementById('usageBar');
   if (!bar || !data || !data.session) { if (bar) bar.classList.remove('visible'); return; }
-  bar.classList.add('visible');
+  _lastUsageData = data;
   const s = data.session, w = data.weekly;
   document.getElementById('usageSessionPct').textContent = s.utilization + '%';
   document.getElementById('usageSessionReset').textContent = '(' + s.resets_in + ')';
@@ -3749,7 +3997,10 @@ function renderUsage(data) {
   wf.className = 'usage-fill ' + usageColor(w.utilization);
   document.getElementById('usageWeeklyPct').style.color =
     w.utilization >= 90 ? 'var(--red)' : w.utilization >= 70 ? 'var(--yellow)' : 'var(--green)';
+  showUsageBar();
 }
+
+document.getElementById('usageBar').addEventListener('click', () => showUsageBar());
 
 async function fetchUsage() {
   try {
