@@ -3376,8 +3376,10 @@ function handleEvent(msg) {
       currentBubble = null;
       clearStreamWatchdog();
       updateSendBtn();
-  
-      if (msg.chat_id && msg.chat_id === currentChat) {
+
+      // Skip reload if we already have messages loaded for this chat
+      // (prevents request storm on reconnect/refresh)
+      if (msg.chat_id && msg.chat_id === currentChat && !document.getElementById('messages').hasChildNodes()) {
         selectChat(msg.chat_id).catch(() => {});
       }
       refreshDebugState('attach-ok');
@@ -3391,7 +3393,8 @@ function handleEvent(msg) {
       sessionStorage.removeItem('streamingChatId');
       clearStreamWatchdog();
       updateSendBtn();
-  
+
+      // Always reload on stream_complete — we may have missed messages
       if (msg.chat_id && msg.chat_id === currentChat) {
         selectChat(msg.chat_id).catch(() => {});
       }
