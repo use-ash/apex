@@ -1588,6 +1588,12 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
                         content = _stringify_block_content(block.content)
                         is_error = block.is_error or False
                         tool_use_id = block.tool_use_id or ""
+                        # Cap tool result content to prevent context explosion from large agent results
+                        MAX_TOOL_RESULT_CHARS = 5000
+                        if len(content) > MAX_TOOL_RESULT_CHARS:
+                            tool_name = pending_tools.get(tool_use_id, {}).get("name", "?")
+                            if DEBUG: log(f"DBG tool result TRUNCATED: {tool_name} {len(content)} -> {MAX_TOOL_RESULT_CHARS} chars")
+                            content = content[:MAX_TOOL_RESULT_CHARS] + f"\n\n[... truncated from {len(content)} chars]"
                         current_tool = pending_tools.pop(tool_use_id, None)
                         if current_tool:
                             tool_events.append({
@@ -2558,6 +2564,13 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 if DEBUG: log(f"DBG RECOVERY: chat={chat_id} first error: {type(first_error).__name__}: {first_error}")
                 await _disconnect_client(chat_id)
 
+                # Retry input — on recovery tiers, inject a conciseness hint to limit context growth
+                def _make_retry_input():
+                    base = make_query_input()
+                    if isinstance(base, str):
+                        return "[System: previous attempt failed. Respond concisely, avoid spawning parallel agents.]\n\n" + base
+                    return base  # async generator — can't easily prepend, pass through
+
                 # Try to RESUME the existing session first (preserves context, saves tokens)
                 chat = _get_chat(chat_id)
                 existing_session = chat.get("claude_session_id") if chat else None
@@ -2567,7 +2580,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                     client = ClaudeSDKClient(options)
                     await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
                     _clients[chat_id] = client
-                    result = await _run_query_turn(client, make_query_input, chat_id)
+                    result = await _run_query_turn(client, _make_retry_input, chat_id)
                     if DEBUG: log(f"DBG RECOVERY: resume OK chat={chat_id} session={existing_session or 'new'}")
                 except Exception as resume_error:
                     if DEBUG: log(f"DBG RECOVERY: resume FAILED: {type(resume_error).__name__}: {resume_error}")
@@ -2579,7 +2592,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                         client = ClaudeSDKClient(options)
                         await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
                         _clients[chat_id] = client
-                        result = await _run_query_turn(client, make_query_input, chat_id)
+                        result = await _run_query_turn(client, _make_retry_input, chat_id)
                         if DEBUG: log(f"DBG RECOVERY: fresh session OK chat={chat_id}")
                     except Exception as fresh_error:
                         if DEBUG: log(f"DBG RECOVERY: fresh ALSO FAILED: {type(fresh_error).__name__}: {fresh_error}")
