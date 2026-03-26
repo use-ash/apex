@@ -4,6 +4,7 @@ struct AlertBubble: View {
     let alert: Alert
     var onAck: (() -> Void)?
     var onAllow: (() -> Void)?
+    var onTap: (() -> Void)? = nil
 
     // MARK: - Severity
 
@@ -145,6 +146,10 @@ struct AlertBubble: View {
         )
         .opacity(alert.acked ? 0.6 : 1.0)
         .padding(.horizontal, 12)
+        .contentShape(RoundedRectangle(cornerRadius: 12))
+        .onTapGesture {
+            onTap?()
+        }
     }
 
     // MARK: - Metadata

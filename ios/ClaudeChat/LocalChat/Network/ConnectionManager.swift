@@ -202,6 +202,11 @@ final class ConnectionManager {
             return .attachOk(chatId: json["chat_id"] as? String ?? "")
         case "stream_complete_reload":
             return .streamCompleteReload(chatId: json["chat_id"] as? String ?? "")
+        case "user_message_added":
+            return .userMessageAdded(
+                chatId: json["chat_id"] as? String ?? "",
+                content: json["content"] as? String ?? ""
+            )
         case "chat_updated":
             return .chatUpdated(
                 chatId: json["chat_id"] as? String ?? "",
@@ -312,6 +317,7 @@ enum ServerMessage {
     case streamReattached(chatId: String)
     case attachOk(chatId: String)
     case streamCompleteReload(chatId: String)
+    case userMessageAdded(chatId: String, content: String)
     case chatUpdated(chatId: String, title: String, model: String?)
     case chatDeleted(chatId: String)
     case error(message: String)

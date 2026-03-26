@@ -408,6 +408,20 @@ final class AppState {
                 await loadMessages(chatId)
                 await refreshPersistentChat()
             }
+        case .userMessageAdded(let chatId, let content):
+            guard persistentChatId == chatId else { break }
+            let userMsg = Message(
+                id: UUID().uuidString,
+                role: "user",
+                content: content,
+                toolEvents: "",
+                thinking: "",
+                costUsd: 0,
+                tokensIn: 0,
+                tokensOut: 0,
+                createdAt: ISO8601DateFormatter().string(from: Date())
+            )
+            messages.append(userMsg)
         case .result(let costUsd, let tokensIn, let tokensOut, _):
             if scenePhase == .background {
                 enqueueCompletionNotification(

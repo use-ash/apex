@@ -25,9 +25,14 @@ struct MessageBubble: View {
     var onReply: (() -> Void)?
 
     @State private var dragOffset: CGFloat = 0
+    @State private var showingDetail: Bool = false
 
     private var parsedToolEvents: [ToolEventDisplayItem] {
         parseSavedToolEventItems(from: message.toolEvents)
+    }
+
+    private var hasStreamDetailContent: Bool {
+        !message.thinking.isEmpty || !parsedToolEvents.isEmpty
     }
 
     var body: some View {
@@ -78,12 +83,27 @@ struct MessageBubble: View {
 
     private var bubbleContent: some View {
         VStack(alignment: message.isUser ? .trailing : .leading, spacing: 6) {
-            if !message.thinking.isEmpty {
-                ThinkingDisclosureView(text: message.thinking)
-            }
+            if hasStreamDetailContent {
+                VStack(alignment: .leading, spacing: 6) {
+                    if !message.thinking.isEmpty {
+                        ThinkingDisclosureView(text: message.thinking)
+                    }
 
-            if !parsedToolEvents.isEmpty {
-                ToolEventListView(events: parsedToolEvents)
+                    if !parsedToolEvents.isEmpty {
+                        ToolEventListView(events: parsedToolEvents)
+                    }
+                }
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    showingDetail = true
+                }
+                .sheet(isPresented: $showingDetail) {
+                    StreamDetailView(
+                        thinking: message.thinking,
+                        toolEvents: parsedToolEvents,
+                        isStreaming: false
+                    )
+                }
             }
 
             messageText
@@ -231,6 +251,7 @@ struct ToolEventDisplayItem: Identifiable, Equatable {
     let id: String
     let name: String
     let input: String
+    let fullInput: String
     var result: String?
     var isError: Bool
     var isComplete: Bool
@@ -484,6 +505,7 @@ func parseSavedToolEventItems(from jsonString: String) -> [ToolEventDisplayItem]
                     id: id,
                     name: object["name"] as? String ?? "Tool",
                     input: compactToolInputDescription(name: object["name"] as? String, input: object["input"] ?? [:]),
+                    fullInput: fullToolInputDescription(input: object["input"] ?? [:]),
                     result: nil,
                     isError: false,
                     isComplete: false
@@ -496,6 +518,7 @@ func parseSavedToolEventItems(from jsonString: String) -> [ToolEventDisplayItem]
                     id: toolUseID,
                     name: "Tool",
                     input: "",
+                    fullInput: "",
                     result: nil,
                     isError: false,
                     isComplete: false
@@ -516,6 +539,7 @@ func parseSavedToolEventItems(from jsonString: String) -> [ToolEventDisplayItem]
             id: id,
             name: object["name"] as? String ?? "Tool",
             input: compactToolInputDescription(name: object["name"] as? String, input: object["input"] ?? [:]),
+            fullInput: fullToolInputDescription(input: object["input"] ?? [:]),
             result: nil,
             isError: false,
             isComplete: false
@@ -607,6 +631,10 @@ func compactToolInputDescription(name: String? = nil, input: Any, maxLength: Int
     }
 
     return truncated(stringifiedToolValue(input), to: maxLength)
+}
+
+func fullToolInputDescription(input: Any) -> String {
+    stringifiedToolValue(input, prettyPrinted: true)
 }
 
 func humanReadableToolName(_ name: String) -> String {
@@ -716,12 +744,12 @@ func truncated(_ value: String, to limit: Int) -> String {
     return String(value.prefix(limit - 3)) + "..."
 }
 
-func stringifiedToolValue(_ value: Any?) -> String {
+func stringifiedToolValue(_ value: Any?, prettyPrinted: Bool = false) -> String {
     guard let value else { return "" }
     if let string = value as? String {
         return string
     }
-    return jsonString(from: value)
+    return jsonString(from: value, prettyPrinted: prettyPrinted)
 }
 
 private func stringValue(_ value: Any?) -> String? {
@@ -735,9 +763,10 @@ private func stringValue(_ value: Any?) -> String? {
     return nil
 }
 
-private func jsonString(from value: Any) -> String {
+private func jsonString(from value: Any, prettyPrinted: Bool = false) -> String {
+    let options: JSONSerialization.WritingOptions = prettyPrinted ? [.prettyPrinted, .sortedKeys] : []
     guard JSONSerialization.isValidJSONObject(value),
-          let data = try? JSONSerialization.data(withJSONObject: value, options: []),
+          let data = try? JSONSerialization.data(withJSONObject: value, options: options),
           let string = String(data: data, encoding: .utf8) else {
         return String(describing: value)
     }

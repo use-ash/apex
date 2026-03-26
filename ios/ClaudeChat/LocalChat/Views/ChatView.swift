@@ -19,6 +19,7 @@ struct ChatView: View {
     @State private var streamingText: String = ""
     @State private var streamingThinking: String = ""
     @State private var streamingToolEvents: [StreamingToolEvent] = []
+    @State private var showingStreamDetail: Bool = false
     @State private var streamingTimeoutToken: UUID?
     @State private var pendingAttachments: [PendingAttachment] = []
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
@@ -29,6 +30,7 @@ struct ChatView: View {
     @State private var replyingToMessage: Message?
     @State private var stopButtonScale: CGFloat = 1.0
     @State private var showClearAlerts: Bool = false
+    @State private var selectedAlert: Alert?
     @AppStorage("chatFontScale") private var fontScale: Double = 1.0
     @FocusState private var isInputFocused: Bool
 
@@ -56,7 +58,8 @@ struct ChatView: View {
                 AlertBubble(
                     alert: alert,
                     onAck: { Task { await appState.ackAlert(alert.id) } },
-                    onAllow: { Task { await appState.allowAlert(alert.id) } }
+                    onAllow: { Task { await appState.allowAlert(alert.id) } },
+                    onTap: { selectedAlert = alert }
                 )
                 .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                 .listRowSeparator(.hidden)
@@ -94,6 +97,9 @@ struct ChatView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Delete all alerts? This cannot be undone.")
+        }
+        .sheet(item: $selectedAlert) { alert in
+            AlertDetailView(alert: alert, appState: appState)
         }
         .onAppear {
             appState.streamMessageHandler = handleStreamMessage
@@ -185,9 +191,21 @@ struct ChatView: View {
             resetStreamingState()
             appState.streamMessageHandler = handleStreamMessage
         }
+        .sheet(isPresented: $showingStreamDetail) {
+            streamDetailContent
+        }
     }
 
     // MARK: - Streaming Bubble
+
+    @ViewBuilder
+    private var streamDetailContent: some View {
+        StreamDetailView(
+            thinking: streamingThinking,
+            toolEvents: streamingToolEvents,
+            isStreaming: isStreaming
+        )
+    }
 
     private var streamingBubble: some View {
         HStack {
@@ -258,6 +276,9 @@ struct ChatView: View {
             .padding(.vertical, 10)
             .background(Color(.systemGray5))
             .clipShape(RoundedRectangle(cornerRadius: 18))
+            .onTapGesture {
+                showingStreamDetail = true
+            }
             .frame(maxWidth: 300, alignment: .leading)
 
             Spacer(minLength: 60)
@@ -763,6 +784,7 @@ struct ChatView: View {
                     id: id,
                     name: name,
                     input: compactToolInputDescription(name: name, input: input),
+                    fullInput: fullToolInputDescription(input: input),
                     result: nil,
                     isError: false,
                     isComplete: false
@@ -838,9 +860,19 @@ private struct StreamingToolEvent: Identifiable, Equatable {
     let id: String
     let name: String
     let input: String
+    let fullInput: String
     var result: String?
     var isError: Bool
     var isComplete: Bool
+}
+
+extension StreamingToolEvent: StreamDetailToolEventRepresentable {
+    var streamDetailID: String { id }
+    var streamDetailName: String { name }
+    var streamDetailInput: String { fullInput }
+    var streamDetailResult: String? { result }
+    var streamDetailIsError: Bool { isError }
+    var streamDetailIsComplete: Bool { isComplete }
 }
 
 private struct PendingAttachment: Identifiable {

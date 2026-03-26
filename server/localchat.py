@@ -2479,6 +2479,16 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
 
         _save_message(chat_id, "user", display_prompt)
 
+        # Notify other viewers that a user message was added
+        ws_set = _chat_ws.get(chat_id, set())
+        for ows in ws_set:
+            if ows is not websocket:
+                await _safe_ws_send_json(
+                    ows,
+                    {"type": "user_message_added", "chat_id": chat_id, "content": display_prompt},
+                    chat_id=chat_id,
+                )
+
         if chat["title"] == "New Chat":
             title_source = prompt or display_prompt
             title = title_source[:50] + ("..." if len(title_source) > 50 else "")
@@ -2968,17 +2978,30 @@ function clearStreamWatchdog() {
   }
 }
 
+function hasActiveTool() {
+  // Check if any tool block is still pending (hourglass icon = no result yet)
+  if (!currentBubble) return false;
+  const tools = currentBubble.querySelectorAll('.tool-block');
+  for (const t of tools) {
+    const status = t.querySelector('.tool-status');
+    if (status && status.textContent === '\u23F3') return true;
+  }
+  return false;
+}
+
 function markStreamActivity(reason = '') {
   if (!streaming) return;
   lastStreamEventAt = Date.now();
   clearStreamWatchdog();
+  // Use longer timeout when a tool is actively running (Codex, Grok can take minutes)
+  const timeout = hasActiveTool() ? 300000 : 30000;  // 5 min for tools, 30s otherwise
   streamWatchdog = setTimeout(() => {
     if (!streaming) return;
-    if (Date.now() - lastStreamEventAt < 29500) {
+    if (Date.now() - lastStreamEventAt < (timeout - 500)) {
       markStreamActivity('watchdog-rescheduled');
       return;
     }
-    dbg('stream watchdog: no events in 30s, clearing streaming state');
+    dbg(`stream watchdog: no events in ${timeout/1000}s, clearing streaming state`);
     streaming = false;
     currentBubble = null;
     sessionStorage.removeItem('streamingChatId');
@@ -2989,7 +3012,7 @@ function markStreamActivity(reason = '') {
     if (currentChat) {
       selectChat(currentChat).catch(() => {});
     }
-  }, 30000);
+  }, timeout);
 }
 
 async function attachToStream(socket, chatId, options = {}) {
@@ -3322,6 +3345,14 @@ function handleEvent(msg) {
         selectChat(msg.chat_id).catch(() => {});
       }
       refreshDebugState('stream-complete-reload');
+      break;
+
+    case 'user_message_added':
+      // Another client sent a message on this chat — show it
+      if (msg.chat_id === currentChat && msg.content) {
+        addUserMsg(msg.content);
+        scrollBottom();
+      }
       break;
 
     case 'chat_updated':
