@@ -2871,9 +2871,42 @@ writing-mode:vertical-lr;text-orientation:mixed;align-self:center;opacity:0.5}
 font-size:11px;white-space:pre-wrap}
 .debug-log{color:#A7F3D0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
 line-height:1.35;max-height:88px;overflow-y:auto;white-space:pre-wrap;margin-top:4px}
+.alert-toast{position:fixed;top:0;left:0;right:0;z-index:9999;padding:8px 12px;
+transform:translateY(-100%);transition:transform .3s ease;pointer-events:none}
+.alert-toast.show{transform:translateY(0);pointer-events:auto}
+.alert-toast-inner{max-width:600px;margin:0 auto;padding:10px 14px;border-radius:10px;
+display:flex;align-items:flex-start;gap:10px;box-shadow:0 4px 20px rgba(0,0,0,.3);
+font-size:13px;line-height:1.4;cursor:pointer}
+.alert-toast-inner.critical{background:#1a0000;border:1px solid #dc2626;color:#fca5a5}
+.alert-toast-inner.warning{background:#1a1400;border:1px solid #d97706;color:#fcd34d}
+.alert-toast-inner.info{background:#001a1a;border:1px solid #0891b2;color:#67e8f9}
+.alert-toast .alert-icon{font-size:18px;flex-shrink:0;margin-top:1px}
+.alert-toast .alert-body{flex:1;min-width:0}
+.alert-toast .alert-source{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;opacity:.7}
+.alert-toast .alert-title{font-weight:600;margin-top:2px}
+.alert-toast .alert-text{font-size:12px;opacity:.8;margin-top:2px;
+white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.alert-toast .alert-actions{display:flex;gap:6px;flex-shrink:0;align-items:center}
+.alert-toast .alert-actions button{font-size:11px;font-weight:600;padding:4px 10px;
+border-radius:6px;border:none;cursor:pointer}
+.alert-toast .btn-ack{background:#dc2626;color:#fff}
+.alert-toast .btn-allow{background:#16a34a;color:#fff}
+.alert-toast .btn-dismiss{background:transparent;color:inherit;opacity:.5;font-size:16px;padding:2px 6px}
 </style>
 </head>
 <body>
+
+<div class="alert-toast" id="alertToast">
+  <div class="alert-toast-inner" id="alertToastInner">
+    <span class="alert-icon" id="alertToastIcon"></span>
+    <div class="alert-body">
+      <div class="alert-source" id="alertToastSource"></div>
+      <div class="alert-title" id="alertToastTitle"></div>
+      <div class="alert-text" id="alertToastText"></div>
+    </div>
+    <div class="alert-actions" id="alertToastActions"></div>
+  </div>
+</div>
 
 <div class="topbar">
   <button class="btn-icon" id="menuBtn">&#9776;</button>
@@ -3425,6 +3458,10 @@ function handleEvent(msg) {
       }).catch(err => reportError('chat_deleted loadChats', err));
       break;
 
+    case 'alert':
+      showAlertToast(msg);
+      break;
+
     case 'system':
       break;
 
@@ -3472,6 +3509,54 @@ function addSystemMsg(text) {
 function scrollBottom() {
   const el = document.getElementById('messages');
   el.scrollTop = el.scrollHeight;
+}
+
+let alertToastTimer = null;
+function showAlertToast(msg) {
+  const toast = document.getElementById('alertToast');
+  const inner = document.getElementById('alertToastInner');
+  const sev = msg.severity || 'info';
+  inner.className = 'alert-toast-inner ' + sev;
+  const icons = {critical: '\u26a0\ufe0f', warning: '\u26a0', info: '\u2139\ufe0f'};
+  document.getElementById('alertToastIcon').textContent = icons[sev] || '\u2139\ufe0f';
+  document.getElementById('alertToastSource').textContent = (msg.source || 'system').toUpperCase();
+  document.getElementById('alertToastTitle').textContent = msg.title || '';
+  document.getElementById('alertToastText').textContent = msg.body || '';
+  // Actions
+  const actions = document.getElementById('alertToastActions');
+  actions.innerHTML = '';
+  if (msg.source === 'guardrail' && msg.id) {
+    const allowBtn = document.createElement('button');
+    allowBtn.className = 'btn-allow';
+    allowBtn.textContent = 'Allow';
+    allowBtn.onclick = (e) => { e.stopPropagation(); alertAction('allow', msg.id); };
+    actions.appendChild(allowBtn);
+  }
+  if (msg.id) {
+    const ackBtn = document.createElement('button');
+    ackBtn.className = 'btn-ack';
+    ackBtn.textContent = 'Ack';
+    ackBtn.onclick = (e) => { e.stopPropagation(); alertAction('ack', msg.id); };
+    actions.appendChild(ackBtn);
+  }
+  const dismissBtn = document.createElement('button');
+  dismissBtn.className = 'btn-dismiss';
+  dismissBtn.textContent = '\u2715';
+  dismissBtn.onclick = (e) => { e.stopPropagation(); hideAlertToast(); };
+  actions.appendChild(dismissBtn);
+  // Show
+  toast.classList.add('show');
+  clearTimeout(alertToastTimer);
+  alertToastTimer = setTimeout(hideAlertToast, 10000);
+}
+function hideAlertToast() {
+  document.getElementById('alertToast').classList.remove('show');
+  clearTimeout(alertToastTimer);
+}
+function alertAction(action, alertId) {
+  fetch('/api/alerts/' + alertId + '/' + action, {method: 'POST'})
+    .then(r => { if (r.ok) hideAlertToast(); })
+    .catch(() => {});
 }
 
 function escHtml(s) {
