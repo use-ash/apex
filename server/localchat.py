@@ -1365,10 +1365,32 @@ def _make_options(model: str | None = None, session_id: str | None = None) -> Cl
     )
 
 
+def _client_is_alive(client: ClaudeSDKClient) -> bool:
+    """Check if an SDK client's subprocess is still running."""
+    try:
+        transport = getattr(client, "_transport", None)
+        if transport is None:
+            return False
+        proc = getattr(transport, "_process", None)
+        if proc is None:
+            return False
+        # anyio.abc.Process — returncode is None while running
+        if proc.returncode is not None:
+            return False
+        return True
+    except Exception:
+        return False
+
+
 async def _get_or_create_client(chat_id: str, model: str | None = None) -> ClaudeSDKClient:
     """Get existing persistent client or create a new one."""
     if chat_id in _clients:
-        return _clients[chat_id]
+        client = _clients[chat_id]
+        if _client_is_alive(client):
+            return client
+        # Stale client — clean up before creating a new one
+        log(f"stale SDK client detected: chat={chat_id}, evicting")
+        await _disconnect_client(chat_id)
 
     chat = _get_chat(chat_id)
     session_id = chat.get("claude_session_id") if chat else None
@@ -2519,6 +2541,12 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 return
         else:
             # --- Claude SDK path ---
+            # Pre-flight compaction check — prevents resume into bloated context
+            try:
+                await _maybe_compact_chat(chat_id)
+            except Exception as compact_err:
+                log(f"pre-flight compaction error: chat={chat_id} {compact_err}")
+
             try:
                 client = await _get_or_create_client(chat_id, model=chat_model)
                 result = await _run_query_turn(client, make_query_input, chat_id)
