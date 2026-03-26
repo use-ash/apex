@@ -444,7 +444,8 @@ final class AppState {
         case .alert(let id, let source, let severity, let title, let body, let createdAt, let metadata):
             let alert = Alert(id: id, source: source, severity: severity, title: title, body: body, acked: false, createdAt: createdAt, metadata: metadata)
             // Only insert if it matches the current channel's category filter
-            if let channelCategory = currentChat?.category {
+            // Empty string = catch-all (show everything), nil = not an alerts channel (show everything)
+            if let channelCategory = currentChat?.category, !channelCategory.isEmpty {
                 let sourceCategory = Self.alertCategory(for: source)
                 if sourceCategory != channelCategory {
                     // Still notify even if not displayed

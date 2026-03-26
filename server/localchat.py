@@ -1086,7 +1086,7 @@ def _get_chats() -> list[dict]:
         ).fetchall()
         conn.close()
     return [{"id": r[0], "title": r[1], "claude_session_id": r[2],
-             "created_at": r[3], "updated_at": r[4], "model": r[5], "type": r[6], "category": r[7]} for r in rows]
+             "created_at": r[3], "updated_at": r[4], "model": r[5], "type": r[6], "category": r[7] or None} for r in rows]
 
 
 def _get_chat(chat_id: str) -> dict | None:
@@ -1098,7 +1098,7 @@ def _get_chat(chat_id: str) -> dict | None:
     if not row:
         return None
     return {"id": row[0], "title": row[1], "claude_session_id": row[2],
-            "created_at": row[3], "updated_at": row[4], "model": row[5], "type": row[6], "category": row[7]}
+            "created_at": row[3], "updated_at": row[4], "model": row[5], "type": row[6], "category": row[7] or None}
 
 
 def _update_chat(chat_id: str, **kwargs) -> None:
@@ -1331,26 +1331,30 @@ def _get_alerts_channels() -> list[dict]:
 
 
 async def _broadcast_alert(alert: dict) -> None:
-    """Send alert to matching alerts-type chats based on category."""
+    """Send alert to ALL connected WebSocket clients (regardless of which chat they're viewing).
+
+    Every client gets the alert so the iOS app can show it even when
+    viewing a regular conversation.  Category filtering is the client's job.
+    """
     payload = {"type": "alert", **alert}
-    category = _alert_category(alert.get("source", ""))
-    for ch in _get_alerts_channels():
-        # Channel with no category = catch-all (receives everything)
-        if ch["category"] and ch["category"] != category:
-            continue
-        cid = ch["id"]
-        ws_set = _chat_ws.get(cid)
-        if not ws_set:
-            continue
-        dead: list[WebSocket] = []
-        for ws in list(ws_set):
-            ok = await _safe_ws_send_json(ws, payload, chat_id=cid)
-            if not ok:
-                dead.append(ws)
-        for ws in dead:
+    # Collect all unique WebSocket connections across all chats
+    all_ws: set[WebSocket] = set()
+    for ws_set in _chat_ws.values():
+        all_ws.update(ws_set)
+    if not all_ws:
+        return
+    dead: list[tuple[WebSocket, str]] = []
+    for ws in list(all_ws):
+        chat_id = _ws_chat.get(ws, "")
+        ok = await _safe_ws_send_json(ws, payload, chat_id=chat_id)
+        if not ok:
+            dead.append((ws, chat_id))
+    for ws, chat_id in dead:
+        ws_set = _chat_ws.get(chat_id)
+        if ws_set:
             ws_set.discard(ws)
-        if not ws_set:
-            _chat_ws.pop(cid, None)
+            if not ws_set:
+                _chat_ws.pop(chat_id, None)
 
 
 def _make_options(model: str | None = None, session_id: str | None = None) -> ClaudeAgentOptions:
