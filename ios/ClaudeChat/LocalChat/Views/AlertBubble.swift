@@ -152,14 +152,10 @@ struct AlertBubble: View {
         )
         .opacity(alert.acked ? 0.6 : 1.0)
         .padding(.horizontal, 12)
-        .background {
-            // Tap target behind buttons — opens detail view
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color.clear)
-                .contentShape(RoundedRectangle(cornerRadius: 12))
-                .onTapGesture { onTap?() }
-                .padding(.horizontal, 12)
-        }
+        .contentShape(RoundedRectangle(cornerRadius: 12))
+        .simultaneousGesture(
+            TapGesture().onEnded { onTap?() }
+        )
     }
 
     // MARK: - Metadata
