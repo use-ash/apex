@@ -56,6 +56,7 @@ except ImportError:
 sys.path.insert(0, str(Path.home() / ".openclaw"))
 try:
     from local_model.tool_loop import run_tool_loop
+    from local_model.context import build_system_prompt
     _TOOL_LOOP_AVAILABLE = True
 except ImportError:
     _TOOL_LOOP_AVAILABLE = False
@@ -1503,7 +1504,11 @@ async def _run_ollama_chat(chat_id: str, prompt: str) -> dict:
     """Run a chat response from Ollama with tool-calling support."""
     # Build message history from recent DB messages
     recent = _get_messages(chat_id, days=1)
-    messages = [{"role": "system", "content": f"You are {MODEL}, a local AI model running via Ollama. You are NOT Claude, NOT made by Anthropic. You have access to tools: bash, read_file, write_file, list_files, search_files. Use them when the user asks you to do something that requires interacting with the system. Be helpful and concise."}]
+    if _TOOL_LOOP_AVAILABLE:
+        sys_prompt = build_system_prompt(MODEL)
+    else:
+        sys_prompt = f"You are {MODEL}, a local AI model running via Ollama. Be helpful and concise."
+    messages = [{"role": "system", "content": sys_prompt}]
     for m in recent[-20:]:
         content = m["content"]
         if "<system-reminder>" in content:
