@@ -105,21 +105,27 @@ struct AlertBubble: View {
                     }
                     if !alert.acked {
                         if isGuardrail {
-                            Button("Allow") { onAllow?() }
+                            Button(action: { onAllow?() }) {
+                                Text("Allow")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(.green)
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        Button(action: { onAck?() }) {
+                            Text("Ack")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 3)
-                                .background(.green)
+                                .background(severityColor)
                                 .clipShape(Capsule())
                         }
-                        Button("Ack") { onAck?() }
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(severityColor)
-                            .clipShape(Capsule())
+                        .buttonStyle(.plain)
                     }
                 }
                 // Row 2: title
@@ -146,9 +152,13 @@ struct AlertBubble: View {
         )
         .opacity(alert.acked ? 0.6 : 1.0)
         .padding(.horizontal, 12)
-        .contentShape(RoundedRectangle(cornerRadius: 12))
-        .onTapGesture {
-            onTap?()
+        .background {
+            // Tap target behind buttons — opens detail view
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.clear)
+                .contentShape(RoundedRectangle(cornerRadius: 12))
+                .onTapGesture { onTap?() }
+                .padding(.horizontal, 12)
         }
     }
 
