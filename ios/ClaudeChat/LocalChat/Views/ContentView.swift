@@ -47,7 +47,18 @@ struct ContentView: View {
                     Button {
                         isShowingConnectionDetails = true
                     } label: {
-                        connectionPill
+                        HStack(spacing: 6) {
+                            connectionPill
+                            if appState.unackedAlertCount > 0 {
+                                Text("\(appState.unackedAlertCount)")
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(.red)
+                                    .clipShape(Capsule())
+                            }
+                        }
                     }
                     .buttonStyle(.plain)
                 }

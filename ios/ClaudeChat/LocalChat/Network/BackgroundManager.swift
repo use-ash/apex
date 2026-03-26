@@ -1,13 +1,16 @@
 import BackgroundTasks
 import Foundation
+import UserNotifications
 
 enum BackgroundManager {
     static let keepAliveTaskIdentifier = "com.openclaw.localchat.keepalive"
 
     private static var connectionManager: ConnectionManager?
+    private static var apiClient: APIClient?
 
-    static func configure(connectionManager: ConnectionManager) {
+    static func configure(connectionManager: ConnectionManager, apiClient: APIClient) {
         self.connectionManager = connectionManager
+        self.apiClient = apiClient
     }
 
     static func register() {
@@ -43,6 +46,38 @@ enum BackgroundManager {
 
         DispatchQueue.main.async {
             connectionManager?.sendBackgroundPing()
+        }
+
+        // Poll for new alerts
+        Task {
+            guard let client = apiClient else {
+                task.setTaskCompleted(success: true)
+                return
+            }
+            do {
+                let lastTimestamp = UserDefaults.standard.string(forKey: "lastAlertTimestamp")
+                let since = (lastTimestamp?.isEmpty ?? true) ? nil : lastTimestamp
+                let alerts = try await client.fetchAlerts(since: since, unackedOnly: true)
+                for alert in alerts {
+                    let content = UNMutableNotificationContent()
+                    content.title = "[\(alert.severity.uppercased())] \(alert.source)"
+                    content.body = alert.title
+                    content.sound = alert.severity == "critical" ? .defaultCritical : .default
+                    content.categoryIdentifier = "ALERT"
+                    content.userInfo = ["alert_id": alert.id]
+                    let request = UNNotificationRequest(
+                        identifier: "alert-\(alert.id)",
+                        content: content,
+                        trigger: nil
+                    )
+                    try? await UNUserNotificationCenter.current().add(request)
+                }
+                if let newest = alerts.first {
+                    UserDefaults.standard.set(newest.createdAt, forKey: "lastAlertTimestamp")
+                }
+            } catch {
+                // Silent fail -- supplementary
+            }
             task.setTaskCompleted(success: true)
         }
     }

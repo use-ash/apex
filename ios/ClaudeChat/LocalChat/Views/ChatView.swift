@@ -30,24 +30,38 @@ struct ChatView: View {
     @AppStorage("chatFontScale") private var fontScale: Double = 1.0
     @FocusState private var isInputFocused: Bool
 
+    private var timelineItems: [TimelineItem] {
+        let messageItems = appState.messages.map { TimelineItem.message($0) }
+        let alertItems = appState.alerts.map { TimelineItem.alert($0) }
+        return (messageItems + alertItems).sorted { $0.createdAt < $1.createdAt }
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 8) {
-                    ForEach(appState.messages) { message in
-                        MessageBubble(
-                            message: message,
-                            isHighlighted: highlightedMessageIDs.contains(message.id),
-                            reaction: reactions[message.id],
-                            fontScale: CGFloat(fontScale),
-                            onReact: { emoji in
-                                updateReaction(emoji, for: message)
-                            },
-                            onReply: {
-                                setReplyTarget(message)
+                    ForEach(timelineItems) { item in
+                        switch item {
+                        case .message(let message):
+                            MessageBubble(
+                                message: message,
+                                isHighlighted: highlightedMessageIDs.contains(message.id),
+                                reaction: reactions[message.id],
+                                fontScale: CGFloat(fontScale),
+                                onReact: { emoji in
+                                    updateReaction(emoji, for: message)
+                                },
+                                onReply: {
+                                    setReplyTarget(message)
+                                }
+                            )
+                            .id(item.id)
+                        case .alert(let alert):
+                            AlertBubble(alert: alert) {
+                                Task { await appState.ackAlert(alert.id) }
                             }
-                        )
-                        .id(message.id)
+                            .id(item.id)
+                        }
                     }
 
                     if isStreaming {
@@ -624,7 +638,7 @@ struct ChatView: View {
     private func scrollToBottom(proxy: ScrollViewProxy) {
         if isStreaming {
             proxy.scrollTo("streaming", anchor: .bottom)
-        } else if let lastId = appState.messages.last?.id {
+        } else if let lastId = timelineItems.last?.id {
             withAnimation(.easeOut(duration: 0.2)) {
                 proxy.scrollTo(lastId, anchor: .bottom)
             }

@@ -31,8 +31,9 @@ struct LocalChatApp: App {
                 await appState.ensurePersistentChat()
             }
             .task {
-                BackgroundManager.configure(connectionManager: appState.connectionManager)
+                BackgroundManager.configure(connectionManager: appState.connectionManager, apiClient: appState.apiClient)
                 await requestNotificationAuthorizationIfNeeded()
+                registerNotificationCategories()
             }
             .onChange(of: scenePhase) { _, newPhase in
                 appState.scenePhase = newPhase
@@ -45,6 +46,7 @@ struct LocalChatApp: App {
                     if let chatId = appState.persistentChatId {
                         appState.connectionManager.send(.attach(chatId: chatId))
                     }
+                    Task { await appState.loadAlerts() }
                 case .background:
                     BackgroundManager.scheduleKeepAlive()
                 case .inactive:
@@ -60,5 +62,19 @@ struct LocalChatApp: App {
         guard !didRequestNotificationPermission else { return }
         didRequestNotificationPermission = true
         _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
+    }
+
+    private func registerNotificationCategories() {
+        let ackAction = UNNotificationAction(
+            identifier: "ACK_ALERT",
+            title: "Acknowledge",
+            options: []
+        )
+        let alertCategory = UNNotificationCategory(
+            identifier: "ALERT",
+            actions: [ackAction],
+            intentIdentifiers: []
+        )
+        UNUserNotificationCenter.current().setNotificationCategories([alertCategory])
     }
 }
