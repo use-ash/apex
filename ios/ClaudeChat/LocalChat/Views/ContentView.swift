@@ -269,6 +269,26 @@ struct ContentView: View {
                             }
                             .opacity(alert.acked ? 0.5 : 1.0)
                         }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            if !alert.acked {
+                                Button {
+                                    Task { await appState.ackAlert(alert.id) }
+                                } label: {
+                                    Label("Ack", systemImage: "checkmark.circle")
+                                }
+                                .tint(.green)
+                            }
+                        }
+                        .swipeActions(edge: .trailing) {
+                            if !alert.acked && alert.source == "guardrail" {
+                                Button {
+                                    Task { await appState.allowAlert(alert.id) }
+                                } label: {
+                                    Label("Allow", systemImage: "hand.thumbsup")
+                                }
+                                .tint(.blue)
+                            }
+                        }
                     }
                 }
             }
