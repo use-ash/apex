@@ -91,6 +91,7 @@ MODEL = os.environ.get("LOCALCHAT_MODEL", "claude-sonnet-4-6")
 PERMISSION_MODE = os.environ.get("LOCALCHAT_PERMISSION_MODE", "acceptEdits")
 DEBUG = os.environ.get("LOCALCHAT_DEBUG", "").lower() in {"1", "true", "yes"}
 ALERT_TOKEN = os.environ.get("LOCALCHAT_ALERT_TOKEN", "")
+XAI_API_KEY = os.environ.get("XAI_API_KEY", "")
 DB_PATH = LOCALCHAT_ROOT / "state" / "localchat.db"
 LOG_PATH = LOCALCHAT_ROOT / "state" / "localchat.log"
 LOG_MAX = 5 * 1024 * 1024  # 5MB
@@ -791,6 +792,12 @@ def _init_db() -> None:
         );
         DROP TABLE IF EXISTS web_sessions;
     """)
+    # Migration: add model and type columns if missing
+    for col, default in [("model", "NULL"), ("type", "'chat'")]:
+        try:
+            conn.execute(f"ALTER TABLE chats ADD COLUMN {col} TEXT DEFAULT {default}")
+        except Exception:
+            pass  # column already exists
     conn.commit()
     conn.close()
 
@@ -949,13 +956,15 @@ def _websocket_origin_allowed(websocket: WebSocket) -> bool:
 # Chat DB operations
 # ---------------------------------------------------------------------------
 
-def _create_chat(title: str = "New Chat") -> str:
+def _create_chat(title: str = "New Chat", model: str | None = None, chat_type: str = "chat") -> str:
     cid = str(uuid.uuid4())[:8]
     now = _now()
     with _db_lock:
         conn = _get_db()
-        conn.execute("INSERT INTO chats (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                     (cid, title, now, now))
+        conn.execute(
+            "INSERT INTO chats (id, title, model, type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (cid, title, model, chat_type, now, now),
+        )
         conn.commit()
         conn.close()
     return cid
@@ -965,23 +974,23 @@ def _get_chats() -> list[dict]:
     with _db_lock:
         conn = _get_db()
         rows = conn.execute(
-            "SELECT id, title, claude_session_id, created_at, updated_at FROM chats ORDER BY updated_at DESC"
+            "SELECT id, title, claude_session_id, created_at, updated_at, model, type FROM chats ORDER BY updated_at DESC"
         ).fetchall()
         conn.close()
     return [{"id": r[0], "title": r[1], "claude_session_id": r[2],
-             "created_at": r[3], "updated_at": r[4]} for r in rows]
+             "created_at": r[3], "updated_at": r[4], "model": r[5], "type": r[6]} for r in rows]
 
 
 def _get_chat(chat_id: str) -> dict | None:
     with _db_lock:
         conn = _get_db()
-        row = conn.execute("SELECT id, title, claude_session_id, created_at, updated_at FROM chats WHERE id = ?",
+        row = conn.execute("SELECT id, title, claude_session_id, created_at, updated_at, model, type FROM chats WHERE id = ?",
                            (chat_id,)).fetchone()
         conn.close()
     if not row:
         return None
     return {"id": row[0], "title": row[1], "claude_session_id": row[2],
-            "created_at": row[3], "updated_at": row[4]}
+            "created_at": row[3], "updated_at": row[4], "model": row[5], "type": row[6]}
 
 
 def _update_chat(chat_id: str, **kwargs) -> None:
@@ -1096,10 +1105,10 @@ async def _broadcast_alert(alert: dict) -> None:
         _alert_ws.discard(ws)
 
 
-def _make_options(session_id: str | None = None) -> ClaudeAgentOptions:
+def _make_options(model: str | None = None, session_id: str | None = None) -> ClaudeAgentOptions:
     """Build SDK options for a new or resumed session."""
     return ClaudeAgentOptions(
-        model=MODEL,
+        model=model or MODEL,
         cwd=str(WORKSPACE),
         permission_mode=PERMISSION_MODE,
         max_turns=50,
@@ -1108,16 +1117,17 @@ def _make_options(session_id: str | None = None) -> ClaudeAgentOptions:
     )
 
 
-async def _get_or_create_client(chat_id: str) -> ClaudeSDKClient:
+async def _get_or_create_client(chat_id: str, model: str | None = None) -> ClaudeSDKClient:
     """Get existing persistent client or create a new one."""
     if chat_id in _clients:
         return _clients[chat_id]
 
     chat = _get_chat(chat_id)
     session_id = chat.get("claude_session_id") if chat else None
-    options = _make_options(session_id)
+    options = _make_options(model=model, session_id=session_id)
 
-    log(f"creating SDK client: chat={chat_id} model={MODEL} resume={session_id or 'new'}")
+    effective_model = model or MODEL
+    log(f"creating SDK client: chat={chat_id} model={effective_model} resume={session_id or 'new'}")
     client = ClaudeSDKClient(options)
     await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
     _clients[chat_id] = client
@@ -1392,23 +1402,10 @@ app = FastAPI(title="LocalChat", docs_url=None, redoc_url=None, lifespan=lifespa
 async def verify_client_cert(request: Request, call_next):
     """Verify client cert on HTTP requests. Bearer token accepted for /api/alerts."""
     path = request.url.path
-    # Bearer token auth for alert endpoints
-    if path.startswith("/api/alerts") and ALERT_TOKEN:
+    # Bearer token auth for alert creation (POST /api/alerts only)
+    if path == "/api/alerts" and request.method == "POST" and ALERT_TOKEN:
         auth = request.headers.get("authorization", "")
-        if auth == f"Bearer {ALERT_TOKEN}":
-            return await call_next(request)
-        # No valid bearer token — check for client cert
-    if SSL_CA:
-        transport = request.scope.get("transport")
-        peercert = None
-        if transport and hasattr(transport, "get_extra_info"):
-            peercert = transport.get_extra_info("peercert")
-        if not peercert:
-            tls = request.scope.get("extensions", {}).get("tls", {})
-            peercert = tls.get("peercert") if tls else None
-        # With CERT_OPTIONAL, no peercert means no client cert was sent
-        # For alert endpoints without bearer token, require cert
-        if not peercert and path.startswith("/api/alerts") and ALERT_TOKEN:
+        if auth != f"Bearer {ALERT_TOKEN}":
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
     return await call_next(request)
 
@@ -1424,8 +1421,15 @@ async def api_chats(request: Request):
 
 @app.post("/api/chats")
 async def api_new_chat(request: Request):
-    cid = _create_chat()
-    return JSONResponse({"id": cid})
+    data = {}
+    try:
+        data = await request.json()
+    except Exception:
+        pass
+    model = data.get("model")
+    chat_type = data.get("type", "chat")
+    cid = _create_chat(model=model, chat_type=chat_type)
+    return JSONResponse({"id": cid, "model": model, "type": chat_type})
 
 
 @app.get("/api/chats/{chat_id}/messages")
@@ -1477,6 +1481,16 @@ def _is_local_model(model: str) -> bool:
     return not model.startswith("claude-")
 
 
+def _get_model_backend(model: str) -> str:
+    """Determine which backend to use for a model."""
+    if model.startswith("claude-"):
+        return "claude"
+    elif model.startswith("grok-"):
+        return "xai"
+    else:
+        return "ollama"
+
+
 def _get_ollama_models() -> list[dict]:
     """Query Ollama for available local models."""
     try:
@@ -1500,14 +1514,15 @@ async def api_local_models():
     return JSONResponse(models)
 
 
-async def _run_ollama_chat(chat_id: str, prompt: str) -> dict:
-    """Run a chat response from Ollama with tool-calling support."""
+async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None) -> dict:
+    """Run a chat response from Ollama/xAI with tool-calling support."""
+    effective_model = model or MODEL
     # Build message history from recent DB messages
     recent = _get_messages(chat_id, days=1)
     if _TOOL_LOOP_AVAILABLE:
-        sys_prompt = build_system_prompt(MODEL)
+        sys_prompt = build_system_prompt(effective_model)
     else:
-        sys_prompt = f"You are {MODEL}, a local AI model running via Ollama. Be helpful and concise."
+        sys_prompt = f"You are {effective_model}, a local AI model running via Ollama. Be helpful and concise."
     messages = [{"role": "system", "content": sys_prompt}]
     for m in recent[-20:]:
         content = m["content"]
@@ -1521,13 +1536,24 @@ async def _run_ollama_chat(chat_id: str, prompt: str) -> dict:
         async def emit(event: dict):
             await _send_stream_event(chat_id, event)
 
-        result = await run_tool_loop(
-            ollama_url=OLLAMA_BASE_URL,
-            model=MODEL,
-            messages=messages,
-            emit_event=emit,
-            workspace=str(WORKSPACE),
-        )
+        # Route to xAI or Ollama based on model backend
+        if _get_model_backend(effective_model) == "xai":
+            result = await run_tool_loop(
+                ollama_url="https://api.x.ai/v1",
+                model=effective_model,
+                messages=messages,
+                emit_event=emit,
+                workspace=str(WORKSPACE),
+                api_key=XAI_API_KEY,
+            )
+        else:
+            result = await run_tool_loop(
+                ollama_url=OLLAMA_BASE_URL,
+                model=effective_model,
+                messages=messages,
+                emit_event=emit,
+                workspace=str(WORKSPACE),
+            )
 
         # Send result event (tool loop emits text/tool events but not the final result)
         await _send_stream_event(chat_id, {
@@ -1539,7 +1565,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str) -> dict:
 
     # Fallback: plain text streaming (no tool support)
     payload = json.dumps({
-        "model": MODEL, "messages": messages, "stream": True,
+        "model": effective_model, "messages": messages, "stream": True,
     }).encode()
     chunk_queue: asyncio.Queue[str | None] = asyncio.Queue()
 
@@ -1928,6 +1954,23 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
                 continue
 
+            if action == "set_chat_model":
+                chat_id = data.get("chat_id", "")
+                model = str(data.get("model", "")).strip()
+                if not chat_id or not model:
+                    await websocket.send_json({"type": "error", "message": "chat_id and model required"})
+                    continue
+                _update_chat(chat_id, model=model)
+                # Disconnect only this chat's SDK client if it exists
+                if chat_id in _clients:
+                    await _disconnect_client(chat_id)
+                await websocket.send_json({
+                    "type": "chat_updated", "chat_id": chat_id,
+                    "title": (_get_chat(chat_id) or {}).get("title", ""),
+                    "model": model,
+                })
+                continue
+
             if action == "send":
                 task = asyncio.create_task(_handle_send_action(websocket, data))
                 _track_task(task)
@@ -2034,6 +2077,10 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         await _safe_ws_send_json(websocket, {"type": "error", "message": "Chat not found"}, chat_id=chat_id)
         return
 
+    # Per-chat model routing — fallback to global MODEL
+    chat_model = chat.get("model") or MODEL
+    backend = _get_model_backend(chat_model)
+
     chat_lock = _get_chat_lock(chat_id)
     try:
         await asyncio.wait_for(chat_lock.acquire(), timeout=0.05)
@@ -2053,8 +2100,8 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
 
         display_prompt = prompt
         make_query_input = None
-        if _is_local_model(MODEL):
-            # Local models use raw prompt — no SDK payload needed
+        if backend in ("ollama", "xai"):
+            # Local/xAI models use raw prompt — no SDK payload needed
             display_prompt = user_visible_prompt if _recall_context else prompt
         else:
             try:
@@ -2072,7 +2119,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             title = title_source[:50] + ("..." if len(title_source) > 50 else "")
             _update_chat(chat_id, title=title)
             await _safe_ws_send_json(
-                websocket, {"type": "chat_updated", "chat_id": chat_id, "title": title}, chat_id=chat_id
+                websocket, {"type": "chat_updated", "chat_id": chat_id, "title": title, "model": chat_model}, chat_id=chat_id
             )
 
         # Register this WS in the registry so the stream can find it
@@ -2083,10 +2130,10 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
 
         result: dict | None = None
 
-        # --- Local model path (Ollama) ---
-        if _is_local_model(MODEL):
+        # --- Local model / xAI path (Ollama or xAI API) ---
+        if backend in ("ollama", "xai"):
             try:
-                result = await _run_ollama_chat(chat_id, prompt)
+                result = await _run_ollama_chat(chat_id, prompt, model=chat_model)
             except Exception as ollama_err:
                 log(f"ollama chat error: {ollama_err}")
                 for ws in list(_chat_ws.get(chat_id, {websocket})):
@@ -2098,7 +2145,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         else:
             # --- Claude SDK path ---
             try:
-                client = await _get_or_create_client(chat_id)
+                client = await _get_or_create_client(chat_id, model=chat_model)
                 result = await _run_query_turn(client, make_query_input, chat_id)
             except Exception as first_error:
                 if DEBUG: log(f"DBG RECOVERY: chat={chat_id} first error: {type(first_error).__name__}: {first_error}")
@@ -2109,7 +2156,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 existing_session = chat.get("claude_session_id") if chat else None
                 if DEBUG: log(f"DBG RECOVERY: attempting resume session={existing_session or 'NONE'}")
                 try:
-                    options = _make_options(session_id=existing_session)
+                    options = _make_options(model=chat_model, session_id=existing_session)
                     client = ClaudeSDKClient(options)
                     await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
                     _clients[chat_id] = client
@@ -2121,7 +2168,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                     _update_chat(chat_id, claude_session_id=None)
                     if DEBUG: log(f"DBG RECOVERY: session_id NUKED, trying fresh...")
                     try:
-                        options = _make_options(session_id=None)
+                        options = _make_options(model=chat_model, session_id=None)
                         client = ClaudeSDKClient(options)
                         await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
                         _clients[chat_id] = client
@@ -2160,7 +2207,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             )
 
         # Auto-compaction check — rotate session if token usage too high (Claude only)
-        if not _is_local_model(MODEL):
+        if backend == "claude":
             try:
                 await _maybe_compact_chat(chat_id)
             except Exception as compact_err:
