@@ -3659,10 +3659,10 @@ function showAlertDetail(alertId) {
     }
     actions += `<button style="background:${color};color:#fff" onclick="detailAlertAction('ack','${a.id}')">Ack</button>`;
   }
-  actions += `<button style="background:#333;color:#ccc" onclick="copyAlertBody('${a.id}')">Copy</button>`;
+  actions += `<button style="background:#333;color:#ccc" onclick="copyAlertBody('${a.id}',this)">Copy</button>`;
   const overlay = document.createElement('div');
   overlay.className = 'alert-detail-overlay';
-  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.onclick = (e) => { if (e.target === overlay) closeAlertDetail(overlay); };
   overlay.innerHTML = `<div class="alert-detail-card">
     <div class="ad-header">
       <span class="ad-icon">${icon}</span>
@@ -3670,7 +3670,7 @@ function showAlertDetail(alertId) {
         <span class="ad-source" style="background:${color}22;color:${color}">${escHtml((a.source||'').toUpperCase())}</span>
         <div class="ad-time">${ago}${a.acked ? ' \u2014 \u2713 Acknowledged' : ''}</div>
       </div>
-      <button class="ad-close" onclick="this.closest('.alert-detail-overlay').remove()">\u2715</button>
+      <button class="ad-close" onclick="closeAlertDetail(this)">\u2715</button>
     </div>
     <div class="ad-section"><div class="ad-label">Title</div><div class="ad-title">${escHtml(a.title)}</div></div>
     ${a.body ? `<div class="ad-section"><div class="ad-label">Details</div><div class="ad-body">${escHtml(a.body)}</div></div>` : ''}
@@ -3679,9 +3679,25 @@ function showAlertDetail(alertId) {
   </div>`;
   document.body.appendChild(overlay);
 }
-function copyAlertBody(alertId) {
+function closeAlertDetail(el) {
+  const overlay = el.closest('.alert-detail-overlay');
+  if (!overlay) return;
+  overlay.style.transition = 'opacity .2s ease';
+  overlay.style.opacity = '0';
+  setTimeout(() => overlay.remove(), 200);
+}
+function copyAlertBody(alertId, btn) {
   const a = channelAlertsData.find(x => x.id === alertId) || alertsCache.find(x => x.id === alertId);
-  if (a) navigator.clipboard.writeText(a.body || a.title || '');
+  if (a) {
+    navigator.clipboard.writeText(a.body || a.title || '');
+    if (btn) {
+      const orig = btn.textContent;
+      btn.textContent = '\u2713 Copied';
+      btn.style.background = '#16a34a';
+      btn.style.color = '#fff';
+      setTimeout(() => { btn.textContent = orig; btn.style.background = '#333'; btn.style.color = '#ccc'; }, 1500);
+    }
+  }
 }
 function detailAlertAction(action, alertId) {
   fetch('/api/alerts/' + alertId + '/' + action, {method:'POST'}).then(r => {
