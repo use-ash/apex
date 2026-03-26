@@ -1160,17 +1160,20 @@ def _get_messages(chat_id: str, days: int | None = None) -> list[dict]:
 def _create_alert(source: str, severity: str, title: str, body: str, metadata: dict | None = None) -> dict:
     aid = uuid.uuid4().hex[:8]
     now = _now()
-    meta = metadata or {}
+    raw_meta = metadata or {}
     with _db_lock:
         conn = _get_db()
         conn.execute(
             "INSERT INTO alerts (id, source, severity, title, body, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (aid, source, severity, title, body, json.dumps(meta), now),
+            (aid, source, severity, title, body, json.dumps(raw_meta), now),
         )
         conn.commit()
         conn.close()
+    # Flatten values to strings — iOS decodes metadata as [String: String]
+    str_meta = {str(k): json.dumps(v) if isinstance(v, (list, dict)) else str(v)
+                for k, v in raw_meta.items()}
     return {"id": aid, "source": source, "severity": severity, "title": title,
-            "body": body, "acked": False, "metadata": meta, "created_at": now}
+            "body": body, "acked": False, "metadata": str_meta, "created_at": now}
 
 
 def _get_alerts(since: str | None = None, unacked_only: bool = False,
@@ -1201,9 +1204,12 @@ def _get_alerts(since: str | None = None, unacked_only: bool = False,
         conn.close()
     results = []
     for r in rows:
-        meta = {}
+        meta: dict[str, str] = {}
         try:
-            meta = json.loads(r[7]) if r[7] else {}
+            raw = json.loads(r[7]) if r[7] else {}
+            # Flatten all values to strings — iOS decodes as [String: String]
+            meta = {str(k): json.dumps(v) if isinstance(v, (list, dict)) else str(v)
+                    for k, v in raw.items()}
         except Exception:
             pass
         results.append({"id": r[0], "source": r[1], "severity": r[2], "title": r[3],
