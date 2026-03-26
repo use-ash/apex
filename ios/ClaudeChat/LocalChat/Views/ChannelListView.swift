@@ -10,6 +10,8 @@ struct ChannelListView: View {
 
     /// Optional callback for drawer mode; when nil, falls back to sheet dismiss.
     var onSelect: (() -> Void)?
+    var onShowSearch: (() -> Void)?
+    var onShowSettings: (() -> Void)?
 
     private func close() {
         if let onSelect { onSelect() } else { dismiss() }
@@ -90,6 +92,37 @@ struct ChannelListView: View {
                         Image(systemName: "plus")
                     }
                 }
+            }
+            .safeAreaInset(edge: .bottom) {
+                HStack(spacing: 0) {
+                    Button {
+                        close()
+                        onShowSearch?()
+                    } label: {
+                        VStack(spacing: 4) {
+                            Image(systemName: "magnifyingglass")
+                            Text("Search")
+                                .font(.caption2)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+
+                    Button {
+                        close()
+                        onShowSettings?()
+                    } label: {
+                        VStack(spacing: 4) {
+                            Image(systemName: "gearshape")
+                            Text("Settings")
+                                .font(.caption2)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+                .foregroundStyle(.secondary)
+                .padding(.vertical, 10)
+                .background(.ultraThinMaterial)
+                .overlay(alignment: .top) { Divider() }
             }
             .sheet(isPresented: $isCreatingChannel) {
                 NewChannelView(appState: appState)

@@ -59,39 +59,33 @@ struct ContentView: View {
                             isShowingConnectionDetails = true
                         }
                     } label: {
-                        HStack(spacing: 6) {
-                            connectionPill
-                            if appState.unackedAlertCount > 0 {
-                                Text("\(appState.unackedAlertCount)")
-                                    .font(.caption2.weight(.bold))
-                                    .foregroundStyle(.white)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 2)
-                                    .background(.red)
-                                    .clipShape(Capsule())
-                            }
-                        }
+                        connectionPill
                     }
                     .buttonStyle(.plain)
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 16) {
-                        Button {
-                            isShowingSettings = true
-                        } label: {
-                            Image(systemName: "gearshape")
+                    Button {
+                        // Navigate to catch-all alerts channel
+                        if let alertsChat = appState.chats.first(where: { $0.type == "alerts" && ($0.category == nil || $0.category?.isEmpty == true) }) {
+                            appState.switchToChat(alertsChat)
+                        } else if let anyAlerts = appState.chats.first(where: { $0.type == "alerts" }) {
+                            appState.switchToChat(anyAlerts)
                         }
-
-                        Button {
-                            withAnimation {
-                                isShowingSearch.toggle()
-                                if !isShowingSearch {
-                                    searchText = ""
-                                }
+                    } label: {
+                        ZStack(alignment: .topTrailing) {
+                            Image(systemName: "bell.fill")
+                                .font(.body)
+                            if appState.unackedAlertCount > 0 {
+                                Text("\(appState.unackedAlertCount)")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(.red)
+                                    .clipShape(Capsule())
+                                    .offset(x: 6, y: -6)
                             }
-                        } label: {
-                            Image(systemName: isShowingSearch ? "xmark.circle.fill" : "magnifyingglass")
                         }
                     }
                 }
@@ -254,6 +248,12 @@ struct ContentView: View {
                 withAnimation(.easeOut(duration: 0.25)) {
                     isShowingChannels = false
                 }
+            }, onShowSearch: {
+                withAnimation {
+                    isShowingSearch = true
+                }
+            }, onShowSettings: {
+                isShowingSettings = true
             })
             .frame(width: drawerWidth)
             .background(.ultraThickMaterial)
