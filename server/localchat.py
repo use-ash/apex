@@ -3933,7 +3933,20 @@ async function renameChat(chatId, newTitle) {
   // chat_updated WS event will trigger loadChats
 }
 
+let _selectChatDebounce = null;
+let _lastSelectChatId = null;
+let _lastSelectChatTime = 0;
+
 async function selectChat(id, title) {
+  // Debounce: skip if same chat selected within 500ms
+  const now = Date.now();
+  if (id === _lastSelectChatId && now - _lastSelectChatTime < 500) {
+    dbg(' selectChat DEBOUNCED:', id);
+    return;
+  }
+  _lastSelectChatId = id;
+  _lastSelectChatTime = now;
+
   dbg(' selectChat:', id, title);
   const seq = ++selectChatSeq;
   setCurrentChat(id, title || 'LocalChat');
