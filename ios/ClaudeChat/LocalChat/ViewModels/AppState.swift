@@ -27,6 +27,7 @@ final class AppState {
     var messages: [Message] = []
     var alerts: [Alert] = []
     var unackedAlertCount: Int { alerts.filter { !$0.acked }.count }
+    var toastAlert: Alert?  // Latest alert for toast overlay (any screen)
     var localModels: [LocalModel] = []
     var allModels: [ModelOption] {
         var models = Self.supportedModels
@@ -456,6 +457,9 @@ final class AppState {
                 }
             }
             alerts.insert(alert, at: 0)
+            withAnimation(.easeInOut(duration: 0.3)) {
+                toastAlert = alert  // Show toast overlay on any screen
+            }
             if scenePhase == .background || scenePhase == .inactive {
                 enqueueAlertNotification(alert)
             }

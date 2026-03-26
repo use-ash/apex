@@ -12,6 +12,8 @@ struct ContentView: View {
     @State private var openSettingsAfterConnectionSheet: Bool = false
     @State private var showUsageBanner: Bool = false
     @State private var usageHideTask: Task<Void, Never>?
+    @State private var toastDismissTask: Task<Void, Never>?
+    @State private var selectedToastAlert: Alert?
 
     var body: some View {
         NavigationStack {
@@ -118,6 +120,49 @@ struct ContentView: View {
             if isShowingChannels || channelDragOffset > 0 {
                 channelDrawer
             }
+        }
+        .overlay(alignment: .top) {
+            if let alert = appState.toastAlert {
+                AlertBubble(
+                    alert: alert,
+                    onAck: {
+                        Task { await appState.ackAlert(alert.id) }
+                        withAnimation { appState.toastAlert = nil }
+                    },
+                    onAllow: {
+                        Task { await appState.allowAlert(alert.id) }
+                        withAnimation { appState.toastAlert = nil }
+                    },
+                    onTap: {
+                        selectedToastAlert = alert
+                        withAnimation { appState.toastAlert = nil }
+                    }
+                )
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .padding(.top, 8)
+                .zIndex(100)
+                .onAppear {
+                    toastDismissTask?.cancel()
+                    toastDismissTask = Task {
+                        try? await Task.sleep(for: .seconds(8))
+                        guard !Task.isCancelled else { return }
+                        withAnimation(.easeOut(duration: 0.3)) {
+                            appState.toastAlert = nil
+                        }
+                    }
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 10)
+                        .onEnded { value in
+                            if value.translation.height < -20 {
+                                withAnimation { appState.toastAlert = nil }
+                            }
+                        }
+                )
+            }
+        }
+        .sheet(item: $selectedToastAlert) { alert in
+            AlertDetailView(alert: alert, appState: appState)
         }
         .simultaneousGesture(
             DragGesture(coordinateSpace: .global)
