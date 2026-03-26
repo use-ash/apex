@@ -1789,6 +1789,9 @@ async def api_create_alert(request: Request):
         return JSONResponse({"error": "title is required"}, status_code=400)
     alert = _create_alert(source, severity, title, body, metadata=metadata)
     await _broadcast_alert(alert)
+    # Wake any long-poll waiters
+    for evt in _alert_waiters:
+        evt.set()
     log(f"alert: id={alert['id']} src={source} sev={severity} title={title[:50]}")
     return JSONResponse(alert, status_code=201)
 
@@ -1797,6 +1800,33 @@ async def api_create_alert(request: Request):
 async def api_get_alerts(since: str | None = None, unacked: bool = False, category: str | None = None):
     return JSONResponse(_get_alerts(since=since, unacked_only=unacked, category=category))
 
+
+_alert_waiters: list[asyncio.Event] = []  # notify background pollers on new alert
+
+@app.get("/api/alerts/wait")
+async def api_wait_alert(since: str | None = None, timeout: int = 25):
+    """Long-poll: block until a new alert arrives or timeout (max 30s).
+    Returns new unacked alerts since `since`, or empty list on timeout."""
+    timeout = min(timeout, 30)
+    # Check immediately — there may already be new alerts
+    alerts = _get_alerts(since=since, unacked_only=True, limit=20)
+    if alerts:
+        return JSONResponse(alerts)
+    # Wait for new alert signal
+    event = asyncio.Event()
+    _alert_waiters.append(event)
+    try:
+        await asyncio.wait_for(event.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        pass
+    finally:
+        try:
+            _alert_waiters.remove(event)
+        except ValueError:
+            pass
+    # Check again after wakeup
+    alerts = _get_alerts(since=since, unacked_only=True, limit=20)
+    return JSONResponse(alerts)
 
 @app.post("/api/alerts/{alert_id}/ack")
 async def api_ack_alert(alert_id: str):

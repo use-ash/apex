@@ -93,6 +93,15 @@ final class APIClient {
         return try JSONDecoder().decode([Alert].self, from: data)
     }
 
+    func fetchAlertsLongPoll(since: String? = nil, timeout: Int = 20) async throws -> [Alert] {
+        var path = "/api/alerts/wait?timeout=\(timeout)&"
+        if let since = since {
+            path += "since=\(since.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? since)&"
+        }
+        let data = try await request("GET", path: path, timeout: Double(timeout + 10))
+        return try JSONDecoder().decode([Alert].self, from: data)
+    }
+
     func ackAlert(alertId: String) async throws {
         _ = try await request("POST", path: "/api/alerts/\(alertId)/ack")
     }
@@ -121,7 +130,8 @@ final class APIClient {
         path: String,
         body: Data? = nil,
         headers: [String: String] = [:],
-        baseURLOverride: String? = nil
+        baseURLOverride: String? = nil,
+        timeout: TimeInterval? = nil
     ) async throws -> Data {
         let resolvedBaseURL = normalizedBaseURL(baseURLOverride ?? baseURL)
 
@@ -132,6 +142,7 @@ final class APIClient {
         var req = URLRequest(url: url)
         req.httpMethod = method
         req.httpBody = body
+        if let timeout { req.timeoutInterval = timeout }
         if body != nil && headers["Content-Type"] == nil {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
