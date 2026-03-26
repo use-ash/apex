@@ -2898,6 +2898,32 @@ border-radius:6px;border:none;cursor:pointer}
 .alert-toast .btn-ack{background:#dc2626;color:#fff}
 .alert-toast .btn-allow{background:#16a34a;color:#fff}
 .alert-toast .btn-dismiss{background:transparent;color:inherit;opacity:.5;font-size:16px;padding:2px 6px}
+.alert-badge{position:relative;cursor:pointer;font-size:18px;padding:0 4px;user-select:none}
+.alert-badge .count{position:absolute;top:-4px;right:-6px;background:#dc2626;color:#fff;
+font-size:9px;font-weight:700;min-width:16px;height:16px;border-radius:8px;
+display:flex;align-items:center;justify-content:center;padding:0 4px}
+.alert-badge .count:empty{display:none}
+.alerts-panel{position:fixed;top:40px;right:8px;width:380px;max-height:70vh;
+background:#1a1a2e;border:1px solid #333;border-radius:12px;z-index:9998;
+overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.5);display:none}
+.alerts-panel.show{display:block}
+.alerts-panel-header{display:flex;align-items:center;justify-content:space-between;
+padding:10px 14px;border-bottom:1px solid #333;font-size:13px;font-weight:600;color:#ccc}
+.alerts-panel-header button{background:transparent;border:none;color:#888;
+font-size:11px;cursor:pointer}
+.alerts-panel-header button:hover{color:#fff}
+.alert-item{padding:10px 14px;border-bottom:1px solid #222;font-size:12px;
+display:flex;align-items:flex-start;gap:8px}
+.alert-item.acked{opacity:.4}
+.alert-item .ai-icon{font-size:14px;flex-shrink:0;margin-top:1px}
+.alert-item .ai-body{flex:1;min-width:0}
+.alert-item .ai-source{font-size:9px;font-weight:700;text-transform:uppercase;
+letter-spacing:.5px;color:#888}
+.alert-item .ai-title{font-weight:600;color:#e5e5e5;margin-top:1px}
+.alert-item .ai-time{font-size:10px;color:#666;margin-top:2px}
+.alert-item .ai-actions{display:flex;gap:4px;flex-shrink:0}
+.alert-item .ai-actions button{font-size:10px;padding:3px 8px;border-radius:5px;
+border:none;cursor:pointer;font-weight:600}
 </style>
 </head>
 <body>
@@ -2919,7 +2945,15 @@ border-radius:6px;border:none;cursor:pointer}
   <h1 id="chatTitle">LocalChat</h1>
   <span class="status ok" id="statusDot"></span>
   <span class="mode-badge {{MODE_CLASS}}" id="modeBadge">{{MODE_LABEL}}</span>
+  <span class="alert-badge" id="alertBadge" onclick="toggleAlertsPanel()" title="Alerts">&#128276;<span class="count" id="alertCount"></span></span>
   <button class="btn-icon" id="refreshBtn" title="Refresh" onclick="window.location.reload()">&#8635;</button>
+</div>
+<div class="alerts-panel" id="alertsPanel">
+  <div class="alerts-panel-header">
+    <span>Alerts</span>
+    <button onclick="clearAllAlerts()">Clear All</button>
+  </div>
+  <div id="alertsList"></div>
 </div>
 
 <div class="usage-bar" id="usageBar">
@@ -2956,7 +2990,7 @@ border-radius:6px;border:none;cursor:pointer}
 
 <div id="attachPreview" class="attach-preview"></div>
 <div id="transcribeStatus" class="transcribing" style="display:none"></div>
-<div class="composer">
+<div class="composer" id="composerBar">
   <label class="btn-compose" id="attachBtn" title="Attach file" style="cursor:pointer">
     &#128206;
     <input type="file" id="fileInput" style="position:absolute;width:0;height:0;overflow:hidden;opacity:0" multiple accept="image/*,.txt,.py,.json,.csv,.md,.yaml,.yml,.toml,.sh,.js,.ts,.html,.css">
@@ -3469,8 +3503,9 @@ function handleEvent(msg) {
       break;
 
     case 'alert_acked':
-      // Another client acked this alert — dismiss toast if it's showing
       hideAlertToast();
+      const acked = alertsCache.find(a => a.id === msg.alert_id);
+      if (acked) { acked.acked = true; renderAlertsPanel(); }
       break;
 
     case 'system':
@@ -3522,6 +3557,127 @@ function scrollBottom() {
   el.scrollTop = el.scrollHeight;
 }
 
+// --- Alerts channel view (renders in main messages area) ---
+function renderAlertsList(alerts) {
+  const el = document.getElementById('messages');
+  el.innerHTML = '';
+  if (alerts.length === 0) {
+    el.innerHTML = '<div style="padding:40px;text-align:center;color:#666">No alerts</div>';
+    return;
+  }
+  const sevIcons = {critical:'\u26a0\ufe0f',warning:'\u26a0',info:'\u2139\ufe0f'};
+  const sevColors = {critical:'#dc2626',warning:'#d97706',info:'#0891b2'};
+  alerts.forEach(a => {
+    const sev = a.severity || 'info';
+    const icon = sevIcons[sev] || '\u2139\ufe0f';
+    const color = sevColors[sev] || '#0891b2';
+    const div = document.createElement('div');
+    div.className = 'msg assistant';
+    div.style.opacity = a.acked ? '0.4' : '1';
+    let actions = '';
+    if (!a.acked) {
+      if (a.source === 'guardrail') {
+        actions += `<button onclick="channelAlertAction('allow','${a.id}',this)" style="background:#16a34a;color:#fff;border:none;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;margin-right:4px">Allow</button>`;
+      }
+      actions += `<button onclick="channelAlertAction('ack','${a.id}',this)" style="background:${color};color:#fff;border:none;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Ack</button>`;
+    } else {
+      actions = '<span style="color:#4ade80;font-size:11px">\u2713 Acked</span>';
+    }
+    const ago = timeAgo(a.created_at);
+    div.innerHTML = `<div class="bubble" style="border-left:3px solid ${color};padding:10px 14px">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+        <span style="font-size:16px">${icon}</span>
+        <span style="font-size:10px;font-weight:700;text-transform:uppercase;color:${color}">${escHtml(a.source)}</span>
+        <span style="font-size:10px;color:#666;margin-left:auto">${ago}</span>
+      </div>
+      <div style="font-weight:600;margin-bottom:4px">${escHtml(a.title)}</div>
+      ${a.body ? `<div style="font-size:12px;color:#aaa;white-space:pre-wrap;margin-bottom:6px">${escHtml(a.body)}</div>` : ''}
+      <div>${actions}</div>
+    </div>`;
+    el.appendChild(div);
+  });
+}
+function channelAlertAction(action, alertId, btn) {
+  fetch('/api/alerts/' + alertId + '/' + action, {method:'POST'}).then(r => {
+    if (r.ok && btn) {
+      const bubble = btn.closest('.msg');
+      if (bubble) bubble.style.opacity = '0.4';
+      btn.parentElement.innerHTML = '<span style="color:#4ade80;font-size:11px">\u2713 Acked</span>';
+    }
+  }).catch(() => {});
+}
+
+// --- Persistent alerts panel ---
+let alertsCache = [];
+function loadAlerts() {
+  fetch('/api/alerts?limit=50').then(r => r.json()).then(alerts => {
+    alertsCache = alerts;
+    renderAlertsPanel();
+  }).catch(() => {});
+}
+function renderAlertsPanel() {
+  const list = document.getElementById('alertsList');
+  const unacked = alertsCache.filter(a => !a.acked).length;
+  document.getElementById('alertCount').textContent = unacked > 0 ? unacked : '';
+  list.innerHTML = '';
+  if (alertsCache.length === 0) {
+    list.innerHTML = '<div style="padding:20px;text-align:center;color:#666;font-size:12px">No alerts</div>';
+    return;
+  }
+  const sevIcons = {critical:'\u26a0\ufe0f',warning:'\u26a0',info:'\u2139\ufe0f'};
+  const sevColors = {critical:'#dc2626',warning:'#d97706',info:'#0891b2'};
+  for (const a of alertsCache) {
+    const div = document.createElement('div');
+    div.className = 'alert-item' + (a.acked ? ' acked' : '');
+    const icon = sevIcons[a.severity] || '\u2139\ufe0f';
+    const color = sevColors[a.severity] || '#0891b2';
+    let actions = '';
+    if (!a.acked) {
+      if (a.source === 'guardrail') {
+        actions += `<button style="background:#16a34a;color:#fff" onclick="panelAlertAction('allow','${a.id}')">Allow</button>`;
+      }
+      actions += `<button style="background:${color};color:#fff" onclick="panelAlertAction('ack','${a.id}')">Ack</button>`;
+    }
+    const ago = timeAgo(a.created_at);
+    div.innerHTML = `<span class="ai-icon">${icon}</span>
+      <div class="ai-body">
+        <div class="ai-source">${escHtml(a.source)}</div>
+        <div class="ai-title">${escHtml(a.title)}</div>
+        <div class="ai-time">${ago}</div>
+      </div>
+      <div class="ai-actions">${actions}</div>`;
+    list.appendChild(div);
+  }
+}
+function toggleAlertsPanel() {
+  const panel = document.getElementById('alertsPanel');
+  const showing = panel.classList.toggle('show');
+  if (showing) loadAlerts();
+}
+function panelAlertAction(action, alertId) {
+  fetch('/api/alerts/' + alertId + '/' + action, {method:'POST'}).then(r => {
+    if (r.ok) {
+      const a = alertsCache.find(x => x.id === alertId);
+      if (a) a.acked = true;
+      renderAlertsPanel();
+    }
+  }).catch(() => {});
+}
+function clearAllAlerts() {
+  fetch('/api/alerts', {method:'DELETE'}).then(r => {
+    if (r.ok) { alertsCache = []; renderAlertsPanel(); }
+  }).catch(() => {});
+}
+function timeAgo(iso) {
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+  return new Date(iso).toLocaleDateString();
+}
+// Load alerts on page init
+setTimeout(loadAlerts, 1000);
+
 let alertToastTimer = null;
 function showAlertToast(msg) {
   const toast = document.getElementById('alertToast');
@@ -3555,7 +3711,10 @@ function showAlertToast(msg) {
   dismissBtn.textContent = '\u2715';
   dismissBtn.onclick = (e) => { e.stopPropagation(); hideAlertToast(); };
   actions.appendChild(dismissBtn);
-  // Show
+  // Add to persistent cache + update badge
+  alertsCache.unshift({id:msg.id,source:msg.source,severity:sev,title:msg.title||'',body:msg.body||'',acked:false,created_at:msg.created_at||new Date().toISOString()});
+  renderAlertsPanel();
+  // Show toast
   toast.classList.add('show');
   clearTimeout(alertToastTimer);
   alertToastTimer = setTimeout(hideAlertToast, 10000);
@@ -3960,7 +4119,9 @@ async function loadChats() {
     d.textContent = c.title || 'Untitled';
     d.dataset.id = c.id;
     d.dataset.title = c.title || 'Untitled';
-    d.onclick = () => selectChat(c.id, c.title).catch(err => reportError('selectChat click', err));
+    d.dataset.type = c.type || 'chat';
+    d.dataset.category = c.category || '';
+    d.onclick = () => selectChat(c.id, c.title, c.type, c.category).catch(err => reportError('selectChat click', err));
     d.ondblclick = (e) => { e.stopPropagation(); startRenameChat(d, c.id, c.title || 'Untitled'); };
     d.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteChat(c.id, c.title || 'Untitled'); };
     list.appendChild(d);
@@ -4033,7 +4194,8 @@ let _selectChatDebounce = null;
 let _lastSelectChatId = null;
 let _lastSelectChatTime = 0;
 
-async function selectChat(id, title) {
+let currentChatType = 'chat';
+async function selectChat(id, title, chatType, category) {
   // Debounce: skip if same chat selected within 500ms
   const now = Date.now();
   if (id === _lastSelectChatId && now - _lastSelectChatTime < 500) {
@@ -4043,7 +4205,15 @@ async function selectChat(id, title) {
   _lastSelectChatId = id;
   _lastSelectChatTime = now;
 
-  dbg(' selectChat:', id, title);
+  // Resolve chat type from sidebar data if not passed
+  if (!chatType) {
+    const item = document.querySelector(`.chat-item[data-id="${id}"]`);
+    chatType = item?.dataset?.type || 'chat';
+    category = item?.dataset?.category || '';
+  }
+  currentChatType = chatType || 'chat';
+
+  dbg(' selectChat:', id, title, 'type:', currentChatType);
   const seq = ++selectChatSeq;
   setCurrentChat(id, title || 'LocalChat');
   closeSidebar();
@@ -4051,6 +4221,22 @@ async function selectChat(id, title) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({action: 'attach', chat_id: id}));
   }
+
+  // Alerts channel — render alerts list instead of messages
+  if (currentChatType === 'alerts') {
+    const catParam = category ? `&category=${category}` : '';
+    const r = await fetch(`/api/alerts?limit=100${catParam}`, {credentials: 'same-origin'});
+    if (!r.ok) return;
+    const alerts = await r.json();
+    if (seq !== selectChatSeq || currentChat !== id) return;
+    renderAlertsList(alerts);
+    // Hide input bar for alerts channels
+    document.getElementById('composerBar').style.display = 'none';
+    return;
+  }
+  // Show input bar for regular chats
+  document.getElementById('composerBar').style.display = '';
+
   // Load messages
   const r = await fetch(`/api/chats/${id}/messages`, {credentials: 'same-origin'});
   if (!r.ok) {
