@@ -81,6 +81,7 @@ WORKSPACE = Path(os.environ.get("LOCALCHAT_WORKSPACE", os.getcwd()))
 MODEL = os.environ.get("LOCALCHAT_MODEL", "claude-sonnet-4-6")
 PERMISSION_MODE = os.environ.get("LOCALCHAT_PERMISSION_MODE", "acceptEdits")
 DEBUG = os.environ.get("LOCALCHAT_DEBUG", "").lower() in {"1", "true", "yes"}
+ALERT_TOKEN = os.environ.get("LOCALCHAT_ALERT_TOKEN", "")
 DB_PATH = LOCALCHAT_ROOT / "state" / "localchat.db"
 LOG_PATH = LOCALCHAT_ROOT / "state" / "localchat.log"
 LOG_MAX = 5 * 1024 * 1024  # 5MB
@@ -769,6 +770,15 @@ def _init_db() -> None:
             tokens_out INTEGER DEFAULT 0,
             created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS alerts (
+            id TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            severity TEXT NOT NULL DEFAULT 'info',
+            title TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            acked INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
         DROP TABLE IF EXISTS web_sessions;
     """)
     conn.commit()
@@ -1005,6 +1015,52 @@ def _get_messages(chat_id: str, days: int | None = None) -> list[dict]:
              "tokens_out": r[7], "created_at": r[8]} for r in rows]
 
 
+def _create_alert(source: str, severity: str, title: str, body: str) -> dict:
+    aid = uuid.uuid4().hex[:8]
+    now = _now()
+    with _db_lock:
+        conn = _get_db()
+        conn.execute(
+            "INSERT INTO alerts (id, source, severity, title, body, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (aid, source, severity, title, body, now),
+        )
+        conn.commit()
+        conn.close()
+    return {"id": aid, "source": source, "severity": severity, "title": title,
+            "body": body, "acked": False, "created_at": now}
+
+
+def _get_alerts(since: str | None = None, unacked_only: bool = False, limit: int = 100) -> list[dict]:
+    with _db_lock:
+        conn = _get_db()
+        query = "SELECT id, source, severity, title, body, acked, created_at FROM alerts"
+        params: list = []
+        conditions: list[str] = []
+        if since:
+            conditions.append("created_at > ?")
+            params.append(since)
+        if unacked_only:
+            conditions.append("acked = 0")
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+    return [{"id": r[0], "source": r[1], "severity": r[2], "title": r[3],
+             "body": r[4], "acked": bool(r[5]), "created_at": r[6]} for r in rows]
+
+
+def _ack_alert(alert_id: str) -> bool:
+    with _db_lock:
+        conn = _get_db()
+        cur = conn.execute("UPDATE alerts SET acked = 1 WHERE id = ? AND acked = 0", (alert_id,))
+        conn.commit()
+        changed = cur.rowcount > 0
+        conn.close()
+    return changed
+
+
 # ---------------------------------------------------------------------------
 # Claude Agent SDK — persistent sessions, no subprocess respawning
 # ---------------------------------------------------------------------------
@@ -1015,6 +1071,19 @@ _stream_buffers: dict[str, deque[tuple[int, dict]]] = {}
 _stream_seq: dict[str, int] = {}
 _chat_send_locks: dict[str, asyncio.Lock] = {}
 _STREAM_BUFFER_MAX = 200
+_alert_ws: set[WebSocket] = set()  # ALL connected WebSockets for alert broadcast
+
+
+async def _broadcast_alert(alert: dict) -> None:
+    """Send alert to ALL connected WebSockets."""
+    payload = {"type": "alert", **alert}
+    dead: list[WebSocket] = []
+    for ws in list(_alert_ws):
+        ok = await _safe_ws_send_json(ws, payload, chat_id="__alerts__")
+        if not ok:
+            dead.append(ws)
+    for ws in dead:
+        _alert_ws.discard(ws)
 
 
 def _make_options(session_id: str | None = None) -> ClaudeAgentOptions:
@@ -1311,20 +1380,26 @@ app = FastAPI(title="LocalChat", docs_url=None, redoc_url=None, lifespan=lifespa
 
 @app.middleware("http")
 async def verify_client_cert(request: Request, call_next):
-    """Verify client cert on HTTP requests. WebSocket bypasses this (same TLS session)."""
+    """Verify client cert on HTTP requests. Bearer token accepted for /api/alerts."""
+    path = request.url.path
+    # Bearer token auth for alert endpoints
+    if path.startswith("/api/alerts") and ALERT_TOKEN:
+        auth = request.headers.get("authorization", "")
+        if auth == f"Bearer {ALERT_TOKEN}":
+            return await call_next(request)
+        # No valid bearer token — check for client cert
     if SSL_CA:
-        # Check if the TLS transport has a peercert
         transport = request.scope.get("transport")
         peercert = None
         if transport and hasattr(transport, "get_extra_info"):
             peercert = transport.get_extra_info("peercert")
         if not peercert:
-            # Try via the ASGI scope extensions
             tls = request.scope.get("extensions", {}).get("tls", {})
             peercert = tls.get("peercert") if tls else None
         # With CERT_OPTIONAL, no peercert means no client cert was sent
-        # Allow anyway — the browser may send it for some requests and not others
-        # The TLS layer still protects against non-CA-signed certs
+        # For alert endpoints without bearer token, require cert
+        if not peercert and path.startswith("/api/alerts") and ALERT_TOKEN:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
     return await call_next(request)
 
 
@@ -1351,6 +1426,38 @@ async def api_messages(chat_id: str, request: Request, days: int | None = 3):
 @app.get("/health")
 async def health():
     return JSONResponse({"ok": True, "clients": len(_clients), "chats": len(_get_chats())})
+
+
+@app.post("/api/alerts")
+async def api_create_alert(request: Request):
+    """Webhook: ingest an alert. Auth: bearer token."""
+    if not ALERT_TOKEN:
+        return JSONResponse({"error": "Alert token not configured"}, status_code=503)
+    data = await request.json()
+    source = str(data.get("source", "unknown"))
+    severity = str(data.get("severity", "info"))
+    if severity not in ("info", "warning", "critical"):
+        severity = "info"
+    title = str(data.get("title", ""))
+    body = str(data.get("body", ""))
+    if not title:
+        return JSONResponse({"error": "title is required"}, status_code=400)
+    alert = _create_alert(source, severity, title, body)
+    await _broadcast_alert(alert)
+    log(f"alert: id={alert['id']} src={source} sev={severity} title={title[:50]}")
+    return JSONResponse(alert, status_code=201)
+
+
+@app.get("/api/alerts")
+async def api_get_alerts(since: str | None = None, unacked: bool = False):
+    return JSONResponse(_get_alerts(since=since, unacked_only=unacked))
+
+
+@app.post("/api/alerts/{alert_id}/ack")
+async def api_ack_alert(alert_id: str):
+    if _ack_alert(alert_id):
+        return JSONResponse({"ok": True})
+    return JSONResponse({"error": "Not found or already acked"}, status_code=404)
 
 
 # --- Usage meter (replicates terminal statusline) -------------------------
@@ -1605,6 +1712,7 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=1008)
         return
     await websocket.accept()
+    _alert_ws.add(websocket)
     ws_id = uuid.uuid4().hex[:6]
     log(f"websocket connected ws={ws_id} remote={websocket.client.host if websocket.client else '?'}")
     active_tasks: set[asyncio.Task] = set()
@@ -1709,6 +1817,7 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         log(f"websocket error ws={ws_id}: {type(e).__name__}: {e}")
     finally:
+        _alert_ws.discard(websocket)
         if active_tasks:
             log(f"websocket cleanup ws={ws_id}: {len(active_tasks)} send task(s) continue in background")
 
