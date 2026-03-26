@@ -82,10 +82,9 @@ struct ContentView: View {
                                     .frame(minWidth: 16, minHeight: 16)
                                     .background(.red)
                                     .clipShape(Circle())
-                                    .offset(x: 8, y: -8)
+                                    .offset(x: 4, y: -4)
                             }
                         }
-                        .frame(width: 32, height: 32)
                     }
                 }
             }
@@ -145,9 +144,10 @@ struct ContentView: View {
                         withAnimation { appState.toastAlert = nil }
                     }
                 )
+                .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
                 .transition(.move(edge: .top).combined(with: .opacity))
-                .padding(.top, 8)
-                .zIndex(100)
+                .padding(.top, 50)
+                .zIndex(999)
                 .onAppear {
                     toastDismissTask?.cancel()
                     toastDismissTask = Task {
