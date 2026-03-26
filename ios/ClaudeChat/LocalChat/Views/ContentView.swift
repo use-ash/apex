@@ -122,7 +122,7 @@ struct ContentView: View {
             }
         }
         .overlay(alignment: .top) {
-            if let alert = appState.toastAlert {
+            if let alert = appState.toastAlert, !isShowingChannels, !isShowingSettings, !isShowingConnectionDetails {
                 AlertBubble(
                     alert: alert,
                     onAck: {
