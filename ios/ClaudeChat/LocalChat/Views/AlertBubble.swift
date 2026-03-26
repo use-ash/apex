@@ -6,6 +6,8 @@ struct AlertBubble: View {
     var onAllow: (() -> Void)?
     var onTap: (() -> Void)? = nil
 
+    @State private var buttonTapped = false
+
     // MARK: - Severity
 
     private var severityColor: Color {
@@ -105,7 +107,7 @@ struct AlertBubble: View {
                     }
                     if !alert.acked {
                         if isGuardrail {
-                            Button(action: { onAllow?() }) {
+                            Button(action: { buttonTapped = true; onAllow?() }) {
                                 Text("Allow")
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(.white)
@@ -116,7 +118,7 @@ struct AlertBubble: View {
                             }
                             .buttonStyle(.plain)
                         }
-                        Button(action: { onAck?() }) {
+                        Button(action: { buttonTapped = true; onAck?() }) {
                             Text("Ack")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.white)
@@ -153,9 +155,13 @@ struct AlertBubble: View {
         .opacity(alert.acked ? 0.6 : 1.0)
         .padding(.horizontal, 12)
         .contentShape(RoundedRectangle(cornerRadius: 12))
-        .simultaneousGesture(
-            TapGesture().onEnded { onTap?() }
-        )
+        .onTapGesture {
+            if buttonTapped {
+                buttonTapped = false
+            } else {
+                onTap?()
+            }
+        }
     }
 
     // MARK: - Metadata

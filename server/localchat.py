@@ -2924,6 +2924,32 @@ letter-spacing:.5px;color:#888}
 .alert-item .ai-actions{display:flex;gap:4px;flex-shrink:0}
 .alert-item .ai-actions button{font-size:10px;padding:3px 8px;border-radius:5px;
 border:none;cursor:pointer;font-weight:600}
+.alert-detail-overlay{position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);
+display:flex;align-items:center;justify-content:center;padding:20px}
+.alert-detail-card{background:#1a1a2e;border-radius:16px;max-width:500px;width:100%;
+max-height:80vh;overflow-y:auto;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.alert-detail-card .ad-header{display:flex;align-items:center;gap:10px;padding:16px 20px;
+border-bottom:1px solid #333}
+.alert-detail-card .ad-icon{font-size:28px}
+.alert-detail-card .ad-source{font-size:10px;font-weight:700;text-transform:uppercase;
+letter-spacing:.5px;padding:3px 8px;border-radius:10px;display:inline-block}
+.alert-detail-card .ad-time{font-size:11px;color:#888;margin-top:4px}
+.alert-detail-card .ad-close{margin-left:auto;background:none;border:none;color:#888;
+font-size:20px;cursor:pointer;padding:4px 8px}
+.alert-detail-card .ad-close:hover{color:#fff}
+.alert-detail-card .ad-section{padding:12px 20px;border-bottom:1px solid #222}
+.alert-detail-card .ad-label{font-size:10px;font-weight:600;color:#888;
+text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.alert-detail-card .ad-title{font-size:16px;font-weight:600;color:#e5e5e5}
+.alert-detail-card .ad-body{font-size:13px;color:#bbb;white-space:pre-wrap;
+font-family:ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.5}
+.alert-detail-card .ad-meta-key{font-size:10px;font-weight:600;color:#888;
+text-transform:uppercase}
+.alert-detail-card .ad-meta-val{font-size:12px;color:#ccc;
+font-family:ui-monospace,monospace;word-break:break-all}
+.alert-detail-card .ad-actions{display:flex;gap:8px;padding:16px 20px}
+.alert-detail-card .ad-actions button{flex:1;padding:8px;border-radius:8px;border:none;
+font-weight:600;font-size:13px;cursor:pointer}
 </style>
 </head>
 <body>
@@ -3559,6 +3585,7 @@ function scrollBottom() {
 
 // --- Alerts channel view (renders in main messages area) ---
 function renderAlertsList(alerts) {
+  channelAlertsData = alerts;
   const el = document.getElementById('messages');
   el.innerHTML = '';
   if (alerts.length === 0) {
@@ -3574,6 +3601,8 @@ function renderAlertsList(alerts) {
     const div = document.createElement('div');
     div.className = 'msg assistant';
     div.style.opacity = a.acked ? '0.4' : '1';
+    div.style.cursor = 'pointer';
+    div.onclick = () => showAlertDetail(a.id);
     let actions = '';
     if (!a.acked) {
       if (a.source === 'guardrail') {
@@ -3597,12 +3626,67 @@ function renderAlertsList(alerts) {
     el.appendChild(div);
   });
 }
+let channelAlertsData = [];
 function channelAlertAction(action, alertId, btn) {
+  event.stopPropagation();
   fetch('/api/alerts/' + alertId + '/' + action, {method:'POST'}).then(r => {
     if (r.ok && btn) {
       const bubble = btn.closest('.msg');
       if (bubble) bubble.style.opacity = '0.4';
       btn.parentElement.innerHTML = '<span style="color:#4ade80;font-size:11px">\u2713 Acked</span>';
+    }
+  }).catch(() => {});
+}
+function showAlertDetail(alertId) {
+  const a = channelAlertsData.find(x => x.id === alertId) || alertsCache.find(x => x.id === alertId);
+  if (!a) return;
+  const sevIcons = {critical:'\u26a0\ufe0f',warning:'\u26a0',info:'\u2139\ufe0f'};
+  const sevColors = {critical:'#dc2626',warning:'#d97706',info:'#0891b2'};
+  const color = sevColors[a.severity] || '#0891b2';
+  const icon = sevIcons[a.severity] || '\u2139\ufe0f';
+  const ago = timeAgo(a.created_at);
+  let metaHtml = '';
+  if (a.metadata && Object.keys(a.metadata).length > 0) {
+    metaHtml = '<div class="ad-section"><div class="ad-label">Metadata</div>' +
+      Object.entries(a.metadata).sort((x,y) => x[0].localeCompare(y[0])).map(([k,v]) =>
+        `<div style="margin-top:8px"><div class="ad-meta-key">${escHtml(k)}</div><div class="ad-meta-val">${escHtml(v)}</div></div>`
+      ).join('') + '</div>';
+  }
+  let actions = '';
+  if (!a.acked) {
+    if (a.source === 'guardrail') {
+      actions += `<button style="background:#16a34a;color:#fff" onclick="detailAlertAction('allow','${a.id}')">Allow</button>`;
+    }
+    actions += `<button style="background:${color};color:#fff" onclick="detailAlertAction('ack','${a.id}')">Ack</button>`;
+  }
+  actions += `<button style="background:#333;color:#ccc" onclick="navigator.clipboard.writeText(${JSON.stringify(a.body||'')})">Copy</button>`;
+  const overlay = document.createElement('div');
+  overlay.className = 'alert-detail-overlay';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.innerHTML = `<div class="alert-detail-card">
+    <div class="ad-header">
+      <span class="ad-icon">${icon}</span>
+      <div>
+        <span class="ad-source" style="background:${color}22;color:${color}">${escHtml((a.source||'').toUpperCase())}</span>
+        <div class="ad-time">${ago}${a.acked ? ' \u2014 \u2713 Acknowledged' : ''}</div>
+      </div>
+      <button class="ad-close" onclick="this.closest('.alert-detail-overlay').remove()">\u2715</button>
+    </div>
+    <div class="ad-section"><div class="ad-label">Title</div><div class="ad-title">${escHtml(a.title)}</div></div>
+    ${a.body ? `<div class="ad-section"><div class="ad-label">Details</div><div class="ad-body">${escHtml(a.body)}</div></div>` : ''}
+    ${metaHtml}
+    <div class="ad-actions">${actions}</div>
+  </div>`;
+  document.body.appendChild(overlay);
+}
+function detailAlertAction(action, alertId) {
+  fetch('/api/alerts/' + alertId + '/' + action, {method:'POST'}).then(r => {
+    if (r.ok) {
+      document.querySelector('.alert-detail-overlay')?.remove();
+      // Refresh channel view if on alerts channel
+      if (currentChatType === 'alerts' && currentChat) {
+        selectChat(currentChat).catch(() => {});
+      }
     }
   }).catch(() => {});
 }
@@ -3712,8 +3796,10 @@ function showAlertToast(msg) {
   dismissBtn.onclick = (e) => { e.stopPropagation(); hideAlertToast(); };
   actions.appendChild(dismissBtn);
   // Add to persistent cache + update badge
-  alertsCache.unshift({id:msg.id,source:msg.source,severity:sev,title:msg.title||'',body:msg.body||'',acked:false,created_at:msg.created_at||new Date().toISOString()});
+  alertsCache.unshift({id:msg.id,source:msg.source,severity:sev,title:msg.title||'',body:msg.body||'',acked:false,created_at:msg.created_at||new Date().toISOString(),metadata:msg.metadata||{}});
   renderAlertsPanel();
+  // Click toast body to open detail
+  inner.onclick = () => { hideAlertToast(); showAlertDetail(msg.id); };
   // Show toast
   toast.classList.add('show');
   clearTimeout(alertToastTimer);
