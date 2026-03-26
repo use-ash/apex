@@ -14,6 +14,9 @@ struct ContentView: View {
     @State private var usageHideTask: Task<Void, Never>?
     @State private var toastDismissTask: Task<Void, Never>?
     @State private var selectedToastAlert: Alert?
+    @State private var isShowingBellSheet: Bool = false
+    @State private var bellSelectedAlert: Alert?
+    @State private var preBellChatId: String?
 
     var body: some View {
         NavigationStack {
@@ -66,12 +69,8 @@ struct ContentView: View {
 
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        // Navigate to catch-all alerts channel
-                        if let alertsChat = appState.chats.first(where: { $0.type == "alerts" && ($0.category == nil || $0.category?.isEmpty == true) }) {
-                            appState.switchToChat(alertsChat)
-                        } else if let anyAlerts = appState.chats.first(where: { $0.type == "alerts" }) {
-                            appState.switchToChat(anyAlerts)
-                        }
+                        Task { await appState.loadAlerts() }
+                        isShowingBellSheet = true
                     } label: {
                         ZStack(alignment: .topTrailing) {
                             Image(systemName: "bell.fill")
@@ -80,13 +79,13 @@ struct ContentView: View {
                                 Text("\(appState.unackedAlertCount)")
                                     .font(.system(size: 9, weight: .bold))
                                     .foregroundStyle(.white)
-                                    .padding(.horizontal, 4)
-                                    .padding(.vertical, 1)
+                                    .frame(minWidth: 16, minHeight: 16)
                                     .background(.red)
-                                    .clipShape(Capsule())
-                                    .offset(x: 6, y: -6)
+                                    .clipShape(Circle())
+                                    .offset(x: 8, y: -8)
                             }
                         }
+                        .frame(width: 32, height: 32)
                     }
                 }
             }
@@ -109,6 +108,20 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isShowingSettings) {
             SettingsView(appState: appState)
+        }
+        .sheet(isPresented: $isShowingBellSheet) {
+            bellAlertListSheet
+        }
+        .sheet(item: $bellSelectedAlert) { alert in
+            AlertDetailView(alert: alert, appState: appState)
+                .onDisappear {
+                    // Return to the chat we were on before tapping the alert
+                    if let prevId = preBellChatId,
+                       let prevChat = appState.chats.first(where: { $0.id == prevId }) {
+                        appState.switchToChat(prevChat)
+                        preBellChatId = nil
+                    }
+                }
         }
         .overlay {
             if isShowingChannels || channelDragOffset > 0 {
@@ -195,6 +208,91 @@ struct ContentView: View {
             guard !Task.isCancelled else { return }
             withAnimation(.easeOut(duration: 0.3)) { showUsageBanner = false }
         }
+    }
+
+    // MARK: - Bell Alert List Sheet
+
+    private var bellAlertListSheet: some View {
+        NavigationStack {
+            List {
+                if appState.alerts.isEmpty {
+                    ContentUnavailableView("No Alerts", systemImage: "bell.slash", description: Text("Alerts will appear here when they arrive."))
+                } else {
+                    ForEach(appState.alerts) { alert in
+                        Button {
+                            isShowingBellSheet = false
+                            // Save current chat so we can return after detail closes
+                            preBellChatId = appState.persistentChatId
+                            // Navigate to the matching alerts channel
+                            let sourceCategory = AppState.alertCategory(for: alert.source)
+                            if let channel = appState.chats.first(where: {
+                                $0.type == "alerts" && $0.category == sourceCategory
+                            }) ?? appState.chats.first(where: {
+                                $0.type == "alerts" && ($0.category == nil || $0.category?.isEmpty == true)
+                            }) {
+                                appState.switchToChat(channel)
+                            }
+                            // Open alert detail after a brief delay for navigation
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                bellSelectedAlert = alert
+                            }
+                        } label: {
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: alert.severity == "critical" ? "exclamationmark.triangle.fill" : alert.severity == "warning" ? "exclamationmark.circle.fill" : "info.circle.fill")
+                                    .foregroundStyle(alert.severity == "critical" ? .red : alert.severity == "warning" ? .orange : .blue)
+                                    .font(.body)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack {
+                                        Text(alert.source.uppercased())
+                                            .font(.caption2.weight(.bold))
+                                            .foregroundStyle(alert.severity == "critical" ? .red : alert.severity == "warning" ? .orange : .blue)
+                                        Spacer()
+                                        Text(bellTimeAgo(alert.createdAt))
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                        if alert.acked {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .font(.caption2)
+                                                .foregroundStyle(.green)
+                                        }
+                                    }
+                                    Text(alert.title)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                    if !alert.body.isEmpty {
+                                        Text(alert.body)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(2)
+                                    }
+                                }
+                            }
+                            .opacity(alert.acked ? 0.5 : 1.0)
+                        }
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("Alerts")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { isShowingBellSheet = false }
+                }
+            }
+        }
+    }
+
+    private func bellTimeAgo(_ iso: String) -> String {
+        let fmtFrac = ISO8601DateFormatter()
+        fmtFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let fmtPlain = ISO8601DateFormatter()
+        guard let date = fmtFrac.date(from: iso) ?? fmtPlain.date(from: iso) else { return "" }
+        let secs = Date().timeIntervalSince(date)
+        if secs < 60 { return "just now" }
+        if secs < 3600 { return "\(Int(secs / 60))m ago" }
+        if secs < 86400 { return "\(Int(secs / 3600))h ago" }
+        return DateFormatter.localizedString(from: date, dateStyle: .short, timeStyle: .short)
     }
 
     // MARK: - Chat
