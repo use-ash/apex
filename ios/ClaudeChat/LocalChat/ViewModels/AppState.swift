@@ -21,6 +21,8 @@ final class AppState {
     }
     var currentChat: Chat?
     var messages: [Message] = []
+    var alerts: [Alert] = []
+    var unackedAlertCount: Int { alerts.filter { !$0.acked }.count }
     var isLoadingMessages: Bool = false
     var isEnsuringPersistentChat: Bool = false
     var error: String?
@@ -286,6 +288,12 @@ final class AppState {
             error = msg
         case .system(_, _):
             break
+        case .alert(let id, let source, let severity, let title, let body, let createdAt):
+            let alert = Alert(id: id, source: source, severity: severity, title: title, body: body, acked: false, createdAt: createdAt)
+            alerts.insert(alert, at: 0)
+            if scenePhase == .background || scenePhase == .inactive {
+                enqueueAlertNotification(alert)
+            }
         default:
             break
         }
@@ -320,6 +328,39 @@ final class AppState {
             trigger: nil
         )
 
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    func loadAlerts() async {
+        do {
+            alerts = try await apiClient.fetchAlerts()
+        } catch {
+            // Alerts are supplementary — silent fail
+        }
+    }
+
+    func ackAlert(_ alertId: String) async {
+        do {
+            try await apiClient.ackAlert(alertId: alertId)
+            if let idx = alerts.firstIndex(where: { $0.id == alertId }) {
+                alerts[idx].acked = true
+            }
+        } catch {
+            self.error = "Failed to ack alert: \(error.localizedDescription)"
+        }
+    }
+
+    private func enqueueAlertNotification(_ alert: Alert) {
+        let content = UNMutableNotificationContent()
+        content.title = "[\(alert.severity.uppercased())] \(alert.source)"
+        content.body = alert.title
+        content.sound = alert.severity == "critical" ? .defaultCritical : .default
+        content.userInfo = ["alert_id": alert.id]
+        let request = UNNotificationRequest(
+            identifier: "alert-\(alert.id)",
+            content: content,
+            trigger: nil
+        )
         UNUserNotificationCenter.current().add(request)
     }
 }

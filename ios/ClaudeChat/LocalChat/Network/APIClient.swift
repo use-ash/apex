@@ -65,6 +65,22 @@ final class APIClient {
         return try JSONDecoder().decode(UploadResponse.self, from: response)
     }
 
+    func fetchAlerts(since: String? = nil, unackedOnly: Bool = false) async throws -> [Alert] {
+        var path = "/api/alerts?"
+        if let since = since {
+            path += "since=\(since.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? since)&"
+        }
+        if unackedOnly {
+            path += "unacked=true&"
+        }
+        let data = try await request("GET", path: path)
+        return try JSONDecoder().decode([Alert].self, from: data)
+    }
+
+    func ackAlert(alertId: String) async throws {
+        _ = try await request("POST", path: "/api/alerts/\(alertId)/ack")
+    }
+
     // MARK: - Private
 
     private func request(

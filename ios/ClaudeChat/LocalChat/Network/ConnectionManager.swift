@@ -214,6 +214,15 @@ final class ConnectionManager {
                 subtype: json["subtype"] as? String ?? "",
                 model: json["model"] as? String
             )
+        case "alert":
+            return .alert(
+                id: json["id"] as? String ?? "",
+                source: json["source"] as? String ?? "",
+                severity: json["severity"] as? String ?? "info",
+                title: json["title"] as? String ?? "",
+                body: json["body"] as? String ?? "",
+                createdAt: json["created_at"] as? String ?? ""
+            )
         default:
             return .error(message: "Unknown message type: \(type)")
         }
@@ -302,6 +311,7 @@ enum ServerMessage {
     case chatUpdated(chatId: String, title: String)
     case error(message: String)
     case system(subtype: String, model: String?)
+    case alert(id: String, source: String, severity: String, title: String, body: String, createdAt: String)
 }
 
 enum ClientMessage: Encodable {
