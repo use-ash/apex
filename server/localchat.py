@@ -3713,14 +3713,16 @@ function renderAlertsPanel() {
   for (const a of alertsCache) {
     const div = document.createElement('div');
     div.className = 'alert-item' + (a.acked ? ' acked' : '');
+    div.style.cursor = 'pointer';
+    div.onclick = () => { toggleAlertsPanel(); showAlertDetail(a.id); };
     const icon = sevIcons[a.severity] || '\u2139\ufe0f';
     const color = sevColors[a.severity] || '#0891b2';
     let actions = '';
     if (!a.acked) {
       if (a.source === 'guardrail') {
-        actions += `<button style="background:#16a34a;color:#fff" onclick="panelAlertAction('allow','${a.id}')">Allow</button>`;
+        actions += `<button style="background:#16a34a;color:#fff" onclick="event.stopPropagation();panelAlertAction('allow','${a.id}')">Allow</button>`;
       }
-      actions += `<button style="background:${color};color:#fff" onclick="panelAlertAction('ack','${a.id}')">Ack</button>`;
+      actions += `<button style="background:${color};color:#fff" onclick="event.stopPropagation();panelAlertAction('ack','${a.id}')">Ack</button>`;
     }
     const ago = timeAgo(a.created_at);
     div.innerHTML = `<span class="ai-icon">${icon}</span>
