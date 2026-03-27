@@ -793,6 +793,151 @@ select {
     background: rgba(148, 163, 184, 0.05);
 }
 
+/* ===================================================================
+   Components: Logs Page
+   =================================================================== */
+
+.log-viewer {
+    background: #0F172A;
+    border: 1px solid var(--card);
+    border-radius: var(--radius);
+    max-height: 500px;
+    overflow-y: auto;
+    padding: 12px 16px;
+    font-family: "SF Mono", "Fira Code", "Cascadia Code", Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.7;
+    color: #B0BEC5;
+    scroll-behavior: smooth;
+}
+
+.log-viewer code {
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.log-line { display: block; }
+.log-line-error { color: var(--red); font-weight: 500; }
+.log-line-warn { color: var(--yellow); }
+.log-line-info { color: var(--green); }
+
+.log-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+
+.log-toolbar select,
+.log-toolbar input {
+    padding: 6px 10px;
+    font-size: 12px;
+}
+
+.log-toolbar input[type="text"] {
+    flex: 1;
+    min-width: 160px;
+    max-width: 300px;
+}
+
+.btn-livetail {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--dim);
+    border: 1px solid var(--card);
+    cursor: pointer;
+    transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+
+.btn-livetail:hover {
+    background: var(--card);
+    color: var(--text);
+}
+
+.btn-livetail.active {
+    background: rgba(16, 185, 129, 0.15);
+    color: var(--green);
+    border-color: var(--green);
+}
+
+.livetail-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--dim);
+    transition: background var(--transition);
+}
+
+.btn-livetail.active .livetail-dot {
+    background: var(--green);
+    box-shadow: 0 0 6px var(--green);
+    animation: livetailPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes livetailPulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 6px var(--green); }
+    50% { opacity: 0.4; box-shadow: 0 0 2px var(--green); }
+}
+
+.logs-action-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.logs-action-row input[type="number"] {
+    width: 70px;
+    padding: 6px 10px;
+    font-size: 12px;
+}
+
+.backup-list {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.backup-list th {
+    text-align: left;
+    padding: 8px 12px;
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--dim);
+    border-bottom: 1px solid var(--card);
+}
+
+.backup-list td {
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.backup-list tbody tr:hover {
+    background: rgba(148, 163, 184, 0.05);
+}
+
+.upload-file-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 0;
+    font-size: 13px;
+}
+
+.upload-file-item + .upload-file-item {
+    border-top: 1px solid rgba(148, 163, 184, 0.1);
+}
+
 .skill-card-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -1139,8 +1284,8 @@ select {
                 </svg>
                 Workspace
             </div>
-            <!-- Future: Logs -->
-            <div class="nav-item nav-disabled" title="Coming in Phase 5">
+            <!-- Logs -->
+            <div class="nav-item" data-page="logs" onclick="navigateTo('logs')">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
                     <polyline points="14 2 14 8 20 8"/>
@@ -1149,7 +1294,6 @@ select {
                     <polyline points="10 9 9 9 8 9"/>
                 </svg>
                 Logs
-                <span class="nav-badge">Soon</span>
             </div>
         </nav>
 
@@ -1539,6 +1683,144 @@ select {
             </div>
         </div>
 
+        <!-- =========================================================
+             LOGS PAGE
+             ========================================================= -->
+        <div class="page" id="page-logs">
+            <div class="page-header">
+                <h2>Logs &amp; Maintenance</h2>
+                <button class="btn btn-ghost" onclick="loadLogsPage()" id="btn-logs-refresh">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="23 4 23 10 17 10"/>
+                        <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+                    </svg>
+                    Refresh
+                </button>
+            </div>
+
+            <!-- Log Viewer Card -->
+            <div class="card" style="margin-bottom:20px;">
+                <div class="card-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                        <polyline points="14 2 14 8 20 8"/>
+                    </svg>
+                    Log Viewer
+                </div>
+                <div class="log-toolbar">
+                    <select id="log-lines-select" title="Lines to display">
+                        <option value="50">50 lines</option>
+                        <option value="100" selected>100 lines</option>
+                        <option value="500">500 lines</option>
+                        <option value="1000">1000 lines</option>
+                    </select>
+                    <input type="text" id="log-search-input" placeholder="Search logs...">
+                    <select id="log-level-select" title="Filter by level">
+                        <option value="">All Levels</option>
+                        <option value="ERROR">ERROR</option>
+                        <option value="WARN">WARN</option>
+                        <option value="INFO">INFO</option>
+                    </select>
+                    <button class="btn btn-ghost" onclick="loadLogs()" style="padding:6px 12px; font-size:12px;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+                            <polyline points="23 4 23 10 17 10"/>
+                            <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+                        </svg>
+                        Refresh
+                    </button>
+                    <button class="btn-livetail" id="btn-livetail" onclick="toggleLiveTail()">
+                        <span class="livetail-dot"></span>
+                        Live Tail
+                    </button>
+                </div>
+                <div class="log-viewer" id="log-viewer">
+                    <code id="log-viewer-content">Loading logs...</code>
+                </div>
+                <div style="margin-top:10px; display:flex; justify-content:flex-end;">
+                    <button class="btn btn-ghost" onclick="clearLogs()" style="padding:6px 12px; font-size:12px; color:var(--red);">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+                            <polyline points="3 6 5 6 21 6"/>
+                            <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
+                            <path d="M10 11v6"/>
+                            <path d="M14 11v6"/>
+                            <path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/>
+                        </svg>
+                        Clear Logs
+                    </button>
+                </div>
+            </div>
+
+            <!-- Database Card -->
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                            <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+                            <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+                        </svg>
+                        Database
+                    </div>
+                    <div id="db-stats-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                    </div>
+                    <div class="logs-action-row" style="margin-top:16px; padding-top:12px; border-top:1px solid var(--card);">
+                        <button class="btn btn-ghost" onclick="vacuumDb()" id="btn-vacuum" style="font-size:12px; padding:6px 12px;">Vacuum</button>
+                        <button class="btn btn-ghost" onclick="exportDb()" style="font-size:12px; padding:6px 12px;">Export</button>
+                        <span style="color:var(--dim); font-size:12px;">Purge older than</span>
+                        <input type="number" id="purge-days-input" value="30" min="1" max="365">
+                        <span style="color:var(--dim); font-size:12px;">days</span>
+                        <button class="btn btn-ghost" onclick="purgeMessages()" style="font-size:12px; padding:6px 12px; color:var(--red);">Purge</button>
+                    </div>
+                </div>
+
+                <!-- Uploads Card -->
+                <div class="card">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                            <polyline points="17 8 12 3 7 8"/>
+                            <line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                        Uploads
+                    </div>
+                    <div id="uploads-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                    </div>
+                    <div class="logs-action-row" style="margin-top:16px; padding-top:12px; border-top:1px solid var(--card);">
+                        <span style="color:var(--dim); font-size:12px;">Cleanup older than</span>
+                        <input type="number" id="uploads-days-input" value="7" min="1" max="365">
+                        <span style="color:var(--dim); font-size:12px;">days</span>
+                        <button class="btn btn-ghost" onclick="cleanupUploads()" style="font-size:12px; padding:6px 12px; color:var(--yellow);">Cleanup</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Backups Card -->
+            <div class="card" style="margin-top:4px;">
+                <div class="card-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>
+                        <polyline points="17 21 17 13 7 13 7 21"/>
+                        <polyline points="7 3 7 8 15 8"/>
+                    </svg>
+                    Backups
+                </div>
+                <div style="margin-bottom:12px;">
+                    <button class="btn btn-primary" onclick="createBackup()" id="btn-create-backup" style="font-size:12px; padding:6px 14px;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+                            <line x1="12" y1="5" x2="12" y2="19"/>
+                            <line x1="5" y1="12" x2="19" y2="12"/>
+                        </svg>
+                        Create Backup
+                    </button>
+                </div>
+                <div id="backups-content">
+                    <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                </div>
+            </div>
+        </div>
+
     </main>
 </div>
 
@@ -1672,6 +1954,7 @@ function navigateTo(page) {
         if (page === "tls") loadTLS();
         if (page === "models") loadModels();
         if (page === "workspace") loadWorkspace();
+        if (page === "logs") loadLogsPage();
     }
 }
 window.navigateTo = navigateTo;
@@ -3387,13 +3670,357 @@ function renderError(message) {
 }
 
 /* =====================================================================
+   Logs Page
+   ===================================================================== */
+
+var liveTailSource = null;
+var liveTailActive = false;
+
+async function loadLogsPage() {
+    var btnRefresh = document.getElementById("btn-logs-refresh");
+    if (btnRefresh) btnRefresh.disabled = true;
+
+    try {
+        await Promise.allSettled([
+            loadLogs(),
+            loadDbStats(),
+            loadUploads(),
+            loadBackups(),
+        ]);
+    } catch (err) {
+        showToast("Failed to load logs page: " + err.message, "error");
+    } finally {
+        if (btnRefresh) btnRefresh.disabled = false;
+    }
+}
+window.loadLogsPage = loadLogsPage;
+
+async function loadLogs() {
+    var lines = document.getElementById("log-lines-select").value || "100";
+    var search = document.getElementById("log-search-input").value || "";
+    var level = document.getElementById("log-level-select").value || "";
+
+    var params = new URLSearchParams();
+    params.set("lines", lines);
+    if (search) params.set("search", search);
+    if (level) params.set("level", level);
+
+    try {
+        var data = await apiFetch("/logs?" + params.toString());
+        var logLines = data.lines || data.logs || [];
+        renderLogLines(logLines);
+    } catch (err) {
+        var viewer = document.getElementById("log-viewer-content");
+        viewer.innerHTML = '<span class="log-line log-line-error">Error loading logs: ' + esc(err.message) + '</span>';
+    }
+}
+window.loadLogs = loadLogs;
+
+function renderLogLines(lines) {
+    var viewer = document.getElementById("log-viewer-content");
+    if (!lines || lines.length === 0) {
+        viewer.innerHTML = '<span class="log-line" style="color:var(--dim);">No log entries found.</span>';
+        return;
+    }
+    var html = "";
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        var text = typeof line === "string" ? line : (line.message || line.line || JSON.stringify(line));
+        var cls = "log-line";
+        var upper = text.toUpperCase();
+        if (upper.indexOf("ERROR") !== -1 || upper.indexOf("CRITICAL") !== -1) {
+            cls = "log-line log-line-error";
+        } else if (upper.indexOf("WARN") !== -1) {
+            cls = "log-line log-line-warn";
+        } else {
+            cls = "log-line log-line-info";
+        }
+        html += '<span class="' + cls + '">' + esc(text) + '</span>\\n';
+    }
+    viewer.innerHTML = html;
+    /* Scroll to bottom */
+    var container = document.getElementById("log-viewer");
+    container.scrollTop = container.scrollHeight;
+}
+
+function toggleLiveTail() {
+    var btn = document.getElementById("btn-livetail");
+    if (liveTailActive) {
+        /* Disconnect */
+        if (liveTailSource) {
+            liveTailSource.close();
+            liveTailSource = null;
+        }
+        liveTailActive = false;
+        btn.classList.remove("active");
+        showToast("Live tail disconnected", "warning");
+        return;
+    }
+
+    /* Connect SSE */
+    liveTailActive = true;
+    btn.classList.add("active");
+
+    var url = API.replace("/api", "") + "/api/logs/stream";
+    liveTailSource = new EventSource(url);
+
+    liveTailSource.onmessage = function(event) {
+        var viewer = document.getElementById("log-viewer-content");
+        var container = document.getElementById("log-viewer");
+        var text = event.data;
+        var cls = "log-line";
+        var upper = text.toUpperCase();
+        if (upper.indexOf("ERROR") !== -1 || upper.indexOf("CRITICAL") !== -1) {
+            cls = "log-line log-line-error";
+        } else if (upper.indexOf("WARN") !== -1) {
+            cls = "log-line log-line-warn";
+        } else {
+            cls = "log-line log-line-info";
+        }
+        viewer.innerHTML += '<span class="' + cls + '">' + esc(text) + '</span>\\n';
+
+        /* Keep buffer trimmed to ~2000 lines */
+        var spans = viewer.querySelectorAll(".log-line");
+        if (spans.length > 2000) {
+            for (var i = 0; i < spans.length - 2000; i++) {
+                spans[i].remove();
+            }
+        }
+
+        /* Auto-scroll */
+        container.scrollTop = container.scrollHeight;
+    };
+
+    liveTailSource.onerror = function() {
+        liveTailActive = false;
+        btn.classList.remove("active");
+        if (liveTailSource) {
+            liveTailSource.close();
+            liveTailSource = null;
+        }
+        showToast("Live tail connection lost", "error");
+    };
+
+    showToast("Live tail connected", "success");
+}
+window.toggleLiveTail = toggleLiveTail;
+
+async function clearLogs() {
+    if (!confirm("Clear all server logs? This cannot be undone.")) return;
+    try {
+        await apiFetch("/logs/clear", { method: "POST" });
+        showToast("Logs cleared", "success");
+        await loadLogs();
+    } catch (err) {
+        showToast("Failed to clear logs: " + err.message, "error");
+    }
+}
+window.clearLogs = clearLogs;
+
+/* -- Database -------------------------------------------------------- */
+
+async function loadDbStats() {
+    var container = document.getElementById("db-stats-content");
+    try {
+        var data = await apiFetch("/db/stats");
+        var html = "";
+        html += '<div class="stat-row"><span class="stat-label">File Size</span><span class="stat-value">' + formatBytes(data.file_size || data.size) + '</span></div>';
+        if (data.page_count != null) {
+            html += '<div class="stat-row"><span class="stat-label">Page Count</span><span class="stat-value">' + formatNumber(data.page_count) + '</span></div>';
+        }
+        html += '<div class="stat-row"><span class="stat-label">WAL Size</span><span class="stat-value">' + formatBytes(data.wal_size) + '</span></div>';
+
+        var tables = data.tables || data.row_counts || {};
+        var keys = Object.keys(tables);
+        for (var i = 0; i < keys.length; i++) {
+            html += '<div class="stat-row"><span class="stat-label">' + esc(keys[i]) + '</span><span class="stat-value">' + formatNumber(tables[keys[i]]) + ' rows</span></div>';
+        }
+        container.innerHTML = html;
+    } catch (err) {
+        container.innerHTML = renderError("Could not load DB stats: " + err.message);
+    }
+}
+
+async function vacuumDb() {
+    var btn = document.getElementById("btn-vacuum");
+    if (btn) btn.disabled = true;
+    try {
+        var data = await apiFetch("/db/vacuum", { method: "POST" });
+        var before = data.before_size || data.size_before;
+        var after = data.after_size || data.size_after;
+        if (before && after) {
+            showToast("Vacuum complete: " + formatBytes(before) + " -> " + formatBytes(after), "success");
+        } else {
+            showToast("Vacuum complete", "success");
+        }
+        await loadDbStats();
+    } catch (err) {
+        showToast("Vacuum failed: " + err.message, "error");
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+window.vacuumDb = vacuumDb;
+
+function exportDb() {
+    window.open(API + "/db/export", "_blank");
+}
+window.exportDb = exportDb;
+
+async function purgeMessages() {
+    var days = parseInt(document.getElementById("purge-days-input").value) || 30;
+    if (!confirm("Purge messages older than " + days + " days? This cannot be undone.")) return;
+    try {
+        var data = await apiFetch("/db/messages?days=" + days, { method: "DELETE" });
+        var count = data.deleted || data.count || 0;
+        showToast("Purged " + formatNumber(count) + " messages", "success");
+        await loadDbStats();
+    } catch (err) {
+        showToast("Purge failed: " + err.message, "error");
+    }
+}
+window.purgeMessages = purgeMessages;
+
+/* -- Uploads --------------------------------------------------------- */
+
+async function loadUploads() {
+    var container = document.getElementById("uploads-content");
+    try {
+        var data = await apiFetch("/uploads");
+        var files = data.files || [];
+        var totalSize = data.total_size || 0;
+        var count = data.count || files.length;
+
+        var html = '';
+        html += '<div class="stat-row"><span class="stat-label">File Count</span><span class="stat-value">' + formatNumber(count) + '</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">Total Size</span><span class="stat-value">' + formatBytes(totalSize) + '</span></div>';
+
+        if (files.length > 0) {
+            html += '<div style="margin-top:12px; max-height:200px; overflow-y:auto;">';
+            for (var i = 0; i < files.length; i++) {
+                var f = files[i];
+                var fname = typeof f === "string" ? f : (f.name || f.filename || "");
+                var fsize = typeof f === "object" ? (f.size || 0) : 0;
+                html += '<div class="upload-file-item">';
+                html += '<span style="color:var(--dim); font-size:12px; font-family:monospace;">' + esc(fname) + '</span>';
+                if (fsize) html += '<span style="font-size:12px; color:var(--dim);">' + formatBytes(fsize) + '</span>';
+                html += '</div>';
+            }
+            html += '</div>';
+        }
+        container.innerHTML = html;
+    } catch (err) {
+        container.innerHTML = renderError("Could not load uploads: " + err.message);
+    }
+}
+
+async function cleanupUploads() {
+    var days = parseInt(document.getElementById("uploads-days-input").value) || 7;
+    if (!confirm("Remove uploaded files older than " + days + " days?")) return;
+    try {
+        var data = await apiFetch("/uploads/cleanup", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ days: days }),
+        });
+        var count = data.deleted || data.removed || 0;
+        showToast("Cleaned up " + formatNumber(count) + " files", "success");
+        await loadUploads();
+    } catch (err) {
+        showToast("Cleanup failed: " + err.message, "error");
+    }
+}
+window.cleanupUploads = cleanupUploads;
+
+/* -- Backups --------------------------------------------------------- */
+
+async function loadBackups() {
+    var container = document.getElementById("backups-content");
+    try {
+        var data = await apiFetch("/backups");
+        var backups = data.backups || data.files || [];
+
+        if (!backups || backups.length === 0) {
+            container.innerHTML =
+                '<div style="padding:16px 0; text-align:center; color:var(--dim); font-size:13px;">' +
+                '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block; margin:0 auto 8px;">' +
+                    '<path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>' +
+                    '<polyline points="17 21 17 13 7 13 7 21"/>' +
+                    '<polyline points="7 3 7 8 15 8"/>' +
+                '</svg>' +
+                'No backups yet. Create one above.' +
+                '</div>';
+            return;
+        }
+
+        var html = '<table class="backup-list"><thead><tr>' +
+            '<th>Filename</th><th>Size</th><th>Date</th><th style="text-align:right;">Actions</th>' +
+            '</tr></thead><tbody>';
+
+        for (var i = 0; i < backups.length; i++) {
+            var b = backups[i];
+            var name = b.filename || b.name || "";
+            var size = b.size || 0;
+            var date = b.date || b.created || b.modified || "";
+
+            html += '<tr>';
+            html += '<td style="font-family:monospace; font-size:12px;">' + esc(name) + '</td>';
+            html += '<td>' + formatBytes(size) + '</td>';
+            html += '<td style="color:var(--dim); font-size:12px;">' + esc(date) + '</td>';
+            html += '<td style="text-align:right;">';
+            html += '<button class="btn btn-ghost" onclick="downloadBackup(\'' + esc(name).replace(/'/g, "\\\\'") + '\')" style="font-size:11px; padding:4px 10px; margin-right:4px;">Download</button>';
+            html += '<button class="btn btn-ghost" onclick="restoreBackup(\'' + esc(name).replace(/'/g, "\\\\'") + '\')" style="font-size:11px; padding:4px 10px; color:var(--yellow);">Restore</button>';
+            html += '</td>';
+            html += '</tr>';
+        }
+        html += '</tbody></table>';
+        container.innerHTML = html;
+    } catch (err) {
+        container.innerHTML = renderError("Could not load backups: " + err.message);
+    }
+}
+
+async function createBackup() {
+    var btn = document.getElementById("btn-create-backup");
+    if (btn) btn.disabled = true;
+    try {
+        var data = await apiFetch("/backup", { method: "POST" });
+        var name = data.filename || data.name || "backup";
+        showToast("Backup created: " + name, "success");
+        await loadBackups();
+    } catch (err) {
+        showToast("Backup failed: " + err.message, "error");
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+window.createBackup = createBackup;
+
+function downloadBackup(filename) {
+    window.open(API + "/backups/" + encodeURIComponent(filename), "_blank");
+}
+window.downloadBackup = downloadBackup;
+
+async function restoreBackup(filename) {
+    if (!confirm("This will overwrite your database, config, and SSL certs. Are you sure?")) return;
+    if (!confirm("FINAL WARNING: Restoring '" + filename + "' is irreversible. Type OK to proceed.")) return;
+    try {
+        await apiFetch("/backups/" + encodeURIComponent(filename) + "/restore", { method: "POST" });
+        showToast("Restore complete. Server may restart.", "success");
+    } catch (err) {
+        showToast("Restore failed: " + err.message, "error");
+    }
+}
+window.restoreBackup = restoreBackup;
+
+/* =====================================================================
    Initialization
    ===================================================================== */
 
 function init() {
     /* Route from URL hash */
     var hash = window.location.hash.replace("#", "");
-    if (hash === "config" || hash === "tls" || hash === "models" || hash === "workspace") {
+    if (hash === "config" || hash === "tls" || hash === "models" || hash === "workspace" || hash === "logs") {
         navigateTo(hash);
     } else {
         /* Default: health page */
