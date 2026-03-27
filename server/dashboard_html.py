@@ -1978,6 +1978,9 @@ function closeSidebar() {
 
 async function apiFetch(path, options) {
     try {
+        options = options || {};
+        if (!options.headers) options.headers = {};
+        options.headers['X-Requested-With'] = 'XMLHttpRequest';
         const resp = await fetch(API + path, options);
         if (!resp.ok) {
             const body = await resp.json().catch(() => ({}));
@@ -2496,15 +2499,47 @@ function renderTlsCaCard(result) {
     const el = document.getElementById("tls-ca-content");
 
     if (result.status === "rejected") {
-        el.innerHTML = renderError("Could not load CA certificate");
+        /* CA not found — offer to generate one */
+        el.innerHTML =
+            '<div class="text-dim" style="padding:8px 0;">No CA certificate found.</div>' +
+            '<button class="btn btn-primary btn-sm" onclick="generateCA()" id="btn-generate-ca">Generate CA</button>';
         return;
     }
 
     const d = result.value;
     let html = renderCertDetails(d);
     html += renderCertExpiryBar(d);
+    html += '<div style="margin-top:12px;">' +
+        '<button class="btn btn-ghost btn-sm" onclick="generateCA(true)">Re-key CA</button>' +
+    '</div>';
     el.innerHTML = html;
 }
+
+async function generateCA(rekey) {
+    if (rekey) {
+        if (!confirm("Re-keying the CA invalidates ALL existing client and server certs. Continue?")) return;
+    }
+
+    var btn = document.getElementById("btn-generate-ca");
+    if (btn) btn.disabled = true;
+
+    try {
+        var body = { cn: "Apex CA", days: 3650 };
+        if (rekey) body.force = true;
+        await apiFetch("/tls/ca/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        showToast(rekey ? "CA re-keyed. Regenerate all certs and restart." : "CA generated. Generate server + client certs next.", "success");
+        loadTLS();
+    } catch (err) {
+        showToast("CA generation failed: " + err.message, "error");
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+window.generateCA = generateCA;
 
 /* -- Render: Server Certificate ------------------------------------- */
 

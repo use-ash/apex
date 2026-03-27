@@ -27,6 +27,7 @@ Endpoints:
     GET    /api/tls/clients/{cn}/qr   — QR code / URL card for .p12
     DELETE /api/tls/clients/{cn}      — Revoke/delete client cert
     POST   /api/tls/server/renew      — Renew server cert from CA
+    POST   /api/tls/ca/generate       — Generate new CA (first-run or re-key)
     GET    /api/tls/sans              — Current SAN list from ext.cnf
     PUT    /api/tls/sans              — Update SANs in ext.cnf
 
@@ -48,6 +49,8 @@ Endpoints:
     GET    /api/workspace/claude-md                 — Read CLAUDE.md content
     PUT    /api/workspace/claude-md                 — Update CLAUDE.md (backup first)
     GET    /api/workspace/memory                    — List memory files
+    GET    /api/workspace/memory/{name}              — Read memory file content
+    PUT    /api/workspace/memory/{name}              — Update memory file (backup first)
     GET    /api/skills                              — List installed skills
     PUT    /api/skills/{name}/enabled               — Enable/disable skill
     GET    /api/guardrails/whitelist                — Read guardrail whitelist
@@ -76,9 +79,12 @@ from __future__ import annotations
 
 import asyncio
 import glob as _glob_mod
+import html
 import json
+import logging
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import subprocess
@@ -90,6 +96,7 @@ import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -101,12 +108,72 @@ from config import Config, SCHEMA
 # Module state — set by init_dashboard() at server startup
 # ---------------------------------------------------------------------------
 
+_log = logging.getLogger("apex.dashboard")
+
 _start_time: float = time.time()
+_vacuum_lock = asyncio.Lock()
+_last_vacuum: float = 0.0
+_cert_gen_times: list[float] = []
 
 _state_dir: Path | None = None
 _db_path: Path | None = None
 _ssl_dir: Path | None = None
 _config: Config | None = None
+
+
+# ---------------------------------------------------------------------------
+# Security helpers
+# ---------------------------------------------------------------------------
+
+def _safe_error(
+    public_msg: str,
+    code: str,
+    exc: Exception | None = None,
+    status: int = 500,
+) -> JSONResponse:
+    """Return a generic error to the client; log the real exception server-side."""
+    if exc is not None:
+        _log.error(f"{code}: {exc}")
+    return _error(public_msg, code, status=status)
+
+
+def _validate_ollama_url(url: str) -> str | None:
+    """Validate a URL is safe for server-side requests (SSRF protection).
+
+    Returns an error message if invalid, None if OK.
+    """
+    from urllib.parse import urlparse
+    import ipaddress
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return "Invalid URL format"
+
+    if parsed.scheme not in ("http", "https"):
+        return "Unsupported scheme (only http/https allowed)"
+
+    host = parsed.hostname or ""
+    if not host:
+        return "URL has no hostname"
+
+    # Block cloud metadata endpoints and link-local
+    try:
+        addr = ipaddress.ip_address(host)
+        blocked_networks = [
+            ipaddress.ip_network("169.254.0.0/16"),   # link-local / cloud metadata
+            ipaddress.ip_network("0.0.0.0/8"),         # "this" network
+        ]
+        for net in blocked_networks:
+            if addr in net:
+                return "Blocked address range"
+    except ValueError:
+        # hostname, not IP -- check for metadata hostnames
+        if host in ("metadata.google.internal", "metadata.aws.internal"):
+            return "Blocked metadata hostname"
+
+    return None
+
 
 
 def init_dashboard(
@@ -132,6 +199,18 @@ dashboard_app = FastAPI(
     redoc_url=None,
     openapi_url="/api/openapi.json",
 )
+
+
+@dashboard_app.middleware("http")
+async def csrf_protection(request: Request, call_next):
+    """Require X-Requested-With header on state-changing requests."""
+    if request.method in ("PUT", "POST", "DELETE"):
+        if request.headers.get("x-requested-with") != "XMLHttpRequest":
+            return JSONResponse(
+                {"error": "Missing X-Requested-With header", "code": "CSRF_REJECTED"},
+                status_code=403,
+            )
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +347,8 @@ async def api_status_db():
             "latest_alert_at": latest_alert[0] if latest_alert else None,
         })
     except sqlite3.Error as e:
-        return _error(f"Database error: {e}", "DB_ERROR")
+        _log.error(f"Database error in status/db: {e}")
+        return _error("Database operation failed", "DB_ERROR")
 
 
 def _format_bytes(n: int) -> str:
@@ -449,8 +529,25 @@ async def api_status_models():
     })
 
 
+def _validate_ollama_url(url: str) -> bool:
+    """Only allow http/https to localhost/known hosts."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return False
+    allowed_hosts = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
+    if parsed.hostname not in allowed_hosts:
+        return False
+    return True
+
+
 def _ping_ollama(base_url: str) -> dict[str, Any]:
     """Ping Ollama /api/tags and return status + available models."""
+    if not _validate_ollama_url(base_url):
+        return {
+            "status": "invalid_url",
+            "url": base_url,
+            "detail": "URL must be http/https to localhost or known local hosts",
+        }
     url = f"{base_url.rstrip('/')}/api/tags"
     try:
         req = urllib.request.Request(url, method="GET")
@@ -464,16 +561,18 @@ def _ping_ollama(base_url: str) -> dict[str, Any]:
                 "model_count": len(models),
             }
     except urllib.error.URLError as e:
+        _log.debug(f"Ollama ping failed: {e}")
         return {
             "status": "unreachable",
             "url": base_url,
-            "detail": f"Connection failed: {e.reason}",
+            "detail": "Connection failed",
         }
     except Exception as e:
+        _log.debug(f"Ollama ping error: {e}")
         return {
             "status": "unreachable",
             "url": base_url,
-            "detail": str(e),
+            "detail": "Connection failed",
         }
 
 
@@ -494,7 +593,8 @@ async def api_config():
             "config": data,
         })
     except Exception as e:
-        return _error(f"Config read error: {e}", "CONFIG_READ_ERROR")
+        _log.error(f"Config read error: {e}")
+        return _error("Failed to read configuration", "CONFIG_READ_ERROR")
 
 
 # ---------------------------------------------------------------------------
@@ -577,11 +677,13 @@ async def _update_config_section(section: str, request: Request) -> JSONResponse
             "restart_required": restart_required,
         })
     except KeyError as e:
-        return _error(str(e), "UNKNOWN_SECTION", status=400)
+        _log.warning(f"Config update unknown section: {e}")
+        return _error("Unknown configuration section", "UNKNOWN_SECTION", status=400)
     except ValueError as e:
         return _error(str(e), "VALIDATION_ERROR", status=422)
     except Exception as e:
-        return _error(f"Config update failed: {e}", "CONFIG_WRITE_ERROR")
+        _log.error(f"Config update failed: {e}")
+        return _error("Configuration update failed", "CONFIG_WRITE_ERROR")
 
 
 # ---------------------------------------------------------------------------
@@ -813,6 +915,15 @@ async def api_tls_clients_create(request: Request):
             status=409,
         )
 
+    # Rate limit: max 10 certs per hour
+    now = time.time()
+    _cert_gen_times[:] = [t for t in _cert_gen_times if now - t < 3600]
+    if len(_cert_gen_times) >= 10:
+        return _error("Rate limit: max 10 certificates per hour", "RATE_LIMITED", 429)
+    _cert_gen_times.append(now)
+
+    p12_password = secrets.token_urlsafe(16)
+
     key_path = _ssl_dir / f"{cn}.key"
     csr_path = _ssl_dir / f"{cn}.csr"
     crt_path = _ssl_dir / f"{cn}.crt"
@@ -841,7 +952,7 @@ async def api_tls_clients_create(request: Request):
          "-inkey", str(key_path),
          "-in", str(crt_path),
          "-certfile", str(ca_crt),
-         "-passout", "pass:localchat"],
+         "-passout", f"pass:{p12_password}"],
     ]
 
     for cmd in steps:
@@ -853,8 +964,9 @@ async def api_tls_clients_create(request: Request):
                 # Clean up partial artifacts
                 for f in (key_path, csr_path, crt_path, p12_path):
                     f.unlink(missing_ok=True)
+                _log.error(f"openssl failed during client cert gen: {result.stderr.strip()}")
                 return _error(
-                    f"openssl failed: {result.stderr.strip()}",
+                    "Certificate operation failed",
                     "OPENSSL_ERROR",
                 )
         except subprocess.TimeoutExpired:
@@ -874,6 +986,7 @@ async def api_tls_clients_create(request: Request):
         "cn": cn,
         "expires": expires,
         "p12_url": f"/admin/api/tls/clients/{cn}/p12",
+        "p12_password": p12_password,
     })
 
 
@@ -935,8 +1048,10 @@ async def api_tls_clients_qr(cn: str, request: Request):
         )
 
     # Build the full download URL from the request
-    base = str(request.base_url).rstrip("/")
-    download_url = f"{base}/admin/api/tls/clients/{cn}/p12"
+    safe_cn = html.escape(cn)
+    safe_base = html.escape(str(request.base_url).rstrip("/"))
+    download_url = f"{str(request.base_url).rstrip('/')}/admin/api/tls/clients/{cn}/p12"
+    safe_download_url = html.escape(download_url)
 
     # Try qrcode library for SVG generation
     try:
@@ -960,27 +1075,27 @@ async def api_tls_clients_qr(cn: str, request: Request):
         img.save(buf)
         svg_str = buf.getvalue().decode("utf-8")
 
-        html = (
+        page_html = (
             "<!DOCTYPE html><html><head><meta charset='utf-8'>"
             "<title>QR — {cn}</title>"
             "<style>body{{background:#111;color:#eee;font-family:system-ui;"
             "display:flex;flex-direction:column;align-items:center;padding:2em}}"
             "svg{{background:white;padding:1em;border-radius:8px;max-width:300px}}"
             "a{{color:#6cf;word-break:break-all}}</style></head><body>"
-            f"<h2>Client cert: {cn}</h2>"
+            f"<h2>Client cert: {safe_cn}</h2>"
             f"{svg_str}"
-            f"<p style='margin-top:1em'>Or copy: <a href='{download_url}'>"
-            f"{download_url}</a></p>"
-            f"<p>Install password: <code>localchat</code></p>"
+            f"<p style='margin-top:1em'>Or copy: <a href='{safe_download_url}'>"
+            f"{safe_download_url}</a></p>"
+            f"<p>Install password was shown at certificate generation time.</p>"
             "</body></html>"
         )
-        return HTMLResponse(html)
+        return HTMLResponse(page_html)
 
     except ImportError:
         # Fallback: URL card without QR
-        html = (
+        page_html = (
             "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-            f"<title>Download — {cn}</title>"
+            f"<title>Download — {safe_cn}</title>"
             "<style>body{background:#111;color:#eee;font-family:system-ui;"
             "display:flex;flex-direction:column;align-items:center;padding:2em}"
             ".card{background:#222;padding:2em;border-radius:12px;max-width:500px;"
@@ -988,15 +1103,15 @@ async def api_tls_clients_qr(cn: str, request: Request):
             "a{color:#6cf;font-size:1.1em;word-break:break-all}"
             "code{background:#333;padding:2px 8px;border-radius:4px}</style></head>"
             "<body><div class='card'>"
-            f"<h2>Client cert: {cn}</h2>"
+            f"<h2>Client cert: {safe_cn}</h2>"
             f"<p>Download URL:</p>"
-            f"<p><a href='{download_url}'>{download_url}</a></p>"
-            f"<p style='margin-top:1em'>Install password: <code>localchat</code></p>"
+            f"<p><a href='{safe_download_url}'>{safe_download_url}</a></p>"
+            f"<p style='margin-top:1em'>Install password was shown at certificate generation time.</p>"
             "<p style='color:#888;font-size:0.85em;margin-top:1em'>"
             "QR code unavailable — install <code>qrcode</code> package for SVG QR.</p>"
             "</div></body></html>"
         )
-        return HTMLResponse(html)
+        return HTMLResponse(page_html)
 
 
 # ---------------------------------------------------------------------------
@@ -1088,8 +1203,9 @@ async def api_tls_server_renew():
                 cmd, capture_output=True, text=True, timeout=30,
             )
             if result.returncode != 0:
+                _log.error(f"openssl failed during server cert renewal: {result.stderr.strip()}")
                 return _error(
-                    f"openssl failed: {result.stderr.strip()}",
+                    "Certificate operation failed",
                     "OPENSSL_ERROR",
                 )
         except subprocess.TimeoutExpired:
@@ -1244,6 +1360,97 @@ async def api_tls_sans_update(request: Request):
     })
 
 
+# ---------------------------------------------------------------------------
+# POST /api/tls/ca/generate — Generate a new CA (first-run or re-key)
+# ---------------------------------------------------------------------------
+
+@dashboard_app.post("/api/tls/ca/generate")
+async def api_tls_ca_generate(request: Request):
+    """Generate a new Certificate Authority.
+
+    Creates a self-signed CA cert + key in the ssl directory.
+    If a CA already exists, requires {"force": true} to overwrite.
+    After re-keying, all existing client/server certs become invalid.
+
+    Body (optional): {"cn": "Apex CA", "days": 3650, "force": false}
+    """
+    if _ssl_dir is None:
+        return _not_initialized()
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    if not isinstance(body, dict):
+        body = {}
+
+    cn = body.get("cn", "Apex CA").strip() or "Apex CA"
+    days = body.get("days", 3650)
+    force = body.get("force", False)
+
+    if not isinstance(days, int) or days < 1 or days > 7300:
+        return _error("days must be an integer between 1 and 7300", "INVALID_DAYS", 400)
+
+    ca_crt = _ssl_dir / "ca.crt"
+    ca_key = _ssl_dir / "ca.key"
+
+    if ca_crt.exists() and not force:
+        return _error(
+            "CA already exists. Pass {\"force\": true} to overwrite. "
+            "WARNING: This invalidates ALL existing client and server certs.",
+            "CA_EXISTS",
+            status=409,
+        )
+
+    # Ensure ssl directory exists
+    _ssl_dir.mkdir(parents=True, exist_ok=True)
+
+    steps = [
+        # 1. Generate CA private key
+        ["openssl", "genrsa", "-out", str(ca_key), "4096"],
+        # 2. Generate self-signed CA certificate
+        ["openssl", "req", "-x509", "-new", "-nodes",
+         "-key", str(ca_key),
+         "-sha256",
+         "-days", str(days),
+         "-out", str(ca_crt),
+         "-subj", f"/CN={cn}"],
+    ]
+
+    for cmd in steps:
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                # Clean up partial artifacts
+                ca_key.unlink(missing_ok=True)
+                ca_crt.unlink(missing_ok=True)
+                _log.error(f"openssl failed during CA generation: {result.stderr.strip()}")
+                return _error(
+                    "Certificate operation failed",
+                    "OPENSSL_ERROR",
+                )
+        except subprocess.TimeoutExpired:
+            ca_key.unlink(missing_ok=True)
+            ca_crt.unlink(missing_ok=True)
+            return _error("openssl command timed out", "OPENSSL_TIMEOUT")
+
+    # Parse the new CA cert for details
+    info = _parse_cert_full(ca_crt)
+
+    return JSONResponse({
+        "status": "ok",
+        "cn": cn,
+        "days": days,
+        "expires": info["expires"] if info else "unknown",
+        "fingerprint": info["fingerprint"] if info else "unknown",
+        "restart_required": True,
+        "message": "CA generated. Generate a server cert and client certs, then restart.",
+    })
+
+
 # ===========================================================================
 # Phase 3 — Models, Credentials, Alerts
 # ===========================================================================
@@ -1272,6 +1479,9 @@ def _update_env_var(key: str, value: str) -> None:
     Reads existing content, replaces the line if found, appends if not.
     Writes via temp file + rename for atomicity.
     """
+    if any(c in value for c in '\n\r\0'):
+        raise ValueError("Value contains invalid characters (newline or null)")
+
     import tempfile as _tf
 
     content = _read_env_file()
@@ -1347,7 +1557,8 @@ async def api_config_models_default(request: Request):
     except ValueError as e:
         return _error(str(e), "VALIDATION_ERROR", status=422)
     except Exception as e:
-        return _error(f"Config update failed: {e}", "CONFIG_WRITE_ERROR")
+        _log.error(f"Config update failed: {e}")
+        return _error("Configuration update failed", "CONFIG_WRITE_ERROR")
 
     # Update module-level MODEL var in the main server module
     try:
@@ -1389,7 +1600,8 @@ async def api_config_models_permission(request: Request):
     except ValueError as e:
         return _error(str(e), "VALIDATION_ERROR", status=422)
     except Exception as e:
-        return _error(f"Config update failed: {e}", "CONFIG_WRITE_ERROR")
+        _log.error(f"Config update failed: {e}")
+        return _error("Configuration update failed", "CONFIG_WRITE_ERROR")
 
     return JSONResponse({
         "status": "ok",
@@ -1421,7 +1633,8 @@ async def api_models_claude():
     except FileNotFoundError:
         keychain_error = "security command not found (not macOS?)"
     except Exception as e:
-        keychain_error = str(e)
+        _log.debug(f"Keychain error: {e}")
+        keychain_error = "keychain lookup failed"
 
     status = "configured" if (env_set or keychain_set) else "not_configured"
 
@@ -1448,6 +1661,17 @@ async def api_models_ollama():
 
     ollama_url = (_config.get("models", "ollama_url")
                   or "http://localhost:11434")
+
+    if not _validate_ollama_url(ollama_url):
+        return JSONResponse({
+            "status": "invalid_url",
+            "url": ollama_url,
+            "detail": "URL must be http/https to localhost or known local hosts",
+            "models": [],
+            "model_count": 0,
+            "running": [],
+        })
+
     base = ollama_url.rstrip("/")
 
     # Fetch model list from /api/tags
@@ -1466,9 +1690,11 @@ async def api_models_ollama():
                     "digest": m.get("digest", "")[:12],
                 })
     except urllib.error.URLError as e:
-        tags_error = f"Connection failed: {e.reason}"
+        _log.debug(f"Ollama tags failed: {e}")
+        tags_error = "Connection failed"
     except Exception as e:
-        tags_error = str(e)
+        _log.debug(f"Ollama tags error: {e}")
+        tags_error = "Connection failed"
 
     # Fetch running models from /api/ps
     running: list[dict[str, Any]] = []
@@ -1485,9 +1711,11 @@ async def api_models_ollama():
                     "expires_at": m.get("expires_at", ""),
                 })
     except urllib.error.URLError as e:
-        ps_error = f"Connection failed: {e.reason}"
+        _log.debug(f"Ollama ps failed: {e}")
+        ps_error = "Connection failed"
     except Exception as e:
-        ps_error = str(e)
+        _log.debug(f"Ollama ps error: {e}")
+        ps_error = "Connection failed"
 
     reachable = tags_error is None
     resp: dict[str, Any] = {
@@ -1576,7 +1804,8 @@ async def api_credentials_update(provider: str, request: Request):
     try:
         _update_env_var(env_var_name, key_value)
     except Exception as e:
-        return _error(f"Failed to update .env: {e}", "ENV_WRITE_ERROR")
+        _log.error(f"Failed to update .env: {e}")
+        return _error("Failed to update credentials file", "ENV_WRITE_ERROR")
 
     # Also update the current process environment
     os.environ[env_var_name] = key_value
@@ -1609,7 +1838,8 @@ async def api_credentials_alert_token_rotate():
     try:
         _update_env_var("LOCALCHAT_ALERT_TOKEN", new_token)
     except Exception as e:
-        return _error(f"Failed to update .env: {e}", "ENV_WRITE_ERROR")
+        _log.error(f"Failed to update .env: {e}")
+        return _error("Failed to update credentials file", "ENV_WRITE_ERROR")
 
     os.environ["LOCALCHAT_ALERT_TOKEN"] = new_token
 
@@ -1684,7 +1914,8 @@ async def api_alerts_config_telegram(request: Request):
         _update_env_var("TELEGRAM_BOT_TOKEN", bot_token)
         _update_env_var("TELEGRAM_CHAT_ID", chat_id)
     except Exception as e:
-        return _error(f"Failed to update .env: {e}", "ENV_WRITE_ERROR")
+        _log.error(f"Failed to update .env: {e}")
+        return _error("Failed to update credentials file", "ENV_WRITE_ERROR")
 
     os.environ["TELEGRAM_BOT_TOKEN"] = bot_token
     os.environ["TELEGRAM_CHAT_ID"] = chat_id
@@ -1728,7 +1959,8 @@ async def api_alerts_test():
             conn.close()
             db_ok = True
         except sqlite3.Error as e:
-            results["db"] = {"status": "error", "detail": str(e)}
+            _log.error(f"Test alert DB error: {e}")
+            results["db"] = {"status": "error", "detail": "Database write failed"}
 
     if db_ok:
         results["db"] = {"status": "ok", "detail": "Test alert inserted"}
@@ -1786,17 +2018,19 @@ async def api_alerts_test():
         except urllib.error.HTTPError as e:
             try:
                 err_body = json.loads(e.read().decode())
-                detail = err_body.get("description", str(e))
+                detail = err_body.get("description", "Telegram API error")
             except Exception:
-                detail = str(e)
+                detail = "Telegram API error"
             results["telegram"] = {"status": "error", "detail": detail}
         except urllib.error.URLError as e:
+            _log.debug(f"Telegram connection error: {e}")
             results["telegram"] = {
                 "status": "error",
-                "detail": f"Connection failed: {e.reason}",
+                "detail": "Connection to Telegram failed",
             }
         except Exception as e:
-            results["telegram"] = {"status": "error", "detail": str(e)}
+            _log.error(f"Telegram test error: {e}")
+            results["telegram"] = {"status": "error", "detail": "Telegram request failed"}
 
     # Overall
     all_ok = all(r.get("status") == "ok" for r in results.values())
@@ -1852,7 +2086,8 @@ async def api_workspace_claude_md_get():
     try:
         content = claude_md.read_text(encoding="utf-8")
     except Exception as e:
-        return _error(f"Failed to read CLAUDE.md: {e}", "READ_ERROR")
+        _log.error(f"Failed to read CLAUDE.md: {e}")
+        return _error("Failed to read CLAUDE.md", "READ_ERROR")
     return JSONResponse({
         "path": str(claude_md),
         "content": content,
@@ -1880,7 +2115,8 @@ async def api_workspace_claude_md_put(request: Request):
             shutil.copy2(str(claude_md), str(bak))
         claude_md.write_text(content, encoding="utf-8")
     except Exception as e:
-        return _error(f"Failed to write CLAUDE.md: {e}", "WRITE_ERROR")
+        _log.error(f"Failed to write CLAUDE.md: {e}")
+        return _error("Failed to write CLAUDE.md", "WRITE_ERROR")
 
     return JSONResponse({
         "status": "ok",
@@ -1912,6 +2148,106 @@ async def api_workspace_memory():
         })
 
     return JSONResponse({"files": files, "count": len(files)})
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/memory/{name} — Read a memory file
+# ---------------------------------------------------------------------------
+
+_MEMORY_NAME_RE = re.compile(r"^[\w\-]+\.md$")
+
+
+@dashboard_app.get("/api/workspace/memory/{name}")
+async def api_workspace_memory_read(name: str):
+    """Read a single memory file's content."""
+    if not _MEMORY_NAME_RE.match(name):
+        return _error("Invalid memory file name", "INVALID_NAME", 400)
+
+    memory_dir = WORKSPACE / "memory"
+    path = memory_dir / name
+    # Prevent path traversal
+    try:
+        path.resolve().relative_to(memory_dir.resolve())
+    except ValueError:
+        return _error("Invalid memory file path", "PATH_TRAVERSAL", 400)
+
+    if not path.exists():
+        return _error(f"Memory file '{name}' not found", "NOT_FOUND", 404)
+
+    try:
+        content = path.read_text(encoding="utf-8")
+        st = path.stat()
+        return JSONResponse({
+            "status": "ok",
+            "name": name,
+            "content": content,
+            "size_bytes": st.st_size,
+            "modified": datetime.fromtimestamp(
+                st.st_mtime, tz=timezone.utc
+            ).isoformat(),
+        })
+    except Exception as e:
+        _log.error(f"Memory file read error: {e}")
+        return _error("Failed to read memory file", "READ_ERROR")
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/workspace/memory/{name} — Update a memory file (with backup)
+# ---------------------------------------------------------------------------
+
+@dashboard_app.put("/api/workspace/memory/{name}")
+async def api_workspace_memory_write(name: str, request: Request):
+    """Write a memory file, backing up the original first."""
+    if not _MEMORY_NAME_RE.match(name):
+        return _error("Invalid memory file name", "INVALID_NAME", 400)
+
+    memory_dir = WORKSPACE / "memory"
+    path = memory_dir / name
+    try:
+        path.resolve().relative_to(memory_dir.resolve())
+    except ValueError:
+        return _error("Invalid memory file path", "PATH_TRAVERSAL", 400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _error("Invalid JSON", "INVALID_JSON", 400)
+
+    content = body.get("content")
+    if content is None:
+        return _error("Missing 'content' field", "BAD_REQUEST", 400)
+
+    # Backup existing file
+    if path.exists():
+        bak = memory_dir / f"{name}.bak"
+        try:
+            shutil.copy2(str(path), str(bak))
+        except Exception:
+            pass  # best-effort backup
+
+    # Atomic write
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        fd, tmp = tempfile.mkstemp(dir=str(memory_dir), suffix=".tmp")
+        try:
+            os.write(fd, content.encode("utf-8"))
+        finally:
+            os.close(fd)
+        os.replace(tmp, str(path))
+    except Exception as e:
+        _log.error(f"Memory file write error: {e}")
+        return _error("Failed to write memory file", "WRITE_ERROR")
+
+    st = path.stat()
+    return JSONResponse({
+        "status": "ok",
+        "name": name,
+        "size_bytes": st.st_size,
+        "modified": datetime.fromtimestamp(
+            st.st_mtime, tz=timezone.utc
+        ).isoformat(),
+        "message": f"Memory file '{name}' saved.",
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -2048,7 +2384,8 @@ async def api_guardrails_whitelist():
         if not isinstance(entries, list):
             entries = []
     except Exception as e:
-        return _error(f"Failed to read whitelist: {e}", "READ_ERROR")
+        _log.error(f"Failed to read whitelist: {e}")
+        return _error("Failed to read whitelist", "READ_ERROR")
 
     # Annotate each entry with whether it's expired
     now = datetime.now(timezone.utc).isoformat()
@@ -2079,7 +2416,8 @@ async def api_guardrails_whitelist_delete(entry_id: int):
         if not isinstance(entries, list):
             return _error("Whitelist is not an array", "BAD_FORMAT", status=500)
     except Exception as e:
-        return _error(f"Failed to read whitelist: {e}", "READ_ERROR")
+        _log.error(f"Failed to read whitelist: {e}")
+        return _error("Failed to read whitelist", "READ_ERROR")
 
     if entry_id < 0 or entry_id >= len(entries):
         return _error(
@@ -2121,7 +2459,8 @@ async def api_sessions():
         ).fetchall()
         conn.close()
     except sqlite3.Error as e:
-        return _error(f"Database error: {e}", "DB_ERROR")
+        _log.error(f"Database error in sessions list: {e}")
+        return _error("Database operation failed", "DB_ERROR")
 
     sessions = []
     for r in rows:
@@ -2153,7 +2492,8 @@ async def api_sessions_compact(chat_id: str):
             status=501,
         )
     except Exception as e:
-        return _error(f"Compaction failed: {e}", "COMPACT_ERROR")
+        _log.error(f"Compaction failed: {e}")
+        return _error("Compaction failed", "COMPACT_ERROR")
 
     return JSONResponse({
         "status": "ok",
@@ -2176,7 +2516,8 @@ async def api_sessions_delete(chat_id: str):
     except AttributeError:
         pass  # Function may not exist yet — still clear DB below
     except Exception as e:
-        return _error(f"Failed to disconnect client: {e}", "DISCONNECT_ERROR")
+        _log.error(f"Failed to disconnect client: {e}")
+        return _error("Failed to disconnect client", "DISCONNECT_ERROR")
 
     # Clear session_id in database
     if _db_path and _db_path.exists():
@@ -2189,7 +2530,8 @@ async def api_sessions_delete(chat_id: str):
             conn.commit()
             conn.close()
         except sqlite3.Error as e:
-            return _error(f"Failed to clear session in DB: {e}", "DB_ERROR")
+            _log.error(f"Failed to clear session in DB: {e}")
+            return _error("Failed to clear session in database", "DB_ERROR")
 
     return JSONResponse({
         "status": "ok",
@@ -2323,7 +2665,8 @@ async def api_logs_stream():
         except asyncio.CancelledError:
             return
         except Exception as exc:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+            _log.error(f"Log stream error: {exc}")
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Stream error'})}\n\n"
 
     return StreamingResponse(
         _event_generator(),
@@ -2362,7 +2705,8 @@ async def api_logs_clear():
             "detail": f"Rotated {old_size} bytes to localchat.log.1",
         })
     except OSError as e:
-        return _error(f"Failed to rotate log: {e}", "LOG_ROTATE_FAILED")
+        _log.error(f"Failed to rotate log: {e}")
+        return _error("Failed to rotate log file", "LOG_ROTATE_FAILED")
 
 
 # ---------------------------------------------------------------------------
@@ -2395,7 +2739,8 @@ async def api_db_stats():
         for row in tables_raw:
             tname = row[0]
             try:
-                cnt = conn.execute(f'SELECT COUNT(*) FROM "{tname}"').fetchone()[0]
+                safe_name = tname.replace('"', '""')
+                cnt = conn.execute(f'SELECT COUNT(*) FROM "{safe_name}"').fetchone()[0]
                 table_counts[tname] = cnt
             except sqlite3.Error:
                 table_counts[tname] = -1
@@ -2411,9 +2756,11 @@ async def api_db_stats():
             "tables": table_counts,
         })
     except sqlite3.Error as e:
-        return _error(f"Database error: {e}", "DB_ERROR")
+        _log.error(f"Database error in db/stats: {e}")
+        return _error("Database operation failed", "DB_ERROR")
     except OSError as e:
-        return _error(f"OS error: {e}", "OS_ERROR")
+        _log.error(f"OS error in db/stats: {e}")
+        return _error("File system error", "OS_ERROR")
 
 
 # ---------------------------------------------------------------------------
@@ -2423,14 +2770,30 @@ async def api_db_stats():
 @dashboard_app.post("/api/db/vacuum")
 async def api_db_vacuum():
     """Run VACUUM on the database, return before/after sizes."""
+    global _last_vacuum
+
     if _db_path is None or not _db_path.exists():
         return _error("Database not found", "DB_NOT_FOUND", 404)
 
+    if time.time() - _last_vacuum < 3600:
+        return _error("Vacuum already ran recently — wait 1 hour", "RATE_LIMITED", 429)
+    if _vacuum_lock.locked():
+        return _error("Vacuum already in progress", "ALREADY_RUNNING", 409)
+
     try:
         size_before = _db_path.stat().st_size
-        conn = sqlite3.connect(str(_db_path), check_same_thread=False)
-        conn.execute("VACUUM")
-        conn.close()
+
+        async with _vacuum_lock:
+            db_path_str = str(_db_path)
+
+            def _do_vacuum():
+                conn = sqlite3.connect(db_path_str, check_same_thread=False)
+                conn.execute("VACUUM")
+                conn.close()
+
+            await asyncio.to_thread(_do_vacuum)
+            _last_vacuum = time.time()
+
         size_after = _db_path.stat().st_size
 
         return JSONResponse({
@@ -2440,7 +2803,8 @@ async def api_db_vacuum():
             "freed_bytes": size_before - size_after,
         })
     except sqlite3.Error as e:
-        return _error(f"VACUUM failed: {e}", "VACUUM_FAILED")
+        _log.error(f"VACUUM failed: {e}")
+        return _error("VACUUM operation failed", "VACUUM_FAILED")
 
 
 # ---------------------------------------------------------------------------
@@ -2449,21 +2813,20 @@ async def api_db_vacuum():
 
 @dashboard_app.get("/api/db/export")
 async def api_db_export():
-    """Download the database file as a binary blob."""
+    """Download the database file as a streaming binary blob."""
     if _db_path is None or not _db_path.exists():
         return _error("Database not found", "DB_NOT_FOUND", 404)
 
-    try:
-        data = _db_path.read_bytes()
-        return Response(
-            content=data,
-            media_type="application/octet-stream",
-            headers={
-                "Content-Disposition": 'attachment; filename="localchat.db"',
-            },
-        )
-    except OSError as e:
-        return _error(f"Failed to read database: {e}", "DB_READ_FAILED")
+    def _stream_file(path: Path):
+        with open(path, "rb") as f:
+            while chunk := f.read(65536):
+                yield chunk
+
+    return StreamingResponse(
+        _stream_file(_db_path),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{_db_path.name}"'},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2493,7 +2856,8 @@ async def api_db_messages_purge(days: int = 30):
             "older_than_days": days,
         })
     except sqlite3.Error as e:
-        return _error(f"Purge failed: {e}", "PURGE_FAILED")
+        _log.error(f"Message purge failed: {e}")
+        return _error("Message purge failed", "PURGE_FAILED")
 
 
 # ---------------------------------------------------------------------------
@@ -2526,7 +2890,8 @@ async def api_uploads_list():
                         "type": suffix or "unknown",
                     })
     except OSError as e:
-        return _error(f"Failed to list uploads: {e}", "UPLOADS_LIST_FAILED")
+        _log.error(f"Failed to list uploads: {e}")
+        return _error("Failed to list uploaded files", "UPLOADS_LIST_FAILED")
 
     files.sort(key=lambda f: f["modified"], reverse=True)
     return JSONResponse({"files": files, "total": len(files)})
@@ -2557,7 +2922,8 @@ async def api_uploads_cleanup(days: int = 7):
                     os.unlink(entry.path)
                     deleted += 1
     except OSError as e:
-        return _error(f"Cleanup failed: {e}", "CLEANUP_FAILED")
+        _log.error(f"Upload cleanup failed: {e}")
+        return _error("Cleanup failed", "CLEANUP_FAILED")
 
     return JSONResponse({
         "status": "ok",
@@ -2609,7 +2975,8 @@ async def api_backup_create():
             "size_bytes": size,
         })
     except (OSError, tarfile.TarError) as e:
-        return _error(f"Backup failed: {e}", "BACKUP_FAILED")
+        _log.error(f"Backup creation failed: {e}")
+        return _error("Backup creation failed", "BACKUP_FAILED")
 
 
 # ---------------------------------------------------------------------------
@@ -2640,7 +3007,8 @@ async def api_backups_list():
                         ).isoformat(),
                     })
     except OSError as e:
-        return _error(f"Failed to list backups: {e}", "BACKUPS_LIST_FAILED")
+        _log.error(f"Failed to list backups: {e}")
+        return _error("Failed to list backups", "BACKUPS_LIST_FAILED")
 
     backups.sort(key=lambda b: b["created"], reverse=True)
     return JSONResponse({"backups": backups, "total": len(backups)})
@@ -2675,7 +3043,8 @@ async def api_backup_download(filename: str):
             },
         )
     except OSError as e:
-        return _error(f"Failed to read backup: {e}", "BACKUP_READ_FAILED")
+        _log.error(f"Failed to read backup: {e}")
+        return _error("Failed to read backup file", "BACKUP_READ_FAILED")
 
 
 # ---------------------------------------------------------------------------
@@ -2719,6 +3088,12 @@ async def api_backup_restore(request: Request):
                         "UNSAFE_ARCHIVE",
                         400,
                     )
+                if member.issym() or member.islnk():
+                    return _error(
+                        f"Unsafe archive member (symlink/hardlink): {member.name}",
+                        "UNSAFE_ARCHIVE",
+                        status_code=400,
+                    )
             tar.extractall(path=str(tmp_dir))
 
         extracted = list(tmp_dir.rglob("*"))
@@ -2759,7 +3134,8 @@ async def api_backup_restore(request: Request):
         })
 
     except (tarfile.TarError, OSError) as e:
-        return _error(f"Restore failed: {e}", "RESTORE_FAILED")
+        _log.error(f"Restore failed: {e}")
+        return _error("Backup restore failed", "RESTORE_FAILED")
     finally:
         if tmp_dir and tmp_dir.exists():
             shutil.rmtree(str(tmp_dir), ignore_errors=True)
