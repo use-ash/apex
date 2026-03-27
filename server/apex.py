@@ -95,6 +95,8 @@ PERMISSION_MODE = os.environ.get("APEX_PERMISSION_MODE", os.environ.get("LOCALCH
 DEBUG = os.environ.get("APEX_DEBUG", os.environ.get("LOCALCHAT_DEBUG", "")).lower() in {"1", "true", "yes"}
 ALERT_TOKEN = os.environ.get("APEX_ALERT_TOKEN", os.environ.get("LOCALCHAT_ALERT_TOKEN", ""))
 XAI_API_KEY = os.environ.get("XAI_API_KEY", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+CODEX_CLI = os.environ.get("CODEX_CLI_PATH", "/opt/homebrew/bin/codex")
 DB_PATH = APEX_ROOT / "state" / "apex.db"
 LOG_PATH = APEX_ROOT / "state" / "apex.log"
 
@@ -117,10 +119,10 @@ MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB
 MAX_TEXT_SIZE = 1 * 1024 * 1024    # 1MB
 MAX_AUDIO_SIZE = 10 * 1024 * 1024  # 10MB
 WHISPER_BIN = os.environ.get("APEX_WHISPER_BIN", os.environ.get("LOCALCHAT_WHISPER_BIN", shutil.which("whisper") or "whisper"))
-SDK_QUERY_TIMEOUT = 30
-SDK_STREAM_TIMEOUT = 300
+SDK_QUERY_TIMEOUT = int(os.environ.get("APEX_SDK_QUERY_TIMEOUT", "30"))
+SDK_STREAM_TIMEOUT = int(os.environ.get("APEX_SDK_STREAM_TIMEOUT", "300"))
 ENABLE_SUBCONSCIOUS_WHISPER = os.environ.get("APEX_ENABLE_WHISPER", os.environ.get("LOCALCHAT_ENABLE_WHISPER", "")).lower() in {"1", "true", "yes"}
-ENABLE_SKILL_DISPATCH = True  # server-side /recall, /codex, /grok dispatch
+ENABLE_SKILL_DISPATCH = os.environ.get("APEX_ENABLE_SKILL_DISPATCH", "true").lower() in {"1", "true", "yes"}
 
 # Model context window sizes (input tokens)
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
@@ -129,15 +131,21 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-haiku-4-5-20251001": 200_000,
     "grok-4": 2_000_000,
     "grok-4-fast": 2_000_000,
+    "mlx:mlx-community/Qwen3.5-35B-A3B-4bit": 128_000,
+    "codex:gpt-5.4": 1_000_000,
+    "codex:o3": 200_000,
+    "codex:o4-mini": 200_000,
 }
 MODEL_CONTEXT_DEFAULT = 128_000  # fallback for local/unknown models
 
 # Auto-compaction — rotate SDK session when cumulative input tokens get too high
 COMPACTION_THRESHOLD = int(os.environ.get("APEX_COMPACTION_THRESHOLD", os.environ.get("LOCALCHAT_COMPACTION_THRESHOLD", "100000")))  # input tokens
-COMPACTION_OLLAMA_MODEL = os.environ.get("APEX_COMPACTION_MODEL", os.environ.get("LOCALCHAT_COMPACTION_MODEL", "gemma3:27b"))
+COMPACTION_MODEL = os.environ.get("APEX_COMPACTION_MODEL", os.environ.get("LOCALCHAT_COMPACTION_MODEL", "grok-4-1-fast-non-reasoning"))
+COMPACTION_OLLAMA_FALLBACK = os.environ.get("APEX_COMPACTION_OLLAMA_FALLBACK", "gemma3:27b")
 OLLAMA_BASE_URL = os.environ.get("APEX_OLLAMA_URL", os.environ.get("LOCALCHAT_OLLAMA_URL", "http://localhost:11434"))
+MLX_BASE_URL = os.environ.get("APEX_MLX_URL", "http://localhost:8400")
 COMPACTION_OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/generate"
-COMPACTION_OLLAMA_TIMEOUT = 30
+COMPACTION_TIMEOUT = 30
 
 # ---------------------------------------------------------------------------
 # Auto-compaction — session rotation when token usage gets too high
@@ -235,8 +243,8 @@ def _get_recent_messages_text(chat_id: str, limit: int = 30) -> str:
 
 
 def _generate_recovery_context(transcript: str) -> str:
-    """Call Ollama to generate structured recovery context for session continuity."""
-    prompt = (
+    """Call Grok (xAI) or Ollama to generate structured recovery context for session continuity."""
+    system_prompt = (
         "Analyze this conversation transcript and produce a recovery briefing "
         "for an AI assistant resuming after a session reset.\n\n"
         "Format your response EXACTLY like this:\n"
@@ -249,13 +257,43 @@ def _generate_recovery_context(transcript: str) -> str:
         "- Be concise — this gets injected into a fresh AI session\n"
         "- If the conversation was idle/casual, just say Status: idle\n"
         "- If a task was mid-execution (code being written, build in progress), say Status: in-progress\n"
-        "- Focus on what the assistant needs to CONTINUE, not rehash\n\n"
-        f"Transcript:\n{transcript}"
+        "- Focus on what the assistant needs to CONTINUE, not rehash"
     )
+
+    # Prefer xAI (Grok) if API key is available — faster + cheaper than local Ollama
+    if XAI_API_KEY and _get_model_backend(COMPACTION_MODEL) == "xai":
+        payload = json.dumps({
+            "model": COMPACTION_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Transcript:\n{transcript}"},
+            ],
+            "max_tokens": 1024,
+        }).encode()
+        req = urllib.request.Request(
+            "https://api.x.ai/v1/chat/completions",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {XAI_API_KEY}",
+                "User-Agent": "Apex/1.0",
+            },
+        )
+        try:
+            resp = urllib.request.urlopen(req, timeout=COMPACTION_TIMEOUT)
+            body = json.loads(resp.read().decode())
+            return body["choices"][0]["message"]["content"].strip()
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode() if hasattr(e, 'read') else ""
+            log(f"recovery context generation (xAI) failed, falling back to Ollama: {e} body={error_body[:300]}")
+        except Exception as e:
+            log(f"recovery context generation (xAI) failed, falling back to Ollama: {e}")
+
+    # Fallback: Ollama local model
     payload = json.dumps({
-        "model": COMPACTION_OLLAMA_MODEL,
+        "model": COMPACTION_OLLAMA_FALLBACK,
         "stream": False,
-        "prompt": prompt,
+        "prompt": f"{system_prompt}\n\nTranscript:\n{transcript}",
     }).encode()
     req = urllib.request.Request(
         COMPACTION_OLLAMA_URL,
@@ -263,11 +301,11 @@ def _generate_recovery_context(transcript: str) -> str:
         headers={"Content-Type": "application/json"},
     )
     try:
-        resp = urllib.request.urlopen(req, timeout=COMPACTION_OLLAMA_TIMEOUT)
+        resp = urllib.request.urlopen(req, timeout=COMPACTION_TIMEOUT)
         body = json.loads(resp.read().decode())
         return body.get("response", "").strip()
     except Exception as e:
-        log(f"recovery context generation failed: {e}")
+        log(f"recovery context generation (Ollama) failed: {e}")
         return ""
 
 
@@ -534,10 +572,13 @@ def _run_recall(args: str) -> str:
     # 2. Semantic search (Gemini embeddings, searches memory + transcripts)
     semantic_output = ""
     try:
-        sys.path.insert(0, str(WORKSPACE / "skills" / "embedding"))
-        from memory_search import search as semantic_search
+        embed_path = str(WORKSPACE / "skills" / "embedding")
+        if embed_path not in sys.path:
+            sys.path.insert(0, embed_path)
+        import importlib
+        _ms = importlib.import_module("memory_search")
         log(f"Recall semantic search: {args[:60]!r}")
-        results = semantic_search(args, top_k=5)
+        results = _ms.search(args, top_k=5)
         if results:
             lines = []
             for i, r in enumerate(results, 1):
@@ -925,9 +966,12 @@ def _get_whisper_text(chat_id: str) -> str:
                 return ""
 
         # Search for relevant memories
-        sys.path.insert(0, str(WORKSPACE / "skills" / "embedding"))
-        from memory_search import search as semantic_search
-        results = semantic_search(query, top_k=3, sources=["memory"])
+        embed_path = str(WORKSPACE / "skills" / "embedding")
+        if embed_path not in sys.path:
+            sys.path.insert(0, embed_path)
+        import importlib
+        _ms = importlib.import_module("memory_search")
+        results = _ms.search(query, top_k=3, sources=["memory"])
 
         # Filter by score threshold
         relevant = [r for r in results if r.get("score", 0) >= 0.65]
@@ -1856,9 +1900,13 @@ async def lifespan(app: FastAPI):
             _recovery_pending.clear()
         # Reindex embeddings (incremental — only changed files)
         try:
-            sys.path.insert(0, str(WORKSPACE / "skills" / "embedding"))
-            from memory_search import index_all
-            stats = await asyncio.to_thread(index_all, force=False)
+            embed_path = str(WORKSPACE / "skills" / "embedding")
+            if embed_path not in sys.path:
+                sys.path.insert(0, embed_path)
+            import importlib
+            mod = importlib.import_module("memory_search")
+            importlib.reload(mod)
+            stats = await asyncio.to_thread(mod.index_all, force=False)
             log(f"embedding reindex: memory={stats.get('memory', {})} transcripts={stats.get('transcripts', {})}")
         except Exception as e:
             log(f"embedding reindex failed (non-fatal): {e}")
@@ -2147,10 +2195,14 @@ def _is_local_model(model: str) -> bool:
 
 def _get_model_backend(model: str) -> str:
     """Determine which backend to use for a model."""
-    if model.startswith("claude-"):
+    if model.startswith("codex:"):
+        return "codex"
+    elif model.startswith("claude-"):
         return "claude"
     elif model.startswith("grok-"):
         return "xai"
+    elif model.startswith("mlx:"):
+        return "mlx"
     else:
         return "ollama"
 
@@ -2172,15 +2224,174 @@ def _get_ollama_models() -> list[dict]:
         return []
 
 
+def _get_mlx_models() -> list[dict]:
+    """Query MLX server for available models."""
+    try:
+        req = urllib.request.Request(
+            f"{MLX_BASE_URL}/v1/models",
+            headers={"User-Agent": "Apex/1.0"},
+        )
+        resp = urllib.request.urlopen(req, timeout=5)
+        data = json.loads(resp.read().decode())
+        models = []
+        for m in data.get("data", []):
+            mid = m.get("id", "")
+            models.append({
+                "id": f"mlx:{mid}",
+                "displayName": mid.split("/")[-1] if "/" in mid else mid,
+                "sizeGb": 0,
+                "local": True,
+            })
+        return models
+    except Exception as e:
+        log(f"mlx model list failed: {e}")
+        return []
+
+
 @app.get("/api/models/local")
 async def api_local_models():
-    models = await asyncio.to_thread(_get_ollama_models)
-    return JSONResponse(models)
+    ollama, mlx = await asyncio.gather(
+        asyncio.to_thread(_get_ollama_models),
+        asyncio.to_thread(_get_mlx_models),
+    )
+    return JSONResponse(ollama + mlx)
+
+
+async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
+                           attachments: list[dict] | None = None) -> dict:
+    """Run a chat response via the Codex CLI (gpt-5.4, o3, o4-mini)."""
+    effective_model = model or "codex:gpt-5.4"
+    cli_model = effective_model.removeprefix("codex:")
+
+    # Inject workspace context into the prompt
+    workspace_ctx = _get_workspace_context(chat_id)
+    full_prompt = f"{workspace_ctx}{prompt}" if workspace_ctx else prompt
+
+    # Build conversation history from recent messages
+    recent = _get_messages(chat_id, days=1)
+    history_lines: list[str] = []
+    for m in recent[-20:]:
+        content = m["content"]
+        if "<system-reminder>" in content:
+            continue
+        history_lines.append(f"[{m['role']}] {content[:1000]}")
+    if history_lines:
+        history_block = "\n".join(history_lines)
+        full_prompt = f"<conversation-history>\n{history_block}\n</conversation-history>\n\n{full_prompt}"
+
+    # Spawn codex CLI
+    proc = await asyncio.create_subprocess_exec(
+        CODEX_CLI, "exec", "--json", "--ephemeral",
+        "-m", cli_model, "-s", "read-only", "-C", str(WORKSPACE), "-",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env={**os.environ, "OPENAI_API_KEY": OPENAI_API_KEY},
+    )
+
+    stdout_data, stderr_data = b"", b""
+    if proc.stdin is not None:
+        proc.stdin.write(full_prompt.encode())
+        await proc.stdin.drain()
+        proc.stdin.close()
+
+    result_text = ""
+    thinking_text = ""
+    tool_events: list[dict] = []
+    tokens_in = 0
+    tokens_out = 0
+
+    # Read stdout line by line (JSONL events)
+    assert proc.stdout is not None
+    while True:
+        line = await proc.stdout.readline()
+        if not line:
+            break
+        line_str = line.decode().strip()
+        if not line_str:
+            continue
+        try:
+            event = json.loads(line_str)
+        except json.JSONDecodeError:
+            continue
+
+        event_type = event.get("type", "")
+
+        if event_type == "item.started":
+            item = event.get("item", {})
+            if item.get("type") == "command_execution":
+                tool_id = str(uuid.uuid4())
+                tool_evt = {"type": "tool_use", "id": tool_id, "name": "command", "input": item.get("command", "")}
+                tool_events.append(tool_evt)
+                await _send_stream_event(chat_id, tool_evt)
+
+        elif event_type == "item.completed":
+            item = event.get("item", {})
+            item_type = item.get("type", "")
+
+            if item_type == "agent_message":
+                text = ""
+                for part in item.get("content", []):
+                    if part.get("type") == "output_text":
+                        text += part.get("text", "")
+                if text:
+                    result_text += text
+                    await _send_stream_event(chat_id, {"type": "text", "text": text})
+
+            elif item_type == "command_execution":
+                tool_id = str(uuid.uuid4())
+                output = item.get("output", "")
+                tool_evt = {"type": "tool_result", "id": tool_id, "content": output[:2000]}
+                tool_events.append(tool_evt)
+                await _send_stream_event(chat_id, tool_evt)
+
+            elif item_type == "reasoning":
+                text = ""
+                for part in item.get("content", []):
+                    if part.get("type") == "text":
+                        text += part.get("text", "")
+                if text:
+                    thinking_text += text
+                    await _send_stream_event(chat_id, {"type": "thinking", "text": text})
+
+            elif item_type == "file_change":
+                tool_id = str(uuid.uuid4())
+                fname = item.get("filename", "unknown")
+                await _send_stream_event(chat_id, {"type": "tool_use", "id": tool_id, "name": "file_change", "input": fname})
+                await _send_stream_event(chat_id, {"type": "tool_result", "id": tool_id, "content": f"File changed: {fname}"})
+
+        elif event_type == "turn.completed":
+            usage = event.get("usage", {})
+            tokens_in = usage.get("input_tokens", 0)
+            tokens_out = usage.get("output_tokens", 0)
+
+    # Wait for process to finish
+    await proc.wait()
+    stderr_data = await proc.stderr.read() if proc.stderr else b""
+    if proc.returncode != 0 and not result_text:
+        err_msg = stderr_data.decode()[:500] if stderr_data else f"codex exited with code {proc.returncode}"
+        log(f"codex process error: {err_msg}")
+        await _send_stream_event(chat_id, {"type": "error", "message": f"Codex: {err_msg}"})
+        return {"text": "", "is_error": True, "error": err_msg,
+                "cost_usd": 0, "tokens_in": 0, "tokens_out": 0,
+                "session_id": None, "thinking": "", "tool_events": json.dumps(tool_events)}
+
+    _cw = MODEL_CONTEXT_WINDOWS.get(effective_model, MODEL_CONTEXT_DEFAULT)
+    await _send_stream_event(chat_id, {
+        "type": "result", "is_error": False,
+        "cost_usd": 0, "tokens_in": tokens_in, "tokens_out": tokens_out,
+        "session_id": None,
+        "context_tokens_in": tokens_in,
+        "context_window": _cw,
+    })
+    return {"text": result_text, "is_error": False, "error": None,
+            "cost_usd": 0, "tokens_in": tokens_in, "tokens_out": tokens_out,
+            "session_id": None, "thinking": thinking_text, "tool_events": json.dumps(tool_events)}
 
 
 async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                            attachments: list[dict] | None = None) -> dict:
-    """Run a chat response from Ollama/xAI with tool-calling support."""
+    """Run a chat response from Ollama/xAI/MLX with tool-calling support."""
     effective_model = model or MODEL
     # Build message history from recent DB messages
     recent = _get_messages(chat_id, days=1)
@@ -2188,8 +2399,14 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
         sys_prompt = build_system_prompt(effective_model)
     else:
         sys_prompt = f"You are {effective_model}, a local AI model running via Ollama. Be helpful and concise."
+
+    # Inject workspace context (CLAUDE.md, MEMORY.md, recovery briefings) for richer context
+    workspace_ctx = _get_workspace_context(chat_id)
+    if workspace_ctx:
+        sys_prompt = f"{sys_prompt}\n\n{workspace_ctx}"
+
     messages = [{"role": "system", "content": sys_prompt}]
-    for m in recent[-10:]:
+    for m in recent[-50:]:
         content = m["content"]
         if "<system-reminder>" in content:
             continue
@@ -2215,8 +2432,9 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
         async def emit(event: dict):
             await _send_stream_event(chat_id, event)
 
-        # Route to xAI or Ollama based on model backend
-        if _get_model_backend(effective_model) == "xai":
+        # Route to xAI, MLX, or Ollama based on model backend
+        backend = _get_model_backend(effective_model)
+        if backend == "xai":
             result = await run_tool_loop(
                 ollama_url=OLLAMA_BASE_URL,
                 model=effective_model,
@@ -2225,6 +2443,18 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 workspace=str(WORKSPACE),
                 api_key=XAI_API_KEY,
                 api_url="https://api.x.ai/v1",
+            )
+        elif backend == "mlx":
+            # Strip "mlx:" prefix — MLX server uses HF model IDs
+            mlx_model = effective_model[4:]
+            result = await run_tool_loop(
+                ollama_url=OLLAMA_BASE_URL,
+                model=mlx_model,
+                messages=messages,
+                emit_event=emit,
+                workspace=str(WORKSPACE),
+                api_key="local",
+                api_url=f"{MLX_BASE_URL}/v1",
             )
         else:
             result = await run_tool_loop(
@@ -2822,14 +3052,14 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             prompt = f"{_recall_context}{prompt}"
 
         # Inject whisper for Ollama/Grok (Claude gets it via _build_turn_payload)
-        if ENABLE_SUBCONSCIOUS_WHISPER and backend in ("ollama", "xai"):
+        if ENABLE_SUBCONSCIOUS_WHISPER and backend in ("ollama", "xai", "mlx"):
             whisper = _get_whisper_text(chat_id)
             if whisper:
                 prompt = f"{whisper}{prompt}"
 
         display_prompt = prompt
         make_query_input = None
-        if backend in ("ollama", "xai"):
+        if backend in ("ollama", "xai", "mlx"):
             # Local/xAI models — build display prompt with attachment labels
             display_prompt = user_visible_prompt if _recall_context else prompt
             if attachments:
@@ -2877,7 +3107,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         result: dict | None = None
 
         # --- Local model / xAI path (Ollama or xAI API) ---
-        if backend in ("ollama", "xai"):
+        if backend in ("ollama", "xai", "mlx"):
             try:
                 result = await _run_ollama_chat(chat_id, prompt, model=chat_model, attachments=attachments)
             except Exception as ollama_err:
@@ -3177,6 +3407,10 @@ z-index:100;transform:translateX(-100%);transition:transform 0.2s;padding-top:va
 font-size:14px;color:var(--dim);min-height:44px;display:flex;align-items:center}
 .sidebar .chat-item:active{background:var(--card)}
 .sidebar .chat-item.active{color:var(--accent);font-weight:600}
+.chat-item-actions{margin-left:auto;display:none;flex-shrink:0}
+.chat-item:hover .chat-item-actions{display:flex;gap:2px}
+.chat-action-btn{background:none;border:none;cursor:pointer;font-size:12px;padding:2px 4px;opacity:0.5;line-height:1}
+.chat-action-btn:hover{opacity:1}
 .sidebar .new-btn{padding:12px 16px;color:var(--accent);cursor:pointer;font-size:14px;
 font-weight:600;border-bottom:1px solid var(--bg);min-height:44px;display:flex;align-items:center}
 
@@ -4743,7 +4977,11 @@ async function loadChats() {
   chats.forEach(c => {
     const d = document.createElement('div');
     d.className = 'chat-item' + (c.id === currentChat ? ' active' : '');
-    d.textContent = c.title || 'Untitled';
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'chat-item-title';
+    titleSpan.textContent = c.title || 'Untitled';
+    titleSpan.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0';
+    d.appendChild(titleSpan);
     d.dataset.id = c.id;
     d.dataset.title = c.title || 'Untitled';
     d.dataset.type = c.type || 'chat';
@@ -4751,6 +4989,20 @@ async function loadChats() {
     d.onclick = () => selectChat(c.id, c.title, c.type, c.category).catch(err => reportError('selectChat click', err));
     d.ondblclick = (e) => { e.stopPropagation(); startRenameChat(d, c.id, c.title || 'Untitled'); };
     d.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteChat(c.id, c.title || 'Untitled'); };
+
+    // Action buttons (rename + delete)
+    const actions = document.createElement('span');
+    actions.className = 'chat-item-actions';
+    actions.innerHTML =
+      '<button class="chat-action-btn" title="Rename" data-action="rename">✏️</button>' +
+      '<button class="chat-action-btn" title="Delete" data-action="delete">🗑️</button>';
+    actions.querySelector('[data-action="rename"]').onclick = (e) => {
+      e.stopPropagation(); startRenameChat(d, c.id, c.title || 'Untitled');
+    };
+    actions.querySelector('[data-action="delete"]').onclick = (e) => {
+      e.stopPropagation(); confirmDeleteChat(c.id, c.title || 'Untitled');
+    };
+    d.appendChild(actions);
     list.appendChild(d);
   });
   setActiveChatUI();
@@ -4759,22 +5011,27 @@ async function loadChats() {
 }
 
 function startRenameChat(el, chatId, currentTitle) {
+  const titleSpan = el.querySelector('.chat-item-title');
+  if (!titleSpan) return;
   const input = document.createElement('input');
   input.type = 'text';
   input.value = currentTitle;
   input.className = 'rename-input';
-  input.style.cssText = 'width:100%;padding:4px 8px;font-size:14px;border:1px solid var(--accent);border-radius:4px;background:var(--bg);color:var(--fg);outline:none;';
-  el.textContent = '';
-  el.appendChild(input);
+  input.style.cssText = 'width:100%;padding:4px 8px;font-size:14px;border:1px solid var(--accent);border-radius:4px;background:var(--bg);color:var(--fg);outline:none;flex:1;min-width:0';
+  titleSpan.replaceWith(input);
   input.focus();
   input.select();
   const commit = async () => {
     const newTitle = input.value.trim();
     if (newTitle && newTitle !== currentTitle) {
       await renameChat(chatId, newTitle);
-    } else {
-      el.textContent = currentTitle;
     }
+    // loadChats will rebuild the list via WS event or fallback
+    const ns = document.createElement('span');
+    ns.className = 'chat-item-title';
+    ns.textContent = newTitle || currentTitle;
+    ns.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0';
+    input.replaceWith(ns);
   };
   input.onblur = () => commit();
   input.onkeydown = (e) => {

@@ -27,13 +27,6 @@ struct ContentView: View {
                             .transition(.move(edge: .top).combined(with: .opacity))
                     }
                     chatContent
-                        .overlay(alignment: .bottomTrailing) {
-                            if let ctx = appState.contextData {
-                                ContextBarView(context: ctx)
-                                    .equatable()
-                                    .padding(.bottom, 4)
-                            }
-                        }
                 }
 
                 if isShowingSearch {

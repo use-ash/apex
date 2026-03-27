@@ -47,13 +47,6 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
             "default": "claude-sonnet-4-6",
             "env": "APEX_MODEL",
             "description": "Default AI model",
-            "choices": [
-                "claude-opus-4-6",
-                "claude-sonnet-4-6",
-                "claude-haiku-4-5-20251001",
-                "grok-4",
-                "grok-4-fast",
-            ],
         },
         "permission_mode": {
             "type": "str",
@@ -68,6 +61,12 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
             "env": "APEX_OLLAMA_URL",
             "description": "Ollama API base URL",
         },
+        "mlx_url": {
+            "type": "str",
+            "default": "http://localhost:8400",
+            "env": "APEX_MLX_URL",
+            "description": "MLX model server base URL",
+        },
         "compaction_threshold": {
             "type": "int",
             "default": 100_000,
@@ -78,9 +77,37 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
         },
         "compaction_model": {
             "type": "str",
-            "default": "gemma3:27b",
+            "default": "grok-4-1-fast-non-reasoning",
             "env": "APEX_COMPACTION_MODEL",
-            "description": "Ollama model for compaction summaries",
+            "description": "Primary model for recovery/compaction (xAI or Ollama)",
+        },
+        "compaction_ollama_fallback": {
+            "type": "str",
+            "default": "gemma3:27b",
+            "env": "APEX_COMPACTION_OLLAMA_FALLBACK",
+            "description": "Ollama fallback model if primary (xAI) fails",
+        },
+        "sdk_query_timeout": {
+            "type": "int",
+            "default": 30,
+            "env": "APEX_SDK_QUERY_TIMEOUT",
+            "description": "SDK query timeout (seconds)",
+            "min": 5,
+            "max": 120,
+        },
+        "sdk_stream_timeout": {
+            "type": "int",
+            "default": 300,
+            "env": "APEX_SDK_STREAM_TIMEOUT",
+            "description": "SDK streaming timeout (seconds)",
+            "min": 30,
+            "max": 900,
+        },
+        "enable_skill_dispatch": {
+            "type": "bool",
+            "default": True,
+            "env": "APEX_ENABLE_SKILL_DISPATCH",
+            "description": "Server-side /recall, /codex, /grok dispatch",
         },
         "max_turns": {
             "type": "int",

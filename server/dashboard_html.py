@@ -3094,10 +3094,19 @@ function renderCredentialsTable() {
 function updateCredential(provider) {
     currentCredentialProvider = provider;
     var names = { anthropic: "Claude API Key", xai: "Grok API Key", telegram_bot: "Telegram Bot Token", telegram_chat: "Telegram Chat ID" };
+    var hints = {
+        anthropic: "Starts with sk-ant-... (paste from console.anthropic.com)",
+        xai: "Starts with xai-... (paste from console.x.ai)",
+        telegram_bot: "Format: 123456789:ABCdef... (from @BotFather)",
+        telegram_chat: "Numeric chat ID (e.g. 5072593158)"
+    };
     document.getElementById("credential-modal-title").textContent = "Update " + (names[provider] || capitalize(provider));
     document.getElementById("credential-input-label").textContent = names[provider] || "Credential";
-    document.getElementById("credential-input-help").textContent = "Enter the new " + (names[provider] || "credential").toLowerCase();
-    document.getElementById("credential-input").value = "";
+    document.getElementById("credential-input-help").textContent = hints[provider] || "Enter the new " + (names[provider] || "credential").toLowerCase();
+    var input = document.getElementById("credential-input");
+    input.value = "";
+    input.type = provider === "telegram_chat" ? "text" : "password";
+    input.autocomplete = "off";
     document.getElementById("btn-save-credential").disabled = false;
     openModal("modal-credential");
 }

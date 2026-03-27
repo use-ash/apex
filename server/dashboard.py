@@ -450,17 +450,24 @@ async def api_status_models():
 
     results: dict[str, Any] = {}
 
-    # Claude — check for API key
+    # Claude — check for API key or Agent SDK
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if anthropic_key:
+    sdk_available = False
+    try:
+        import claude_agent_sdk  # noqa: F401
+        sdk_available = True
+    except ImportError:
+        pass
+    if anthropic_key or sdk_available:
+        detail = "Agent SDK" if sdk_available else "ANTHROPIC_API_KEY"
         results["claude"] = {
             "status": "configured",
-            "detail": "ANTHROPIC_API_KEY is set",
+            "detail": f"{detail} is available",
         }
     else:
         results["claude"] = {
             "status": "not_configured",
-            "detail": "ANTHROPIC_API_KEY not found in environment",
+            "detail": "No API key or Agent SDK found",
         }
 
     # Ollama — ping /api/tags
@@ -1606,12 +1613,22 @@ async def api_models_claude():
         _log.debug(f"Keychain error: {e}")
         keychain_error = "keychain lookup failed"
 
-    status = "configured" if (env_set or keychain_set) else "not_configured"
+    # Also check if Claude Agent SDK is available (used by Apex for Claude access)
+    sdk_available = False
+    try:
+        import claude_agent_sdk  # noqa: F401
+        sdk_available = True
+    except ImportError:
+        pass
+
+    status = "configured" if (env_set or keychain_set or sdk_available) else "not_configured"
 
     resp: dict[str, Any] = {
         "status": status,
         "env_var_set": env_set,
         "keychain_set": keychain_set,
+        "sdk_available": sdk_available,
+        "api_key_configured": env_set or keychain_set or sdk_available,
     }
     if keychain_error:
         resp["keychain_error"] = keychain_error
@@ -1719,6 +1736,7 @@ async def api_models_grok():
         "status": status,
         "env_var_set": env_set,
         "dotenv_set": dotenv_set,
+        "api_key_configured": env_set or dotenv_set,
     })
 
 
@@ -1745,13 +1763,27 @@ async def api_credentials():
 # PUT /api/credentials/{provider} — Set API key in .env
 # ---------------------------------------------------------------------------
 
+_CREDENTIAL_KEY_PATTERNS: dict[str, tuple[str, int, int]] = {
+    # provider: (prefix_or_empty, min_length, max_length)
+    "anthropic": ("sk-ant-", 20, 200),
+    "xai": ("xai-", 20, 200),
+    "telegram_bot": ("", 30, 100),   # format: 123456:ABC-DEF...
+    "telegram_chat": ("", 5, 20),    # numeric chat ID
+}
+_credential_rate: dict[str, float] = {}  # provider -> last update timestamp
+_CREDENTIAL_RATE_LIMIT = 5.0  # seconds between updates per provider
+
+
 @dashboard_app.put("/api/credentials/{provider}")
 async def api_credentials_update(provider: str, request: Request):
     """Set an API key/token in ~/.openclaw/.env (atomic write).
 
     Providers: anthropic, xai, telegram_bot, telegram_chat.
     Body: {"key": "sk-..."}
+    Security: mTLS required, rate-limited, format-validated, audit-logged.
     """
+    import time as _time
+
     if provider not in _PROVIDER_KEY_MAP:
         return _error(
             f"Unknown provider: '{provider}'. "
@@ -1759,6 +1791,14 @@ async def api_credentials_update(provider: str, request: Request):
             "UNKNOWN_PROVIDER",
             status=400,
         )
+
+    # Rate limit: one update per provider every N seconds
+    now = _time.time()
+    last = _credential_rate.get(provider, 0)
+    if now - last < _CREDENTIAL_RATE_LIMIT:
+        _log.warning(f"credential update rate-limited: provider={provider}")
+        return _error("Too many requests. Try again shortly.", "RATE_LIMITED", status=429)
+    _credential_rate[provider] = now
 
     try:
         body = await request.json()
@@ -1768,6 +1808,36 @@ async def api_credentials_update(provider: str, request: Request):
     key_value = body.get("key", "") if isinstance(body, dict) else ""
     if not key_value or not isinstance(key_value, str):
         return _error("'key' field is required", "MISSING_KEY", status=400)
+
+    # Strip whitespace (common paste artifact)
+    key_value = key_value.strip()
+
+    # Format validation
+    pattern = _CREDENTIAL_KEY_PATTERNS.get(provider)
+    if pattern:
+        prefix, min_len, max_len = pattern
+        if prefix and not key_value.startswith(prefix):
+            return _error(
+                f"Invalid key format. Expected prefix: {prefix}...",
+                "INVALID_FORMAT",
+                status=400,
+            )
+        if len(key_value) < min_len:
+            return _error(
+                f"Key too short (minimum {min_len} characters)",
+                "INVALID_FORMAT",
+                status=400,
+            )
+        if len(key_value) > max_len:
+            return _error(
+                f"Key too long (maximum {max_len} characters)",
+                "INVALID_FORMAT",
+                status=400,
+            )
+
+    # Block control characters
+    if any(ord(c) < 32 for c in key_value):
+        return _error("Key contains invalid control characters", "INVALID_FORMAT", status=400)
 
     env_var_name = _PROVIDER_KEY_MAP[provider]
 
@@ -1780,11 +1850,16 @@ async def api_credentials_update(provider: str, request: Request):
     # Also update the current process environment
     os.environ[env_var_name] = key_value
 
+    # Audit log — never log the key itself
+    masked = key_value[:8] + "..." + key_value[-4:] if len(key_value) > 16 else "***"
+    remote = request.client.host if request.client else "unknown"
+    _log.info(f"AUDIT: credential updated provider={provider} masked={masked} remote={remote}")
+
     return JSONResponse({
         "status": "ok",
         "provider": provider,
         "env_var": env_var_name,
-        "message": f"{env_var_name} updated in .env",
+        "message": f"{env_var_name} updated successfully",
     })
 
 

@@ -423,6 +423,11 @@ private struct ChatComposeBar: View {
 
     var body: some View {
         VStack(spacing: 8) {
+            if let ctx = appState.contextData {
+                ContextBarView(context: ctx)
+                    .equatable()
+            }
+
             if let replyingToMessage {
                 replyPreview(for: replyingToMessage)
             }
