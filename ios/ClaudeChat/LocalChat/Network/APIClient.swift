@@ -4,12 +4,11 @@ import UniformTypeIdentifiers
 
 @Observable
 final class APIClient {
-    private let defaultBaseURL = "https://10.8.0.2:8300"
     private let delegate: TLSDelegate
 
     var baseURL: String {
-        get { normalizedBaseURL(UserDefaults.standard.string(forKey: "server_url") ?? defaultBaseURL) }
-        set { UserDefaults.standard.set(normalizedBaseURL(newValue), forKey: "server_url") }
+        get { ServerConfig.currentBaseURL }
+        set { ServerConfig.setBaseURL(newValue) }
     }
 
     private let session: URLSession
@@ -64,6 +63,11 @@ final class APIClient {
     func fetchUsage() async throws -> UsageResponse {
         let data = try await request("GET", path: "/api/usage")
         return try JSONDecoder().decode(UsageResponse.self, from: data)
+    }
+
+    func fetchContext(chatId: String) async throws -> ContextData {
+        let data = try await request("GET", path: "/api/chats/\(chatId)/context")
+        return try JSONDecoder().decode(ContextData.self, from: data)
     }
 
     func uploadFile(data: Data, filename: String) async throws -> UploadResponse {
@@ -133,7 +137,8 @@ final class APIClient {
         baseURLOverride: String? = nil,
         timeout: TimeInterval? = nil
     ) async throws -> Data {
-        let resolvedBaseURL = normalizedBaseURL(baseURLOverride ?? baseURL)
+        let raw = (baseURLOverride ?? baseURL).trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedBaseURL = raw.hasSuffix("/") ? String(raw.dropLast()) : raw
 
         guard let url = URL(string: resolvedBaseURL + path) else {
             throw APIError.invalidURL
@@ -182,12 +187,6 @@ final class APIClient {
             case .unsupportedEndpoint(let endpoint): return "Server does not support \(endpoint)"
             }
         }
-    }
-
-    private func normalizedBaseURL(_ value: String) -> String {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return defaultBaseURL }
-        return trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
     }
 
     private func makeMultipartBody(data: Data, filename: String, boundary: String) -> Data {
@@ -261,6 +260,18 @@ struct UsageResponse: Decodable {
             case resetsAt = "resets_at"
             case resetsIn = "resets_in"
         }
+    }
+}
+
+// MARK: - Context
+
+struct ContextData: Decodable, Equatable {
+    let tokensIn: Int
+    let contextWindow: Int
+
+    enum CodingKeys: String, CodingKey {
+        case tokensIn = "tokens_in"
+        case contextWindow = "context_window"
     }
 }
 

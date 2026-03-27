@@ -4,12 +4,6 @@ import UIKit
 
 struct MessageBubble: View {
     private static let reactionOptions = ["👍", "❤️", "😂", "😮", "😢", "🔥"]
-    private static let iso8601FormatterWithFractionalSeconds: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
-    private static let iso8601Formatter = ISO8601DateFormatter()
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.timeStyle = .short
@@ -143,7 +137,7 @@ struct MessageBubble: View {
             }
 
             Button {
-                UIPasteboard.general.string = message.content
+                UIPasteboard.general.secureCopy(message.content)
             } label: {
                 Label("Copy", systemImage: "doc.on.doc")
             }
@@ -151,9 +145,7 @@ struct MessageBubble: View {
     }
 
     private func formattedTime(_ createdAt: String) -> String? {
-        let date = Self.iso8601FormatterWithFractionalSeconds.date(from: createdAt)
-            ?? Self.iso8601Formatter.date(from: createdAt)
-        guard let date else { return nil }
+        guard let date = DateParsing.parseISO8601(createdAt) else { return nil }
         return Self.timeFormatter.string(from: date)
     }
 
@@ -328,7 +320,7 @@ struct ToolEventListView: View {
     }
 }
 
-private struct ThinkingActivityLabel: View {
+struct ThinkingActivityLabel: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.45)) { context in
             let dotCount = Int(context.date.timeIntervalSinceReferenceDate * 2).quotientAndRemainder(dividingBy: 4).remainder

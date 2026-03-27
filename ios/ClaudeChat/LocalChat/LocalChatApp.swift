@@ -1,4 +1,5 @@
 import BackgroundTasks
+import OSLog
 import SwiftUI
 import UserNotifications
 
@@ -67,7 +68,7 @@ struct LocalChatApp: App {
             do {
                 try await center.requestAuthorization(options: [.alert, .sound, .badge])
             } catch {
-                print("Notification auth error: \(error)")
+                Logger(subsystem: "com.openclaw.localchat", category: "App").error("Notification auth error: \(error.localizedDescription, privacy: .public)")
             }
         }
     }

@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import Observation
+import OSLog
 
 @Observable
 final class ConnectionManager {
@@ -16,6 +17,7 @@ final class ConnectionManager {
     private var pongTimer: Timer?
     private var reconnectAttempts: Int = 0
     private let maxReconnectDelay: TimeInterval = 15
+    private let logger = Logger(subsystem: "com.openclaw.localchat", category: "WebSocket")
     private var intentionalDisconnect = false
     private var wantsConnection = false
     private let delegate: TLSDelegate
@@ -24,7 +26,7 @@ final class ConnectionManager {
     private var pathMonitorDebounceWork: DispatchWorkItem?
 
     var baseURL: String {
-        normalizedBaseURL(UserDefaults.standard.string(forKey: "server_url") ?? "https://10.8.0.2:8300")
+        ServerConfig.currentBaseURL
     }
 
     init(certificateManager: CertificateManager) {
@@ -107,7 +109,7 @@ final class ConnectionManager {
         let currentTask = webSocketTask
         webSocketTask?.send(.string(string)) { [weak self] error in
             if let error {
-                print("WS send error: \(error)")
+                self?.logger.error("WS send error: \(error.localizedDescription, privacy: .public)")
                 self?.handleDisconnect(for: currentTask)
             }
         }
@@ -132,7 +134,7 @@ final class ConnectionManager {
                 }
                 self.receiveLoop(generation: generation)
             case .failure(let error):
-                print("WS receive error: \(error)")
+                self.logger.error("WS receive error: \(error.localizedDescription, privacy: .public)")
                 self.handleDisconnect(for: currentTask)
             default:
                 self.receiveLoop(generation: generation)
@@ -192,7 +194,9 @@ final class ConnectionManager {
                 costUsd: json["cost_usd"] as? Double ?? 0,
                 tokensIn: json["tokens_in"] as? Int ?? 0,
                 tokensOut: json["tokens_out"] as? Int ?? 0,
-                sessionId: json["session_id"] as? String
+                sessionId: json["session_id"] as? String,
+                contextTokensIn: json["context_tokens_in"] as? Int,
+                contextWindow: json["context_window"] as? Int
             )
         case "stream_end":
             return .streamEnd(chatId: json["chat_id"] as? String ?? "")
@@ -253,7 +257,7 @@ final class ConnectionManager {
         pongTimer?.invalidate()
         let currentTask = webSocketTask
         pongTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: false) { [weak self] _ in
-            print("WS: Pong timeout — forcing reconnect")
+            self?.logger.warning("WS: Pong timeout — forcing reconnect")
             self?.handleDisconnect(for: currentTask)
         }
     }
@@ -291,7 +295,7 @@ final class ConnectionManager {
         let delay = min(pow(2.0, Double(reconnectAttempts)), maxReconnectDelay)
         reconnectAttempts += 1
         connectionError = "Reconnecting in \(Int(delay))s..."
-        print("WS: Scheduling reconnect in \(delay)s (attempt \(reconnectAttempts))")
+        logger.info("WS: Scheduling reconnect in \(delay, privacy: .public)s (attempt \(self.reconnectAttempts, privacy: .public))")
 
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.wantsConnection, !self.intentionalDisconnect else { return }
@@ -299,10 +303,6 @@ final class ConnectionManager {
         }
     }
 
-    private func normalizedBaseURL(_ value: String) -> String {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
-    }
 }
 
 // MARK: - Message Types
@@ -314,7 +314,7 @@ enum ServerMessage {
     case thinking(text: String)
     case toolUse(id: String, name: String, input: Any)
     case toolResult(toolUseId: String, content: String, isError: Bool)
-    case result(costUsd: Double, tokensIn: Int, tokensOut: Int, sessionId: String?)
+    case result(costUsd: Double, tokensIn: Int, tokensOut: Int, sessionId: String?, contextTokensIn: Int?, contextWindow: Int?)
     case streamEnd(chatId: String)
     case streamReattached(chatId: String)
     case attachOk(chatId: String)

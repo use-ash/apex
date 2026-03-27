@@ -8,94 +8,28 @@ struct AlertBubble: View {
 
     @State private var buttonTapped = false
 
-    // MARK: - Severity
-
-    private var severityColor: Color {
-        switch alert.severity {
-        case "critical": return .red
-        case "warning": return .orange
-        default: return .blue
-        }
-    }
-
-    private var severityIcon: String {
-        switch alert.severity {
-        case "critical": return "exclamationmark.triangle.fill"
-        case "warning": return "exclamationmark.circle.fill"
-        default: return "info.circle.fill"
-        }
-    }
-
-    // MARK: - Source mapping
-
-    private var sourceLabel: String {
-        switch alert.source {
-        case "plan_h": return "Plan H"
-        case "plan_c": return "Plan C"
-        case "plan_h_backstop": return "Backstop"
-        case "regime": return "Regime"
-        case "guardrail": return "Guardrail"
-        case "test": return "Test"
-        default: return alert.source
-        }
-    }
-
-    private var sourceIcon: String {
-        switch alert.source {
-        case "plan_h": return "chart.xyaxis.line"
-        case "plan_c": return "chart.bar.xaxis"
-        case "plan_h_backstop": return "shield.fill"
-        case "regime": return "gauge.medium"
-        case "guardrail": return "lock.shield.fill"
-        case "test": return "testtube.2"
-        default: return severityIcon
-        }
-    }
-
-    private var isGuardrail: Bool { alert.source == "guardrail" }
-
-    // MARK: - Timestamp
-
-    private static let iso8601Frac: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-
-    private static let iso8601: ISO8601DateFormatter = ISO8601DateFormatter()
-
-    private static let absoluteFmt: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "MMM d, HH:mm"
-        return f
-    }()
+    // Severity + source helpers are now on Alert model
 
     private var relativeTimestamp: String {
-        guard let date = Self.iso8601Frac.date(from: alert.createdAt)
-                ?? Self.iso8601.date(from: alert.createdAt) else { return "" }
-        let seconds = Date().timeIntervalSince(date)
-        if seconds < 60 { return "just now" }
-        if seconds < 3600 { return "\(Int(seconds / 60))m ago" }
-        if seconds < 86400 { return "\(Int(seconds / 3600))h ago" }
-        return Self.absoluteFmt.string(from: date)
+        DateParsing.relativeTimeAgo(alert.createdAt)
     }
 
     // MARK: - Body
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: severityIcon)
-                .foregroundStyle(severityColor)
+            Image(systemName: alert.severityIcon)
+                .foregroundStyle(alert.severityColor)
                 .font(.title3)
             VStack(alignment: .leading, spacing: 4) {
                 // Row 1: source + timestamp + actions
                 HStack(spacing: 6) {
-                    Image(systemName: sourceIcon)
+                    Image(systemName: alert.sourceIcon)
                         .font(.caption2)
-                        .foregroundStyle(severityColor)
-                    Text(sourceLabel.uppercased())
+                        .foregroundStyle(alert.severityColor)
+                    Text(alert.sourceLabel.uppercased())
                         .font(.caption2.weight(.bold))
-                        .foregroundStyle(severityColor)
+                        .foregroundStyle(alert.severityColor)
                     Spacer()
                     Text(relativeTimestamp)
                         .font(.caption2)
@@ -106,7 +40,7 @@ struct AlertBubble: View {
                             .foregroundStyle(.green)
                     }
                     if !alert.acked {
-                        if isGuardrail {
+                        if alert.isGuardrail {
                             Button(action: { buttonTapped = true; onAllow?() }) {
                                 Text("Allow")
                                     .font(.caption.weight(.semibold))
@@ -124,7 +58,7 @@ struct AlertBubble: View {
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 3)
-                                .background(severityColor)
+                                .background(alert.severityColor)
                                 .clipShape(Capsule())
                         }
                         .buttonStyle(.plain)
@@ -150,12 +84,12 @@ struct AlertBubble: View {
             RoundedRectangle(cornerRadius: 12)
                 .fill(Color(.systemBackground))
             RoundedRectangle(cornerRadius: 12)
-                .fill(severityColor.opacity(alert.acked ? 0.05 : 0.12))
+                .fill(alert.severityColor.opacity(alert.acked ? 0.05 : 0.12))
         }
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(severityColor.opacity(0.3), lineWidth: 1)
+                .strokeBorder(alert.severityColor.opacity(0.3), lineWidth: 1)
         )
         .opacity(alert.acked ? 0.6 : 1.0)
         .padding(.horizontal, 12)

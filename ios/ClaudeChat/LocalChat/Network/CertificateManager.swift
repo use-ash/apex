@@ -53,6 +53,7 @@ final class CertificateManager {
             kSecClass as String: kSecClassIdentity,
             kSecValueRef as String: identity,
             kSecAttrLabel as String: Self.identityLabel,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
         ]
         let addStatus = SecItemAdd(addIdentityQuery as CFDictionary, nil)
         guard addStatus == errSecSuccess else {
@@ -66,6 +67,7 @@ final class CertificateManager {
                 kSecClass as String: kSecClassCertificate,
                 kSecValueRef as String: caCertificate,
                 kSecAttrLabel as String: Self.caLabel,
+                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
             ]
             let caStatus = SecItemAdd(addCAQuery as CFDictionary, nil)
             guard caStatus == errSecSuccess else {

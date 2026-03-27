@@ -1,5 +1,6 @@
 import BackgroundTasks
 import Foundation
+import OSLog
 import UserNotifications
 
 /// Manages background alert polling via BGAppRefreshTask + long-poll endpoint.
@@ -12,6 +13,7 @@ import UserNotifications
 /// 5. Re-schedule the task for immediate re-poll
 enum BackgroundManager {
     static let keepAliveTaskIdentifier = "com.openclaw.localchat.keepalive"
+    private static let logger = Logger(subsystem: "com.openclaw.localchat", category: "Background")
 
     private static var connectionManager: ConnectionManager?
     private static var apiClient: APIClient?
@@ -41,7 +43,7 @@ enum BackgroundManager {
         do {
             try BGTaskScheduler.shared.submit(request)
         } catch {
-            print("BGTask submit error: \(error)")
+            logger.error("BGTask submit error: \(error.localizedDescription, privacy: .public)")
         }
     }
 

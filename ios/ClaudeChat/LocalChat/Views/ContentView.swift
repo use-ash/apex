@@ -27,6 +27,13 @@ struct ContentView: View {
                             .transition(.move(edge: .top).combined(with: .opacity))
                     }
                     chatContent
+                        .overlay(alignment: .bottomTrailing) {
+                            if let ctx = appState.contextData {
+                                ContextBarView(context: ctx)
+                                    .equatable()
+                                    .padding(.bottom, 4)
+                            }
+                        }
                 }
 
                 if isShowingSearch {
@@ -238,14 +245,14 @@ struct ContentView: View {
                             }
                         } label: {
                             HStack(alignment: .top, spacing: 10) {
-                                Image(systemName: alert.severity == "critical" ? "exclamationmark.triangle.fill" : alert.severity == "warning" ? "exclamationmark.circle.fill" : "info.circle.fill")
-                                    .foregroundStyle(alert.severity == "critical" ? .red : alert.severity == "warning" ? .orange : .blue)
+                                Image(systemName: alert.severityIcon)
+                                    .foregroundStyle(alert.severityColor)
                                     .font(.body)
                                 VStack(alignment: .leading, spacing: 2) {
                                     HStack {
-                                        Text(alert.source.uppercased())
+                                        Text(alert.sourceLabel.uppercased())
                                             .font(.caption2.weight(.bold))
-                                            .foregroundStyle(alert.severity == "critical" ? .red : alert.severity == "warning" ? .orange : .blue)
+                                            .foregroundStyle(alert.severityColor)
                                         Spacer()
                                         Text(bellTimeAgo(alert.createdAt))
                                             .font(.caption2)
@@ -304,15 +311,7 @@ struct ContentView: View {
     }
 
     private func bellTimeAgo(_ iso: String) -> String {
-        let fmtFrac = ISO8601DateFormatter()
-        fmtFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let fmtPlain = ISO8601DateFormatter()
-        guard let date = fmtFrac.date(from: iso) ?? fmtPlain.date(from: iso) else { return "" }
-        let secs = Date().timeIntervalSince(date)
-        if secs < 60 { return "just now" }
-        if secs < 3600 { return "\(Int(secs / 60))m ago" }
-        if secs < 86400 { return "\(Int(secs / 3600))h ago" }
-        return DateFormatter.localizedString(from: date, dateStyle: .short, timeStyle: .short)
+        DateParsing.relativeTimeAgo(iso)
     }
 
     // MARK: - Chat

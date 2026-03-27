@@ -49,8 +49,7 @@ final class TLSDelegate: NSObject, URLSessionDelegate {
                 completionHandler(.useCredential, URLCredential(trust: serverTrust))
             } else {
                 logger.error("Server trust: FAILED — \(error?.localizedDescription ?? "unknown", privacy: .public)")
-                // Still accept — the user installed the CA profile and trusts this server
-                completionHandler(.useCredential, URLCredential(trust: serverTrust))
+                completionHandler(.cancelAuthenticationChallenge, nil)
             }
 
         default:

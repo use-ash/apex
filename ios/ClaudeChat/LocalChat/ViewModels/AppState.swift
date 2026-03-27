@@ -44,6 +44,7 @@ final class AppState {
     var scenePhase: ScenePhase = .active
     var streamMessageHandler: ((ServerMessage) -> Void)?
     var usageData: UsageResponse?
+    var contextData: ContextData?
     private var usagePollingTask: Task<Void, Never>?
     var selectedModel: String {
         didSet {
@@ -310,6 +311,15 @@ final class AppState {
         }
     }
 
+    func fetchContext() async {
+        guard let chatId = persistentChatId else { return }
+        do {
+            contextData = try await apiClient.fetchContext(chatId: chatId)
+        } catch {
+            contextData = nil
+        }
+    }
+
     static func alertCategory(for source: String) -> String {
         switch source {
         case "plan_h", "plan_c", "plan_h_backstop", "plan_m", "plan_alpha", "regime":
@@ -358,7 +368,7 @@ final class AppState {
     }
 
     private func fallbackChat(id: String) -> Chat {
-        let now = ISO8601DateFormatter().string(from: Date())
+        let now = DateParsing.iso8601.string(from: Date())
         return Chat(
             id: id,
             title: "New Chat",
@@ -420,10 +430,10 @@ final class AppState {
                 costUsd: 0,
                 tokensIn: 0,
                 tokensOut: 0,
-                createdAt: ISO8601DateFormatter().string(from: Date())
+                createdAt: DateParsing.iso8601.string(from: Date())
             )
             messages.append(userMsg)
-        case .result(let costUsd, let tokensIn, let tokensOut, _):
+        case .result(let costUsd, let tokensIn, let tokensOut, _, let contextTokensIn, let contextWindow):
             if scenePhase == .background {
                 enqueueCompletionNotification(
                     body: notificationBody(
@@ -432,6 +442,9 @@ final class AppState {
                         tokensOut: tokensOut
                     )
                 )
+            }
+            if let ctxIn = contextTokensIn, let ctxWindow = contextWindow {
+                contextData = ContextData(tokensIn: ctxIn, contextWindow: ctxWindow)
             }
             streamingResponsePreview = ""
             Task { await fetchUsage() }
@@ -569,7 +582,9 @@ final class AppState {
         content.title = "[\(alert.severity.uppercased())] \(alert.source)"
         content.body = alert.title
         content.sound = alert.severity == "critical" ? .defaultCritical : .default
+        content.categoryIdentifier = "ALERT"
         content.userInfo = ["alert_id": alert.id]
+        content.interruptionLevel = alert.severity == "critical" ? .critical : .timeSensitive
         let request = UNNotificationRequest(
             identifier: "alert-\(alert.id)",
             content: content,
