@@ -181,7 +181,7 @@ ApexChat/
 ├── Network/
 │   ├── ConnectionManager.swift     # + BGTaskScheduler, NWPathMonitor
 │   └── BackgroundManager.swift     # Background task registration & scheduling
-├── LocalChatApp.swift              # + scenePhase handling, BGTask registration
+├── ApexChatApp.swift               # + scenePhase handling, BGTask registration
 ```
 
 **Key implementation details:**
@@ -293,7 +293,7 @@ ApexChat/
 - **Haptics:** Subtle haptic on send, on stream complete
 - **Appearance:** Dark/light mode, dynamic type support
 - **iPad:** Split view (sidebar always visible)
-- **Share extension:** Share text/images/URLs directly to LocalChat
+- **Share extension:** Share text/images/URLs directly to Apex
 
 ---
 

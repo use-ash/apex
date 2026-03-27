@@ -4,7 +4,7 @@ description: Apex mobile setup over VPN with mTLS client cert auth, SDK streamin
 type: project
 ---
 
-Apex (`scripts/localchat.py`) serves over HTTPS with mTLS client certificate auth. Full troubleshooting log at `docs/TROUBLESHOOTING.md`.
+Apex (`server/apex.py`) serves over HTTPS with mTLS client certificate auth. Full troubleshooting log at `docs/TROUBLESHOOTING.md`.
 
 **Auth: mTLS (CERT_OPTIONAL)**
 - Password auth fully stripped. No cookies, no sessions, no tokens.
@@ -20,7 +20,7 @@ Apex (`scripts/localchat.py`) serves over HTTPS with mTLS client certificate aut
 - Stale session resume hangs — 30s timeout + clear session ID on failure
 - Each SDK process ~360MB RAM
 
-**Launch:** `./scripts/launch_localchat.sh` (generates client cert on first run)
+**Launch:** `./server/launch_apex.sh` (generates client cert on first run)
 
 **Why:** Dana wants mobile Claude access over WireGuard VPN. Also a reference impl for ASH customer service chat.
 

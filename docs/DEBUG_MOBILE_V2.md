@@ -1,7 +1,7 @@
 # Apex Mobile Reconnection — Debug Report V2
 
 **Date:** 2026-03-24
-**File:** `scripts/localchat.py` (~2444 lines after Codex v1 fixes)
+**File:** `server/apex.py` (~2444 lines after Codex v1 fixes)
 **Platform:** iOS Safari PWA over WireGuard VPN + mTLS
 **Prereq:** Read `DEBUG_MOBILE_V1.md` for full architecture and Bugs 1-6.
 
@@ -203,7 +203,7 @@ function updateVoiceBtn() {
 
 ## File References
 
-All changes in `scripts/localchat.py`:
+All changes in `server/apex.py`:
 - `resumeConnection()`: ~line 1407 (polling timeout)
 - `pageshow` handler: ~line 2384
 - `connect()` + `onopen`: ~line 1288 (attach on fresh boot)

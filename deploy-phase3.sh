@@ -1,6 +1,6 @@
 #!/bin/bash
 # Phase 3 Deploy — skill-improver + usage banner + inline approval
-# Run from: ~/.openclaw/localchat/
+# Run from: ~/.openclaw/apex/
 set -e
 
 echo "=== Phase 3 Deploy ==="
@@ -23,16 +23,16 @@ mkdir -p ~/.openclaw/workspace/.claude/commands
 cp _stage/claude-commands/improve.md ~/.openclaw/workspace/.claude/commands/
 echo "  ✓ improve.md → workspace/.claude/commands/"
 
-# 3. Git add + commit in localchat repo
-echo "→ Staging files in localchat repo..."
+# 3. Git add + commit in apex repo
+echo "→ Staging files in apex repo..."
 git add \
-  server/localchat.py \
-  ios/ClaudeChat/LocalChat/Network/APIClient.swift \
-  ios/ClaudeChat/LocalChat/ViewModels/AppState.swift \
-  ios/ClaudeChat/LocalChat/Views/ChatView.swift \
-  ios/ClaudeChat/LocalChat/Views/ContentView.swift \
-  ios/ClaudeChat/LocalChat/Views/MessageBubble.swift \
-  ios/ClaudeChat/LocalChat/Views/UsageBannerView.swift \
+  server/apex.py \
+  ios/ApexChat/ApexChat/Network/APIClient.swift \
+  ios/ApexChat/ApexChat/ViewModels/AppState.swift \
+  ios/ApexChat/ApexChat/Views/ChatView.swift \
+  ios/ApexChat/ApexChat/Views/ContentView.swift \
+  ios/ApexChat/ApexChat/Views/MessageBubble.swift \
+  ios/ApexChat/ApexChat/Views/UsageBannerView.swift \
   skills/skill-improver/ \
   claude-commands/improve.md
 
@@ -59,6 +59,6 @@ git push
 echo ""
 echo "=== Deploy complete ==="
 echo "Workspace: skill-improver + /improve command deployed"
-echo "Localchat: committed + pushed"
+echo "Apex: committed + pushed"
 echo ""
 echo "Test with: /improve recall"

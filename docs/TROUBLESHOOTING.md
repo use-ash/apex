@@ -47,7 +47,7 @@ async def _make_stream(blocks):
 ### Issue 7: No debug output in tmux
 **Symptom:** Server runs but no debug-level HTTP/WebSocket logging in the tmux pane.
 **Root cause:** `uvicorn.run()` was changed to use `log_level=os.environ.get("APEX_LOG_LEVEL", "info")` which defaults to `info`. The launch script doesn't set the env var.
-**Fix:** To get debug output, add `export APEX_LOG_LEVEL=debug` to `launch_localchat.sh` or run manually with that env var.
+**Fix:** To get debug output, add `export APEX_LOG_LEVEL=debug` to `launch_apex.sh` or run manually with that env var.
 
 ### Issue 8: Tool events and thinking not persisted to DB
 **Symptom:** After phone lock/unlock, chat history loads but tool blocks and thinking sections are missing.
@@ -85,7 +85,7 @@ async def _make_stream(blocks):
 ```
 state/ssl/
 ├── ca.crt + ca.key          — OpenClaw Local CA (root, 5yr)
-├── localchat.crt + .key     — Server cert (SANs: 10.8.0.2, 192.168.86.214, 127.0.0.1)
+├── apex.crt + .key          — Server cert (SANs: 10.8.0.2, 192.168.86.214, 127.0.0.1)
 ├── client.crt + .key        — Client cert (CN=dana-localchat, clientAuth EKU)
 ├── client.p12               — PKCS#12 bundle for iOS (password: apex)
 └── ext.cnf                  — Extension config for cert generation

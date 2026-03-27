@@ -7,13 +7,13 @@ Private Claude chat interface — native iOS client (ApexChat) + Python server. 
 ```
 apex/
 ├── server/           # FastAPI + WebSocket + Claude Agent SDK
-│   ├── localchat.py  # Single-file server (port 8300)
-│   └── launch_localchat.sh
+│   ├── apex.py       # Single-file server (port 8300)
+│   └── launch_apex.sh
 ├── ios/              # SwiftUI native client (ApexChat)
 ├── production/       # Deployment configs, cron, systemd
 ├── docs/             # Design docs, debug logs, plans
 └── state/            # Runtime data (not committed)
-    ├── localchat.db  # SQLite chat database
+    ├── apex.db       # SQLite chat database
     ├── ssl/          # mTLS certs (ca, server, client)
     └── uploads/      # Temporary file uploads
 ```
@@ -22,7 +22,7 @@ apex/
 
 ```bash
 # Server
-cd server && bash launch_localchat.sh
+cd server && bash launch_apex.sh
 
 # State directory must exist with SSL certs
 # See docs/TROUBLESHOOTING.md for cert generation

@@ -10,7 +10,7 @@ Local web chat for Claude Code. Zero third-party data flow. Phone → WireGuard 
 
 **Status:** v1.2 committed (`b70abe2`). Working from browser. Other session working on TLS + mobile fixes.
 
-**File:** `scripts/localchat.py` (single file, ~1700 lines)
+**File:** `server/apex.py` (single file, ~1700 lines)
 
 **Architecture:** FastAPI + WebSocket + Claude Agent SDK (`ClaudeSDKClient`) for persistent multi-turn sessions. SQLite for chat/message storage. Embedded HTML/CSS/JS.
 

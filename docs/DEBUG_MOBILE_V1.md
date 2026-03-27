@@ -1,7 +1,7 @@
 # Apex Mobile Reconnection — Debug Report
 
 **Date:** 2026-03-24
-**File:** `scripts/localchat.py` (single-file server, ~2260 lines)
+**File:** `server/apex.py` (single-file server, ~2260 lines)
 **Platform:** iOS Safari PWA over WireGuard VPN + mTLS
 
 ## Context
@@ -178,7 +178,7 @@ After fixes:
 
 ## Implementation Notes
 
-- All fixes are in `scripts/localchat.py` — single file, inline JS/CSS/HTML
+- All fixes are in `server/apex.py` — single file, inline JS/CSS/HTML
 - Server runs under uvicorn with mTLS (`ssl_cert_reqs=ssl.CERT_OPTIONAL`)
 - The `_send()` closure pattern is correct — keep it, just add the event buffer
 - `sessionStorage` is correct for cross-disconnect state — keep it
@@ -188,7 +188,7 @@ After fixes:
 
 ## File References
 
-All changes in `scripts/localchat.py`:
+All changes in `server/apex.py`:
 - Server-side registry: lines 430-435
 - `_stream_response` + `_send()`: lines 507-630
 - `attach` handler: lines 825-845

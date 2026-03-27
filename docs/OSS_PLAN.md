@@ -4,7 +4,7 @@ description: Plan to open-source Apex as a standalone single-file Claude chat se
 type: project
 ---
 
-Apex (`scripts/localchat.py`) is a candidate for OSS release as a standalone self-hosted Claude chat interface.
+Apex (`server/apex.py`) is a candidate for OSS release as a standalone self-hosted Claude chat interface.
 
 **What it is:** Single-file Python chat server (~1600 lines) with inline HTML/CSS/JS. Zero build step. Runs Claude via the Agent SDK with streaming, persistent sessions, file uploads, and TLS.
 
