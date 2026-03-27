@@ -713,6 +713,200 @@ select {
 .text-accent { color: var(--accent); }
 .mono { font-family: "SF Mono", "Fira Code", "Cascadia Code", Menlo, monospace; font-size: 12px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+
+/* ===================================================================
+   Components: Modal
+   =================================================================== */
+
+.modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+}
+
+.modal-overlay.modal-open {
+    display: flex;
+}
+
+.modal-card {
+    background: var(--surface);
+    border: 1px solid var(--card);
+    border-radius: var(--radius);
+    padding: 24px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    min-width: 400px;
+    max-width: 560px;
+    width: 90%;
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+}
+
+.modal-header h3 {
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.modal-close {
+    background: transparent;
+    color: var(--dim);
+    padding: 4px;
+    line-height: 1;
+    font-size: 20px;
+}
+
+.modal-close:hover {
+    color: var(--text);
+}
+
+/* ===================================================================
+   Components: TLS Page
+   =================================================================== */
+
+.san-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: var(--card);
+    border-radius: 12px;
+    font-size: 12px;
+    font-family: "SF Mono", "Fira Code", Menlo, monospace;
+    margin: 3px;
+}
+
+.san-chip .san-remove {
+    background: transparent;
+    color: var(--dim);
+    font-size: 14px;
+    padding: 0;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.san-chip .san-remove:hover {
+    color: var(--red);
+}
+
+.tls-detail-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 6px 16px;
+    font-size: 13px;
+    margin-bottom: 16px;
+}
+
+.tls-detail-grid dt {
+    color: var(--dim);
+    white-space: nowrap;
+}
+
+.tls-detail-grid dd {
+    font-weight: 500;
+    word-break: break-all;
+}
+
+.tls-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.tls-table thead th {
+    text-align: left;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--dim);
+    border-bottom: 1px solid var(--card);
+}
+
+.tls-table tbody td {
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+    vertical-align: middle;
+}
+
+.tls-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.btn-danger {
+    background: var(--red);
+    color: #fff;
+}
+
+.btn-danger:hover {
+    background: #DC2626;
+}
+
+.btn-sm {
+    padding: 5px 10px;
+    font-size: 12px;
+}
+
+.btn-row {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.san-input-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.san-input-row input {
+    flex: 1;
+}
+
+.san-input-row select {
+    width: 100px;
+}
+
+.san-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 8px;
+    min-height: 32px;
+}
+
+.modal-note {
+    margin-top: 12px;
+    padding: 10px 12px;
+    background: rgba(245, 158, 11, 0.1);
+    border: 1px solid rgba(245, 158, 11, 0.25);
+    border-radius: var(--radius);
+    font-size: 12px;
+    color: var(--yellow);
+}
+
+.qr-container {
+    display: flex;
+    justify-content: center;
+    padding: 16px 0;
+}
+
+.qr-container img {
+    max-width: 200px;
+    border-radius: var(--radius);
+    background: #fff;
+    padding: 8px;
+}
 </style>
 </head>
 <body>
@@ -769,14 +963,13 @@ select {
                 </svg>
                 Config
             </div>
-            <!-- Future: TLS -->
-            <div class="nav-item nav-disabled" title="Coming in Phase 2">
+            <!-- TLS -->
+            <div class="nav-item" data-page="tls" onclick="navigateTo('tls')">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
                     <path d="M7 11V7a5 5 0 0110 0v4"/>
                 </svg>
                 TLS
-                <span class="nav-badge">Soon</span>
             </div>
             <!-- Future: Models -->
             <div class="nav-item nav-disabled" title="Coming in Phase 3">
@@ -911,7 +1104,134 @@ select {
             </div>
         </div>
 
+        <!-- =========================================================
+             TLS PAGE
+             ========================================================= -->
+        <div class="page" id="page-tls">
+            <div class="page-header">
+                <h2>TLS Certificates</h2>
+                <button class="btn btn-ghost" onclick="loadTLS()" id="btn-tls-refresh">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="23 4 23 10 17 10"/>
+                        <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+                    </svg>
+                    Refresh
+                </button>
+            </div>
+
+            <div class="card-grid">
+
+                <!-- CA Certificate Card -->
+                <div class="card" id="card-tls-ca">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                        </svg>
+                        CA Certificate
+                    </div>
+                    <div id="tls-ca-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+
+                <!-- Server Certificate Card -->
+                <div class="card" id="card-tls-server">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                            <line x1="8" y1="21" x2="16" y2="21"/>
+                            <line x1="12" y1="17" x2="12" y2="21"/>
+                        </svg>
+                        Server Certificate
+                    </div>
+                    <div id="tls-server-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Client Certificates Table -->
+            <div class="config-section" id="tls-clients-section">
+                <div class="config-section-header">
+                    <span class="config-section-title">Client Certificates</span>
+                    <button class="btn btn-primary" onclick="openNewClientDialog()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="12" y1="5" x2="12" y2="19"/>
+                            <line x1="5" y1="12" x2="19" y2="12"/>
+                        </svg>
+                        New Client
+                    </button>
+                </div>
+                <div id="tls-clients-content">
+                    <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                </div>
+            </div>
+        </div>
+
     </main>
+</div>
+
+<!-- SAN Editor Modal -->
+<div class="modal-overlay" id="modal-san-editor">
+    <div class="modal-card">
+        <div class="modal-header">
+            <h3>Edit Subject Alternative Names</h3>
+            <button class="modal-close" onclick="closeModal('modal-san-editor')">&times;</button>
+        </div>
+        <div>
+            <label class="form-label">Current SANs</label>
+            <div class="san-list" id="san-list"></div>
+        </div>
+        <div class="san-input-row">
+            <select id="san-type">
+                <option value="IP">IP</option>
+                <option value="DNS">DNS</option>
+            </select>
+            <input type="text" id="san-input" placeholder="e.g. 10.0.0.1 or myhost.local">
+            <button class="btn btn-ghost" onclick="addSAN()">Add</button>
+        </div>
+        <div class="modal-note" id="san-note" style="display:none;">
+            Server certificate renewal required for SAN changes to take effect.
+        </div>
+        <div class="config-actions">
+            <button class="btn btn-primary" onclick="saveSANs()" id="btn-save-sans">Save SANs</button>
+            <button class="btn btn-ghost" onclick="closeModal('modal-san-editor')">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<!-- New Client Modal -->
+<div class="modal-overlay" id="modal-new-client">
+    <div class="modal-card">
+        <div class="modal-header">
+            <h3>Generate Client Certificate</h3>
+            <button class="modal-close" onclick="closeModal('modal-new-client')">&times;</button>
+        </div>
+        <div class="form-field">
+            <label class="form-label" for="new-client-cn">Device Name (CN)</label>
+            <div class="form-help">Common name for the client certificate, e.g. "iphone" or "macbook"</div>
+            <input type="text" id="new-client-cn" placeholder="e.g. iphone-dana" style="width:100%;">
+        </div>
+        <div id="new-client-result" style="display:none; margin-top:16px;"></div>
+        <div class="config-actions">
+            <button class="btn btn-primary" onclick="generateClient()" id="btn-generate-client">Generate</button>
+            <button class="btn btn-ghost" onclick="closeModal('modal-new-client')">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<!-- QR Code Modal -->
+<div class="modal-overlay" id="modal-qr">
+    <div class="modal-card">
+        <div class="modal-header">
+            <h3 id="qr-title">QR Code</h3>
+            <button class="modal-close" onclick="closeModal('modal-qr')">&times;</button>
+        </div>
+        <div class="qr-container" id="qr-content">
+            <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+        </div>
+    </div>
 </div>
 
 <script>
@@ -960,6 +1280,7 @@ function navigateTo(page) {
     } else {
         stopAutoRefresh();
         if (page === "config") loadConfig();
+        if (page === "tls") loadTLS();
     }
 }
 window.navigateTo = navigateTo;
@@ -1432,6 +1753,373 @@ async function saveConfig(section) {
 window.saveConfig = saveConfig;
 
 /* =====================================================================
+   TLS Page
+   ===================================================================== */
+
+let tlsSANs = [];  /* Local SAN array for editor */
+
+async function loadTLS() {
+    const btnRefresh = document.getElementById("btn-tls-refresh");
+    if (btnRefresh) btnRefresh.disabled = true;
+
+    try {
+        const [ca, server, clients, sans] = await Promise.allSettled([
+            apiFetch("/tls/ca"),
+            apiFetch("/tls/server"),
+            apiFetch("/tls/clients"),
+            apiFetch("/tls/sans"),
+        ]);
+
+        renderTlsCaCard(ca);
+        renderTlsServerCard(server);
+        renderTlsClientsTable(clients);
+
+        /* Cache SANs for editor */
+        if (sans.status === "fulfilled") {
+            tlsSANs = (sans.value.sans || sans.value || []).slice();
+        }
+    } catch (err) {
+        showToast("Failed to load TLS data: " + err.message, "error");
+    } finally {
+        if (btnRefresh) btnRefresh.disabled = false;
+    }
+}
+window.loadTLS = loadTLS;
+
+/* -- Render: CA Certificate ----------------------------------------- */
+
+function renderCertDetails(cert) {
+    let html = '<dl class="tls-detail-grid">';
+    if (cert.subject) html += '<dt>Subject</dt><dd class="mono">' + esc(cert.subject) + '</dd>';
+    if (cert.issuer) html += '<dt>Issuer</dt><dd class="mono">' + esc(cert.issuer) + '</dd>';
+    if (cert.serial) html += '<dt>Serial</dt><dd class="mono">' + esc(cert.serial) + '</dd>';
+    if (cert.fingerprint) html += '<dt>Fingerprint</dt><dd class="mono">' + esc(cert.fingerprint) + '</dd>';
+    if (cert.not_before) html += '<dt>Not Before</dt><dd>' + esc(cert.not_before) + '</dd>';
+    if (cert.not_after) html += '<dt>Not After</dt><dd>' + esc(cert.not_after) + '</dd>';
+    html += '</dl>';
+    return html;
+}
+
+function renderCertExpiryBar(cert) {
+    const days = cert.days_remaining != null ? cert.days_remaining : null;
+    const color = days === null ? "dim" : (days > 365 ? "green" : (days > 90 ? "yellow" : "red"));
+    const maxDays = cert.total_days || 3650;  /* default 10yr for CA */
+    const pct = days === null ? 0 : Math.max(0, Math.min(100, (days / maxDays) * 100));
+    const label = days === null ? "Unknown" : days + " days remaining";
+
+    return '<div class="cert-row">' +
+        '<div class="cert-label">' +
+            '<span class="cert-label-name">Expiry</span>' +
+            '<span class="cert-label-days text-' + color + '">' + label + '</span>' +
+        '</div>' +
+        '<div class="cert-bar">' +
+            '<div class="cert-bar-fill ' + color + '" style="width:' + pct + '%"></div>' +
+        '</div>' +
+    '</div>';
+}
+
+function renderTlsCaCard(result) {
+    const el = document.getElementById("tls-ca-content");
+
+    if (result.status === "rejected") {
+        el.innerHTML = renderError("Could not load CA certificate");
+        return;
+    }
+
+    const d = result.value;
+    let html = renderCertDetails(d);
+    html += renderCertExpiryBar(d);
+    el.innerHTML = html;
+}
+
+/* -- Render: Server Certificate ------------------------------------- */
+
+function renderTlsServerCard(result) {
+    const el = document.getElementById("tls-server-content");
+
+    if (result.status === "rejected") {
+        el.innerHTML = renderError("Could not load server certificate");
+        return;
+    }
+
+    const d = result.value;
+    let html = renderCertDetails(d);
+
+    /* SAN chips */
+    if (d.sans && d.sans.length > 0) {
+        html += '<div style="margin-bottom:12px;">' +
+            '<span class="stat-label" style="display:block; margin-bottom:6px;">Subject Alternative Names</span>' +
+            '<div class="san-list">';
+        for (const san of d.sans) {
+            html += '<span class="san-chip">' + esc(san) + '</span>';
+        }
+        html += '</div></div>';
+    }
+
+    html += renderCertExpiryBar(d);
+
+    /* Action buttons */
+    html += '<div style="margin-top:16px; display:flex; gap:8px;">' +
+        '<button class="btn btn-primary btn-sm" onclick="renewServer()">Renew</button>' +
+        '<button class="btn btn-ghost btn-sm" onclick="openSANEditor()">Edit SANs</button>' +
+    '</div>';
+
+    el.innerHTML = html;
+}
+
+/* -- Render: Client Certificates Table ------------------------------ */
+
+function renderTlsClientsTable(result) {
+    const el = document.getElementById("tls-clients-content");
+
+    if (result.status === "rejected") {
+        el.innerHTML = renderError("Could not load client certificates");
+        return;
+    }
+
+    const clients = result.value.clients || result.value || [];
+
+    if (clients.length === 0) {
+        el.innerHTML = '<div class="text-dim" style="padding:8px 0;">No client certificates issued yet.</div>';
+        return;
+    }
+
+    let html = '<table class="tls-table"><thead><tr>' +
+        '<th>Name (CN)</th><th>Expires</th><th>Days Left</th><th>Status</th><th>Actions</th>' +
+    '</tr></thead><tbody>';
+
+    for (const c of clients) {
+        const days = c.days_remaining != null ? c.days_remaining : null;
+        const expired = days !== null && days <= 0;
+        const warning = days !== null && days > 0 && days <= 90;
+        const dotClass = expired ? "red" : (warning ? "yellow" : "green");
+        const statusText = expired ? "Expired" : (warning ? "Expiring" : "Valid");
+
+        html += '<tr>' +
+            '<td class="mono">' + esc(c.cn || c.name || "—") + '</td>' +
+            '<td>' + esc(c.not_after || c.expires || "—") + '</td>' +
+            '<td class="text-' + dotClass + '">' + (days != null ? days : "—") + '</td>' +
+            '<td><span class="status-inline"><span class="status-dot ' + dotClass + '"></span>' + statusText + '</span></td>' +
+            '<td><div class="btn-row">' +
+                '<button class="btn btn-ghost btn-sm" onclick="downloadP12(\'' + esc(c.cn || c.name) + '\')" title="Download .p12">' +
+                    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+                        '<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>' +
+                        '<polyline points="7 10 12 15 17 10"/>' +
+                        '<line x1="12" y1="15" x2="12" y2="3"/>' +
+                    '</svg>' +
+                '</button>' +
+                '<button class="btn btn-ghost btn-sm" onclick="showQR(\'' + esc(c.cn || c.name) + '\')" title="Show QR code">' +
+                    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+                        '<rect x="3" y="3" width="7" height="7"/>' +
+                        '<rect x="14" y="3" width="7" height="7"/>' +
+                        '<rect x="3" y="14" width="7" height="7"/>' +
+                        '<rect x="14" y="14" width="3" height="3"/>' +
+                        '<rect x="20" y="14" width="1" height="3"/>' +
+                        '<rect x="14" y="20" width="3" height="1"/>' +
+                    '</svg>' +
+                '</button>' +
+                '<button class="btn btn-danger btn-sm" onclick="revokeClient(\'' + esc(c.cn || c.name) + '\')" title="Revoke">Revoke</button>' +
+            '</div></td>' +
+        '</tr>';
+    }
+
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}
+
+/* -- TLS Actions ---------------------------------------------------- */
+
+async function renewServer() {
+    if (!confirm("Renew the server certificate? Active connections may need to reconnect.")) return;
+
+    try {
+        await apiFetch("/tls/server/renew", { method: "POST" });
+        showToast("Server certificate renewed", "success");
+        loadTLS();
+    } catch (err) {
+        showToast("Renew failed: " + err.message, "error");
+    }
+}
+window.renewServer = renewServer;
+
+function downloadP12(cn) {
+    window.open(API + "/tls/clients/" + encodeURIComponent(cn) + "/p12", "_blank");
+}
+window.downloadP12 = downloadP12;
+
+async function showQR(cn) {
+    document.getElementById("qr-title").textContent = "QR Code — " + cn;
+    document.getElementById("qr-content").innerHTML =
+        '<div class="loading-overlay"><div class="spinner"></div> Loading...</div>';
+    openModal("modal-qr");
+
+    try {
+        const resp = await fetch(API + "/tls/clients/" + encodeURIComponent(cn) + "/qr");
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        document.getElementById("qr-content").innerHTML =
+            '<img src="' + url + '" alt="QR code for ' + esc(cn) + '">';
+    } catch (err) {
+        document.getElementById("qr-content").innerHTML = renderError("Failed to load QR: " + err.message);
+    }
+}
+window.showQR = showQR;
+
+async function revokeClient(cn) {
+    if (!confirm("Revoke client certificate for '" + cn + "'? This cannot be undone.")) return;
+
+    try {
+        await apiFetch("/tls/clients/" + encodeURIComponent(cn), { method: "DELETE" });
+        showToast("Client '" + cn + "' revoked", "success");
+        loadTLS();
+    } catch (err) {
+        showToast("Revoke failed: " + err.message, "error");
+    }
+}
+window.revokeClient = revokeClient;
+
+/* -- New Client Dialog ---------------------------------------------- */
+
+function openNewClientDialog() {
+    document.getElementById("new-client-cn").value = "";
+    document.getElementById("new-client-result").style.display = "none";
+    document.getElementById("new-client-result").innerHTML = "";
+    document.getElementById("btn-generate-client").disabled = false;
+    openModal("modal-new-client");
+}
+window.openNewClientDialog = openNewClientDialog;
+
+async function generateClient() {
+    const cn = document.getElementById("new-client-cn").value.trim();
+    if (!cn) {
+        showToast("Please enter a device name", "warning");
+        return;
+    }
+
+    const btn = document.getElementById("btn-generate-client");
+    btn.disabled = true;
+
+    try {
+        const result = await apiFetch("/tls/clients", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cn: cn }),
+        });
+
+        showToast("Client certificate generated for '" + cn + "'", "success");
+
+        /* Show download + QR area */
+        const resultEl = document.getElementById("new-client-result");
+        let html = '<div style="padding:12px; background:var(--bg); border-radius:var(--radius);">' +
+            '<div style="margin-bottom:10px; color:var(--green); font-weight:500;">Certificate generated successfully.</div>' +
+            '<div class="btn-row">' +
+                '<button class="btn btn-primary btn-sm" onclick="downloadP12(\'' + esc(cn) + '\')">Download .p12</button>' +
+                '<button class="btn btn-ghost btn-sm" onclick="showQR(\'' + esc(cn) + '\')">Show QR Code</button>' +
+            '</div>' +
+        '</div>';
+        resultEl.innerHTML = html;
+        resultEl.style.display = "block";
+
+        /* Refresh client list behind the modal */
+        loadTLS();
+    } catch (err) {
+        showToast("Generate failed: " + err.message, "error");
+        btn.disabled = false;
+    }
+}
+window.generateClient = generateClient;
+
+/* -- SAN Editor ----------------------------------------------------- */
+
+function openSANEditor() {
+    renderSANList();
+    document.getElementById("san-note").style.display = "none";
+    document.getElementById("san-input").value = "";
+    openModal("modal-san-editor");
+}
+window.openSANEditor = openSANEditor;
+
+function renderSANList() {
+    const el = document.getElementById("san-list");
+    if (tlsSANs.length === 0) {
+        el.innerHTML = '<span class="text-dim">No SANs configured</span>';
+        return;
+    }
+    let html = "";
+    for (let i = 0; i < tlsSANs.length; i++) {
+        const san = tlsSANs[i];
+        const display = (typeof san === "object") ? (san.type || "IP") + ":" + san.value : san;
+        html += '<span class="san-chip">' +
+            esc(display) +
+            '<button class="san-remove" onclick="removeSAN(' + i + ')" title="Remove">&times;</button>' +
+        '</span>';
+    }
+    el.innerHTML = html;
+}
+
+function addSAN() {
+    const typeEl = document.getElementById("san-type");
+    const inputEl = document.getElementById("san-input");
+    const value = inputEl.value.trim();
+    if (!value) return;
+
+    tlsSANs.push({ type: typeEl.value, value: value });
+    inputEl.value = "";
+    renderSANList();
+}
+window.addSAN = addSAN;
+
+function removeSAN(index) {
+    tlsSANs.splice(index, 1);
+    renderSANList();
+}
+window.removeSAN = removeSAN;
+
+async function loadSANs() {
+    try {
+        const result = await apiFetch("/tls/sans");
+        tlsSANs = (result.sans || result || []).slice();
+        renderSANList();
+    } catch (err) {
+        showToast("Failed to load SANs: " + err.message, "error");
+    }
+}
+window.loadSANs = loadSANs;
+
+async function saveSANs() {
+    const btn = document.getElementById("btn-save-sans");
+    btn.disabled = true;
+
+    try {
+        await apiFetch("/tls/sans", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sans: tlsSANs }),
+        });
+        showToast("SANs updated", "success");
+        document.getElementById("san-note").style.display = "block";
+        loadTLS();
+    } catch (err) {
+        showToast("Save SANs failed: " + err.message, "error");
+    } finally {
+        btn.disabled = false;
+    }
+}
+window.saveSANs = saveSANs;
+
+/* -- Modal Helpers -------------------------------------------------- */
+
+function openModal(id) {
+    document.getElementById(id).classList.add("modal-open");
+}
+
+function closeModal(id) {
+    document.getElementById(id).classList.remove("modal-open");
+}
+window.closeModal = closeModal;
+
+/* =====================================================================
    Auto-Refresh Timer
    ===================================================================== */
 
@@ -1513,8 +2201,8 @@ function renderError(message) {
 function init() {
     /* Route from URL hash */
     var hash = window.location.hash.replace("#", "");
-    if (hash === "config") {
-        navigateTo("config");
+    if (hash === "config" || hash === "tls") {
+        navigateTo(hash);
     } else {
         /* Default: health page */
         currentPage = "health";

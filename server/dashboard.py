@@ -1,6 +1,7 @@
 """Apex Dashboard — FastAPI sub-app for server management.
 
 Phase 1: Foundation + Health Dashboard.
+Phase 2: TLS Certificate Management.
 Mounted at /admin on the main server. Shares mTLS auth.
 
 Endpoints:
@@ -16,6 +17,18 @@ Endpoints:
     PUT  /api/config/models     — Update models config
     PUT  /api/config/workspace  — Update workspace config
     POST /api/server/restart    — Signal restart required
+
+    Phase 2 — TLS Certificate Management:
+    GET    /api/tls/ca                — CA cert details
+    GET    /api/tls/server            — Server cert details + SANs
+    GET    /api/tls/clients           — List all client certs
+    POST   /api/tls/clients           — Generate new client cert
+    GET    /api/tls/clients/{cn}/p12  — Download .p12 bundle
+    GET    /api/tls/clients/{cn}/qr   — QR code / URL card for .p12
+    DELETE /api/tls/clients/{cn}      — Revoke/delete client cert
+    POST   /api/tls/server/renew      — Renew server cert from CA
+    GET    /api/tls/sans              — Current SAN list from ext.cnf
+    PUT    /api/tls/sans              — Update SANs in ext.cnf
 """
 
 from __future__ import annotations
@@ -33,7 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from config import Config, SCHEMA
 
@@ -540,6 +553,647 @@ async def api_server_restart():
         "restart_required": True,
         "message": "Server restart required. Restart the process manually or "
                    "via your process supervisor.",
+    })
+
+
+# ===========================================================================
+# Phase 2 — TLS Certificate Management
+# ===========================================================================
+
+_CN_RE = re.compile(r"^[a-zA-Z0-9\-]{1,64}$")
+
+
+def _require_ssl_dir() -> Path | None:
+    """Return _ssl_dir or None (caller should return _not_initialized())."""
+    return _ssl_dir
+
+
+def _require_ca() -> tuple[Path, Path] | None:
+    """Return (ca.crt, ca.key) paths if both exist, else None."""
+    if _ssl_dir is None:
+        return None
+    ca_crt = _ssl_dir / "ca.crt"
+    ca_key = _ssl_dir / "ca.key"
+    if not ca_crt.exists() or not ca_key.exists():
+        return None
+    return ca_crt, ca_key
+
+
+def _parse_cert_full(path: Path) -> dict[str, Any] | None:
+    """Parse a certificate for full details: subject, issuer, expiry,
+    serial, fingerprint, SANs."""
+    try:
+        result = subprocess.run(
+            [
+                "openssl", "x509", "-in", str(path),
+                "-noout", "-subject", "-issuer", "-enddate",
+                "-serial", "-fingerprint", "-text",
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            return None
+
+        out = result.stdout
+
+        def _extract(label: str) -> str:
+            m = re.search(rf"{label}=(.+)", out)
+            return m.group(1).strip() if m else ""
+
+        subject = _extract("subject")
+        issuer = _extract("issuer")
+        expires_str = _extract("notAfter")
+        serial = _extract("serial")
+
+        # Fingerprint line: SHA1 Fingerprint=AA:BB:...
+        fingerprint = ""
+        m = re.search(r"Fingerprint=([0-9A-Fa-f:]+)", out)
+        if m:
+            fingerprint = m.group(1)
+
+        # Expiry as days remaining
+        days_remaining = -1
+        if expires_str:
+            try:
+                expires_dt = datetime.strptime(
+                    expires_str, "%b %d %H:%M:%S %Y %Z"
+                )
+                expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+                delta = expires_dt - datetime.now(timezone.utc)
+                days_remaining = delta.days
+            except ValueError:
+                pass
+
+        # SANs — look for "X509v3 Subject Alternative Name" block
+        sans: list[str] = []
+        san_match = re.search(
+            r"X509v3 Subject Alternative Name:\s*\n\s*(.+)", out
+        )
+        if san_match:
+            raw = san_match.group(1).strip()
+            sans = [s.strip() for s in raw.split(",") if s.strip()]
+
+        return {
+            "subject": subject,
+            "issuer": issuer,
+            "expires": expires_str,
+            "days_remaining": days_remaining,
+            "serial": serial,
+            "fingerprint": fingerprint,
+            "sans": sans,
+        }
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+
+
+def _validate_cn(cn: str) -> str | None:
+    """Return error message if CN is invalid, else None."""
+    if not cn:
+        return "cn is required"
+    if not _CN_RE.match(cn):
+        return "cn must be alphanumeric/hyphens only, max 64 chars"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# GET /api/tls/ca — CA certificate details
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/tls/ca")
+async def api_tls_ca():
+    """CA certificate details: subject, issuer, expiry, serial, fingerprint."""
+    if _ssl_dir is None:
+        return _not_initialized()
+
+    ca_path = _ssl_dir / "ca.crt"
+    if not ca_path.exists():
+        return _error("CA certificate not found", "CA_NOT_FOUND", 404)
+
+    info = _parse_cert_full(ca_path)
+    if info is None:
+        return _error("Failed to parse CA certificate", "CERT_PARSE_ERROR")
+
+    return JSONResponse({"status": "ok", **info})
+
+
+# ---------------------------------------------------------------------------
+# GET /api/tls/server — Server certificate details + SANs
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/tls/server")
+async def api_tls_server():
+    """Server certificate details including SANs."""
+    if _ssl_dir is None:
+        return _not_initialized()
+
+    srv_path = _ssl_dir / "localchat.crt"
+    if not srv_path.exists():
+        return _error("Server certificate not found", "SERVER_CERT_NOT_FOUND", 404)
+
+    info = _parse_cert_full(srv_path)
+    if info is None:
+        return _error("Failed to parse server certificate", "CERT_PARSE_ERROR")
+
+    return JSONResponse({"status": "ok", **info})
+
+
+# ---------------------------------------------------------------------------
+# GET /api/tls/clients — List all client certificates
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/tls/clients")
+async def api_tls_clients_list():
+    """List all client certificates found in the SSL directory."""
+    if _ssl_dir is None:
+        return _not_initialized()
+
+    clients: list[dict[str, Any]] = []
+    for crt_path in sorted(_ssl_dir.glob("*.crt")):
+        name = crt_path.stem
+        # Skip CA and server certs
+        if name in ("ca", "localchat"):
+            continue
+        info = _parse_cert_full(crt_path)
+        entry: dict[str, Any] = {"cn": name}
+        if info:
+            entry["subject"] = info["subject"]
+            entry["expires"] = info["expires"]
+            entry["days_remaining"] = info["days_remaining"]
+            entry["fingerprint"] = info["fingerprint"]
+        else:
+            entry["error"] = "Failed to parse certificate"
+        # Check for companion files
+        entry["has_key"] = (_ssl_dir / f"{name}.key").exists()
+        entry["has_p12"] = (_ssl_dir / f"{name}.p12").exists()
+        clients.append(entry)
+
+    return JSONResponse({"status": "ok", "clients": clients, "count": len(clients)})
+
+
+# ---------------------------------------------------------------------------
+# POST /api/tls/clients — Generate a new client certificate
+# ---------------------------------------------------------------------------
+
+@dashboard_app.post("/api/tls/clients")
+async def api_tls_clients_create(request: Request):
+    """Generate a new client certificate signed by the CA.
+
+    Body: {"cn": "device-name"}
+    """
+    if _ssl_dir is None:
+        return _not_initialized()
+
+    ca = _require_ca()
+    if ca is None:
+        return _error("CA certificate or key not found", "CA_NOT_FOUND", 404)
+    ca_crt, ca_key = ca
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _error("Invalid JSON in request body", "INVALID_JSON", status=400)
+
+    cn = body.get("cn", "").strip() if isinstance(body, dict) else ""
+    err = _validate_cn(cn)
+    if err:
+        return _error(err, "INVALID_CN", status=400)
+
+    # Check for existing cert with same CN
+    if (_ssl_dir / f"{cn}.crt").exists():
+        return _error(
+            f"Client certificate '{cn}' already exists",
+            "CN_EXISTS",
+            status=409,
+        )
+
+    key_path = _ssl_dir / f"{cn}.key"
+    csr_path = _ssl_dir / f"{cn}.csr"
+    crt_path = _ssl_dir / f"{cn}.crt"
+    p12_path = _ssl_dir / f"{cn}.p12"
+
+    steps = [
+        # 1. Generate private key
+        ["openssl", "genrsa", "-out", str(key_path), "2048"],
+        # 2. Generate CSR
+        ["openssl", "req", "-new",
+         "-key", str(key_path),
+         "-out", str(csr_path),
+         "-subj", f"/CN={cn}"],
+        # 3. Sign with CA
+        ["openssl", "x509", "-req",
+         "-in", str(csr_path),
+         "-CA", str(ca_crt),
+         "-CAkey", str(ca_key),
+         "-CAcreateserial",
+         "-out", str(crt_path),
+         "-days", "825",
+         "-sha256"],
+        # 4. Create .p12 bundle
+        ["openssl", "pkcs12", "-export",
+         "-out", str(p12_path),
+         "-inkey", str(key_path),
+         "-in", str(crt_path),
+         "-certfile", str(ca_crt),
+         "-passout", "pass:localchat"],
+    ]
+
+    for cmd in steps:
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                # Clean up partial artifacts
+                for f in (key_path, csr_path, crt_path, p12_path):
+                    f.unlink(missing_ok=True)
+                return _error(
+                    f"openssl failed: {result.stderr.strip()}",
+                    "OPENSSL_ERROR",
+                )
+        except subprocess.TimeoutExpired:
+            for f in (key_path, csr_path, crt_path, p12_path):
+                f.unlink(missing_ok=True)
+            return _error("openssl command timed out", "OPENSSL_TIMEOUT")
+
+    # 5. Clean up CSR
+    csr_path.unlink(missing_ok=True)
+
+    # Parse the new cert for expiry
+    info = _parse_cert_full(crt_path)
+    expires = info["expires"] if info else "unknown"
+
+    return JSONResponse({
+        "status": "ok",
+        "cn": cn,
+        "expires": expires,
+        "p12_url": f"/admin/api/tls/clients/{cn}/p12",
+    })
+
+
+# ---------------------------------------------------------------------------
+# GET /api/tls/clients/{cn}/p12 — Download .p12 bundle
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/tls/clients/{cn}/p12")
+async def api_tls_clients_download_p12(cn: str):
+    """Download a client .p12 certificate bundle."""
+    if _ssl_dir is None:
+        return _not_initialized()
+
+    err = _validate_cn(cn)
+    if err:
+        return _error(err, "INVALID_CN", status=400)
+
+    p12_path = _ssl_dir / f"{cn}.p12"
+    if not p12_path.exists():
+        return _error(
+            f"No .p12 bundle for '{cn}'",
+            "P12_NOT_FOUND",
+            status=404,
+        )
+
+    data = p12_path.read_bytes()
+    return Response(
+        content=data,
+        media_type="application/x-pkcs12",
+        headers={
+            "Content-Disposition": f'attachment; filename="{cn}.p12"',
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/tls/clients/{cn}/qr — QR code or URL card for .p12
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/tls/clients/{cn}/qr")
+async def api_tls_clients_qr(cn: str, request: Request):
+    """Return a QR code as inline SVG for the .p12 download URL.
+
+    Falls back to a plain URL card if the qrcode library is not installed.
+    """
+    if _ssl_dir is None:
+        return _not_initialized()
+
+    err = _validate_cn(cn)
+    if err:
+        return _error(err, "INVALID_CN", status=400)
+
+    p12_path = _ssl_dir / f"{cn}.p12"
+    if not p12_path.exists():
+        return _error(
+            f"No .p12 bundle for '{cn}'",
+            "P12_NOT_FOUND",
+            status=404,
+        )
+
+    # Build the full download URL from the request
+    base = str(request.base_url).rstrip("/")
+    download_url = f"{base}/admin/api/tls/clients/{cn}/p12"
+
+    # Try qrcode library for SVG generation
+    try:
+        import qrcode  # type: ignore
+        import qrcode.image.svg  # type: ignore
+
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(download_url)
+        qr.make(fit=True)
+
+        factory = qrcode.image.svg.SvgPathImage
+        img = qr.make_image(image_factory=factory)
+
+        import io
+        buf = io.BytesIO()
+        img.save(buf)
+        svg_str = buf.getvalue().decode("utf-8")
+
+        html = (
+            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            "<title>QR — {cn}</title>"
+            "<style>body{{background:#111;color:#eee;font-family:system-ui;"
+            "display:flex;flex-direction:column;align-items:center;padding:2em}}"
+            "svg{{background:white;padding:1em;border-radius:8px;max-width:300px}}"
+            "a{{color:#6cf;word-break:break-all}}</style></head><body>"
+            f"<h2>Client cert: {cn}</h2>"
+            f"{svg_str}"
+            f"<p style='margin-top:1em'>Or copy: <a href='{download_url}'>"
+            f"{download_url}</a></p>"
+            f"<p>Install password: <code>localchat</code></p>"
+            "</body></html>"
+        )
+        return HTMLResponse(html)
+
+    except ImportError:
+        # Fallback: URL card without QR
+        html = (
+            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            f"<title>Download — {cn}</title>"
+            "<style>body{background:#111;color:#eee;font-family:system-ui;"
+            "display:flex;flex-direction:column;align-items:center;padding:2em}"
+            ".card{background:#222;padding:2em;border-radius:12px;max-width:500px;"
+            "text-align:center;border:1px solid #444}"
+            "a{color:#6cf;font-size:1.1em;word-break:break-all}"
+            "code{background:#333;padding:2px 8px;border-radius:4px}</style></head>"
+            "<body><div class='card'>"
+            f"<h2>Client cert: {cn}</h2>"
+            f"<p>Download URL:</p>"
+            f"<p><a href='{download_url}'>{download_url}</a></p>"
+            f"<p style='margin-top:1em'>Install password: <code>localchat</code></p>"
+            "<p style='color:#888;font-size:0.85em;margin-top:1em'>"
+            "QR code unavailable — install <code>qrcode</code> package for SVG QR.</p>"
+            "</div></body></html>"
+        )
+        return HTMLResponse(html)
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/tls/clients/{cn} — Revoke/delete client cert
+# ---------------------------------------------------------------------------
+
+@dashboard_app.delete("/api/tls/clients/{cn}")
+async def api_tls_clients_delete(cn: str):
+    """Delete a client certificate and its key/p12 files."""
+    if _ssl_dir is None:
+        return _not_initialized()
+
+    err = _validate_cn(cn)
+    if err:
+        return _error(err, "INVALID_CN", status=400)
+
+    crt_path = _ssl_dir / f"{cn}.crt"
+    if not crt_path.exists():
+        return _error(
+            f"Client certificate '{cn}' not found",
+            "CLIENT_NOT_FOUND",
+            status=404,
+        )
+
+    removed: list[str] = []
+    for ext in (".crt", ".key", ".p12", ".csr"):
+        f = _ssl_dir / f"{cn}{ext}"
+        if f.exists():
+            f.unlink()
+            removed.append(f.name)
+
+    return JSONResponse({
+        "status": "ok",
+        "cn": cn,
+        "removed_files": removed,
+    })
+
+
+# ---------------------------------------------------------------------------
+# POST /api/tls/server/renew — Renew server certificate using existing CA
+# ---------------------------------------------------------------------------
+
+@dashboard_app.post("/api/tls/server/renew")
+async def api_tls_server_renew():
+    """Regenerate the server certificate signed by the existing CA.
+
+    Uses ext.cnf for SAN extensions. Returns restart_required=true.
+    """
+    if _ssl_dir is None:
+        return _not_initialized()
+
+    ca = _require_ca()
+    if ca is None:
+        return _error("CA certificate or key not found", "CA_NOT_FOUND", 404)
+    ca_crt, ca_key = ca
+
+    ext_cnf = _ssl_dir / "ext.cnf"
+    if not ext_cnf.exists():
+        return _error("ext.cnf not found — cannot determine SANs", "EXT_CNF_NOT_FOUND", 404)
+
+    key_path = _ssl_dir / "localchat.key"
+    csr_path = _ssl_dir / "localchat.csr"
+    crt_path = _ssl_dir / "localchat.crt"
+
+    steps = [
+        # 1. Generate new server key
+        ["openssl", "genrsa", "-out", str(key_path), "2048"],
+        # 2. Generate CSR
+        ["openssl", "req", "-new",
+         "-key", str(key_path),
+         "-out", str(csr_path),
+         "-subj", "/CN=localchat"],
+        # 3. Sign with CA using ext.cnf for SANs
+        ["openssl", "x509", "-req",
+         "-in", str(csr_path),
+         "-CA", str(ca_crt),
+         "-CAkey", str(ca_key),
+         "-CAcreateserial",
+         "-out", str(crt_path),
+         "-days", "825",
+         "-sha256",
+         "-extfile", str(ext_cnf),
+         "-extensions", "v3_req"],
+    ]
+
+    for cmd in steps:
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                return _error(
+                    f"openssl failed: {result.stderr.strip()}",
+                    "OPENSSL_ERROR",
+                )
+        except subprocess.TimeoutExpired:
+            return _error("openssl command timed out", "OPENSSL_TIMEOUT")
+
+    # Clean up CSR
+    csr_path.unlink(missing_ok=True)
+
+    # Parse the renewed cert for expiry
+    info = _parse_cert_full(crt_path)
+    expires = info["expires"] if info else "unknown"
+
+    return JSONResponse({
+        "status": "ok",
+        "restart_required": True,
+        "expires": expires,
+        "message": "Server certificate renewed. Restart the server to use the new cert.",
+    })
+
+
+# ---------------------------------------------------------------------------
+# GET /api/tls/sans — Current SAN list from ext.cnf
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/tls/sans")
+async def api_tls_sans():
+    """Parse ext.cnf and return the current Subject Alternative Names."""
+    if _ssl_dir is None:
+        return _not_initialized()
+
+    ext_cnf = _ssl_dir / "ext.cnf"
+    if not ext_cnf.exists():
+        return _error("ext.cnf not found", "EXT_CNF_NOT_FOUND", 404)
+
+    sans = _parse_ext_cnf_sans(ext_cnf)
+
+    return JSONResponse({
+        "status": "ok",
+        "sans": sans,
+        "ext_cnf_path": str(ext_cnf),
+    })
+
+
+def _parse_ext_cnf_sans(ext_cnf: Path) -> list[str]:
+    """Parse the [alt_names] section from ext.cnf into a list like
+    ['IP:10.8.0.2', 'DNS:localhost']."""
+    sans: list[str] = []
+    in_alt = False
+    for line in ext_cnf.read_text().splitlines():
+        stripped = line.strip()
+        if stripped == "[alt_names]":
+            in_alt = True
+            continue
+        if in_alt:
+            if stripped.startswith("[") and stripped.endswith("]"):
+                break  # next section
+            if "=" in stripped:
+                # e.g. "IP.1 = 10.8.0.2" or "DNS.1 = localhost"
+                key, _, val = stripped.partition("=")
+                key = key.strip()
+                val = val.strip()
+                # Extract type from key: IP.1 -> IP, DNS.2 -> DNS
+                type_part = key.split(".")[0].strip()
+                sans.append(f"{type_part}:{val}")
+    return sans
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/tls/sans — Update SANs in ext.cnf
+# ---------------------------------------------------------------------------
+
+@dashboard_app.put("/api/tls/sans")
+async def api_tls_sans_update(request: Request):
+    """Update Subject Alternative Names in ext.cnf.
+
+    Body: {"sans": ["IP:192.168.1.5", "DNS:myserver.local"]}
+    Writes a new ext.cnf. Returns restart_required + renew_required.
+    """
+    if _ssl_dir is None:
+        return _not_initialized()
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _error("Invalid JSON in request body", "INVALID_JSON", status=400)
+
+    if not isinstance(body, dict) or "sans" not in body:
+        return _error(
+            'Request body must contain "sans" array',
+            "INVALID_BODY",
+            status=400,
+        )
+
+    raw_sans = body["sans"]
+    if not isinstance(raw_sans, list) or len(raw_sans) == 0:
+        return _error(
+            '"sans" must be a non-empty array',
+            "INVALID_SANS",
+            status=400,
+        )
+
+    # Validate each SAN entry
+    san_re = re.compile(r"^(IP|DNS):.+$")
+    for entry in raw_sans:
+        if not isinstance(entry, str) or not san_re.match(entry):
+            return _error(
+                f"Invalid SAN entry: '{entry}' — must be 'IP:...' or 'DNS:...'",
+                "INVALID_SAN_ENTRY",
+                status=400,
+            )
+
+    # Build the new ext.cnf
+    alt_lines: list[str] = []
+    ip_idx = 0
+    dns_idx = 0
+    for entry in raw_sans:
+        san_type, _, san_val = entry.partition(":")
+        if san_type == "IP":
+            ip_idx += 1
+            alt_lines.append(f"IP.{ip_idx} = {san_val}")
+        elif san_type == "DNS":
+            dns_idx += 1
+            alt_lines.append(f"DNS.{dns_idx} = {san_val}")
+
+    ext_cnf_content = (
+        "[req]\n"
+        "req_extensions = v3_req\n"
+        "distinguished_name = req_dn\n"
+        "\n"
+        "[req_dn]\n"
+        "CN = localchat\n"
+        "\n"
+        "[v3_req]\n"
+        "basicConstraints = CA:FALSE\n"
+        "keyUsage = digitalSignature, keyEncipherment\n"
+        "extendedKeyUsage = serverAuth\n"
+        "subjectAltName = @alt_names\n"
+        "\n"
+        "[alt_names]\n"
+    )
+    ext_cnf_content += "\n".join(alt_lines) + "\n"
+
+    ext_cnf = _ssl_dir / "ext.cnf"
+    ext_cnf.write_text(ext_cnf_content)
+
+    return JSONResponse({
+        "status": "ok",
+        "sans": raw_sans,
+        "restart_required": True,
+        "renew_required": True,
+        "message": "SANs updated. Renew the server certificate then restart.",
     })
 
 
