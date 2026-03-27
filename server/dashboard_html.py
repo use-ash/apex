@@ -703,6 +703,158 @@ select {
 }
 
 /* ===================================================================
+   Components: Workspace Page
+   =================================================================== */
+
+.ws-textarea {
+    width: 100%;
+    min-height: 400px;
+    padding: 16px;
+    font-family: "SF Mono", "Fira Code", "Cascadia Code", Menlo, monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--card);
+    border-radius: var(--radius);
+    resize: vertical;
+    outline: none;
+    tab-size: 4;
+    transition: border-color var(--transition);
+}
+
+.ws-textarea:focus {
+    border-color: var(--accent);
+}
+
+.ws-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--dim);
+}
+
+.ws-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.ws-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+}
+
+.ws-summary-item {
+    text-align: center;
+    padding: 12px;
+    background: var(--bg);
+    border-radius: var(--radius);
+}
+
+.ws-summary-value {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.ws-summary-label {
+    font-size: 12px;
+    color: var(--dim);
+    margin-top: 4px;
+}
+
+.ws-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.ws-table th {
+    text-align: left;
+    padding: 8px 12px;
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--dim);
+    border-bottom: 1px solid var(--card);
+}
+
+.ws-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.ws-table tbody tr:hover {
+    background: rgba(148, 163, 184, 0.05);
+}
+
+.skill-card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+}
+
+.skill-card {
+    background: var(--bg);
+    border: 1px solid var(--card);
+    border-radius: var(--radius);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.skill-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.skill-card-name {
+    font-weight: 600;
+    font-size: 14px;
+}
+
+.skill-card-desc {
+    font-size: 12px;
+    color: var(--dim);
+    line-height: 1.4;
+}
+
+.btn-danger {
+    background: var(--red);
+    color: #fff;
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.btn-danger:hover {
+    opacity: 0.85;
+}
+
+.btn-sm {
+    padding: 5px 10px;
+    font-size: 12px;
+}
+
+.ws-empty {
+    padding: 24px;
+    text-align: center;
+    color: var(--dim);
+    font-size: 13px;
+}
+
+.ws-countdown {
+    font-variant-numeric: tabular-nums;
+}
+
+/* ===================================================================
    Utility
    =================================================================== */
 
@@ -980,13 +1132,12 @@ select {
                 </svg>
                 Models
             </div>
-            <!-- Future: Workspace -->
-            <div class="nav-item nav-disabled" title="Coming in Phase 4">
+            <!-- Workspace -->
+            <div class="nav-item" data-page="workspace" onclick="navigateTo('workspace')">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
                 </svg>
                 Workspace
-                <span class="nav-badge">Soon</span>
             </div>
             <!-- Future: Logs -->
             <div class="nav-item nav-disabled" title="Coming in Phase 5">
@@ -1288,6 +1439,106 @@ select {
             </div>
         </div>
 
+        <!-- =========================================================
+             WORKSPACE PAGE
+             ========================================================= -->
+        <div class="page" id="page-workspace">
+            <div class="page-header">
+                <h2>Workspace</h2>
+                <button class="btn btn-ghost" onclick="loadWorkspace()" id="btn-workspace-refresh">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="23 4 23 10 17 10"/>
+                        <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+                    </svg>
+                    Refresh
+                </button>
+            </div>
+
+            <!-- Workspace Summary -->
+            <div class="card" style="margin-bottom:20px;">
+                <div class="card-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"/>
+                        <line x1="12" y1="16" x2="12" y2="12"/>
+                        <line x1="12" y1="8" x2="12.01" y2="8"/>
+                    </svg>
+                    Workspace Summary
+                </div>
+                <div id="ws-summary-content">
+                    <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                </div>
+            </div>
+
+            <!-- CLAUDE.md Editor -->
+            <div class="config-section" style="margin-bottom:20px;">
+                <div class="config-section-header">
+                    <span class="config-section-title">CLAUDE.md</span>
+                </div>
+                <textarea class="ws-textarea" id="ws-claudemd-editor" placeholder="Loading CLAUDE.md..." spellcheck="false"></textarea>
+                <div class="ws-meta">
+                    <span id="ws-claudemd-modified"></span>
+                    <span id="ws-claudemd-status"></span>
+                </div>
+                <div class="ws-actions">
+                    <button class="btn btn-ghost" onclick="loadClaudeMd()" id="btn-claudemd-load">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+                            <polyline points="23 4 23 10 17 10"/>
+                            <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+                        </svg>
+                        Reload
+                    </button>
+                    <button class="btn btn-primary" onclick="saveClaudeMd()" id="btn-claudemd-save">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+                            <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>
+                            <polyline points="17 21 17 13 7 13 7 21"/>
+                            <polyline points="7 3 7 8 15 8"/>
+                        </svg>
+                        Save
+                    </button>
+                </div>
+            </div>
+
+            <!-- Memory Files -->
+            <div class="config-section" style="margin-bottom:20px;">
+                <div class="config-section-header">
+                    <span class="config-section-title">Memory Files</span>
+                </div>
+                <div id="ws-memory-content">
+                    <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                </div>
+            </div>
+
+            <!-- Skills Catalog -->
+            <div class="config-section" style="margin-bottom:20px;">
+                <div class="config-section-header">
+                    <span class="config-section-title">Skills</span>
+                </div>
+                <div id="ws-skills-content">
+                    <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                </div>
+            </div>
+
+            <!-- Guardrail Whitelist -->
+            <div class="config-section" style="margin-bottom:20px;">
+                <div class="config-section-header">
+                    <span class="config-section-title">Guardrail Whitelist</span>
+                </div>
+                <div id="ws-whitelist-content">
+                    <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                </div>
+            </div>
+
+            <!-- Active Sessions -->
+            <div class="config-section">
+                <div class="config-section-header">
+                    <span class="config-section-title">Active Sessions</span>
+                </div>
+                <div id="ws-sessions-content">
+                    <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                </div>
+            </div>
+        </div>
+
     </main>
 </div>
 
@@ -1420,6 +1671,7 @@ function navigateTo(page) {
         if (page === "config") loadConfig();
         if (page === "tls") loadTLS();
         if (page === "models") loadModels();
+        if (page === "workspace") loadWorkspace();
     }
 }
 window.navigateTo = navigateTo;
@@ -2670,6 +2922,384 @@ async function testAlerts() {
 }
 window.testAlerts = testAlerts;
 
+/* =====================================================================
+   Workspace Page
+   ===================================================================== */
+
+var wsSkillsData = [];
+var wsWhitelistData = [];
+var wsSessionsData = [];
+
+async function loadWorkspace() {
+    var btnRefresh = document.getElementById("btn-workspace-refresh");
+    if (btnRefresh) btnRefresh.disabled = true;
+
+    try {
+        var [workspace, skills, whitelist, sessions] = await Promise.allSettled([
+            apiFetch("/workspace"),
+            apiFetch("/skills"),
+            apiFetch("/guardrails/whitelist"),
+            apiFetch("/sessions"),
+        ]);
+
+        /* Summary */
+        renderWsSummary(workspace);
+
+        /* Skills */
+        if (skills.status === "fulfilled") {
+            wsSkillsData = skills.value.skills || skills.value || [];
+            renderSkills();
+        } else {
+            document.getElementById("ws-skills-content").innerHTML =
+                renderError("Could not load skills");
+        }
+
+        /* Whitelist */
+        if (whitelist.status === "fulfilled") {
+            wsWhitelistData = whitelist.value.entries || whitelist.value || [];
+            renderWhitelist();
+        } else {
+            document.getElementById("ws-whitelist-content").innerHTML =
+                renderError("Could not load whitelist");
+        }
+
+        /* Sessions */
+        if (sessions.status === "fulfilled") {
+            wsSessionsData = sessions.value.sessions || sessions.value || [];
+            renderSessions();
+        } else {
+            document.getElementById("ws-sessions-content").innerHTML =
+                renderError("Could not load sessions");
+        }
+
+        /* Load CLAUDE.md and memory separately */
+        loadClaudeMd();
+        loadMemoryFiles();
+    } catch (err) {
+        showToast("Failed to load workspace: " + err.message, "error");
+    } finally {
+        if (btnRefresh) btnRefresh.disabled = false;
+    }
+}
+window.loadWorkspace = loadWorkspace;
+
+/* -- Workspace Summary --------------------------------------------- */
+
+function renderWsSummary(result) {
+    var el = document.getElementById("ws-summary-content");
+
+    if (result.status === "rejected") {
+        el.innerHTML = renderError("Could not load workspace info");
+        return;
+    }
+
+    var d = result.value;
+    var path = d.path || d.workspace_path || "Unknown";
+    var claudeMdExists = d.claude_md_exists !== false;
+    var memoryCount = d.memory_file_count != null ? d.memory_file_count : "—";
+    var skillsCount = d.skills_count != null ? d.skills_count : "—";
+
+    el.innerHTML =
+        '<div class="ws-summary-grid">' +
+            '<div class="ws-summary-item">' +
+                '<div class="ws-summary-value mono" style="font-size:13px; word-break:break-all;">' + esc(path) + '</div>' +
+                '<div class="ws-summary-label">Workspace Path</div>' +
+            '</div>' +
+            '<div class="ws-summary-item">' +
+                '<div class="ws-summary-value">' +
+                    '<span class="status-dot ' + (claudeMdExists ? "green" : "red") + '"></span>' +
+                    (claudeMdExists ? "Present" : "Missing") +
+                '</div>' +
+                '<div class="ws-summary-label">CLAUDE.md</div>' +
+            '</div>' +
+            '<div class="ws-summary-item">' +
+                '<div class="ws-summary-value">' + esc(memoryCount) + '</div>' +
+                '<div class="ws-summary-label">Memory Files</div>' +
+            '</div>' +
+            '<div class="ws-summary-item">' +
+                '<div class="ws-summary-value">' + esc(skillsCount) + '</div>' +
+                '<div class="ws-summary-label">Skills</div>' +
+            '</div>' +
+        '</div>';
+}
+
+/* -- CLAUDE.md Editor ---------------------------------------------- */
+
+async function loadClaudeMd() {
+    var editor = document.getElementById("ws-claudemd-editor");
+    var statusEl = document.getElementById("ws-claudemd-status");
+    var modifiedEl = document.getElementById("ws-claudemd-modified");
+
+    statusEl.textContent = "Loading...";
+    editor.disabled = true;
+
+    try {
+        var result = await apiFetch("/workspace/claude-md");
+        editor.value = result.content || result.text || "";
+        var modified = result.modified || result.last_modified || null;
+        if (modified) {
+            modifiedEl.textContent = "Last modified: " + new Date(modified).toLocaleString();
+        } else {
+            modifiedEl.textContent = "";
+        }
+        statusEl.textContent = "";
+    } catch (err) {
+        editor.value = "";
+        statusEl.textContent = "Error: " + err.message;
+        statusEl.style.color = "var(--red)";
+    } finally {
+        editor.disabled = false;
+    }
+}
+window.loadClaudeMd = loadClaudeMd;
+
+async function saveClaudeMd() {
+    if (!confirm("This will backup and overwrite CLAUDE.md. Continue?")) return;
+
+    var editor = document.getElementById("ws-claudemd-editor");
+    var btn = document.getElementById("btn-claudemd-save");
+    var statusEl = document.getElementById("ws-claudemd-status");
+    btn.disabled = true;
+
+    try {
+        await apiFetch("/workspace/claude-md", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: editor.value }),
+        });
+        showToast("CLAUDE.md saved with backup", "success");
+        statusEl.textContent = "Saved";
+        statusEl.style.color = "var(--green)";
+        setTimeout(function() { statusEl.textContent = ""; }, 3000);
+        /* Refresh modified timestamp */
+        var modifiedEl = document.getElementById("ws-claudemd-modified");
+        modifiedEl.textContent = "Last modified: " + new Date().toLocaleString();
+    } catch (err) {
+        showToast("Save failed: " + err.message, "error");
+    } finally {
+        btn.disabled = false;
+    }
+}
+window.saveClaudeMd = saveClaudeMd;
+
+/* -- Memory Files -------------------------------------------------- */
+
+async function loadMemoryFiles() {
+    var el = document.getElementById("ws-memory-content");
+    el.innerHTML = '<div class="loading-overlay"><div class="spinner"></div> Loading...</div>';
+
+    try {
+        var result = await apiFetch("/workspace/memory");
+        var files = result.files || result || [];
+
+        if (files.length === 0) {
+            el.innerHTML = '<div class="ws-empty">No memory files found.</div>';
+            return;
+        }
+
+        var html = '<table class="ws-table"><thead><tr>' +
+            '<th>Name</th><th>Size</th><th>Modified</th>' +
+        '</tr></thead><tbody>';
+
+        for (var i = 0; i < files.length; i++) {
+            var f = files[i];
+            var modified = f.modified || f.last_modified || "";
+            if (modified) {
+                modified = new Date(modified).toLocaleString();
+            }
+            html += '<tr>' +
+                '<td class="mono">' + esc(f.name || f.filename || "—") + '</td>' +
+                '<td>' + formatBytes(f.size || f.size_bytes || 0) + '</td>' +
+                '<td class="text-dim">' + esc(modified || "—") + '</td>' +
+            '</tr>';
+        }
+
+        html += '</tbody></table>';
+        el.innerHTML = html;
+    } catch (err) {
+        el.innerHTML = renderError("Could not load memory files: " + err.message);
+    }
+}
+window.loadMemoryFiles = loadMemoryFiles;
+
+/* -- Skills Catalog ------------------------------------------------ */
+
+function renderSkills() {
+    var el = document.getElementById("ws-skills-content");
+
+    if (wsSkillsData.length === 0) {
+        el.innerHTML = '<div class="ws-empty">No skills registered.</div>';
+        return;
+    }
+
+    var html = '<div class="skill-card-grid">';
+
+    for (var i = 0; i < wsSkillsData.length; i++) {
+        var s = wsSkillsData[i];
+        var enabled = s.enabled !== false;
+        var name = s.name || s.id || "Skill " + (i + 1);
+        var desc = s.description || s.desc || "";
+
+        html += '<div class="skill-card">' +
+            '<div class="skill-card-header">' +
+                '<span class="skill-card-name">' + esc(name) + '</span>' +
+                '<label class="toggle">' +
+                    '<input type="checkbox" ' + (enabled ? "checked" : "") +
+                        ' onchange="toggleSkill(\'' + esc(name) + '\', this.checked)">' +
+                    '<div class="toggle-track"></div>' +
+                    '<div class="toggle-knob"></div>' +
+                '</label>' +
+            '</div>' +
+            (desc ? '<div class="skill-card-desc">' + esc(desc) + '</div>' : '') +
+        '</div>';
+    }
+
+    html += '</div>';
+    el.innerHTML = html;
+}
+
+async function toggleSkill(name, enabled) {
+    try {
+        await apiFetch("/skills/" + encodeURIComponent(name) + "/enabled", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled: enabled }),
+        });
+        showToast("Skill '" + name + "' " + (enabled ? "enabled" : "disabled"), "success");
+    } catch (err) {
+        showToast("Toggle failed: " + err.message, "error");
+        /* Reload to reset toggle state */
+        loadWorkspace();
+    }
+}
+window.toggleSkill = toggleSkill;
+
+/* -- Guardrail Whitelist ------------------------------------------- */
+
+function renderWhitelist() {
+    var el = document.getElementById("ws-whitelist-content");
+
+    if (wsWhitelistData.length === 0) {
+        el.innerHTML = '<div class="ws-empty">No whitelist entries.</div>';
+        return;
+    }
+
+    var html = '<table class="ws-table"><thead><tr>' +
+        '<th>Pattern</th><th>Expires</th><th>Actions</th>' +
+    '</tr></thead><tbody>';
+
+    var now = Date.now();
+    for (var i = 0; i < wsWhitelistData.length; i++) {
+        var e = wsWhitelistData[i];
+        var pattern = e.pattern || e.command || e.path || "—";
+        var expiresRaw = e.expires || e.expires_at || null;
+        var expiresStr = "—";
+        var countdown = "";
+
+        if (expiresRaw) {
+            var expiresMs = new Date(expiresRaw).getTime();
+            var remaining = expiresMs - now;
+            if (remaining > 0) {
+                var mins = Math.floor(remaining / 60000);
+                var secs = Math.floor((remaining % 60000) / 1000);
+                countdown = mins + "m " + secs + "s";
+                expiresStr = new Date(expiresRaw).toLocaleString();
+            } else {
+                expiresStr = "Expired";
+                countdown = "0m 0s";
+            }
+        }
+
+        var entryId = e.id || e._id || i;
+
+        html += '<tr>' +
+            '<td class="mono">' + esc(pattern) + '</td>' +
+            '<td>' + esc(expiresStr) +
+                (countdown ? ' <span class="ws-countdown text-dim">(' + countdown + ')</span>' : '') +
+            '</td>' +
+            '<td><button class="btn btn-danger btn-sm" onclick="deleteWhitelistEntry(\'' + esc(entryId) + '\')">Delete</button></td>' +
+        '</tr>';
+    }
+
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}
+
+async function deleteWhitelistEntry(id) {
+    if (!confirm("Delete this whitelist entry?")) return;
+
+    try {
+        await apiFetch("/guardrails/whitelist/" + encodeURIComponent(id), { method: "DELETE" });
+        showToast("Whitelist entry deleted", "success");
+        loadWorkspace();
+    } catch (err) {
+        showToast("Delete failed: " + err.message, "error");
+    }
+}
+window.deleteWhitelistEntry = deleteWhitelistEntry;
+
+/* -- Active Sessions ----------------------------------------------- */
+
+function renderSessions() {
+    var el = document.getElementById("ws-sessions-content");
+
+    if (wsSessionsData.length === 0) {
+        el.innerHTML = '<div class="ws-empty">No active sessions.</div>';
+        return;
+    }
+
+    var html = '<table class="ws-table"><thead><tr>' +
+        '<th>Chat</th><th>Session ID</th><th>Model</th><th>Actions</th>' +
+    '</tr></thead><tbody>';
+
+    for (var i = 0; i < wsSessionsData.length; i++) {
+        var s = wsSessionsData[i];
+        var chatName = s.chat || s.chat_title || s.chat_id || "—";
+        var sessionId = s.session_id || s.id || "—";
+        var truncId = String(sessionId).length > 12 ? String(sessionId).substring(0, 12) + "..." : String(sessionId);
+        var model = s.model || "—";
+
+        html += '<tr>' +
+            '<td>' + esc(chatName) + '</td>' +
+            '<td class="mono" title="' + esc(sessionId) + '">' + esc(truncId) + '</td>' +
+            '<td class="mono">' + esc(model) + '</td>' +
+            '<td><div style="display:flex; gap:6px;">' +
+                '<button class="btn btn-ghost btn-sm" onclick="compactSession(\'' + esc(s.chat_id || s.id || "") + '\')">Compact</button>' +
+                '<button class="btn btn-danger btn-sm" onclick="killSession(\'' + esc(s.chat_id || s.id || "") + '\')">Kill</button>' +
+            '</div></td>' +
+        '</tr>';
+    }
+
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}
+
+async function compactSession(chatId) {
+    if (!confirm("Compact session for chat '" + chatId + "'? This will summarize the conversation history.")) return;
+
+    try {
+        await apiFetch("/sessions/" + encodeURIComponent(chatId) + "/compact", { method: "POST" });
+        showToast("Session compacted", "success");
+        loadWorkspace();
+    } catch (err) {
+        showToast("Compact failed: " + err.message, "error");
+    }
+}
+window.compactSession = compactSession;
+
+async function killSession(chatId) {
+    if (!confirm("Kill session for chat '" + chatId + "'? This will terminate the active session.")) return;
+
+    try {
+        await apiFetch("/sessions/" + encodeURIComponent(chatId), { method: "DELETE" });
+        showToast("Session killed", "success");
+        loadWorkspace();
+    } catch (err) {
+        showToast("Kill failed: " + err.message, "error");
+    }
+}
+window.killSession = killSession;
+
 /* -- Modal Helpers -------------------------------------------------- */
 
 function openModal(id) {
@@ -2763,7 +3393,7 @@ function renderError(message) {
 function init() {
     /* Route from URL hash */
     var hash = window.location.hash.replace("#", "");
-    if (hash === "config" || hash === "tls" || hash === "models") {
+    if (hash === "config" || hash === "tls" || hash === "models" || hash === "workspace") {
         navigateTo(hash);
     } else {
         /* Default: health page */

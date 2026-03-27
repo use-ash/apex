@@ -42,15 +42,48 @@ Endpoints:
     GET    /api/alerts/config                    — Alert configuration overview
     PUT    /api/alerts/config/telegram           — Update telegram config
     POST   /api/alerts/test                      — Fire test alert (DB + Telegram)
+
+    Phase 4 — Workspace, Skills, Guardrails, Sessions:
+    GET    /api/workspace                          — Workspace summary
+    GET    /api/workspace/claude-md                 — Read CLAUDE.md content
+    PUT    /api/workspace/claude-md                 — Update CLAUDE.md (backup first)
+    GET    /api/workspace/memory                    — List memory files
+    GET    /api/skills                              — List installed skills
+    PUT    /api/skills/{name}/enabled               — Enable/disable skill
+    GET    /api/guardrails/whitelist                — Read guardrail whitelist
+    DELETE /api/guardrails/whitelist/{id}           — Remove whitelist entry by index
+    GET    /api/sessions                            — List active sessions
+    POST   /api/sessions/{chat_id}/compact          — Force compaction
+    DELETE /api/sessions/{chat_id}                  — Kill session
+
+    Phase 5 — Logs, Storage, Backups:
+    GET    /api/logs                             — Read log lines (tail, search, level filter)
+    GET    /api/logs/stream                      — SSE live tail of log file
+    POST   /api/logs/clear                       — Rotate log file
+    GET    /api/db/stats                         — Database stats (size, tables, WAL, pragmas)
+    POST   /api/db/vacuum                        — VACUUM database
+    GET    /api/db/export                        — Download database file
+    DELETE /api/db/messages                       — Purge old messages
+    GET    /api/uploads                          — List uploaded files
+    POST   /api/uploads/cleanup                  — Delete old uploads
+    POST   /api/backup                           — Create backup tarball
+    GET    /api/backups                          — List available backups
+    GET    /api/backups/{filename}               — Download backup file
+    POST   /api/backup/restore                   — Restore from backup
 """
 
 from __future__ import annotations
 
+import asyncio
+import glob as _glob_mod
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
+import tarfile
+import tempfile
 import time
 import urllib.request
 import urllib.error
@@ -60,6 +93,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
+from starlette.responses import StreamingResponse
 
 from config import Config, SCHEMA
 
@@ -1772,6 +1806,963 @@ async def api_alerts_test():
         "results": results,
         "fired_at": now_iso,
     })
+
+
+# ===========================================================================
+# Phase 4 — Workspace, Skills, Guardrails, Sessions
+# ===========================================================================
+
+WORKSPACE = Path(os.environ.get("LOCALCHAT_WORKSPACE", os.getcwd()))
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace — Workspace summary
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/workspace")
+async def api_workspace():
+    """Workspace overview: path, CLAUDE.md exists, memory count, skills count."""
+    claude_md = WORKSPACE / "CLAUDE.md"
+    memory_dir = WORKSPACE / "memory"
+    skills_dir = WORKSPACE / "skills"
+
+    memory_count = len(list(memory_dir.glob("*.md"))) if memory_dir.is_dir() else 0
+    skills_count = len(
+        _glob_mod.glob(str(skills_dir / "*" / "SKILL.md"))
+    ) if skills_dir.is_dir() else 0
+
+    return JSONResponse({
+        "workspace": str(WORKSPACE),
+        "claude_md_exists": claude_md.exists(),
+        "memory_file_count": memory_count,
+        "skills_count": skills_count,
+    })
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/claude-md — Read CLAUDE.md
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/workspace/claude-md")
+async def api_workspace_claude_md_get():
+    """Return the contents of CLAUDE.md."""
+    claude_md = WORKSPACE / "CLAUDE.md"
+    if not claude_md.exists():
+        return _error("CLAUDE.md not found", "NOT_FOUND", status=404)
+    try:
+        content = claude_md.read_text(encoding="utf-8")
+    except Exception as e:
+        return _error(f"Failed to read CLAUDE.md: {e}", "READ_ERROR")
+    return JSONResponse({
+        "path": str(claude_md),
+        "content": content,
+        "size_bytes": claude_md.stat().st_size,
+    })
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/workspace/claude-md — Update CLAUDE.md (backup first)
+# ---------------------------------------------------------------------------
+
+@dashboard_app.put("/api/workspace/claude-md")
+async def api_workspace_claude_md_put(request: Request):
+    """Write CLAUDE.md after backing up to CLAUDE.md.bak."""
+    body = await request.json()
+    content = body.get("content")
+    if content is None:
+        return _error("Missing 'content' field", "BAD_REQUEST", status=400)
+
+    claude_md = WORKSPACE / "CLAUDE.md"
+    bak = WORKSPACE / "CLAUDE.md.bak"
+
+    try:
+        if claude_md.exists():
+            shutil.copy2(str(claude_md), str(bak))
+        claude_md.write_text(content, encoding="utf-8")
+    except Exception as e:
+        return _error(f"Failed to write CLAUDE.md: {e}", "WRITE_ERROR")
+
+    return JSONResponse({
+        "status": "ok",
+        "message": "CLAUDE.md updated (backup saved to CLAUDE.md.bak)",
+        "size_bytes": claude_md.stat().st_size,
+    })
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/memory — List memory files
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/workspace/memory")
+async def api_workspace_memory():
+    """List all memory/*.md files with name, size, and modified time."""
+    memory_dir = WORKSPACE / "memory"
+    if not memory_dir.is_dir():
+        return JSONResponse({"files": []})
+
+    files = []
+    for p in sorted(memory_dir.glob("*.md")):
+        st = p.stat()
+        files.append({
+            "name": p.name,
+            "size_bytes": st.st_size,
+            "modified": datetime.fromtimestamp(
+                st.st_mtime, tz=timezone.utc
+            ).isoformat(),
+        })
+
+    return JSONResponse({"files": files, "count": len(files)})
+
+
+# ---------------------------------------------------------------------------
+# GET /api/skills — List installed skills
+# ---------------------------------------------------------------------------
+
+def _parse_skill_frontmatter(skill_path: Path) -> dict[str, str]:
+    """Parse YAML frontmatter from a SKILL.md file.
+
+    Expects the file to start with '---' and contain a second '---' closing
+    the frontmatter block. Returns {name, description} from the YAML.
+    """
+    try:
+        text = skill_path.read_text(encoding="utf-8")
+    except Exception:
+        return {"name": skill_path.parent.name, "description": ""}
+
+    if not text.startswith("---"):
+        return {"name": skill_path.parent.name, "description": ""}
+
+    end = text.find("---", 3)
+    if end == -1:
+        return {"name": skill_path.parent.name, "description": ""}
+
+    try:
+        import yaml
+        fm = yaml.safe_load(text[3:end])
+        if not isinstance(fm, dict):
+            fm = {}
+    except Exception:
+        fm = {}
+
+    return {
+        "name": fm.get("name", skill_path.parent.name),
+        "description": fm.get("description", ""),
+    }
+
+
+@dashboard_app.get("/api/skills")
+async def api_skills():
+    """List installed skills by scanning skills/*/SKILL.md."""
+    skills_dir = WORKSPACE / "skills"
+    if not skills_dir.is_dir():
+        return JSONResponse({"skills": [], "count": 0})
+
+    # Load disabled list
+    skills_config_path = _state_dir / "skills_config.json" if _state_dir else None
+    disabled: list[str] = []
+    if skills_config_path and skills_config_path.exists():
+        try:
+            disabled = json.loads(
+                skills_config_path.read_text(encoding="utf-8")
+            ).get("disabled", [])
+        except Exception:
+            pass
+
+    skills = []
+    for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
+        info = _parse_skill_frontmatter(skill_md)
+        dir_name = skill_md.parent.name
+        skills.append({
+            "dir": dir_name,
+            "name": info["name"],
+            "description": info["description"],
+            "enabled": dir_name not in disabled,
+            "path": str(skill_md),
+        })
+
+    return JSONResponse({"skills": skills, "count": len(skills)})
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/skills/{name}/enabled — Enable/disable a skill
+# ---------------------------------------------------------------------------
+
+@dashboard_app.put("/api/skills/{name}/enabled")
+async def api_skills_enabled(name: str, request: Request):
+    """Enable or disable a skill by updating state/skills_config.json."""
+    if _state_dir is None:
+        return _not_initialized()
+
+    body = await request.json()
+    enabled = body.get("enabled")
+    if enabled is None:
+        return _error("Missing 'enabled' field", "BAD_REQUEST", status=400)
+
+    skills_config_path = _state_dir / "skills_config.json"
+
+    # Load existing config
+    config: dict[str, Any] = {}
+    if skills_config_path.exists():
+        try:
+            config = json.loads(
+                skills_config_path.read_text(encoding="utf-8")
+            )
+        except Exception:
+            config = {}
+
+    disabled: list[str] = config.get("disabled", [])
+
+    if enabled and name in disabled:
+        disabled.remove(name)
+    elif not enabled and name not in disabled:
+        disabled.append(name)
+
+    config["disabled"] = disabled
+    skills_config_path.write_text(
+        json.dumps(config, indent=2) + "\n", encoding="utf-8"
+    )
+
+    return JSONResponse({
+        "status": "ok",
+        "skill": name,
+        "enabled": bool(enabled),
+    })
+
+
+# ---------------------------------------------------------------------------
+# GET /api/guardrails/whitelist — Read guardrail whitelist
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/guardrails/whitelist")
+async def api_guardrails_whitelist():
+    """Return the guardrail whitelist entries with expiry info."""
+    if _state_dir is None:
+        return _not_initialized()
+
+    wl_path = _state_dir / "guardrail_whitelist.json"
+    if not wl_path.exists():
+        return JSONResponse({"entries": [], "count": 0})
+
+    try:
+        entries = json.loads(wl_path.read_text(encoding="utf-8"))
+        if not isinstance(entries, list):
+            entries = []
+    except Exception as e:
+        return _error(f"Failed to read whitelist: {e}", "READ_ERROR")
+
+    # Annotate each entry with whether it's expired
+    now = datetime.now(timezone.utc).isoformat()
+    for i, entry in enumerate(entries):
+        entry["_index"] = i
+        expires = entry.get("expires", "")
+        entry["_expired"] = bool(expires and expires < now)
+
+    return JSONResponse({"entries": entries, "count": len(entries)})
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/guardrails/whitelist/{id} — Remove entry by index
+# ---------------------------------------------------------------------------
+
+@dashboard_app.delete("/api/guardrails/whitelist/{entry_id}")
+async def api_guardrails_whitelist_delete(entry_id: int):
+    """Remove a whitelist entry by its array index."""
+    if _state_dir is None:
+        return _not_initialized()
+
+    wl_path = _state_dir / "guardrail_whitelist.json"
+    if not wl_path.exists():
+        return _error("Whitelist file not found", "NOT_FOUND", status=404)
+
+    try:
+        entries = json.loads(wl_path.read_text(encoding="utf-8"))
+        if not isinstance(entries, list):
+            return _error("Whitelist is not an array", "BAD_FORMAT", status=500)
+    except Exception as e:
+        return _error(f"Failed to read whitelist: {e}", "READ_ERROR")
+
+    if entry_id < 0 or entry_id >= len(entries):
+        return _error(
+            f"Index {entry_id} out of range (0..{len(entries) - 1})",
+            "OUT_OF_RANGE",
+            status=400,
+        )
+
+    removed = entries.pop(entry_id)
+    wl_path.write_text(
+        json.dumps(entries, indent=2) + "\n", encoding="utf-8"
+    )
+
+    return JSONResponse({
+        "status": "ok",
+        "removed": removed,
+        "remaining": len(entries),
+    })
+
+
+# ---------------------------------------------------------------------------
+# GET /api/sessions — List active sessions
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/sessions")
+async def api_sessions():
+    """List chats with active Claude sessions."""
+    if _db_path is None or not _db_path.exists():
+        return _error("Database not available", "DB_ERROR")
+
+    try:
+        conn = sqlite3.connect(str(_db_path), check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, title, claude_session_id, model, created_at "
+            "FROM chats WHERE claude_session_id IS NOT NULL "
+            "AND claude_session_id != '' "
+            "ORDER BY created_at DESC"
+        ).fetchall()
+        conn.close()
+    except sqlite3.Error as e:
+        return _error(f"Database error: {e}", "DB_ERROR")
+
+    sessions = []
+    for r in rows:
+        sessions.append({
+            "chat_id": r["id"],
+            "chat_title": r["title"],
+            "session_id": r["claude_session_id"],
+            "model": r["model"],
+            "created_at": r["created_at"],
+        })
+
+    return JSONResponse({"sessions": sessions, "count": len(sessions)})
+
+
+# ---------------------------------------------------------------------------
+# POST /api/sessions/{chat_id}/compact — Force compaction
+# ---------------------------------------------------------------------------
+
+@dashboard_app.post("/api/sessions/{chat_id}/compact")
+async def api_sessions_compact(chat_id: str):
+    """Force compaction on a chat session."""
+    try:
+        import localchat as lc
+        result = await lc._maybe_compact_chat(chat_id)
+    except AttributeError:
+        return _error(
+            "_maybe_compact_chat not available in localchat module",
+            "NOT_IMPLEMENTED",
+            status=501,
+        )
+    except Exception as e:
+        return _error(f"Compaction failed: {e}", "COMPACT_ERROR")
+
+    return JSONResponse({
+        "status": "ok",
+        "chat_id": chat_id,
+        "result": result,
+    })
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/sessions/{chat_id} — Kill session
+# ---------------------------------------------------------------------------
+
+@dashboard_app.delete("/api/sessions/{chat_id}")
+async def api_sessions_delete(chat_id: str):
+    """Kill a session: disconnect client and clear session_id in DB."""
+    # Disconnect the client
+    try:
+        import localchat as lc
+        await lc._disconnect_client(chat_id)
+    except AttributeError:
+        pass  # Function may not exist yet — still clear DB below
+    except Exception as e:
+        return _error(f"Failed to disconnect client: {e}", "DISCONNECT_ERROR")
+
+    # Clear session_id in database
+    if _db_path and _db_path.exists():
+        try:
+            conn = sqlite3.connect(str(_db_path), check_same_thread=False)
+            conn.execute(
+                "UPDATE chats SET claude_session_id = NULL WHERE id = ?",
+                (chat_id,),
+            )
+            conn.commit()
+            conn.close()
+        except sqlite3.Error as e:
+            return _error(f"Failed to clear session in DB: {e}", "DB_ERROR")
+
+    return JSONResponse({
+        "status": "ok",
+        "chat_id": chat_id,
+        "message": "Session killed and cleared from database",
+    })
+
+
+# ===========================================================================
+# Phase 5 — Logs, Storage, Backups
+# ===========================================================================
+
+_LOG_LINE_RE = re.compile(
+    r"^\[localchat\s+(\d{2}:\d{2}:\d{2})\]\s*(\w+)?\s*(.*)",
+)
+
+
+def _tail_lines(filepath: Path, n: int) -> list[str]:
+    """Read the last *n* lines from a file efficiently (seek from end)."""
+    if not filepath.exists() or filepath.stat().st_size == 0:
+        return []
+    try:
+        with open(filepath, "rb") as f:
+            f.seek(0, 2)
+            end = f.tell()
+            if end == 0:
+                return []
+            block_size = 8192
+            blocks: list[bytes] = []
+            remaining = end
+            lines_found = 0
+            while remaining > 0 and lines_found <= n:
+                read_size = min(block_size, remaining)
+                remaining -= read_size
+                f.seek(remaining)
+                block = f.read(read_size)
+                blocks.append(block)
+                lines_found += block.count(b"\n")
+            raw = b"".join(reversed(blocks))
+            all_lines = raw.decode("utf-8", errors="replace").splitlines()
+            return all_lines[-n:]
+    except OSError:
+        return []
+
+
+def _parse_log_line(line: str) -> dict[str, str]:
+    """Parse a localchat log line into {timestamp, level, message}."""
+    m = _LOG_LINE_RE.match(line)
+    if m:
+        return {
+            "timestamp": m.group(1),
+            "level": m.group(2) or "INFO",
+            "message": m.group(3).strip(),
+        }
+    return {"timestamp": "", "level": "", "message": line}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/logs — Read log lines
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/logs")
+async def api_logs(lines: int = 100, search: str = "", level: str = ""):
+    """Read last N log lines with optional search/level filter."""
+    if _state_dir is None:
+        return _not_initialized()
+
+    log_path = _state_dir / "localchat.log"
+    if not log_path.exists():
+        return JSONResponse({"lines": [], "total": 0, "file_exists": False})
+
+    n = max(1, min(lines, 1000))
+    raw_lines = _tail_lines(log_path, n)
+
+    parsed = [_parse_log_line(l) for l in raw_lines if l.strip()]
+
+    if level:
+        level_upper = level.upper()
+        parsed = [p for p in parsed if p["level"].upper() == level_upper]
+
+    if search:
+        try:
+            pat = re.compile(search, re.IGNORECASE)
+            parsed = [p for p in parsed if pat.search(p["message"])]
+        except re.error:
+            search_lower = search.lower()
+            parsed = [p for p in parsed if search_lower in p["message"].lower()]
+
+    return JSONResponse({
+        "lines": parsed,
+        "total": len(parsed),
+        "file_exists": True,
+    })
+
+
+# ---------------------------------------------------------------------------
+# GET /api/logs/stream — SSE live tail
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/logs/stream")
+async def api_logs_stream():
+    """Server-Sent Events live tail of the log file."""
+    if _state_dir is None:
+        return _not_initialized()
+
+    log_path = _state_dir / "localchat.log"
+
+    async def _event_generator():
+        """Async generator that tails the log file and yields SSE events."""
+        try:
+            if not log_path.exists():
+                yield f"data: {json.dumps({'type': 'error', 'message': 'Log file not found'})}\n\n"
+                return
+
+            with open(log_path, "r") as f:
+                f.seek(0, 2)
+                last_heartbeat = time.time()
+                while True:
+                    line = f.readline()
+                    if line:
+                        line = line.rstrip("\n")
+                        if line.strip():
+                            parsed = _parse_log_line(line)
+                            yield f"data: {json.dumps(parsed)}\n\n"
+                    else:
+                        now = time.time()
+                        if now - last_heartbeat >= 15:
+                            yield ": heartbeat\n\n"
+                            last_heartbeat = now
+                        await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+
+    return StreamingResponse(
+        _event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/logs/clear — Rotate log file
+# ---------------------------------------------------------------------------
+
+@dashboard_app.post("/api/logs/clear")
+async def api_logs_clear():
+    """Rotate: rename localchat.log -> localchat.log.1, create fresh log."""
+    if _state_dir is None:
+        return _not_initialized()
+
+    log_path = _state_dir / "localchat.log"
+    backup_path = _state_dir / "localchat.log.1"
+
+    if not log_path.exists():
+        return JSONResponse({"status": "ok", "detail": "No log file to rotate"})
+
+    try:
+        old_size = log_path.stat().st_size
+        shutil.move(str(log_path), str(backup_path))
+        log_path.touch()
+        return JSONResponse({
+            "status": "ok",
+            "rotated_size": old_size,
+            "detail": f"Rotated {old_size} bytes to localchat.log.1",
+        })
+    except OSError as e:
+        return _error(f"Failed to rotate log: {e}", "LOG_ROTATE_FAILED")
+
+
+# ---------------------------------------------------------------------------
+# GET /api/db/stats — Database statistics
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/db/stats")
+async def api_db_stats():
+    """Database stats: file size, table row counts, WAL size, pragmas."""
+    if _db_path is None or not _db_path.exists():
+        return _error("Database not found", "DB_NOT_FOUND", 404)
+
+    try:
+        db_size = _db_path.stat().st_size
+
+        wal_path = Path(str(_db_path) + "-wal")
+        wal_size = wal_path.stat().st_size if wal_path.exists() else 0
+
+        conn = sqlite3.connect(str(_db_path), check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+
+        page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+        freelist_count = conn.execute("PRAGMA freelist_count").fetchone()[0]
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+
+        tables_raw = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).fetchall()
+        table_counts = {}
+        for row in tables_raw:
+            tname = row[0]
+            try:
+                cnt = conn.execute(f'SELECT COUNT(*) FROM "{tname}"').fetchone()[0]
+                table_counts[tname] = cnt
+            except sqlite3.Error:
+                table_counts[tname] = -1
+
+        conn.close()
+
+        return JSONResponse({
+            "db_size_bytes": db_size,
+            "wal_size_bytes": wal_size,
+            "page_count": page_count,
+            "page_size": page_size,
+            "freelist_count": freelist_count,
+            "tables": table_counts,
+        })
+    except sqlite3.Error as e:
+        return _error(f"Database error: {e}", "DB_ERROR")
+    except OSError as e:
+        return _error(f"OS error: {e}", "OS_ERROR")
+
+
+# ---------------------------------------------------------------------------
+# POST /api/db/vacuum — VACUUM database
+# ---------------------------------------------------------------------------
+
+@dashboard_app.post("/api/db/vacuum")
+async def api_db_vacuum():
+    """Run VACUUM on the database, return before/after sizes."""
+    if _db_path is None or not _db_path.exists():
+        return _error("Database not found", "DB_NOT_FOUND", 404)
+
+    try:
+        size_before = _db_path.stat().st_size
+        conn = sqlite3.connect(str(_db_path), check_same_thread=False)
+        conn.execute("VACUUM")
+        conn.close()
+        size_after = _db_path.stat().st_size
+
+        return JSONResponse({
+            "status": "ok",
+            "size_before": size_before,
+            "size_after": size_after,
+            "freed_bytes": size_before - size_after,
+        })
+    except sqlite3.Error as e:
+        return _error(f"VACUUM failed: {e}", "VACUUM_FAILED")
+
+
+# ---------------------------------------------------------------------------
+# GET /api/db/export — Download database file
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/db/export")
+async def api_db_export():
+    """Download the database file as a binary blob."""
+    if _db_path is None or not _db_path.exists():
+        return _error("Database not found", "DB_NOT_FOUND", 404)
+
+    try:
+        data = _db_path.read_bytes()
+        return Response(
+            content=data,
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": 'attachment; filename="localchat.db"',
+            },
+        )
+    except OSError as e:
+        return _error(f"Failed to read database: {e}", "DB_READ_FAILED")
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/db/messages — Purge old messages
+# ---------------------------------------------------------------------------
+
+@dashboard_app.delete("/api/db/messages")
+async def api_db_messages_purge(days: int = 30):
+    """Delete messages older than N days. Return count deleted."""
+    if _db_path is None or not _db_path.exists():
+        return _error("Database not found", "DB_NOT_FOUND", 404)
+
+    days = max(1, days)
+
+    try:
+        conn = sqlite3.connect(str(_db_path), check_same_thread=False)
+        cursor = conn.execute(
+            "DELETE FROM messages WHERE created_at < datetime('now', ?)",
+            (f"-{days} days",),
+        )
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return JSONResponse({
+            "status": "ok",
+            "deleted": deleted,
+            "older_than_days": days,
+        })
+    except sqlite3.Error as e:
+        return _error(f"Purge failed: {e}", "PURGE_FAILED")
+
+
+# ---------------------------------------------------------------------------
+# GET /api/uploads — List uploaded files
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/uploads")
+async def api_uploads_list():
+    """List files in state/uploads/ with name, size, modified, type."""
+    if _state_dir is None:
+        return _not_initialized()
+
+    uploads_dir = _state_dir / "uploads"
+    if not uploads_dir.exists():
+        return JSONResponse({"files": [], "total": 0})
+
+    files = []
+    try:
+        with os.scandir(str(uploads_dir)) as entries:
+            for entry in entries:
+                if entry.is_file():
+                    stat = entry.stat()
+                    suffix = Path(entry.name).suffix.lstrip(".")
+                    files.append({
+                        "name": entry.name,
+                        "size_bytes": stat.st_size,
+                        "modified": datetime.fromtimestamp(
+                            stat.st_mtime, tz=timezone.utc
+                        ).isoformat(),
+                        "type": suffix or "unknown",
+                    })
+    except OSError as e:
+        return _error(f"Failed to list uploads: {e}", "UPLOADS_LIST_FAILED")
+
+    files.sort(key=lambda f: f["modified"], reverse=True)
+    return JSONResponse({"files": files, "total": len(files)})
+
+
+# ---------------------------------------------------------------------------
+# POST /api/uploads/cleanup — Delete old uploads
+# ---------------------------------------------------------------------------
+
+@dashboard_app.post("/api/uploads/cleanup")
+async def api_uploads_cleanup(days: int = 7):
+    """Delete uploaded files older than N days."""
+    if _state_dir is None:
+        return _not_initialized()
+
+    uploads_dir = _state_dir / "uploads"
+    if not uploads_dir.exists():
+        return JSONResponse({"status": "ok", "deleted": 0})
+
+    days = max(1, days)
+    cutoff = time.time() - (days * 86400)
+    deleted = 0
+
+    try:
+        with os.scandir(str(uploads_dir)) as entries:
+            for entry in entries:
+                if entry.is_file() and entry.stat().st_mtime < cutoff:
+                    os.unlink(entry.path)
+                    deleted += 1
+    except OSError as e:
+        return _error(f"Cleanup failed: {e}", "CLEANUP_FAILED")
+
+    return JSONResponse({
+        "status": "ok",
+        "deleted": deleted,
+        "older_than_days": days,
+    })
+
+
+# ---------------------------------------------------------------------------
+# POST /api/backup — Create backup tarball
+# ---------------------------------------------------------------------------
+
+_BACKUP_FILES = ["localchat.db", "config.json", "guardrail_whitelist.json"]
+
+
+@dashboard_app.post("/api/backup")
+async def api_backup_create():
+    """Create a backup tarball of key state files + ssl dir."""
+    if _state_dir is None:
+        return _not_initialized()
+
+    backups_dir = _state_dir / "backups"
+    backups_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    filename = f"apex-backup-{ts}.tar.gz"
+    backup_path = backups_dir / filename
+
+    try:
+        with tarfile.open(str(backup_path), "w:gz") as tar:
+            for name in _BACKUP_FILES:
+                fpath = _state_dir / name
+                if fpath.exists():
+                    tar.add(str(fpath), arcname=name)
+
+            ssl_dir = _state_dir / "ssl"
+            if ssl_dir.exists() and ssl_dir.is_dir():
+                for item in ssl_dir.rglob("*"):
+                    if item.is_file():
+                        arcname = f"ssl/{item.relative_to(ssl_dir)}"
+                        tar.add(str(item), arcname=arcname)
+
+        size = backup_path.stat().st_size
+        return JSONResponse({
+            "status": "ok",
+            "id": ts,
+            "filename": filename,
+            "path": str(backup_path),
+            "size_bytes": size,
+        })
+    except (OSError, tarfile.TarError) as e:
+        return _error(f"Backup failed: {e}", "BACKUP_FAILED")
+
+
+# ---------------------------------------------------------------------------
+# GET /api/backups — List available backups
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/backups")
+async def api_backups_list():
+    """List backup tarballs in state/backups/."""
+    if _state_dir is None:
+        return _not_initialized()
+
+    backups_dir = _state_dir / "backups"
+    if not backups_dir.exists():
+        return JSONResponse({"backups": [], "total": 0})
+
+    backups = []
+    try:
+        with os.scandir(str(backups_dir)) as entries:
+            for entry in entries:
+                if entry.is_file() and entry.name.endswith(".tar.gz"):
+                    stat = entry.stat()
+                    backups.append({
+                        "filename": entry.name,
+                        "size_bytes": stat.st_size,
+                        "created": datetime.fromtimestamp(
+                            stat.st_mtime, tz=timezone.utc
+                        ).isoformat(),
+                    })
+    except OSError as e:
+        return _error(f"Failed to list backups: {e}", "BACKUPS_LIST_FAILED")
+
+    backups.sort(key=lambda b: b["created"], reverse=True)
+    return JSONResponse({"backups": backups, "total": len(backups)})
+
+
+# ---------------------------------------------------------------------------
+# GET /api/backups/{filename} — Download backup file
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/backups/{filename}")
+async def api_backup_download(filename: str):
+    """Download a backup tarball."""
+    if _state_dir is None:
+        return _not_initialized()
+
+    if "/" in filename or "\\" in filename or ".." in filename:
+        return _error("Invalid filename", "INVALID_FILENAME", 400)
+
+    backups_dir = _state_dir / "backups"
+    backup_path = backups_dir / filename
+
+    if not backup_path.exists():
+        return _error(f"Backup not found: {filename}", "BACKUP_NOT_FOUND", 404)
+
+    try:
+        data = backup_path.read_bytes()
+        return Response(
+            content=data,
+            media_type="application/gzip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+    except OSError as e:
+        return _error(f"Failed to read backup: {e}", "BACKUP_READ_FAILED")
+
+
+# ---------------------------------------------------------------------------
+# POST /api/backup/restore — Restore from backup
+# ---------------------------------------------------------------------------
+
+@dashboard_app.post("/api/backup/restore")
+async def api_backup_restore(request: Request):
+    """Restore state from a backup tarball. Extracts to temp, validates, moves."""
+    if _state_dir is None:
+        return _not_initialized()
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _error("Invalid JSON body", "BAD_REQUEST", 400)
+
+    filename = body.get("filename", "")
+    if not filename:
+        return _error("filename is required", "BAD_REQUEST", 400)
+
+    if "/" in filename or "\\" in filename or ".." in filename:
+        return _error("Invalid filename", "INVALID_FILENAME", 400)
+
+    backups_dir = _state_dir / "backups"
+    backup_path = backups_dir / filename
+
+    if not backup_path.exists():
+        return _error(f"Backup not found: {filename}", "BACKUP_NOT_FOUND", 404)
+
+    tmp_dir = None
+    try:
+        tmp_dir = Path(tempfile.mkdtemp(prefix="apex-restore-"))
+
+        with tarfile.open(str(backup_path), "r:gz") as tar:
+            for member in tar.getmembers():
+                member_path = Path(member.name)
+                if member_path.is_absolute() or ".." in member_path.parts:
+                    return _error(
+                        f"Unsafe path in archive: {member.name}",
+                        "UNSAFE_ARCHIVE",
+                        400,
+                    )
+            tar.extractall(path=str(tmp_dir))
+
+        extracted = list(tmp_dir.rglob("*"))
+        extracted_names = [p.name for p in extracted if p.is_file()]
+        if not any(n in extracted_names for n in ("localchat.db", "config.json")):
+            return _error(
+                "Archive does not contain localchat.db or config.json",
+                "INVALID_BACKUP",
+                400,
+            )
+
+        restored = []
+
+        for name in _BACKUP_FILES:
+            src = tmp_dir / name
+            if src.exists():
+                dest = _state_dir / name
+                shutil.copy2(str(src), str(dest))
+                restored.append(name)
+
+        ssl_src = tmp_dir / "ssl"
+        if ssl_src.exists() and ssl_src.is_dir():
+            ssl_dest = _state_dir / "ssl"
+            ssl_dest.mkdir(parents=True, exist_ok=True)
+            for item in ssl_src.rglob("*"):
+                if item.is_file():
+                    rel = item.relative_to(ssl_src)
+                    dest_file = ssl_dest / rel
+                    dest_file.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(str(item), str(dest_file))
+                    restored.append(f"ssl/{rel}")
+
+        return JSONResponse({
+            "status": "ok",
+            "restored_files": restored,
+            "restart_required": True,
+            "detail": "Backup restored. Server restart required for changes to take effect.",
+        })
+
+    except (tarfile.TarError, OSError) as e:
+        return _error(f"Restore failed: {e}", "RESTORE_FAILED")
+    finally:
+        if tmp_dir and tmp_dir.exists():
+            shutil.rmtree(str(tmp_dir), ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
