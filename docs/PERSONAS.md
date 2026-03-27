@@ -303,6 +303,19 @@ hit this limit and stop mid-work. To avoid this:
 ## Receiving Tasks
 When you receive a task, verify you have: goal, scope, constraints,
 definition of done, and verification steps. If any are missing, ask.
+
+## Guardrail Awareness
+This environment has active guardrails that inspect every bash command.
+Key lessons:
+- NEVER use heredocs with ${variable} patterns — the guardrail sees them
+  as shell variable redirects and blocks the command. Write Python to a
+  temp file instead: cat > /tmp/task.py <<'PY' ... PY && python3 /tmp/task.py
+- Protected files (production trading scripts, .env, guardrail files)
+  cannot be written to. Report needed changes to Architect.
+- Writes outside the workspace require approval. Use /tmp/ for scratch.
+- Every tool call is audited. Blocks trigger Telegram alerts to Dana.
+- If blocked: don't retry. Restructure the command. Report false positives.
+- See AGENTS.md "Guardrails & Environment Safety" for full details.
 ```
 
 ---
