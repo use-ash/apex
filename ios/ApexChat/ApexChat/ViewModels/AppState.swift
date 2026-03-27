@@ -258,11 +258,16 @@ final class AppState {
         do {
             try await apiClient.updateChatProfile(chatId: chatId, profileId: profileId)
             await loadChats()
-            if let updated = chats.first(where: { $0.id == chatId }) {
-                if currentChat?.id == chatId {
-                    currentChat = updated
+            if let updated = chats.first(where: { $0.id == chatId }), persistentChatId == chatId {
+                currentChat = updated
+                messages = []
+                if connectionManager.isConnected {
+                    connectionManager.send(.attach(chatId: chatId))
                 }
+                await loadMessages(chatId)
+                await fetchContext()
             }
+            error = nil
         } catch {
             self.error = error.localizedDescription
         }

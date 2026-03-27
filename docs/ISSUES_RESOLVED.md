@@ -132,3 +132,10 @@ Format: `[component] title` — what broke, why, how it was fixed.
 **Root cause:** Health check tested API reachability (actual HTTP call), not just key presence.
 **Fix:** Confirmed this is correct behavior — red means the API is actually unreachable, not misconfigured.
 **OSS note:** Document that health dots test live connectivity, not just configuration.
+
+### #18 — [server] Profile CRUD P1 hardening — backend derived, validation, upsert seeding
+**When:** 2026-03-27 &bull; **Component:** api / profiles
+**Symptom:** (a) `backend` field was stored but routing derived backend from model prefix — a profile could claim `backend: claude` with `model: grok-4` and route to xAI. (b) CRUD validation was weak: no slug normalization on update, no empty name/slug rejection, no IntegrityError catch on update (500 on duplicate slug), delete returned 200 even for nonexistent profiles. (c) Seeding exited early if any profile existed — new built-ins never added on upgrade. (d) `GET /api/profiles` returned full `system_prompt` for every profile in the list.
+**Root cause:** Profile system was v1 — schema stored `backend` as user-supplied field instead of deriving it, and CRUD endpoints lacked standard REST semantics.
+**Fix:** (1) `backend` is now always derived via `_get_model_backend(model)` — stored value ignored on read, client-supplied value ignored on create/update. (2) Added `_normalize_slug()` helper (lowercase, alphanum+hyphens). Create/update validate non-empty name/slug, update catches IntegrityError→409, delete returns 404 if missing. (3) Seed uses `INSERT OR IGNORE` — new built-in profiles added on upgrade, user-edited rows preserved. (4) List endpoint returns metadata only; new `GET /api/profiles/{id}` detail endpoint includes `system_prompt`.
+**OSS note:** `tool_policy` field remains stored but unenforced (P2). Document as reserved for future per-persona tool access gating.

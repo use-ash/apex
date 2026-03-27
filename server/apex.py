@@ -1137,13 +1137,9 @@ def _init_db() -> None:
 
 
 def _seed_default_profiles():
-    """Seed the 5 default agent personas if none exist."""
+    """Seed/upsert built-in agent personas by id. User-edited rows are preserved."""
     with _db_lock:
         conn = _get_db()
-        count = conn.execute("SELECT COUNT(*) FROM agent_profiles").fetchone()[0]
-        if count > 0:
-            conn.close()
-            return
 
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         profiles = [
@@ -1294,18 +1290,21 @@ def _seed_default_profiles():
             },
         ]
 
+        inserted = 0
         for p in profiles:
-            conn.execute(
-                "INSERT INTO agent_profiles (id, name, slug, avatar, role_description, "
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO agent_profiles (id, name, slug, avatar, role_description, "
                 "backend, model, system_prompt, tool_policy, is_default, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (p["id"], p["name"], p["slug"], p["avatar"], p["role_description"],
                  p["backend"], p["model"], p["system_prompt"], "",
                  p["is_default"], now, now),
             )
+            inserted += cur.rowcount
         conn.commit()
         conn.close()
-        log(f"Seeded {len(profiles)} default agent profiles")
+        if inserted:
+            log(f"Seeded {inserted} new default agent profiles")
 
 
 def _now() -> str:
@@ -2204,6 +2203,8 @@ async def api_new_chat(request: Request):
     chat_type = data.get("type", "chat")
     category = data.get("category") if chat_type == "alerts" else None
     profile_id = str(data.get("profile_id", "")).strip()
+    if profile_id and chat_type != "chat":
+        return JSONResponse({"error": "Profiles are only supported for regular chats"}, status_code=400)
     # If a profile is specified, validate and inherit model
     if profile_id:
         with _db_lock:
@@ -2255,6 +2256,8 @@ async def api_update_chat(chat_id: str, request: Request):
                 await _safe_ws_send_json(ws, payload, chat_id=cid)
     # Handle profile_id assignment
     if "profile_id" in data:
+        if chat.get("type") != "chat":
+            return JSONResponse({"error": "Profiles are only supported for regular chats"}, status_code=400)
         pid = str(data["profile_id"]).strip()
         # P0: Validate profile_id — must be empty or an existing profile
         if pid:
@@ -2280,9 +2283,15 @@ async def api_update_chat(chat_id: str, request: Request):
         _update_chat(chat_id, **update_kwargs)
 
         # P0: Reset session state on profile change — stale clients cause wrong model/context
+        had_sdk_client = chat_id in _clients
         await _disconnect_client(chat_id)
         _update_chat(chat_id, claude_session_id=None)
         _session_context_sent.discard(chat_id)
+        if not had_sdk_client:
+            send_task = _active_send_tasks.pop(chat_id, None)
+            if send_task and not send_task.done():
+                send_task.cancel()
+                await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id})
 
         # P0: Broadcast profile change to all connected clients
         updated_chat = _get_chat(chat_id)
@@ -2370,26 +2379,58 @@ async def health():
     })
 
 
+def _normalize_slug(raw: str) -> str:
+    """Normalize a slug: lowercase, alphanumeric + hyphens only, no leading/trailing hyphens."""
+    import re as _re
+    s = raw.lower().strip()
+    s = _re.sub(r"[^a-z0-9\-]", "-", s)
+    s = _re.sub(r"-{2,}", "-", s)
+    return s.strip("-")
+
+
 @app.get("/api/profiles")
 async def api_get_profiles():
-    """List all agent profiles."""
+    """List all agent profiles (metadata only — no system_prompt)."""
     with _db_lock:
         conn = _get_db()
         rows = conn.execute(
-            "SELECT id, name, slug, avatar, role_description, backend, model, "
-            "system_prompt, tool_policy, is_default, created_at, updated_at "
+            "SELECT id, name, slug, avatar, role_description, model, "
+            "is_default, created_at, updated_at "
             "FROM agent_profiles ORDER BY is_default DESC, name ASC"
         ).fetchall()
         conn.close()
     profiles = []
     for r in rows:
+        model = r[5] or ""
         profiles.append({
             "id": r[0], "name": r[1], "slug": r[2], "avatar": r[3],
-            "role_description": r[4], "backend": r[5], "model": r[6],
-            "system_prompt": r[7], "tool_policy": r[8],
-            "is_default": bool(r[9]), "created_at": r[10], "updated_at": r[11],
+            "role_description": r[4], "backend": _get_model_backend(model),
+            "model": model, "is_default": bool(r[6]),
+            "created_at": r[7], "updated_at": r[8],
         })
     return JSONResponse({"profiles": profiles})
+
+
+@app.get("/api/profiles/{profile_id}")
+async def api_get_profile_detail(profile_id: str):
+    """Get a single profile with full details including system_prompt."""
+    with _db_lock:
+        conn = _get_db()
+        row = conn.execute(
+            "SELECT id, name, slug, avatar, role_description, model, "
+            "system_prompt, tool_policy, is_default, created_at, updated_at "
+            "FROM agent_profiles WHERE id = ?", (profile_id,)
+        ).fetchone()
+        conn.close()
+    if not row:
+        return JSONResponse({"error": "profile not found"}, status_code=404)
+    model = row[5] or ""
+    return JSONResponse({
+        "id": row[0], "name": row[1], "slug": row[2], "avatar": row[3],
+        "role_description": row[4], "backend": _get_model_backend(model),
+        "model": model, "system_prompt": row[6], "tool_policy": row[7],
+        "is_default": bool(row[8]), "created_at": row[9], "updated_at": row[10],
+    })
 
 
 @app.post("/api/profiles")
@@ -2399,7 +2440,13 @@ async def api_create_profile(request: Request):
     name = str(data.get("name", "")).strip()
     if not name:
         return JSONResponse({"error": "name required"}, status_code=400)
-    slug = str(data.get("slug", "")).strip() or name.lower().replace(" ", "-")
+    raw_slug = str(data.get("slug", "")).strip()
+    slug = _normalize_slug(raw_slug) if raw_slug else _normalize_slug(name)
+    if not slug:
+        return JSONResponse({"error": "slug cannot be empty after normalization"}, status_code=400)
+    model = str(data.get("model", "")).strip()
+    # backend is derived from model — ignore any client-supplied value
+    backend = _get_model_backend(model) if model else ""
     now = datetime.now(timezone.utc).isoformat()
     profile_id = str(uuid.uuid4())[:8]
     with _db_lock:
@@ -2412,8 +2459,7 @@ async def api_create_profile(request: Request):
                 (profile_id, name, slug,
                  str(data.get("avatar", "")),
                  str(data.get("role_description", "")),
-                 str(data.get("backend", "")),
-                 str(data.get("model", "")),
+                 backend, model,
                  str(data.get("system_prompt", "")),
                  str(data.get("tool_policy", "")),
                  1 if data.get("is_default") else 0,
@@ -2434,11 +2480,28 @@ async def api_update_profile(profile_id: str, request: Request):
     now = datetime.now(timezone.utc).isoformat()
     fields = []
     values = []
-    for key in ("name", "slug", "avatar", "role_description", "backend", "model",
+    for key in ("name", "avatar", "role_description", "model",
                 "system_prompt", "tool_policy"):
         if key in data:
+            val = str(data[key]).strip() if key in ("name",) else str(data[key])
+            if key == "name" and not val:
+                return JSONResponse({"error": "name cannot be empty"}, status_code=400)
             fields.append(f"{key} = ?")
-            values.append(str(data[key]))
+            values.append(val)
+    # Slug: normalize and reject empty
+    if "slug" in data:
+        slug = _normalize_slug(str(data["slug"]))
+        if not slug:
+            return JSONResponse({"error": "slug cannot be empty"}, status_code=400)
+        fields.append("slug = ?")
+        values.append(slug)
+    # Backend is always derived from model — update it if model changed
+    if "model" in data:
+        model = str(data["model"]).strip()
+        backend = _get_model_backend(model) if model else ""
+        fields.append("backend = ?")
+        values.append(backend)
+    # Ignore client-supplied "backend" — it's derived
     if "is_default" in data:
         fields.append("is_default = ?")
         values.append(1 if data["is_default"] else 0)
@@ -2449,9 +2512,16 @@ async def api_update_profile(profile_id: str, request: Request):
     values.append(profile_id)
     with _db_lock:
         conn = _get_db()
-        conn.execute(f"UPDATE agent_profiles SET {', '.join(fields)} WHERE id = ?", values)
-        conn.commit()
+        try:
+            cur = conn.execute(f"UPDATE agent_profiles SET {', '.join(fields)} WHERE id = ?", values)
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.close()
+            return JSONResponse({"error": "slug already exists"}, status_code=409)
+        affected = cur.rowcount
         conn.close()
+    if affected == 0:
+        return JSONResponse({"error": "profile not found"}, status_code=404)
     return JSONResponse({"ok": True})
 
 
@@ -2460,8 +2530,11 @@ async def api_delete_profile(profile_id: str):
     """Delete an agent profile (unlinks from chats but doesn't delete chats)."""
     with _db_lock:
         conn = _get_db()
+        cur = conn.execute("DELETE FROM agent_profiles WHERE id = ?", (profile_id,))
+        if cur.rowcount == 0:
+            conn.close()
+            return JSONResponse({"error": "profile not found"}, status_code=404)
         conn.execute("UPDATE chats SET profile_id = '' WHERE profile_id = ?", (profile_id,))
-        conn.execute("DELETE FROM agent_profiles WHERE id = ?", (profile_id,))
         conn.commit()
         conn.close()
     return JSONResponse({"ok": True})
@@ -3224,6 +3297,49 @@ async def api_usage_grok():
     return JSONResponse(usage)
 
 
+# --- Codex (ChatGPT) usage — read from rate limit headers cached by tool_loop ---
+
+_CODEX_USAGE_CACHE_PATH = Path.home() / ".codex" / ".usage_cache.json"
+
+
+@app.get("/api/usage/codex")
+async def api_usage_codex():
+    """Return Codex/ChatGPT rate limit status from cached response headers."""
+    try:
+        data = json.loads(_CODEX_USAGE_CACHE_PATH.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return JSONResponse({"error": "no usage data yet — send a message in a Codex chat first"}, status_code=404)
+
+    # Check staleness (>30 min = stale)
+    ts = data.get("_ts", 0)
+    stale = (time.time() - ts) > 1800
+
+    primary_pct = float(data.get("x-codex-primary-used-percent", 0))
+    secondary_pct = float(data.get("x-codex-secondary-used-percent", 0))
+    primary_reset = int(data.get("x-codex-primary-reset-after-seconds", 0))
+    secondary_reset = int(data.get("x-codex-secondary-reset-after-seconds", 0))
+    plan = data.get("x-codex-plan-type", "unknown")
+
+    def fmt_reset(secs: int) -> str:
+        if secs <= 0:
+            return "now"
+        h, m = secs // 3600, (secs % 3600) // 60
+        return f"{h}h{m:02d}m" if h > 0 else f"{m}m"
+
+    return JSONResponse({
+        "plan": plan.title() if plan else "Unknown",
+        "session": {
+            "utilization": round(primary_pct),
+            "resets_in": fmt_reset(primary_reset),
+        },
+        "weekly": {
+            "utilization": round(secondary_pct),
+            "resets_in": fmt_reset(secondary_reset),
+        },
+        "stale": stale,
+    })
+
+
 # --- File upload ---
 
 @app.post("/api/upload")
@@ -3417,15 +3533,31 @@ async def websocket_endpoint(websocket: WebSocket):
                 if not chat_id or not model:
                     await websocket.send_json({"type": "error", "message": "chat_id and model required"})
                     continue
+                chat = _get_chat(chat_id)
+                if not chat:
+                    await websocket.send_json({"type": "error", "message": "Chat not found"})
+                    continue
+                if chat.get("type") != "chat":
+                    await websocket.send_json({"type": "error", "message": "Only regular chats support model changes"})
+                    continue
+                if chat.get("profile_id"):
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Model is locked by profile: {chat.get('profile_id')}",
+                    })
+                    continue
                 _update_chat(chat_id, model=model)
-                # Disconnect only this chat's SDK client if it exists
                 if chat_id in _clients:
                     await _disconnect_client(chat_id)
-                await websocket.send_json({
+                updated_chat = _get_chat(chat_id) or {}
+                payload = {
                     "type": "chat_updated", "chat_id": chat_id,
-                    "title": (_get_chat(chat_id) or {}).get("title", ""),
-                    "model": model,
-                })
+                    "title": updated_chat.get("title", ""),
+                    "model": updated_chat.get("model", model),
+                }
+                for cid, ws_set in list(_chat_ws.items()):
+                    for ws in list(ws_set):
+                        await _safe_ws_send_json(ws, payload, chat_id=cid)
                 continue
 
             if action == "send":
@@ -3438,7 +3570,6 @@ async def websocket_endpoint(websocket: WebSocket):
                         if _active_send_tasks.get(cid) is t else None
                     )
                 _track_task(task)
-
             elif action == "stop":
                 chat_id = data.get("chat_id", "")
                 if chat_id:
@@ -3776,6 +3907,8 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     html = CHAT_HTML.replace("{{MODE_CLASS}}", "mtls").replace("{{MODE_LABEL}}", "mTLS")
+    # Sanitize: replace any lone surrogates with replacement char (prevents UnicodeEncodeError)
+    html = html.encode("utf-8", errors="replace").decode("utf-8")
     return HTMLResponse(html, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
@@ -5120,9 +5253,6 @@ function toggleAlertsPanel() {
   document.getElementById('settingsPanel').classList.remove('show');
 }
 
-// --- Settings Panel ---
-let _settingsModels = [];  // cached model list
-
 function toggleSettings() {
   const panel = document.getElementById('settingsPanel');
   const showing = panel.classList.toggle('show');
@@ -5132,6 +5262,27 @@ function toggleSettings() {
     document.getElementById('alertsPanel').classList.remove('show');
   }
 }
+
+// Click outside to dismiss alerts/settings panels
+document.addEventListener('click', (e) => {
+  const alertsPanel = document.getElementById('alertsPanel');
+  const settingsPanel = document.getElementById('settingsPanel');
+  const alertBadge = document.getElementById('alertBadge');
+  const settingsBtn = document.getElementById('settingsBtn');
+  // Close alerts panel if click is outside it and outside the bell
+  if (alertsPanel.classList.contains('show') &&
+      !alertsPanel.contains(e.target) && !alertBadge.contains(e.target)) {
+    alertsPanel.classList.remove('show');
+  }
+  // Close settings panel if click is outside it and outside the settings button
+  if (settingsPanel.classList.contains('show') &&
+      !settingsPanel.contains(e.target) && !(settingsBtn && settingsBtn.contains(e.target))) {
+    settingsPanel.classList.remove('show');
+  }
+});
+
+// --- Settings Panel ---
+let _settingsModels = [];  // cached model list
 
 async function loadSettingsData() {
   // Server default model
@@ -6365,7 +6516,8 @@ function updateUsageBarVisibility() {
   const label = document.getElementById('usageLabel');
   if (label) label.textContent = provider === 'codex' ? 'ChatGPT' : provider === 'grok' ? 'Grok' : 'Claude';
   bar.style.display = '';
-  if (mode === 'always') {
+  if (mode === 'always' || (mode === 'auto' && provider !== 'claude')) {
+    // Always-on mode, or auto mode for non-polling providers (Codex/Grok stay visible)
     bar.classList.add('visible');
     bar.classList.remove('fading');
     clearTimeout(_usageHideTimer);
@@ -6379,7 +6531,10 @@ function showUsageBar() {
   bar.classList.add('visible');
   bar.classList.remove('fading');
   clearTimeout(_usageHideTimer);
-  if (getUsageMeterMode() === 'auto') {
+  const mode = getUsageMeterMode();
+  const provider = getUsageProvider();
+  // Auto-hide only for Claude (which polls and re-shows). Codex/Grok are static — keep visible.
+  if (mode === 'auto' && provider === 'claude') {
     _usageHideTimer = setTimeout(() => {
       bar.classList.add('fading');
       setTimeout(() => { bar.classList.remove('visible', 'fading'); }, 350);
@@ -6442,12 +6597,35 @@ async function fetchClaudeUsage() {
   } catch (e) { dbg('claude usage fetch error:', e.message); }
 }
 
-function fetchCodexUsage() {
-  // Codex usage API is Cloudflare-protected — show subscription status
-  renderUsage({
-    session: { utilization: 0, resets_in: 'N/A' },
-    weekly: { utilization: 0, resets_in: 'N/A' },
-  });
+async function fetchCodexUsage() {
+  try {
+    const r = await fetch('/api/usage/codex');
+    if (r.ok) {
+      const data = await r.json();
+      // Update label
+      const label = document.getElementById('usageLabel');
+      if (label) label.textContent = 'ChatGPT ' + (data.plan || '');
+      // Render using standard renderUsage (same format as Claude)
+      renderUsage(data);
+      return;
+    }
+  } catch (e) { dbg('codex usage fetch error:', e.message); }
+  // Fallback: no data yet — show placeholder
+  const bar = document.getElementById('usageBar');
+  if (!bar) return;
+  const label = document.getElementById('usageLabel');
+  if (label) label.textContent = 'ChatGPT';
+  document.getElementById('usageSessionPct').textContent = '--';
+  document.getElementById('usageSessionReset').textContent = 'send a message to load';
+  document.querySelector('#usageSession .label').textContent = 'Session';
+  document.getElementById('usageSessionFill').style.width = '0%';
+  document.getElementById('usageWeeklyPct').textContent = '--';
+  document.getElementById('usageWeeklyReset').textContent = '';
+  document.querySelector('#usageWeekly .label').textContent = 'Weekly';
+  document.getElementById('usageWeeklyFill').style.width = '0%';
+  bar.style.display = '';
+  bar.classList.add('visible');
+  bar.classList.remove('fading');
 }
 
 async function fetchGrokUsage() {
@@ -6640,17 +6818,18 @@ function updateTopbarProfile(profileName, profileAvatar) {
   _currentChatProfileName = profileName || '';
   _currentChatProfileAvatar = profileAvatar || '';
   if (profileName) {
-    avatarEl.textContent = profileAvatar || '\\uD83D\\uDCAC';
+    avatarEl.textContent = profileAvatar || '\uD83D\uDCAC';
     nameEl.textContent = profileName;
   } else {
-    avatarEl.textContent = '\\uD83D\\uDCAC';
+    avatarEl.textContent = '\uD83D\uDCAC';
     nameEl.textContent = 'No Profile';
   }
-  el.style.display = '';
+  el.style.display = currentChatType === 'chat' ? '' : 'none';
 }
 
 function showProfileDropdown(event) {
   event.stopPropagation();
+  if (currentChatType !== 'chat') return;
   // Remove existing dropdown
   document.querySelector('.profile-dropdown')?.remove();
 
@@ -6666,16 +6845,16 @@ function showProfileDropdown(event) {
   // "None" option
   const noneItem = document.createElement('div');
   noneItem.className = 'pd-item';
-  noneItem.innerHTML = '<span class="pd-avatar">\\uD83D\\uDCAC</span><span class="pd-name">No Profile</span>' +
-    (!_currentChatProfileId ? '<span class="pd-check">\\u2713</span>' : '');
+  noneItem.innerHTML = '<span class="pd-avatar">\uD83D\uDCAC</span><span class="pd-name">No Profile</span>' +
+    (!_currentChatProfileId ? '<span class="pd-check">\u2713</span>' : '');
   noneItem.onclick = () => { dd.remove(); changeChatProfile(''); };
   dd.appendChild(noneItem);
 
   _profilesCache.forEach(p => {
     const item = document.createElement('div');
     item.className = 'pd-item';
-    item.innerHTML = `<span class="pd-avatar">${p.avatar || '\\uD83D\\uDCAC'}</span><span class="pd-name">${escHtml(p.name)}</span>` +
-      (_currentChatProfileId === p.id ? '<span class="pd-check">\\u2713</span>' : '');
+    item.innerHTML = `<span class="pd-avatar">${p.avatar || '\uD83D\uDCAC'}</span><span class="pd-name">${escHtml(p.name)}</span>` +
+      (_currentChatProfileId === p.id ? '<span class="pd-check">\u2713</span>' : '');
     item.onclick = () => { dd.remove(); changeChatProfile(p.id); };
     dd.appendChild(item);
   });
@@ -6691,7 +6870,7 @@ function showProfileDropdown(event) {
 }
 
 async function changeChatProfile(profileId) {
-  if (!currentChat) return;
+  if (!currentChat || currentChatType !== 'chat') return;
   try {
     const r = await fetch('/api/chats/' + currentChat, {
       method: 'PATCH',

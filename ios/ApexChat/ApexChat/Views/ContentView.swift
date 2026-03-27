@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @Bindable var appState: AppState
 
+    @State private var isShowingChannelSettings: Bool = false
     @State private var isShowingConnectionDetails: Bool = false
     @State private var isShowingSettings: Bool = false
     @State private var isShowingSearch: Bool = false
@@ -65,11 +66,7 @@ struct ContentView: View {
 
                 ToolbarItem(placement: .principal) {
                     Button {
-                        if appState.usageData != nil {
-                            flashUsageBanner()
-                        } else {
-                            isShowingConnectionDetails = true
-                        }
+                        isShowingChannelSettings = true
                     } label: {
                         connectionPill
                     }
@@ -114,6 +111,14 @@ struct ContentView: View {
             }
         }
         .sheet(
+            isPresented: $isShowingChannelSettings
+        ) {
+            if let chatId = appState.persistentChatId {
+                ChannelSettingsView(appState: appState, chatId: chatId)
+                    .presentationDetents([.medium])
+            }
+        }
+        .sheet(
             isPresented: $isShowingConnectionDetails,
             onDismiss: handleConnectionSheetDismiss
         ) {
@@ -141,7 +146,7 @@ struct ContentView: View {
             }
         }
         .overlay(alignment: .top) {
-            if let alert = appState.toastAlert, !isShowingChannels, !isShowingSettings, !isShowingConnectionDetails {
+            if let alert = appState.toastAlert, !isShowingChannels, !isShowingSettings, !isShowingChannelSettings, !isShowingConnectionDetails {
                 AlertBubble(
                     alert: alert,
                     onAck: {
