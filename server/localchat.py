@@ -77,6 +77,9 @@ except ImportError:
     print("pip install claude-agent-sdk", file=sys.stderr)
     sys.exit(1)
 
+from config import Config as ApexConfig
+from dashboard import dashboard_app, init_dashboard
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -107,6 +110,16 @@ SDK_QUERY_TIMEOUT = 30
 SDK_STREAM_TIMEOUT = 300
 ENABLE_SUBCONSCIOUS_WHISPER = os.environ.get("LOCALCHAT_ENABLE_WHISPER", "").lower() in {"1", "true", "yes"}
 ENABLE_SKILL_DISPATCH = True  # server-side /recall, /codex, /grok dispatch
+
+# Model context window sizes (input tokens)
+MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    "claude-opus-4-6": 1_000_000,
+    "claude-sonnet-4-6": 200_000,
+    "claude-haiku-4-5-20251001": 200_000,
+    "grok-4": 2_000_000,
+    "grok-4-fast": 2_000_000,
+}
+MODEL_CONTEXT_DEFAULT = 128_000  # fallback for local/unknown models
 
 # Auto-compaction — rotate SDK session when cumulative input tokens get too high
 COMPACTION_THRESHOLD = int(os.environ.get("LOCALCHAT_COMPACTION_THRESHOLD", "100000"))  # input tokens
@@ -140,6 +153,54 @@ def _get_cumulative_tokens_in(chat_id: str) -> int:
             ).fetchone()
         conn.close()
     return row[0] if row else 0
+
+
+def _get_last_turn_tokens_in(chat_id: str) -> int:
+    """Get the best estimate of current context fill for a Claude chat.
+
+    Takes max from last 5 assistant messages (SDK sometimes reports low counts
+    after session restarts). Respects compaction boundary.
+    """
+    since = _last_compacted_at.get(chat_id)
+    with _db_lock:
+        conn = _get_db()
+        if since:
+            rows = conn.execute(
+                "SELECT tokens_in FROM messages "
+                "WHERE chat_id = ? AND role = 'assistant' AND tokens_in > 0 AND created_at > ? "
+                "ORDER BY created_at DESC LIMIT 5",
+                (chat_id, since),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT tokens_in FROM messages "
+                "WHERE chat_id = ? AND role = 'assistant' AND tokens_in > 0 "
+                "ORDER BY created_at DESC LIMIT 5",
+                (chat_id,),
+            ).fetchall()
+        conn.close()
+    return max((r[0] for r in rows), default=0)
+
+
+def _estimate_tokens(chat_id: str) -> int:
+    """Estimate token count from message content (~4 chars per token)."""
+    since = _last_compacted_at.get(chat_id)
+    with _db_lock:
+        conn = _get_db()
+        if since:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM messages "
+                "WHERE chat_id = ? AND created_at > ?",
+                (chat_id, since),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM messages WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+        conn.close()
+    total_chars = row[0] if row else 0
+    return total_chars // 4
 
 
 def _get_recent_messages_text(chat_id: str, limit: int = 30) -> str:
@@ -1628,8 +1689,11 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
                     "stream_failed": False,
                     "is_error": bool(msg.is_error),
                 }
-                # Include cumulative context info for the frontend meter
-                _ctx_in = _get_cumulative_tokens_in(chat_id) + result_info["tokens_in"]
+                # The current turn's tokens_in IS the context fill (includes full history)
+                _ctx_in = result_info["tokens_in"]
+                _chat = _get_chat(chat_id)
+                _ctx_model = (_chat.get("model") or MODEL) if _chat else MODEL
+                _ctx_window = MODEL_CONTEXT_WINDOWS.get(_ctx_model, MODEL_CONTEXT_DEFAULT)
                 await _send({
                     "type": "result",
                     "is_error": msg.is_error,
@@ -1638,7 +1702,7 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
                     "tokens_out": result_info["tokens_out"],
                     "session_id": msg.session_id,
                     "context_tokens_in": _ctx_in,
-                    "compaction_threshold": COMPACTION_THRESHOLD,
+                    "context_window": _ctx_window,
                 })
                 elapsed = time.monotonic() - _stream_start
                 if DEBUG: log(f"DBG stream COMPLETE: chat={chat_id} events={_stream_event_count} time={elapsed:.0f}s session={msg.session_id[:8] if msg.session_id else '?'} cost=${result_info['cost_usd']:.4f}")
@@ -1677,6 +1741,13 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     _init_db()
+    # Initialize Apex Dashboard
+    _apex_config = ApexConfig(LOCALCHAT_ROOT / "state")
+    init_dashboard(
+        state_dir=LOCALCHAT_ROOT / "state",
+        db_path=DB_PATH,
+        ssl_dir=LOCALCHAT_ROOT / "state" / "ssl",
+    )
     log(f"LocalChat starting on {HOST}:{PORT} [mTLS]")
     try:
         yield
@@ -1686,6 +1757,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="LocalChat", docs_url=None, redoc_url=None, lifespan=lifespan)
+app.mount("/admin", dashboard_app)
 
 
 @app.middleware("http")
@@ -1776,7 +1848,13 @@ async def api_context(chat_id: str, request: Request):
     if not chat:
         return JSONResponse({"error": "Chat not found"}, status_code=404)
     chat_model = chat.get("model") or MODEL
-    cumulative_in = _get_cumulative_tokens_in(chat_id)
+    if chat_model.startswith("claude-"):
+        # Claude: last turn's tokens_in IS the actual context window fill
+        # (each turn sends full history, so tokens_in includes everything)
+        context_used = _get_last_turn_tokens_in(chat_id)
+    else:
+        # Non-Claude: estimate from message content (~4 chars/token)
+        context_used = _estimate_tokens(chat_id)
     # Total output tokens since last compaction
     since = _last_compacted_at.get(chat_id)
     with _db_lock:
@@ -1793,12 +1871,14 @@ async def api_context(chat_id: str, request: Request):
             ).fetchone()
         conn.close()
     cumulative_out = row[0] if row else 0
+    context_window = MODEL_CONTEXT_WINDOWS.get(chat_model, MODEL_CONTEXT_DEFAULT)
     return JSONResponse({
         "chat_id": chat_id,
         "model": chat_model,
-        "tokens_in": cumulative_in,
+        "tokens_in": context_used,
         "tokens_out": cumulative_out,
         "compaction_threshold": COMPACTION_THRESHOLD,
+        "context_window": context_window,
     })
 
 
@@ -1963,7 +2043,8 @@ async def api_local_models():
     return JSONResponse(models)
 
 
-async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None) -> dict:
+async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
+                           attachments: list[dict] | None = None) -> dict:
     """Run a chat response from Ollama/xAI with tool-calling support."""
     effective_model = model or MODEL
     # Build message history from recent DB messages
@@ -1973,12 +2054,26 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None) 
     else:
         sys_prompt = f"You are {effective_model}, a local AI model running via Ollama. Be helpful and concise."
     messages = [{"role": "system", "content": sys_prompt}]
-    for m in recent[-20:]:
+    for m in recent[-10:]:
         content = m["content"]
         if "<system-reminder>" in content:
             continue
         messages.append({"role": m["role"], "content": content})
-    messages.append({"role": "user", "content": prompt})
+
+    # Build user message — inject images in Ollama format if present
+    user_msg: dict = {"role": "user", "content": prompt}
+    if attachments:
+        images_b64: list[str] = []
+        for att in attachments:
+            try:
+                item = _load_attachment(att)
+                if item["type"] == "image":
+                    images_b64.append(base64.b64encode(item["data"]).decode())
+            except (ValueError, Exception) as e:
+                log(f"ollama image load error: {e}")
+        if images_b64:
+            user_msg["images"] = images_b64
+    messages.append(user_msg)
 
     # Use tool loop if available
     if _TOOL_LOOP_AVAILABLE:
@@ -2006,10 +2101,14 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None) 
             )
 
         # Send result event (tool loop emits text/tool events but not the final result)
+        _est = _estimate_tokens(chat_id)
+        _cw = MODEL_CONTEXT_WINDOWS.get(effective_model, MODEL_CONTEXT_DEFAULT)
         await _send_stream_event(chat_id, {
             "type": "result", "is_error": result.get("is_error", False),
             "cost_usd": 0, "tokens_in": 0, "tokens_out": 0,
             "session_id": None,
+            "context_tokens_in": _est,
+            "context_window": _cw,
         })
         return result
 
@@ -2055,9 +2154,13 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None) 
         result_text += chunk
         await _send_stream_event(chat_id, {"type": "text", "text": chunk})
 
+    _est = _estimate_tokens(chat_id) + len(result_text) // 4
+    _cw = MODEL_CONTEXT_WINDOWS.get(effective_model, MODEL_CONTEXT_DEFAULT)
     await _send_stream_event(chat_id, {
         "type": "result", "is_error": is_error,
         "cost_usd": 0, "tokens_in": 0, "tokens_out": 0, "session_id": None,
+        "context_tokens_in": _est,
+        "context_window": _cw,
     })
     return {"text": result_text, "is_error": is_error, "error": error_msg or None,
             "cost_usd": 0, "tokens_in": 0, "tokens_out": 0,
@@ -2577,8 +2680,15 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         display_prompt = prompt
         make_query_input = None
         if backend in ("ollama", "xai"):
-            # Local/xAI models use raw prompt — no SDK payload needed
+            # Local/xAI models — build display prompt with attachment labels
             display_prompt = user_visible_prompt if _recall_context else prompt
+            if attachments:
+                try:
+                    loaded = [_load_attachment(att) for att in attachments]
+                    att_label = _summarize_attachments(loaded)
+                    display_prompt = f"{display_prompt}\n{att_label}".strip() if display_prompt else att_label
+                except Exception:
+                    pass
         else:
             try:
                 display_prompt, make_query_input = _build_turn_payload(chat_id, prompt, attachments)
@@ -2619,7 +2729,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         # --- Local model / xAI path (Ollama or xAI API) ---
         if backend in ("ollama", "xai"):
             try:
-                result = await _run_ollama_chat(chat_id, prompt, model=chat_model)
+                result = await _run_ollama_chat(chat_id, prompt, model=chat_model, attachments=attachments)
             except Exception as ollama_err:
                 log(f"ollama chat error: {ollama_err}")
                 for ws in list(_chat_ws.get(chat_id, {websocket})):
@@ -3525,8 +3635,8 @@ function handleEvent(msg) {
       }
       markStreamActivity('result');
       // Update context bar from inline data or fallback to API
-      if (msg.context_tokens_in != null && msg.compaction_threshold) {
-        updateContextBar(msg.context_tokens_in, msg.compaction_threshold);
+      if (msg.context_tokens_in != null && msg.context_window) {
+        updateContextBar(msg.context_tokens_in, msg.context_window);
       } else {
         fetchContext(currentChat);
       }
@@ -4776,7 +4886,7 @@ async function fetchContext(chatId) {
     const r = await fetch('/api/chats/' + chatId + '/context');
     if (r.ok) {
       const d = await r.json();
-      updateContextBar(d.tokens_in, d.compaction_threshold);
+      updateContextBar(d.tokens_in, d.context_window);
     }
   } catch (e) { dbg('context fetch error:', e.message); }
 }
