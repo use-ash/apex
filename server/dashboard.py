@@ -29,6 +29,19 @@ Endpoints:
     POST   /api/tls/server/renew      — Renew server cert from CA
     GET    /api/tls/sans              — Current SAN list from ext.cnf
     PUT    /api/tls/sans              — Update SANs in ext.cnf
+
+    Phase 3 — Models, Credentials, Alerts:
+    PUT    /api/config/models/default           — Set default model
+    PUT    /api/config/models/permission         — Set SDK permission mode
+    GET    /api/models/claude                    — Claude API status (env + keychain)
+    GET    /api/models/ollama                    — Ollama detailed status + running models
+    GET    /api/models/grok                      — Grok API key status
+    GET    /api/credentials                      — Which keys are configured (booleans)
+    PUT    /api/credentials/{provider}           — Set API key in .env
+    POST   /api/credentials/alert-token/rotate   — Rotate alert token
+    GET    /api/alerts/config                    — Alert configuration overview
+    PUT    /api/alerts/config/telegram           — Update telegram config
+    POST   /api/alerts/test                      — Fire test alert (DB + Telegram)
 """
 
 from __future__ import annotations
@@ -1194,6 +1207,570 @@ async def api_tls_sans_update(request: Request):
         "restart_required": True,
         "renew_required": True,
         "message": "SANs updated. Renew the server certificate then restart.",
+    })
+
+
+# ===========================================================================
+# Phase 3 — Models, Credentials, Alerts
+# ===========================================================================
+
+ENV_PATH = Path.home() / ".openclaw" / ".env"
+
+_PROVIDER_KEY_MAP: dict[str, str] = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "xai": "XAI_API_KEY",
+    "telegram_bot": "TELEGRAM_BOT_TOKEN",
+    "telegram_chat": "TELEGRAM_CHAT_ID",
+}
+
+
+def _read_env_file() -> str:
+    """Read the .env file, returning empty string if missing."""
+    try:
+        return ENV_PATH.read_text()
+    except FileNotFoundError:
+        return ""
+
+
+def _update_env_var(key: str, value: str) -> None:
+    """Set key=value in the .env file using atomic write.
+
+    Reads existing content, replaces the line if found, appends if not.
+    Writes via temp file + rename for atomicity.
+    """
+    import tempfile as _tf
+
+    content = _read_env_file()
+    lines = content.splitlines()
+    found = False
+    new_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(f"{key}=") or stripped.startswith(f"export {key}="):
+            new_lines.append(f"{key}={value}")
+            found = True
+        else:
+            new_lines.append(line)
+    if not found:
+        new_lines.append(f"{key}={value}")
+
+    # Ensure trailing newline
+    final = "\n".join(new_lines)
+    if not final.endswith("\n"):
+        final += "\n"
+
+    ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = _tf.mkstemp(dir=str(ENV_PATH.parent), suffix=".env.tmp")
+    try:
+        os.write(fd, final.encode())
+        os.close(fd)
+        os.rename(tmp_path, str(ENV_PATH))
+    except Exception:
+        os.close(fd) if not os.get_inheritable(fd) else None  # noqa: best-effort
+        Path(tmp_path).unlink(missing_ok=True)
+        raise
+
+
+def _env_has_key(key: str) -> bool:
+    """Check whether key is set in environment or .env file (non-empty)."""
+    if os.environ.get(key, ""):
+        return True
+    content = _read_env_file()
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(f"{key}="):
+            val = stripped[len(key) + 1:]
+            return bool(val.strip())
+        if stripped.startswith(f"export {key}="):
+            val = stripped[len(f"export {key}="):]
+            return bool(val.strip())
+    return False
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/config/models/default — Set default model
+# ---------------------------------------------------------------------------
+
+@dashboard_app.put("/api/config/models/default")
+async def api_config_models_default(request: Request):
+    """Set the default model. Updates config and the module-level MODEL var."""
+    if _config is None:
+        return _not_initialized()
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _error("Invalid JSON in request body", "INVALID_JSON", status=400)
+
+    model = body.get("model", "") if isinstance(body, dict) else ""
+    if not model or not isinstance(model, str):
+        return _error("'model' field is required", "MISSING_MODEL", status=400)
+
+    try:
+        new_values, restart_required = _config.update_section(
+            "models", {"default_model": model}
+        )
+    except ValueError as e:
+        return _error(str(e), "VALIDATION_ERROR", status=422)
+    except Exception as e:
+        return _error(f"Config update failed: {e}", "CONFIG_WRITE_ERROR")
+
+    # Update module-level MODEL var in the main server module
+    try:
+        import localchat as _lc
+        _lc.MODEL = model
+    except Exception:
+        pass
+
+    return JSONResponse({
+        "status": "ok",
+        "model": model,
+        "restart_required": restart_required,
+    })
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/config/models/permission — Set SDK permission mode
+# ---------------------------------------------------------------------------
+
+@dashboard_app.put("/api/config/models/permission")
+async def api_config_models_permission(request: Request):
+    """Set the Claude SDK permission mode."""
+    if _config is None:
+        return _not_initialized()
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _error("Invalid JSON in request body", "INVALID_JSON", status=400)
+
+    mode = body.get("mode", "") if isinstance(body, dict) else ""
+    if not mode or not isinstance(mode, str):
+        return _error("'mode' field is required", "MISSING_MODE", status=400)
+
+    try:
+        new_values, restart_required = _config.update_section(
+            "models", {"permission_mode": mode}
+        )
+    except ValueError as e:
+        return _error(str(e), "VALIDATION_ERROR", status=422)
+    except Exception as e:
+        return _error(f"Config update failed: {e}", "CONFIG_WRITE_ERROR")
+
+    return JSONResponse({
+        "status": "ok",
+        "permission_mode": mode,
+        "restart_required": restart_required,
+    })
+
+
+# ---------------------------------------------------------------------------
+# GET /api/models/claude — Claude API status
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/models/claude")
+async def api_models_claude():
+    """Check Claude API key status: environment variable and macOS keychain."""
+    env_set = bool(os.environ.get("ANTHROPIC_API_KEY", ""))
+
+    # Check macOS keychain
+    keychain_set = False
+    keychain_error: str | None = None
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", "anthropic-api-key", "-w"],
+            capture_output=True, text=True, timeout=5,
+        )
+        keychain_set = result.returncode == 0 and bool(result.stdout.strip())
+    except subprocess.TimeoutExpired:
+        keychain_error = "keychain lookup timed out"
+    except FileNotFoundError:
+        keychain_error = "security command not found (not macOS?)"
+    except Exception as e:
+        keychain_error = str(e)
+
+    status = "configured" if (env_set or keychain_set) else "not_configured"
+
+    resp: dict[str, Any] = {
+        "status": status,
+        "env_var_set": env_set,
+        "keychain_set": keychain_set,
+    }
+    if keychain_error:
+        resp["keychain_error"] = keychain_error
+
+    return JSONResponse(resp)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/models/ollama — Ollama detailed status
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/models/ollama")
+async def api_models_ollama():
+    """Ollama status: reachability, model list with sizes, running models."""
+    if _config is None:
+        return _not_initialized()
+
+    ollama_url = (_config.get("models", "ollama_url")
+                  or "http://localhost:11434")
+    base = ollama_url.rstrip("/")
+
+    # Fetch model list from /api/tags
+    models_list: list[dict[str, Any]] = []
+    tags_error: str | None = None
+    try:
+        req = urllib.request.Request(f"{base}/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+            for m in data.get("models", []):
+                models_list.append({
+                    "name": m.get("name", "?"),
+                    "size": m.get("size", 0),
+                    "size_human": _format_bytes(m.get("size", 0)),
+                    "modified_at": m.get("modified_at", ""),
+                    "digest": m.get("digest", "")[:12],
+                })
+    except urllib.error.URLError as e:
+        tags_error = f"Connection failed: {e.reason}"
+    except Exception as e:
+        tags_error = str(e)
+
+    # Fetch running models from /api/ps
+    running: list[dict[str, Any]] = []
+    ps_error: str | None = None
+    try:
+        req = urllib.request.Request(f"{base}/api/ps", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+            for m in data.get("models", []):
+                running.append({
+                    "name": m.get("name", "?"),
+                    "size": m.get("size", 0),
+                    "size_human": _format_bytes(m.get("size", 0)),
+                    "expires_at": m.get("expires_at", ""),
+                })
+    except urllib.error.URLError as e:
+        ps_error = f"Connection failed: {e.reason}"
+    except Exception as e:
+        ps_error = str(e)
+
+    reachable = tags_error is None
+    resp: dict[str, Any] = {
+        "status": "reachable" if reachable else "unreachable",
+        "url": ollama_url,
+        "models": models_list,
+        "model_count": len(models_list),
+        "running": running,
+    }
+    if tags_error:
+        resp["tags_error"] = tags_error
+    if ps_error:
+        resp["ps_error"] = ps_error
+
+    return JSONResponse(resp)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/models/grok — Grok API status
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/models/grok")
+async def api_models_grok():
+    """Check Grok API key status (XAI_API_KEY presence)."""
+    env_set = bool(os.environ.get("XAI_API_KEY", ""))
+    dotenv_set = _env_has_key("XAI_API_KEY") if not env_set else False
+
+    status = "configured" if (env_set or dotenv_set) else "not_configured"
+
+    return JSONResponse({
+        "status": status,
+        "env_var_set": env_set,
+        "dotenv_set": dotenv_set,
+    })
+
+
+# ---------------------------------------------------------------------------
+# GET /api/credentials — Which keys are configured (booleans only)
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/credentials")
+async def api_credentials():
+    """Return boolean flags for which API keys/tokens are configured."""
+    return JSONResponse({
+        "status": "ok",
+        "credentials": {
+            "anthropic": _env_has_key("ANTHROPIC_API_KEY"),
+            "xai": _env_has_key("XAI_API_KEY"),
+            "telegram_bot": _env_has_key("TELEGRAM_BOT_TOKEN"),
+            "telegram_chat": _env_has_key("TELEGRAM_CHAT_ID"),
+            "alert_token": _env_has_key("LOCALCHAT_ALERT_TOKEN"),
+        },
+    })
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/credentials/{provider} — Set API key in .env
+# ---------------------------------------------------------------------------
+
+@dashboard_app.put("/api/credentials/{provider}")
+async def api_credentials_update(provider: str, request: Request):
+    """Set an API key/token in ~/.openclaw/.env (atomic write).
+
+    Providers: anthropic, xai, telegram_bot, telegram_chat.
+    Body: {"key": "sk-..."}
+    """
+    if provider not in _PROVIDER_KEY_MAP:
+        return _error(
+            f"Unknown provider: '{provider}'. "
+            f"Valid: {', '.join(sorted(_PROVIDER_KEY_MAP))}",
+            "UNKNOWN_PROVIDER",
+            status=400,
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _error("Invalid JSON in request body", "INVALID_JSON", status=400)
+
+    key_value = body.get("key", "") if isinstance(body, dict) else ""
+    if not key_value or not isinstance(key_value, str):
+        return _error("'key' field is required", "MISSING_KEY", status=400)
+
+    env_var_name = _PROVIDER_KEY_MAP[provider]
+
+    try:
+        _update_env_var(env_var_name, key_value)
+    except Exception as e:
+        return _error(f"Failed to update .env: {e}", "ENV_WRITE_ERROR")
+
+    # Also update the current process environment
+    os.environ[env_var_name] = key_value
+
+    return JSONResponse({
+        "status": "ok",
+        "provider": provider,
+        "env_var": env_var_name,
+        "message": f"{env_var_name} updated in .env",
+    })
+
+
+# ---------------------------------------------------------------------------
+# POST /api/credentials/alert-token/rotate — Generate new alert token
+# ---------------------------------------------------------------------------
+
+@dashboard_app.post("/api/credentials/alert-token/rotate")
+async def api_credentials_alert_token_rotate():
+    """Generate a new random alert token (32 bytes, base64url).
+
+    Updates LOCALCHAT_ALERT_TOKEN in .env and the running config.
+    Returns the new token (only time it is exposed).
+    """
+    import secrets
+    import base64
+
+    token_bytes = secrets.token_bytes(32)
+    new_token = base64.urlsafe_b64encode(token_bytes).decode().rstrip("=")
+
+    try:
+        _update_env_var("LOCALCHAT_ALERT_TOKEN", new_token)
+    except Exception as e:
+        return _error(f"Failed to update .env: {e}", "ENV_WRITE_ERROR")
+
+    os.environ["LOCALCHAT_ALERT_TOKEN"] = new_token
+
+    return JSONResponse({
+        "status": "ok",
+        "alert_token": new_token,
+        "message": "New alert token generated. Update any clients using the old token.",
+    })
+
+
+# ---------------------------------------------------------------------------
+# GET /api/alerts/config — Current alert configuration
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/alerts/config")
+async def api_alerts_config():
+    """Alert configuration: telegram status, alert token, DB categories."""
+    telegram_configured = (
+        _env_has_key("TELEGRAM_BOT_TOKEN") and _env_has_key("TELEGRAM_CHAT_ID")
+    )
+    alert_token_set = _env_has_key("LOCALCHAT_ALERT_TOKEN")
+
+    # Fetch distinct alert categories from DB
+    categories: list[str] = []
+    if _db_path and _db_path.exists():
+        try:
+            conn = sqlite3.connect(str(_db_path), check_same_thread=False)
+            rows = conn.execute(
+                "SELECT DISTINCT category FROM alerts WHERE category IS NOT NULL "
+                "ORDER BY category"
+            ).fetchall()
+            categories = [r[0] for r in rows]
+            conn.close()
+        except sqlite3.Error:
+            pass
+
+    return JSONResponse({
+        "status": "ok",
+        "telegram_configured": telegram_configured,
+        "alert_token_set": alert_token_set,
+        "categories": categories,
+    })
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/alerts/config/telegram — Update telegram config in .env
+# ---------------------------------------------------------------------------
+
+@dashboard_app.put("/api/alerts/config/telegram")
+async def api_alerts_config_telegram(request: Request):
+    """Update TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env.
+
+    Body: {"bot_token": "123456:ABC...", "chat_id": "-100..."}
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return _error("Invalid JSON in request body", "INVALID_JSON", status=400)
+
+    if not isinstance(body, dict):
+        return _error("Request body must be a JSON object", "INVALID_BODY", status=400)
+
+    bot_token = body.get("bot_token", "")
+    chat_id = body.get("chat_id", "")
+
+    if not bot_token or not isinstance(bot_token, str):
+        return _error("'bot_token' field is required", "MISSING_BOT_TOKEN", status=400)
+    if not chat_id or not isinstance(chat_id, str):
+        return _error("'chat_id' field is required", "MISSING_CHAT_ID", status=400)
+
+    try:
+        _update_env_var("TELEGRAM_BOT_TOKEN", bot_token)
+        _update_env_var("TELEGRAM_CHAT_ID", chat_id)
+    except Exception as e:
+        return _error(f"Failed to update .env: {e}", "ENV_WRITE_ERROR")
+
+    os.environ["TELEGRAM_BOT_TOKEN"] = bot_token
+    os.environ["TELEGRAM_CHAT_ID"] = chat_id
+
+    return JSONResponse({
+        "status": "ok",
+        "message": "Telegram bot token and chat ID updated in .env",
+    })
+
+
+# ---------------------------------------------------------------------------
+# POST /api/alerts/test — Fire a test alert through the full pipeline
+# ---------------------------------------------------------------------------
+
+@dashboard_app.post("/api/alerts/test")
+async def api_alerts_test():
+    """Fire a test alert: insert into DB and send via Telegram.
+
+    Returns the result of each channel.
+    """
+    results: dict[str, Any] = {}
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # 1. Insert test alert into DB
+    db_ok = False
+    if _db_path and _db_path.exists():
+        try:
+            conn = sqlite3.connect(str(_db_path), check_same_thread=False)
+            conn.execute(
+                "INSERT INTO alerts (category, title, body, severity, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    "test",
+                    "Test Alert",
+                    f"Dashboard test alert fired at {now_iso}",
+                    "info",
+                    now_iso,
+                ),
+            )
+            conn.commit()
+            conn.close()
+            db_ok = True
+        except sqlite3.Error as e:
+            results["db"] = {"status": "error", "detail": str(e)}
+
+    if db_ok:
+        results["db"] = {"status": "ok", "detail": "Test alert inserted"}
+    elif "db" not in results:
+        results["db"] = {"status": "error", "detail": "Database not available"}
+
+    # 2. Send via Telegram
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+    if not bot_token or not chat_id:
+        # Try reading from .env if not in environment
+        content = _read_env_file()
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("TELEGRAM_BOT_TOKEN=") and not bot_token:
+                bot_token = stripped.split("=", 1)[1].strip()
+            elif stripped.startswith("TELEGRAM_CHAT_ID=") and not chat_id:
+                chat_id = stripped.split("=", 1)[1].strip()
+
+    if not bot_token or not chat_id:
+        results["telegram"] = {
+            "status": "not_configured",
+            "detail": "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set",
+        }
+    else:
+        try:
+            tg_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            payload = json.dumps({
+                "chat_id": chat_id,
+                "text": f"🔔 Apex Dashboard Test Alert\n\n"
+                        f"This is a test alert from the Apex Dashboard.\n"
+                        f"Time: {now_iso}",
+                "parse_mode": "HTML",
+            }).encode()
+            req = urllib.request.Request(
+                tg_url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                tg_resp = json.loads(resp.read().decode())
+                if tg_resp.get("ok"):
+                    results["telegram"] = {
+                        "status": "ok",
+                        "detail": "Test message sent",
+                        "message_id": tg_resp.get("result", {}).get("message_id"),
+                    }
+                else:
+                    results["telegram"] = {
+                        "status": "error",
+                        "detail": tg_resp.get("description", "Unknown error"),
+                    }
+        except urllib.error.HTTPError as e:
+            try:
+                err_body = json.loads(e.read().decode())
+                detail = err_body.get("description", str(e))
+            except Exception:
+                detail = str(e)
+            results["telegram"] = {"status": "error", "detail": detail}
+        except urllib.error.URLError as e:
+            results["telegram"] = {
+                "status": "error",
+                "detail": f"Connection failed: {e.reason}",
+            }
+        except Exception as e:
+            results["telegram"] = {"status": "error", "detail": str(e)}
+
+    # Overall
+    all_ok = all(r.get("status") == "ok" for r in results.values())
+
+    return JSONResponse({
+        "status": "ok" if all_ok else "partial",
+        "results": results,
+        "fired_at": now_iso,
     })
 
 

@@ -971,15 +971,14 @@ select {
                 </svg>
                 TLS
             </div>
-            <!-- Future: Models -->
-            <div class="nav-item nav-disabled" title="Coming in Phase 3">
+            <!-- Models -->
+            <div class="nav-item" data-page="models" onclick="navigateTo('models')">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polygon points="12 2 2 7 12 12 22 7 12 2"/>
                     <polyline points="2 17 12 22 22 17"/>
                     <polyline points="2 12 12 17 22 12"/>
                 </svg>
                 Models
-                <span class="nav-badge">Soon</span>
             </div>
             <!-- Future: Workspace -->
             <div class="nav-item nav-disabled" title="Coming in Phase 4">
@@ -1169,6 +1168,126 @@ select {
             </div>
         </div>
 
+        <!-- =========================================================
+             MODELS PAGE
+             ========================================================= -->
+        <div class="page" id="page-models">
+            <div class="page-header">
+                <h2>Models &amp; Credentials</h2>
+                <button class="btn btn-ghost" onclick="loadModels()" id="btn-models-refresh">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="23 4 23 10 17 10"/>
+                        <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+                    </svg>
+                    Refresh
+                </button>
+            </div>
+
+            <!-- Provider Status Cards -->
+            <div class="card-grid" id="models-provider-cards">
+                <div class="card">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+                            <polyline points="2 17 12 22 22 17"/>
+                            <polyline points="2 12 12 17 22 12"/>
+                        </svg>
+                        Claude
+                    </div>
+                    <div id="provider-claude-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="10"/>
+                            <path d="M8 12l2 2 4-4"/>
+                        </svg>
+                        Ollama
+                    </div>
+                    <div id="provider-ollama-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/>
+                        </svg>
+                        Grok
+                    </div>
+                    <div id="provider-grok-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Default Model Selector -->
+            <div class="config-section">
+                <div class="config-section-header">
+                    <span class="config-section-title">Default Model</span>
+                </div>
+                <div class="form-field">
+                    <label class="form-label" for="default-model-select">Active model for new conversations</label>
+                    <div class="form-help">Select a model from any available provider</div>
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <select id="default-model-select" style="width:100%; max-width:400px;">
+                            <option value="">Loading models...</option>
+                        </select>
+                        <button class="btn btn-primary" onclick="setDefaultModel()" id="btn-set-default-model">Save</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Credentials Section -->
+            <div class="config-section">
+                <div class="config-section-header">
+                    <span class="config-section-title">Credentials</span>
+                </div>
+                <table class="tls-table" id="credentials-table">
+                    <thead><tr>
+                        <th>Provider</th><th>Status</th><th>Action</th>
+                    </tr></thead>
+                    <tbody id="credentials-tbody">
+                        <tr><td colspan="3"><div class="loading-overlay"><div class="spinner"></div> Loading...</div></td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Alert Configuration Section -->
+            <div class="config-section">
+                <div class="config-section-header">
+                    <span class="config-section-title">Alert Configuration</span>
+                </div>
+                <div id="alert-config-content">
+                    <div class="stat-row">
+                        <span class="stat-label">Telegram</span>
+                        <span class="stat-value" id="alert-telegram-status">
+                            <span class="status-dot dim"></span> Checking...
+                        </span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Alert Token</span>
+                        <span class="stat-value mono" id="alert-token-display">****</span>
+                    </div>
+                    <div style="margin-top:16px; display:flex; gap:8px; flex-wrap:wrap;">
+                        <button class="btn btn-primary btn-sm" onclick="testAlerts()" id="btn-test-alerts">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+                                <path d="M22 2L11 13"/>
+                                <path d="M22 2L15 22 11 13 2 9l20-7z"/>
+                            </svg>
+                            Test Alerts
+                        </button>
+                        <button class="btn btn-ghost btn-sm" onclick="rotateAlertToken()" id="btn-rotate-token">Rotate Alert Token</button>
+                    </div>
+                    <div id="alert-test-result" style="display:none; margin-top:12px;"></div>
+                </div>
+            </div>
+        </div>
+
     </main>
 </div>
 
@@ -1234,6 +1353,25 @@ select {
     </div>
 </div>
 
+<!-- Credential Update Modal -->
+<div class="modal-overlay" id="modal-credential">
+    <div class="modal-card">
+        <div class="modal-header">
+            <h3 id="credential-modal-title">Update Credential</h3>
+            <button class="modal-close" onclick="closeModal('modal-credential')">&times;</button>
+        </div>
+        <div class="form-field">
+            <label class="form-label" for="credential-input" id="credential-input-label">API Key</label>
+            <div class="form-help" id="credential-input-help">Enter the new API key or secret</div>
+            <input type="password" id="credential-input" placeholder="Paste new credential..." style="width:100%;">
+        </div>
+        <div class="config-actions">
+            <button class="btn btn-primary" onclick="saveCredential()" id="btn-save-credential">Save</button>
+            <button class="btn btn-ghost" onclick="closeModal('modal-credential')">Cancel</button>
+        </div>
+    </div>
+</div>
+
 <script>
 /* =====================================================================
    Apex Dashboard — Client-Side Application
@@ -1281,6 +1419,7 @@ function navigateTo(page) {
         stopAutoRefresh();
         if (page === "config") loadConfig();
         if (page === "tls") loadTLS();
+        if (page === "models") loadModels();
     }
 }
 window.navigateTo = navigateTo;
@@ -2108,6 +2247,429 @@ async function saveSANs() {
 }
 window.saveSANs = saveSANs;
 
+/* =====================================================================
+   Models Page
+   ===================================================================== */
+
+let modelsData = {};     /* Cached provider data */
+let credentialsData = {};  /* Cached credentials status */
+let currentCredentialProvider = null;
+
+async function loadModels() {
+    const btnRefresh = document.getElementById("btn-models-refresh");
+    if (btnRefresh) btnRefresh.disabled = true;
+
+    try {
+        const [claude, ollama, grok, creds] = await Promise.allSettled([
+            apiFetch("/status/models/claude"),
+            apiFetch("/status/models/ollama"),
+            apiFetch("/status/models/grok"),
+            apiFetch("/credentials"),
+        ]);
+
+        modelsData = { claude: claude, ollama: ollama, grok: grok };
+        if (creds.status === "fulfilled") {
+            credentialsData = creds.value.credentials || creds.value || {};
+        }
+
+        renderProviderCards(claude, ollama, grok);
+        renderDefaultModelSelector(claude, ollama, grok);
+        renderCredentialsTable();
+        renderAlertConfig();
+    } catch (err) {
+        showToast("Failed to load models: " + err.message, "error");
+    } finally {
+        if (btnRefresh) btnRefresh.disabled = false;
+    }
+}
+window.loadModels = loadModels;
+
+/* -- Render: Provider Status Cards ---------------------------------- */
+
+function renderProviderCards(claude, ollama, grok) {
+    /* Claude */
+    const claudeEl = document.getElementById("provider-claude-content");
+    if (claude.status === "rejected") {
+        claudeEl.innerHTML = renderError("Could not reach Claude API");
+    } else {
+        const d = claude.value;
+        const ok = d.status === "ok" || d.status === "reachable" || d.reachable === true;
+        const dotClass = ok ? "green" : "red";
+        const apiKey = d.api_key_configured !== undefined ? d.api_key_configured : (credentialsData.claude || false);
+        const keychain = d.keychain_fallback !== undefined ? d.keychain_fallback : null;
+
+        claudeEl.innerHTML =
+            '<div class="stat-row">' +
+                '<span class="stat-label">Status</span>' +
+                '<span class="stat-value status-inline">' +
+                    '<span class="status-dot ' + dotClass + '"></span>' +
+                    (ok ? "Reachable" : "Unreachable") +
+                '</span>' +
+            '</div>' +
+            '<div class="stat-row">' +
+                '<span class="stat-label">Model</span>' +
+                '<span class="stat-value mono">' + esc(d.model || d.default_model || "—") + '</span>' +
+            '</div>' +
+            '<div class="stat-row">' +
+                '<span class="stat-label">API Key</span>' +
+                '<span class="stat-value text-' + (apiKey ? "green" : "red") + '">' +
+                    (apiKey ? "Configured" : "Not set") +
+                '</span>' +
+            '</div>' +
+            (keychain !== null ?
+            '<div class="stat-row">' +
+                '<span class="stat-label">Keychain Fallback</span>' +
+                '<span class="stat-value text-' + (keychain ? "green" : "dim") + '">' +
+                    (keychain ? "Available" : "Not available") +
+                '</span>' +
+            '</div>' : '') +
+            (d.latency_ms != null ?
+            '<div class="stat-row">' +
+                '<span class="stat-label">Latency</span>' +
+                '<span class="stat-value">' + d.latency_ms + ' ms</span>' +
+            '</div>' : '');
+    }
+
+    /* Ollama */
+    const ollamaEl = document.getElementById("provider-ollama-content");
+    if (ollama.status === "rejected") {
+        ollamaEl.innerHTML = renderError("Could not reach Ollama");
+    } else {
+        const d = ollama.value;
+        const ok = d.status === "ok" || d.status === "reachable" || d.reachable === true;
+        const dotClass = ok ? "green" : "red";
+        const modelCount = d.model_count != null ? d.model_count : (d.models ? d.models.length : null);
+        const loaded = d.loaded_models || d.running || [];
+
+        ollamaEl.innerHTML =
+            '<div class="stat-row">' +
+                '<span class="stat-label">Status</span>' +
+                '<span class="stat-value status-inline">' +
+                    '<span class="status-dot ' + dotClass + '"></span>' +
+                    (ok ? "Reachable" : "Unreachable") +
+                '</span>' +
+            '</div>' +
+            '<div class="stat-row">' +
+                '<span class="stat-label">URL</span>' +
+                '<span class="stat-value mono">' + esc(d.url || d.base_url || "—") + '</span>' +
+            '</div>' +
+            '<div class="stat-row">' +
+                '<span class="stat-label">Models Available</span>' +
+                '<span class="stat-value">' + (modelCount != null ? modelCount : "—") + '</span>' +
+            '</div>' +
+            '<div class="stat-row">' +
+                '<span class="stat-label">Currently Loaded</span>' +
+                '<span class="stat-value">' +
+                    (loaded.length > 0 ? loaded.map(function(m) { return '<span class="mono">' + esc(typeof m === "string" ? m : m.name || m.model) + '</span>'; }).join(", ") : '<span class="text-dim">None</span>') +
+                '</span>' +
+            '</div>' +
+            (d.latency_ms != null ?
+            '<div class="stat-row">' +
+                '<span class="stat-label">Latency</span>' +
+                '<span class="stat-value">' + d.latency_ms + ' ms</span>' +
+            '</div>' : '');
+    }
+
+    /* Grok */
+    const grokEl = document.getElementById("provider-grok-content");
+    if (grok.status === "rejected") {
+        grokEl.innerHTML = renderError("Could not reach Grok API");
+    } else {
+        const d = grok.value;
+        const ok = d.status === "ok" || d.status === "reachable" || d.reachable === true;
+        const dotClass = ok ? "green" : "red";
+        const apiKey = d.api_key_configured !== undefined ? d.api_key_configured : (credentialsData.grok || false);
+
+        grokEl.innerHTML =
+            '<div class="stat-row">' +
+                '<span class="stat-label">Status</span>' +
+                '<span class="stat-value status-inline">' +
+                    '<span class="status-dot ' + dotClass + '"></span>' +
+                    (ok ? "Reachable" : "Unreachable") +
+                '</span>' +
+            '</div>' +
+            '<div class="stat-row">' +
+                '<span class="stat-label">Model</span>' +
+                '<span class="stat-value mono">' + esc(d.model || d.default_model || "—") + '</span>' +
+            '</div>' +
+            '<div class="stat-row">' +
+                '<span class="stat-label">API Key</span>' +
+                '<span class="stat-value text-' + (apiKey ? "green" : "red") + '">' +
+                    (apiKey ? "Configured" : "Not set") +
+                '</span>' +
+            '</div>' +
+            (d.latency_ms != null ?
+            '<div class="stat-row">' +
+                '<span class="stat-label">Latency</span>' +
+                '<span class="stat-value">' + d.latency_ms + ' ms</span>' +
+            '</div>' : '');
+    }
+}
+
+/* -- Render: Default Model Selector --------------------------------- */
+
+function renderDefaultModelSelector(claude, ollama, grok) {
+    const sel = document.getElementById("default-model-select");
+    var options = '<option value="" disabled>Select a model...</option>';
+
+    /* Claude models */
+    if (claude.status === "fulfilled") {
+        var d = claude.value;
+        var models = d.models || (d.model ? [d.model] : [d.default_model].filter(Boolean));
+        if (models.length > 0) {
+            options += '<optgroup label="Claude">';
+            for (var i = 0; i < models.length; i++) {
+                var name = typeof models[i] === "string" ? models[i] : models[i].name || models[i].id;
+                options += '<option value="claude:' + esc(name) + '">' + esc(name) + '</option>';
+            }
+            options += '</optgroup>';
+        }
+    }
+
+    /* Ollama models */
+    if (ollama.status === "fulfilled") {
+        var od = ollama.value;
+        var oModels = od.models || [];
+        if (oModels.length > 0) {
+            options += '<optgroup label="Ollama">';
+            for (var j = 0; j < oModels.length; j++) {
+                var oName = typeof oModels[j] === "string" ? oModels[j] : oModels[j].name || oModels[j].model;
+                options += '<option value="ollama:' + esc(oName) + '">' + esc(oName) + '</option>';
+            }
+            options += '</optgroup>';
+        }
+    }
+
+    /* Grok models */
+    if (grok.status === "fulfilled") {
+        var gd = grok.value;
+        var gModels = gd.models || (gd.model ? [gd.model] : [gd.default_model].filter(Boolean));
+        if (gModels.length > 0) {
+            options += '<optgroup label="Grok">';
+            for (var k = 0; k < gModels.length; k++) {
+                var gName = typeof gModels[k] === "string" ? gModels[k] : gModels[k].name || gModels[k].id;
+                options += '<option value="grok:' + esc(gName) + '">' + esc(gName) + '</option>';
+            }
+            options += '</optgroup>';
+        }
+    }
+
+    sel.innerHTML = options;
+
+    /* Highlight current default */
+    var current = credentialsData.default_model || "";
+    if (current) {
+        sel.value = current;
+    }
+}
+
+async function setDefaultModel() {
+    var sel = document.getElementById("default-model-select");
+    var model = sel.value;
+    if (!model) {
+        showToast("Please select a model", "warning");
+        return;
+    }
+
+    var btn = document.getElementById("btn-set-default-model");
+    btn.disabled = true;
+
+    try {
+        await apiFetch("/config/models/default", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model: model }),
+        });
+        showToast("Default model updated to " + model, "success");
+    } catch (err) {
+        showToast("Failed to set default model: " + err.message, "error");
+    } finally {
+        btn.disabled = false;
+    }
+}
+window.setDefaultModel = setDefaultModel;
+
+/* -- Render: Credentials Table -------------------------------------- */
+
+function renderCredentialsTable() {
+    var tbody = document.getElementById("credentials-tbody");
+    var providers = [
+        { key: "claude", name: "Claude (Anthropic)" },
+        { key: "grok", name: "Grok (xAI)" },
+        { key: "telegram", name: "Telegram Bot" },
+    ];
+
+    var html = "";
+    for (var i = 0; i < providers.length; i++) {
+        var p = providers[i];
+        var configured = credentialsData[p.key] === true || (credentialsData[p.key] && credentialsData[p.key].configured);
+        var dotClass = configured ? "green" : "red";
+        var statusText = configured ? "Configured" : "Not set";
+
+        html += '<tr>' +
+            '<td style="font-weight:500;">' + esc(p.name) + '</td>' +
+            '<td><span class="status-inline"><span class="status-dot ' + dotClass + '"></span>' +
+                '<span class="text-' + (configured ? "green" : "red") + '">' + statusText + '</span>' +
+            '</span></td>' +
+            '<td><button class="btn btn-ghost btn-sm" onclick="updateCredential(\'' + esc(p.key) + '\')">Update</button></td>' +
+        '</tr>';
+    }
+
+    tbody.innerHTML = html;
+}
+
+/* -- Credential Update ---------------------------------------------- */
+
+function updateCredential(provider) {
+    currentCredentialProvider = provider;
+    var names = { claude: "Claude API Key", grok: "Grok API Key", telegram: "Telegram Bot Token" };
+    document.getElementById("credential-modal-title").textContent = "Update " + (names[provider] || capitalize(provider));
+    document.getElementById("credential-input-label").textContent = names[provider] || "Credential";
+    document.getElementById("credential-input-help").textContent = "Enter the new " + (names[provider] || "credential").toLowerCase();
+    document.getElementById("credential-input").value = "";
+    document.getElementById("btn-save-credential").disabled = false;
+    openModal("modal-credential");
+}
+window.updateCredential = updateCredential;
+
+async function saveCredential() {
+    var input = document.getElementById("credential-input");
+    var value = input.value.trim();
+    if (!value) {
+        showToast("Please enter a credential value", "warning");
+        return;
+    }
+
+    var btn = document.getElementById("btn-save-credential");
+    btn.disabled = true;
+
+    try {
+        await apiFetch("/credentials/" + encodeURIComponent(currentCredentialProvider), {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ value: value }),
+        });
+        showToast(capitalize(currentCredentialProvider) + " credential updated", "success");
+        closeModal("modal-credential");
+        loadModels();
+    } catch (err) {
+        showToast("Update failed: " + err.message, "error");
+        btn.disabled = false;
+    }
+}
+window.saveCredential = saveCredential;
+
+/* -- Alert Configuration -------------------------------------------- */
+
+function renderAlertConfig() {
+    /* Telegram status */
+    var telegramEl = document.getElementById("alert-telegram-status");
+    var tgConfigured = credentialsData.telegram === true || (credentialsData.telegram && credentialsData.telegram.configured);
+    var dotClass = tgConfigured ? "green" : "red";
+    telegramEl.innerHTML =
+        '<span class="status-dot ' + dotClass + '"></span>' +
+        '<span class="text-' + (tgConfigured ? "green" : "red") + '">' +
+            (tgConfigured ? "Configured" : "Not configured") +
+        '</span>';
+
+    /* Alert token display */
+    var tokenEl = document.getElementById("alert-token-display");
+    var token = credentialsData.alert_token || credentialsData.alertToken || "";
+    if (token && token.length > 4) {
+        tokenEl.textContent = token.substring(0, 4) + "****";
+    } else if (token) {
+        tokenEl.textContent = "****";
+    } else {
+        tokenEl.innerHTML = '<span class="text-dim">Not set</span>';
+    }
+}
+
+async function rotateAlertToken() {
+    if (!confirm("Rotate the alert token? All existing alert integrations will need the new token.")) return;
+
+    var btn = document.getElementById("btn-rotate-token");
+    btn.disabled = true;
+
+    try {
+        var result = await apiFetch("/credentials/alert_token/rotate", { method: "POST" });
+        var newToken = result.token || result.alert_token || "";
+        if (newToken) {
+            var tokenEl = document.getElementById("alert-token-display");
+            tokenEl.textContent = newToken;
+            tokenEl.classList.add("text-accent");
+            showToast("Alert token rotated. Copy the new token now — it won't be shown again.", "warning");
+            setTimeout(function() {
+                tokenEl.textContent = newToken.substring(0, 4) + "****";
+                tokenEl.classList.remove("text-accent");
+            }, 15000);
+        } else {
+            showToast("Alert token rotated", "success");
+        }
+        loadModels();
+    } catch (err) {
+        showToast("Rotate failed: " + err.message, "error");
+    } finally {
+        btn.disabled = false;
+    }
+}
+window.rotateAlertToken = rotateAlertToken;
+
+async function testAlerts() {
+    var btn = document.getElementById("btn-test-alerts");
+    btn.disabled = true;
+    var resultEl = document.getElementById("alert-test-result");
+    resultEl.style.display = "block";
+    resultEl.innerHTML = '<div class="loading-overlay" style="padding:12px;"><div class="spinner"></div> Sending test alert...</div>';
+
+    try {
+        var result = await apiFetch("/alerts/test", { method: "POST" });
+        var channels = result.results || result.channels || result;
+        var html = '';
+
+        if (Array.isArray(channels)) {
+            for (var i = 0; i < channels.length; i++) {
+                var ch = channels[i];
+                var ok = ch.success || ch.status === "ok";
+                var dotClass = ok ? "green" : "red";
+                html +=
+                    '<div class="stat-row">' +
+                        '<span class="stat-label">' + esc(ch.channel || ch.name || "Channel " + (i + 1)) + '</span>' +
+                        '<span class="stat-value status-inline">' +
+                            '<span class="status-dot ' + dotClass + '"></span>' +
+                            (ok ? "Success" : esc(ch.error || "Failed")) +
+                        '</span>' +
+                    '</div>';
+            }
+        } else if (typeof channels === "object") {
+            for (var key in channels) {
+                if (!channels.hasOwnProperty(key)) continue;
+                var val = channels[key];
+                var chOk = val === true || val.success || val.status === "ok";
+                html +=
+                    '<div class="stat-row">' +
+                        '<span class="stat-label">' + esc(key) + '</span>' +
+                        '<span class="stat-value status-inline">' +
+                            '<span class="status-dot ' + (chOk ? "green" : "red") + '"></span>' +
+                            (chOk ? "Success" : esc(val.error || "Failed")) +
+                        '</span>' +
+                    '</div>';
+            }
+        } else {
+            html = '<div class="text-green" style="padding:4px 0;">Test alert sent successfully</div>';
+        }
+
+        resultEl.innerHTML = '<div style="background:var(--bg); border-radius:var(--radius); padding:12px;">' + html + '</div>';
+        showToast("Test alert sent", "success");
+    } catch (err) {
+        resultEl.innerHTML = '<div style="background:var(--bg); border-radius:var(--radius); padding:12px; color:var(--red);">' +
+            'Test failed: ' + esc(err.message) + '</div>';
+        showToast("Test alert failed: " + err.message, "error");
+    } finally {
+        btn.disabled = false;
+    }
+}
+window.testAlerts = testAlerts;
+
 /* -- Modal Helpers -------------------------------------------------- */
 
 function openModal(id) {
@@ -2201,7 +2763,7 @@ function renderError(message) {
 function init() {
     /* Route from URL hash */
     var hash = window.location.hash.replace("#", "");
-    if (hash === "config" || hash === "tls") {
+    if (hash === "config" || hash === "tls" || hash === "models") {
         navigateTo(hash);
     } else {
         /* Default: health page */
