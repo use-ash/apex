@@ -14,6 +14,7 @@ import tempfile
 import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 # ---------------------------------------------------------------------------
 # Schema — every valid config key with type, default, env-var source
@@ -304,6 +305,8 @@ class Config:
                     value = bool(value)
             else:
                 value = str(value)
+                if any(ord(c) < 32 and c not in (' ', '\t') for c in value):
+                    raise ValueError(f"{key}: contains control characters")
         except (ValueError, TypeError) as e:
             raise ValueError(f"{key}: invalid {target} value: {e}") from e
 
@@ -311,6 +314,15 @@ class Config:
             raise ValueError(
                 f"{key}: must be one of {spec['choices']}, got {value!r}"
             )
+
+        # URL validation for ollama_url
+        if key == "ollama_url" and isinstance(value, str):
+            parsed = urlparse(value)
+            if parsed.scheme not in ("http", "https"):
+                raise ValueError(f"{key}: scheme must be http or https")
+            if not parsed.hostname:
+                raise ValueError(f"{key}: missing hostname")
+
         return value
 
     @staticmethod

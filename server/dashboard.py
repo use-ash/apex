@@ -114,6 +114,10 @@ _start_time: float = time.time()
 _vacuum_lock = asyncio.Lock()
 _last_vacuum: float = 0.0
 _cert_gen_times: list[float] = []
+_backup_lock = asyncio.Lock()
+_last_backup: float = 0.0
+_BACKUP_COOLDOWN = 60.0
+_cert_lock = asyncio.Lock()
 
 _state_dir: Path | None = None
 _db_path: Path | None = None
@@ -137,45 +141,6 @@ def _safe_error(
     return _error(public_msg, code, status=status)
 
 
-def _validate_ollama_url(url: str) -> str | None:
-    """Validate a URL is safe for server-side requests (SSRF protection).
-
-    Returns an error message if invalid, None if OK.
-    """
-    from urllib.parse import urlparse
-    import ipaddress
-
-    try:
-        parsed = urlparse(url)
-    except Exception:
-        return "Invalid URL format"
-
-    if parsed.scheme not in ("http", "https"):
-        return "Unsupported scheme (only http/https allowed)"
-
-    host = parsed.hostname or ""
-    if not host:
-        return "URL has no hostname"
-
-    # Block cloud metadata endpoints and link-local
-    try:
-        addr = ipaddress.ip_address(host)
-        blocked_networks = [
-            ipaddress.ip_network("169.254.0.0/16"),   # link-local / cloud metadata
-            ipaddress.ip_network("0.0.0.0/8"),         # "this" network
-        ]
-        for net in blocked_networks:
-            if addr in net:
-                return "Blocked address range"
-    except ValueError:
-        # hostname, not IP -- check for metadata hostnames
-        if host in ("metadata.google.internal", "metadata.aws.internal"):
-            return "Blocked metadata hostname"
-
-    return None
-
-
-
 def init_dashboard(
     state_dir: Path | str,
     db_path: Path | str,
@@ -195,9 +160,9 @@ def init_dashboard(
 
 dashboard_app = FastAPI(
     title="Apex Dashboard",
-    docs_url="/api/docs",
+    docs_url=None,
     redoc_url=None,
-    openapi_url="/api/openapi.json",
+    openapi_url=None,
 )
 
 
@@ -908,87 +873,88 @@ async def api_tls_clients_create(request: Request):
     if err:
         return _error(err, "INVALID_CN", status=400)
 
-    # Check for existing cert with same CN
-    if (_ssl_dir / f"{cn}.crt").exists():
-        return _error(
-            f"Client certificate '{cn}' already exists",
-            "CN_EXISTS",
-            status=409,
-        )
-
-    # Rate limit: max 10 certs per hour
-    now = time.time()
-    _cert_gen_times[:] = [t for t in _cert_gen_times if now - t < 3600]
-    if len(_cert_gen_times) >= 10:
-        return _error("Rate limit: max 10 certificates per hour", "RATE_LIMITED", 429)
-    _cert_gen_times.append(now)
-
-    p12_password = secrets.token_urlsafe(16)
-
-    key_path = _ssl_dir / f"{cn}.key"
-    csr_path = _ssl_dir / f"{cn}.csr"
-    crt_path = _ssl_dir / f"{cn}.crt"
-    p12_path = _ssl_dir / f"{cn}.p12"
-
-    steps = [
-        # 1. Generate private key
-        ["openssl", "genrsa", "-out", str(key_path), "2048"],
-        # 2. Generate CSR
-        ["openssl", "req", "-new",
-         "-key", str(key_path),
-         "-out", str(csr_path),
-         "-subj", f"/CN={cn}"],
-        # 3. Sign with CA
-        ["openssl", "x509", "-req",
-         "-in", str(csr_path),
-         "-CA", str(ca_crt),
-         "-CAkey", str(ca_key),
-         "-CAcreateserial",
-         "-out", str(crt_path),
-         "-days", "825",
-         "-sha256"],
-        # 4. Create .p12 bundle
-        ["openssl", "pkcs12", "-export",
-         "-out", str(p12_path),
-         "-inkey", str(key_path),
-         "-in", str(crt_path),
-         "-certfile", str(ca_crt),
-         "-passout", f"pass:{p12_password}"],
-    ]
-
-    for cmd in steps:
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=30,
+    async with _cert_lock:
+        # Check for existing cert with same CN
+        if (_ssl_dir / f"{cn}.crt").exists():
+            return _error(
+                f"Client certificate '{cn}' already exists",
+                "CN_EXISTS",
+                status=409,
             )
-            if result.returncode != 0:
-                # Clean up partial artifacts
+
+        # Rate limit: max 10 certs per hour
+        now = time.time()
+        _cert_gen_times[:] = [t for t in _cert_gen_times if now - t < 3600]
+        if len(_cert_gen_times) >= 10:
+            return _error("Rate limit: max 10 certificates per hour", "RATE_LIMITED", 429)
+        _cert_gen_times.append(now)
+
+        p12_password = secrets.token_urlsafe(16)
+
+        key_path = _ssl_dir / f"{cn}.key"
+        csr_path = _ssl_dir / f"{cn}.csr"
+        crt_path = _ssl_dir / f"{cn}.crt"
+        p12_path = _ssl_dir / f"{cn}.p12"
+
+        steps = [
+            # 1. Generate private key
+            ["openssl", "genrsa", "-out", str(key_path), "2048"],
+            # 2. Generate CSR
+            ["openssl", "req", "-new",
+             "-key", str(key_path),
+             "-out", str(csr_path),
+             "-subj", f"/CN={cn}"],
+            # 3. Sign with CA
+            ["openssl", "x509", "-req",
+             "-in", str(csr_path),
+             "-CA", str(ca_crt),
+             "-CAkey", str(ca_key),
+             "-CAcreateserial",
+             "-out", str(crt_path),
+             "-days", "825",
+             "-sha256"],
+            # 4. Create .p12 bundle
+            ["openssl", "pkcs12", "-export",
+             "-out", str(p12_path),
+             "-inkey", str(key_path),
+             "-in", str(crt_path),
+             "-certfile", str(ca_crt),
+             "-passout", f"pass:{p12_password}"],
+        ]
+
+        for cmd in steps:
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=30,
+                )
+                if result.returncode != 0:
+                    # Clean up partial artifacts
+                    for f in (key_path, csr_path, crt_path, p12_path):
+                        f.unlink(missing_ok=True)
+                    _log.error(f"openssl failed during client cert gen: {result.stderr.strip()}")
+                    return _error(
+                        "Certificate operation failed",
+                        "OPENSSL_ERROR",
+                    )
+            except subprocess.TimeoutExpired:
                 for f in (key_path, csr_path, crt_path, p12_path):
                     f.unlink(missing_ok=True)
-                _log.error(f"openssl failed during client cert gen: {result.stderr.strip()}")
-                return _error(
-                    "Certificate operation failed",
-                    "OPENSSL_ERROR",
-                )
-        except subprocess.TimeoutExpired:
-            for f in (key_path, csr_path, crt_path, p12_path):
-                f.unlink(missing_ok=True)
-            return _error("openssl command timed out", "OPENSSL_TIMEOUT")
+                return _error("openssl command timed out", "OPENSSL_TIMEOUT")
 
-    # 5. Clean up CSR
-    csr_path.unlink(missing_ok=True)
+        # 5. Clean up CSR
+        csr_path.unlink(missing_ok=True)
 
-    # Parse the new cert for expiry
-    info = _parse_cert_full(crt_path)
-    expires = info["expires"] if info else "unknown"
+        # Parse the new cert for expiry
+        info = _parse_cert_full(crt_path)
+        expires = info["expires"] if info else "unknown"
 
-    return JSONResponse({
-        "status": "ok",
-        "cn": cn,
-        "expires": expires,
-        "p12_url": f"/admin/api/tls/clients/{cn}/p12",
-        "p12_password": p12_password,
-    })
+        return JSONResponse({
+            "status": "ok",
+            "cn": cn,
+            "expires": expires,
+            "p12_url": f"/admin/api/tls/clients/{cn}/p12",
+            "p12_password": p12_password,
+        })
 
 
 # ---------------------------------------------------------------------------
@@ -1393,63 +1359,64 @@ async def api_tls_ca_generate(request: Request):
     if not isinstance(days, int) or days < 1 or days > 7300:
         return _error("days must be an integer between 1 and 7300", "INVALID_DAYS", 400)
 
-    ca_crt = _ssl_dir / "ca.crt"
-    ca_key = _ssl_dir / "ca.key"
+    async with _cert_lock:
+        ca_crt = _ssl_dir / "ca.crt"
+        ca_key = _ssl_dir / "ca.key"
 
-    if ca_crt.exists() and not force:
-        return _error(
-            "CA already exists. Pass {\"force\": true} to overwrite. "
-            "WARNING: This invalidates ALL existing client and server certs.",
-            "CA_EXISTS",
-            status=409,
-        )
-
-    # Ensure ssl directory exists
-    _ssl_dir.mkdir(parents=True, exist_ok=True)
-
-    steps = [
-        # 1. Generate CA private key
-        ["openssl", "genrsa", "-out", str(ca_key), "4096"],
-        # 2. Generate self-signed CA certificate
-        ["openssl", "req", "-x509", "-new", "-nodes",
-         "-key", str(ca_key),
-         "-sha256",
-         "-days", str(days),
-         "-out", str(ca_crt),
-         "-subj", f"/CN={cn}"],
-    ]
-
-    for cmd in steps:
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=30,
+        if ca_crt.exists() and not force:
+            return _error(
+                "CA already exists. Pass {\"force\": true} to overwrite. "
+                "WARNING: This invalidates ALL existing client and server certs.",
+                "CA_EXISTS",
+                status=409,
             )
-            if result.returncode != 0:
-                # Clean up partial artifacts
+
+        # Ensure ssl directory exists
+        _ssl_dir.mkdir(parents=True, exist_ok=True)
+
+        steps = [
+            # 1. Generate CA private key
+            ["openssl", "genrsa", "-out", str(ca_key), "4096"],
+            # 2. Generate self-signed CA certificate
+            ["openssl", "req", "-x509", "-new", "-nodes",
+             "-key", str(ca_key),
+             "-sha256",
+             "-days", str(days),
+             "-out", str(ca_crt),
+             "-subj", f"/CN={cn}"],
+        ]
+
+        for cmd in steps:
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=30,
+                )
+                if result.returncode != 0:
+                    # Clean up partial artifacts
+                    ca_key.unlink(missing_ok=True)
+                    ca_crt.unlink(missing_ok=True)
+                    _log.error(f"openssl failed during CA generation: {result.stderr.strip()}")
+                    return _error(
+                        "Certificate operation failed",
+                        "OPENSSL_ERROR",
+                    )
+            except subprocess.TimeoutExpired:
                 ca_key.unlink(missing_ok=True)
                 ca_crt.unlink(missing_ok=True)
-                _log.error(f"openssl failed during CA generation: {result.stderr.strip()}")
-                return _error(
-                    "Certificate operation failed",
-                    "OPENSSL_ERROR",
-                )
-        except subprocess.TimeoutExpired:
-            ca_key.unlink(missing_ok=True)
-            ca_crt.unlink(missing_ok=True)
-            return _error("openssl command timed out", "OPENSSL_TIMEOUT")
+                return _error("openssl command timed out", "OPENSSL_TIMEOUT")
 
-    # Parse the new CA cert for details
-    info = _parse_cert_full(ca_crt)
+        # Parse the new CA cert for details
+        info = _parse_cert_full(ca_crt)
 
-    return JSONResponse({
-        "status": "ok",
-        "cn": cn,
-        "days": days,
-        "expires": info["expires"] if info else "unknown",
-        "fingerprint": info["fingerprint"] if info else "unknown",
-        "restart_required": True,
-        "message": "CA generated. Generate a server cert and client certs, then restart.",
-    })
+        return JSONResponse({
+            "status": "ok",
+            "cn": cn,
+            "days": days,
+            "expires": info["expires"] if info else "unknown",
+            "fingerprint": info["fingerprint"] if info else "unknown",
+            "restart_required": True,
+            "message": "CA generated. Generate a server cert and client certs, then restart.",
+        })
 
 
 # ===========================================================================
@@ -2092,7 +2059,6 @@ async def api_workspace_claude_md_get():
         _log.error(f"Failed to read CLAUDE.md: {e}")
         return _error("Failed to read CLAUDE.md", "READ_ERROR")
     return JSONResponse({
-        "path": str(claude_md),
         "content": content,
         "size_bytes": claude_md.stat().st_size,
     })
@@ -2316,7 +2282,6 @@ async def api_skills():
             "name": info["name"],
             "description": info["description"],
             "enabled": dir_name not in disabled,
-            "path": str(skill_md),
         })
 
     return JSONResponse({"skills": skills, "count": len(skills)})
@@ -2945,41 +2910,47 @@ _BACKUP_FILES = ["localchat.db", "config.json", "guardrail_whitelist.json"]
 @dashboard_app.post("/api/backup")
 async def api_backup_create():
     """Create a backup tarball of key state files + ssl dir."""
+    global _last_backup
+
     if _state_dir is None:
         return _not_initialized()
 
-    backups_dir = _state_dir / "backups"
-    backups_dir.mkdir(parents=True, exist_ok=True)
+    if time.time() - _last_backup < _BACKUP_COOLDOWN:
+        return _error("Backup cooldown — try again later", "RATE_LIMITED", status=429)
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    filename = f"apex-backup-{ts}.tar.gz"
-    backup_path = backups_dir / filename
+    async with _backup_lock:
+        backups_dir = _state_dir / "backups"
+        backups_dir.mkdir(parents=True, exist_ok=True)
 
-    try:
-        with tarfile.open(str(backup_path), "w:gz") as tar:
-            for name in _BACKUP_FILES:
-                fpath = _state_dir / name
-                if fpath.exists():
-                    tar.add(str(fpath), arcname=name)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        filename = f"apex-backup-{ts}.tar.gz"
+        backup_path = backups_dir / filename
 
-            ssl_dir = _state_dir / "ssl"
-            if ssl_dir.exists() and ssl_dir.is_dir():
-                for item in ssl_dir.rglob("*"):
-                    if item.is_file():
-                        arcname = f"ssl/{item.relative_to(ssl_dir)}"
-                        tar.add(str(item), arcname=arcname)
+        try:
+            with tarfile.open(str(backup_path), "w:gz") as tar:
+                for name in _BACKUP_FILES:
+                    fpath = _state_dir / name
+                    if fpath.exists():
+                        tar.add(str(fpath), arcname=name)
 
-        size = backup_path.stat().st_size
-        return JSONResponse({
-            "status": "ok",
-            "id": ts,
-            "filename": filename,
-            "path": str(backup_path),
-            "size_bytes": size,
-        })
-    except (OSError, tarfile.TarError) as e:
-        _log.error(f"Backup creation failed: {e}")
-        return _error("Backup creation failed", "BACKUP_FAILED")
+                ssl_dir = _state_dir / "ssl"
+                if ssl_dir.exists() and ssl_dir.is_dir():
+                    for item in ssl_dir.rglob("*"):
+                        if item.is_file():
+                            arcname = f"ssl/{item.relative_to(ssl_dir)}"
+                            tar.add(str(item), arcname=arcname)
+
+            size = backup_path.stat().st_size
+            _last_backup = time.time()
+            return JSONResponse({
+                "status": "ok",
+                "id": ts,
+                "filename": filename,
+                "size_bytes": size,
+            })
+        except (OSError, tarfile.TarError) as e:
+            _log.error(f"Backup creation failed: {e}")
+            return _error("Backup creation failed", "BACKUP_FAILED")
 
 
 # ---------------------------------------------------------------------------
@@ -3036,14 +3007,16 @@ async def api_backup_download(filename: str):
     if not backup_path.exists():
         return _error(f"Backup not found: {filename}", "BACKUP_NOT_FOUND", 404)
 
+    def _stream_file(path: Path):
+        with open(path, "rb") as f:
+            while chunk := f.read(65536):
+                yield chunk
+
     try:
-        data = backup_path.read_bytes()
-        return Response(
-            content=data,
+        return StreamingResponse(
+            _stream_file(backup_path),
             media_type="application/gzip",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-            },
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
     except OSError as e:
         _log.error(f"Failed to read backup: {e}")
@@ -3086,18 +3059,13 @@ async def api_backup_restore(request: Request):
             for member in tar.getmembers():
                 member_path = Path(member.name)
                 if member_path.is_absolute() or ".." in member_path.parts:
-                    return _error(
-                        f"Unsafe path in archive: {member.name}",
-                        "UNSAFE_ARCHIVE",
-                        400,
-                    )
+                    return _error("Unsafe path in archive", "UNSAFE_ARCHIVE", status=400)
                 if member.issym() or member.islnk():
-                    return _error(
-                        f"Unsafe archive member (symlink/hardlink): {member.name}",
-                        "UNSAFE_ARCHIVE",
-                        status_code=400,
-                    )
-            tar.extractall(path=str(tmp_dir))
+                    return _error("Unsafe archive member", "UNSAFE_ARCHIVE", status=400)
+                dest = (tmp_dir / member.name).resolve()
+                if not str(dest).startswith(str(tmp_dir.resolve())):
+                    return _error("Path escape in archive", "UNSAFE_ARCHIVE", status=400)
+                tar.extract(member, path=str(tmp_dir))
 
         extracted = list(tmp_dir.rglob("*"))
         extracted_names = [p.name for p in extracted if p.is_file()]

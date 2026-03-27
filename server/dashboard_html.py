@@ -2106,19 +2106,19 @@ function renderDbCard(result) {
     el.innerHTML =
         '<div class="stat-row">' +
             '<span class="stat-label">Chats</span>' +
-            '<span class="stat-value">' + formatNumber(d.chats) + '</span>' +
+            '<span class="stat-value">' + formatNumber(d.chat_count) + '</span>' +
         '</div>' +
         '<div class="stat-row">' +
             '<span class="stat-label">Messages</span>' +
-            '<span class="stat-value">' + formatNumber(d.messages) + '</span>' +
+            '<span class="stat-value">' + formatNumber(d.message_count) + '</span>' +
         '</div>' +
         '<div class="stat-row">' +
             '<span class="stat-label">Alerts</span>' +
-            '<span class="stat-value">' + formatNumber(d.alerts) + '</span>' +
+            '<span class="stat-value">' + formatNumber(d.alert_count) + '</span>' +
         '</div>' +
         '<div class="stat-row">' +
             '<span class="stat-label">DB Size</span>' +
-            '<span class="stat-value">' + formatBytes(d.size_bytes) + '</span>' +
+            '<span class="stat-value">' + formatBytes(d.file_size_bytes) + '</span>' +
         '</div>';
 }
 
@@ -2299,7 +2299,7 @@ function renderConfigPage() {
             /* Save button */
             html +=
                 '<div class="config-actions">' +
-                    '<button class="btn btn-primary" onclick="saveConfig(\'' + esc(section) + '\')" id="btn-save-' + esc(section) + '">' +
+                    '<button class="btn btn-primary" data-save-config="' + esc(section) + '" id="btn-save-' + esc(section) + '">' +
                         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
                             '<path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>' +
                             '<polyline points="17 21 17 13 7 13 7 21"/>' +
@@ -2335,7 +2335,7 @@ function renderFormField(section, key, spec, value) {
                 '<label class="toggle">' +
                     '<input type="checkbox" id="' + fieldId + '" ' + checked +
                         ' data-section="' + esc(section) + '" data-key="' + esc(key) + '"' +
-                        ' onchange="markDirty(\'' + esc(section) + '\', \'' + esc(key) + '\')">' +
+                        ' onchange="markDirty(this.dataset.section, this.dataset.key)">' +
                     '<div class="toggle-track"></div>' +
                     '<div class="toggle-knob"></div>' +
                 '</label>' +
@@ -2343,7 +2343,7 @@ function renderFormField(section, key, spec, value) {
             '</div>';
     } else if (spec.choices) {
         html += '<select id="' + fieldId + '" data-section="' + esc(section) + '" data-key="' + esc(key) + '"' +
-                ' onchange="markDirty(\'' + esc(section) + '\', \'' + esc(key) + '\')">';
+                ' onchange="markDirty(this.dataset.section, this.dataset.key)">';
         for (const choice of spec.choices) {
             const selected = (String(value) === String(choice)) ? " selected" : "";
             html += '<option value="' + esc(choice) + '"' + selected + '>' + esc(choice) + '</option>';
@@ -2354,11 +2354,11 @@ function renderFormField(section, key, spec, value) {
                 (spec.min != null ? ' min="' + spec.min + '"' : '') +
                 (spec.max != null ? ' max="' + spec.max + '"' : '') +
                 ' data-section="' + esc(section) + '" data-key="' + esc(key) + '"' +
-                ' onchange="markDirty(\'' + esc(section) + '\', \'' + esc(key) + '\')">';
+                ' onchange="markDirty(this.dataset.section, this.dataset.key)">';
     } else {
         html += '<input type="text" id="' + fieldId + '" value="' + esc(value) + '"' +
                 ' data-section="' + esc(section) + '" data-key="' + esc(key) + '"' +
-                ' oninput="markDirty(\'' + esc(section) + '\', \'' + esc(key) + '\')">';
+                ' oninput="markDirty(this.dataset.section, this.dataset.key)">';
     }
 
     html += '</div>';
@@ -2610,14 +2610,14 @@ function renderTlsClientsTable(result) {
             '<td class="text-' + dotClass + '">' + (days != null ? days : "—") + '</td>' +
             '<td><span class="status-inline"><span class="status-dot ' + dotClass + '"></span>' + statusText + '</span></td>' +
             '<td><div class="btn-row">' +
-                '<button class="btn btn-ghost btn-sm" onclick="downloadP12(\'' + esc(c.cn || c.name) + '\')" title="Download .p12">' +
+                '<button class="btn btn-ghost btn-sm" data-download-p12="' + esc(c.cn || c.name) + '" title="Download .p12">' +
                     '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
                         '<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>' +
                         '<polyline points="7 10 12 15 17 10"/>' +
                         '<line x1="12" y1="15" x2="12" y2="3"/>' +
                     '</svg>' +
                 '</button>' +
-                '<button class="btn btn-ghost btn-sm" onclick="showQR(\'' + esc(c.cn || c.name) + '\')" title="Show QR code">' +
+                '<button class="btn btn-ghost btn-sm" data-show-qr="' + esc(c.cn || c.name) + '" title="Show QR code">' +
                     '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
                         '<rect x="3" y="3" width="7" height="7"/>' +
                         '<rect x="14" y="3" width="7" height="7"/>' +
@@ -2627,7 +2627,7 @@ function renderTlsClientsTable(result) {
                         '<rect x="14" y="20" width="3" height="1"/>' +
                     '</svg>' +
                 '</button>' +
-                '<button class="btn btn-danger btn-sm" onclick="revokeClient(\'' + esc(c.cn || c.name) + '\')" title="Revoke">Revoke</button>' +
+                '<button class="btn btn-danger btn-sm" data-revoke-client="' + esc(c.cn || c.name) + '" title="Revoke">Revoke</button>' +
             '</div></td>' +
         '</tr>';
     }
@@ -2723,8 +2723,8 @@ async function generateClient() {
         let html = '<div style="padding:12px; background:var(--bg); border-radius:var(--radius);">' +
             '<div style="margin-bottom:10px; color:var(--green); font-weight:500;">Certificate generated successfully.</div>' +
             '<div class="btn-row">' +
-                '<button class="btn btn-primary btn-sm" onclick="downloadP12(\'' + esc(cn) + '\')">Download .p12</button>' +
-                '<button class="btn btn-ghost btn-sm" onclick="showQR(\'' + esc(cn) + '\')">Show QR Code</button>' +
+                '<button class="btn btn-primary btn-sm" data-download-p12="' + esc(cn) + '">Download .p12</button>' +
+                '<button class="btn btn-ghost btn-sm" data-show-qr="' + esc(cn) + '">Show QR Code</button>' +
             '</div>' +
         '</div>';
         resultEl.innerHTML = html;
@@ -2831,9 +2831,9 @@ async function loadModels() {
 
     try {
         const [claude, ollama, grok, creds] = await Promise.allSettled([
-            apiFetch("/status/models/claude"),
-            apiFetch("/status/models/ollama"),
-            apiFetch("/status/models/grok"),
+            apiFetch("/models/claude"),
+            apiFetch("/models/ollama"),
+            apiFetch("/models/grok"),
             apiFetch("/credentials"),
         ]);
 
@@ -2863,7 +2863,7 @@ function renderProviderCards(claude, ollama, grok) {
         claudeEl.innerHTML = renderError("Could not reach Claude API");
     } else {
         const d = claude.value;
-        const ok = d.status === "ok" || d.status === "reachable" || d.reachable === true;
+        const ok = d.status === "ok" || d.status === "reachable" || d.status === "configured" || d.reachable === true;
         const dotClass = ok ? "green" : "red";
         const apiKey = d.api_key_configured !== undefined ? d.api_key_configured : (credentialsData.claude || false);
         const keychain = d.keychain_fallback !== undefined ? d.keychain_fallback : null;
@@ -2906,7 +2906,7 @@ function renderProviderCards(claude, ollama, grok) {
         ollamaEl.innerHTML = renderError("Could not reach Ollama");
     } else {
         const d = ollama.value;
-        const ok = d.status === "ok" || d.status === "reachable" || d.reachable === true;
+        const ok = d.status === "ok" || d.status === "reachable" || d.status === "configured" || d.reachable === true;
         const dotClass = ok ? "green" : "red";
         const modelCount = d.model_count != null ? d.model_count : (d.models ? d.models.length : null);
         const loaded = d.loaded_models || d.running || [];
@@ -2946,7 +2946,7 @@ function renderProviderCards(claude, ollama, grok) {
         grokEl.innerHTML = renderError("Could not reach Grok API");
     } else {
         const d = grok.value;
-        const ok = d.status === "ok" || d.status === "reachable" || d.reachable === true;
+        const ok = d.status === "ok" || d.status === "reachable" || d.status === "configured" || d.reachable === true;
         const dotClass = ok ? "green" : "red";
         const apiKey = d.api_key_configured !== undefined ? d.api_key_configured : (credentialsData.grok || false);
 
@@ -3064,9 +3064,10 @@ window.setDefaultModel = setDefaultModel;
 function renderCredentialsTable() {
     var tbody = document.getElementById("credentials-tbody");
     var providers = [
-        { key: "claude", name: "Claude (Anthropic)" },
-        { key: "grok", name: "Grok (xAI)" },
-        { key: "telegram", name: "Telegram Bot" },
+        { key: "anthropic", name: "Claude (Anthropic)" },
+        { key: "xai", name: "Grok (xAI)" },
+        { key: "telegram_bot", name: "Telegram Bot Token" },
+        { key: "telegram_chat", name: "Telegram Chat ID" },
     ];
 
     var html = "";
@@ -3081,7 +3082,7 @@ function renderCredentialsTable() {
             '<td><span class="status-inline"><span class="status-dot ' + dotClass + '"></span>' +
                 '<span class="text-' + (configured ? "green" : "red") + '">' + statusText + '</span>' +
             '</span></td>' +
-            '<td><button class="btn btn-ghost btn-sm" onclick="updateCredential(\'' + esc(p.key) + '\')">Update</button></td>' +
+            '<td><button class="btn btn-ghost btn-sm" data-update-credential="' + esc(p.key) + '">Update</button></td>' +
         '</tr>';
     }
 
@@ -3092,7 +3093,7 @@ function renderCredentialsTable() {
 
 function updateCredential(provider) {
     currentCredentialProvider = provider;
-    var names = { claude: "Claude API Key", grok: "Grok API Key", telegram: "Telegram Bot Token" };
+    var names = { anthropic: "Claude API Key", xai: "Grok API Key", telegram_bot: "Telegram Bot Token", telegram_chat: "Telegram Chat ID" };
     document.getElementById("credential-modal-title").textContent = "Update " + (names[provider] || capitalize(provider));
     document.getElementById("credential-input-label").textContent = names[provider] || "Credential";
     document.getElementById("credential-input-help").textContent = "Enter the new " + (names[provider] || "credential").toLowerCase();
@@ -3117,7 +3118,7 @@ async function saveCredential() {
         await apiFetch("/credentials/" + encodeURIComponent(currentCredentialProvider), {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ value: value }),
+            body: JSON.stringify({ key: value }),
         });
         showToast(capitalize(currentCredentialProvider) + " credential updated", "success");
         closeModal("modal-credential");
@@ -3312,7 +3313,7 @@ function renderWsSummary(result) {
     }
 
     var d = result.value;
-    var path = d.path || d.workspace_path || "Unknown";
+    var path = d.workspace || d.path || d.workspace_path || "Unknown";
     var claudeMdExists = d.claude_md_exists !== false;
     var memoryCount = d.memory_file_count != null ? d.memory_file_count : "—";
     var skillsCount = d.skills_count != null ? d.skills_count : "—";
@@ -3463,7 +3464,7 @@ function renderSkills() {
                 '<span class="skill-card-name">' + esc(name) + '</span>' +
                 '<label class="toggle">' +
                     '<input type="checkbox" ' + (enabled ? "checked" : "") +
-                        ' onchange="toggleSkill(\'' + esc(name) + '\', this.checked)">' +
+                        ' data-skill-dir="' + esc(s.dir || name) + '">' +
                     '<div class="toggle-track"></div>' +
                     '<div class="toggle-knob"></div>' +
                 '</label>' +
@@ -3476,14 +3477,14 @@ function renderSkills() {
     el.innerHTML = html;
 }
 
-async function toggleSkill(name, enabled) {
+async function toggleSkill(dir, enabled) {
     try {
-        await apiFetch("/skills/" + encodeURIComponent(name) + "/enabled", {
+        await apiFetch("/skills/" + encodeURIComponent(dir) + "/enabled", {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ enabled: enabled }),
         });
-        showToast("Skill '" + name + "' " + (enabled ? "enabled" : "disabled"), "success");
+        showToast("Skill '" + dir + "' " + (enabled ? "enabled" : "disabled"), "success");
     } catch (err) {
         showToast("Toggle failed: " + err.message, "error");
         /* Reload to reset toggle state */
@@ -3535,7 +3536,7 @@ function renderWhitelist() {
             '<td>' + esc(expiresStr) +
                 (countdown ? ' <span class="ws-countdown text-dim">(' + countdown + ')</span>' : '') +
             '</td>' +
-            '<td><button class="btn btn-danger btn-sm" onclick="deleteWhitelistEntry(\'' + esc(entryId) + '\')">Delete</button></td>' +
+            '<td><button class="btn btn-danger btn-sm" data-delete-whitelist="' + esc(entryId) + '">Delete</button></td>' +
         '</tr>';
     }
 
@@ -3582,8 +3583,8 @@ function renderSessions() {
             '<td class="mono" title="' + esc(sessionId) + '">' + esc(truncId) + '</td>' +
             '<td class="mono">' + esc(model) + '</td>' +
             '<td><div style="display:flex; gap:6px;">' +
-                '<button class="btn btn-ghost btn-sm" onclick="compactSession(\'' + esc(s.chat_id || s.id || "") + '\')">Compact</button>' +
-                '<button class="btn btn-danger btn-sm" onclick="killSession(\'' + esc(s.chat_id || s.id || "") + '\')">Kill</button>' +
+                '<button class="btn btn-ghost btn-sm" data-compact-session="' + esc(s.chat_id || s.id || "") + '">Compact</button>' +
+                '<button class="btn btn-danger btn-sm" data-kill-session="' + esc(s.chat_id || s.id || "") + '">Kill</button>' +
             '</div></td>' +
         '</tr>';
     }
@@ -3859,11 +3860,11 @@ async function loadDbStats() {
     try {
         var data = await apiFetch("/db/stats");
         var html = "";
-        html += '<div class="stat-row"><span class="stat-label">File Size</span><span class="stat-value">' + formatBytes(data.file_size || data.size) + '</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">File Size</span><span class="stat-value">' + formatBytes(data.db_size_bytes || data.file_size) + '</span></div>';
         if (data.page_count != null) {
             html += '<div class="stat-row"><span class="stat-label">Page Count</span><span class="stat-value">' + formatNumber(data.page_count) + '</span></div>';
         }
-        html += '<div class="stat-row"><span class="stat-label">WAL Size</span><span class="stat-value">' + formatBytes(data.wal_size) + '</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">WAL Size</span><span class="stat-value">' + formatBytes(data.wal_size_bytes || data.wal_size) + '</span></div>';
 
         var tables = data.tables || data.row_counts || {};
         var keys = Object.keys(tables);
@@ -3923,8 +3924,8 @@ async function loadUploads() {
     try {
         var data = await apiFetch("/uploads");
         var files = data.files || [];
-        var totalSize = data.total_size || 0;
-        var count = data.count || files.length;
+        var totalSize = files.reduce(function(s, f) { return s + (f.size_bytes || f.size || 0); }, 0);
+        var count = data.total || files.length;
 
         var html = '';
         html += '<div class="stat-row"><span class="stat-label">File Count</span><span class="stat-value">' + formatNumber(count) + '</span></div>';
@@ -3935,7 +3936,7 @@ async function loadUploads() {
             for (var i = 0; i < files.length; i++) {
                 var f = files[i];
                 var fname = typeof f === "string" ? f : (f.name || f.filename || "");
-                var fsize = typeof f === "object" ? (f.size || 0) : 0;
+                var fsize = typeof f === "object" ? (f.size_bytes || f.size || 0) : 0;
                 html += '<div class="upload-file-item">';
                 html += '<span style="color:var(--dim); font-size:12px; font-family:monospace;">' + esc(fname) + '</span>';
                 if (fsize) html += '<span style="font-size:12px; color:var(--dim);">' + formatBytes(fsize) + '</span>';
@@ -3995,7 +3996,7 @@ async function loadBackups() {
         for (var i = 0; i < backups.length; i++) {
             var b = backups[i];
             var name = b.filename || b.name || "";
-            var size = b.size || 0;
+            var size = b.size_bytes || b.size || 0;
             var date = b.date || b.created || b.modified || "";
 
             html += '<tr>';
@@ -4003,8 +4004,8 @@ async function loadBackups() {
             html += '<td>' + formatBytes(size) + '</td>';
             html += '<td style="color:var(--dim); font-size:12px;">' + esc(date) + '</td>';
             html += '<td style="text-align:right;">';
-            html += '<button class="btn btn-ghost" onclick="downloadBackup(\'' + esc(name).replace(/'/g, "\\\\'") + '\')" style="font-size:11px; padding:4px 10px; margin-right:4px;">Download</button>';
-            html += '<button class="btn btn-ghost" onclick="restoreBackup(\'' + esc(name).replace(/'/g, "\\\\'") + '\')" style="font-size:11px; padding:4px 10px; color:var(--yellow);">Restore</button>';
+            html += '<button class="btn btn-ghost" data-download-backup="' + esc(name) + '" style="font-size:11px; padding:4px 10px; margin-right:4px;">Download</button>';
+            html += '<button class="btn btn-ghost" data-restore-backup="' + esc(name) + '" style="font-size:11px; padding:4px 10px; color:var(--yellow);">Restore</button>';
             html += '</td>';
             html += '</tr>';
         }
@@ -4040,13 +4041,44 @@ async function restoreBackup(filename) {
     if (!confirm("This will overwrite your database, config, and SSL certs. Are you sure?")) return;
     if (!confirm("FINAL WARNING: Restoring '" + filename + "' is irreversible. Type OK to proceed.")) return;
     try {
-        await apiFetch("/backups/" + encodeURIComponent(filename) + "/restore", { method: "POST" });
+        await apiFetch("/backup/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename: filename }) });
         showToast("Restore complete. Server may restart.", "success");
     } catch (err) {
         showToast("Restore failed: " + err.message, "error");
     }
 }
 window.restoreBackup = restoreBackup;
+
+/* --- Delegated event handlers (XSS-safe: no dynamic data in onclick) --- */
+document.addEventListener("change", function(e) {
+    if (e.target.matches("[data-skill-dir]")) {
+        toggleSkill(e.target.dataset.skillDir, e.target.checked);
+    }
+});
+document.addEventListener("click", function(e) {
+    var btn;
+    if ((btn = e.target.closest("[data-delete-whitelist]"))) {
+        deleteWhitelistEntry(btn.dataset.deleteWhitelist);
+    } else if ((btn = e.target.closest("[data-compact-session]"))) {
+        compactSession(btn.dataset.compactSession);
+    } else if ((btn = e.target.closest("[data-kill-session]"))) {
+        killSession(btn.dataset.killSession);
+    } else if ((btn = e.target.closest("[data-download-backup]"))) {
+        downloadBackup(btn.dataset.downloadBackup);
+    } else if ((btn = e.target.closest("[data-restore-backup]"))) {
+        restoreBackup(btn.dataset.restoreBackup);
+    } else if ((btn = e.target.closest("[data-download-p12]"))) {
+        downloadP12(btn.dataset.downloadP12);
+    } else if ((btn = e.target.closest("[data-show-qr]"))) {
+        showQR(btn.dataset.showQr);
+    } else if ((btn = e.target.closest("[data-revoke-client]"))) {
+        revokeClient(btn.dataset.revokeClient);
+    } else if ((btn = e.target.closest("[data-update-credential]"))) {
+        updateCredential(btn.dataset.updateCredential);
+    } else if ((btn = e.target.closest("[data-save-config]"))) {
+        saveConfig(btn.dataset.saveConfig);
+    }
+});
 
 /* =====================================================================
    Initialization

@@ -6,6 +6,7 @@ export LOCALCHAT_WORKSPACE="/Users/dana/.openclaw/workspace"
 export LOCALCHAT_MODEL="claude-opus-4-6"
 export LOCALCHAT_PERMISSION_MODE="bypassPermissions"
 export LOCALCHAT_DEBUG=1
+export LOCALCHAT_ENABLE_WHISPER=1
 export LOCALCHAT_ALERT_TOKEN="a1zWUJkPtoWXWccbrPAaF37280DWhJrly1ocirDQfwQ"
 
 # Load API keys from .env

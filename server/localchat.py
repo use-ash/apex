@@ -498,34 +498,60 @@ def _extract_recall_terms(raw: str) -> str:
 
 
 def _run_recall(args: str) -> str:
-    """Run transcript search and return formatted results."""
+    """Run hybrid search: keyword (fast, exact) + semantic (Gemini embeddings)."""
     if not args:
         return "Usage: /recall <search query>"
+    t0 = _time.monotonic()
+    parts: list[str] = []
+
+    # 1. Keyword search (existing, fast, good for exact phrases)
     query = _extract_recall_terms(args)
     script = WORKSPACE / "skills" / "recall" / "search_transcripts.py"
-    if not script.exists():
-        return "Recall skill not found."
-    log(f"Recall search terms: {query!r}")
-    t0 = _time.monotonic()
+    keyword_output = ""
+    if script.exists():
+        log(f"Recall keyword search: {query!r}")
+        try:
+            result = subprocess.run(
+                ["/opt/homebrew/bin/python3", str(script), query, "--top", "5", "--context", "800"],
+                capture_output=True, text=True, timeout=15, cwd=str(WORKSPACE),
+            )
+            if result.returncode == 0 and result.stdout.strip() and "No results" not in result.stdout:
+                keyword_output = result.stdout.strip()
+        except Exception:
+            pass
+
+    # 2. Semantic search (Gemini embeddings, searches memory + transcripts)
+    semantic_output = ""
     try:
-        result = subprocess.run(
-            ["/opt/homebrew/bin/python3", str(script), query, "--top", "8", "--context", "800"],
-            capture_output=True, text=True, timeout=15, cwd=str(WORKSPACE),
-        )
-        elapsed = _time.monotonic() - t0
-        output = result.stdout.strip()
-        if result.returncode != 0:
-            _log_skill_invocation("recall", success=False, duration_sec=elapsed, error=result.stderr.strip()[:200], context=query[:80], source="localchat")
-            return f"Recall error: {result.stderr.strip()}"
-        success = bool(output) and "No results" not in output
-        _log_skill_invocation("recall", success=success, duration_sec=elapsed, context=query[:80], source="localchat")
-        return output or f"No results found for: {args}"
-    except subprocess.TimeoutExpired:
-        _log_skill_invocation("recall", success=False, duration_sec=15.0, error="timeout", context=query[:80], source="localchat")
-        return "Recall timed out."
+        sys.path.insert(0, str(WORKSPACE / "skills" / "embedding"))
+        from memory_search import search as semantic_search
+        log(f"Recall semantic search: {args[:60]!r}")
+        results = semantic_search(args, top_k=5)
+        if results:
+            lines = []
+            for i, r in enumerate(results, 1):
+                source_tag = r.get("source", "?")
+                score = r.get("score", 0)
+                fname = Path(r["file"]).name
+                preview = r.get("content", "")[:600]
+                lines.append(f"[{i}] Score: {score:.3f} | {source_tag} | {fname}\n{'='*60}\n{preview}\n")
+            semantic_output = "\n".join(lines)
     except Exception as e:
-        _log_skill_invocation("recall", success=False, duration_sec=_time.monotonic() - t0, error=str(e)[:200], context=query[:80], source="localchat")
-        return f"Recall error: {e}"
+        log(f"Recall semantic search error: {e}")
+
+    # 3. Merge results
+    elapsed = _time.monotonic() - t0
+    if semantic_output:
+        parts.append(f"## Semantic Search Results (Gemini Embedding)\n\n{semantic_output}")
+    if keyword_output:
+        parts.append(f"## Keyword Search Results\n\n{keyword_output}")
+
+    if parts:
+        _log_skill_invocation("recall", success=True, duration_sec=elapsed, context=query[:80], source="localchat")
+        return "\n\n".join(parts)
+
+    _log_skill_invocation("recall", success=False, duration_sec=elapsed, context=query[:80], source="localchat")
+    return f"No results found for: {args}"
 
 
 def _run_improve(args: str) -> str:
@@ -861,44 +887,54 @@ WHISPER_INTERVAL = 300  # seconds between whisper injections (5 min)
 _whisper_last: dict[str, float] = {}  # chat_id -> last whisper timestamp
 
 def _get_whisper_text(chat_id: str) -> str:
-    """Run subconscious whisper and return text to prepend, or empty string."""
+    """Inject relevant memories based on recent conversation topic via embeddings."""
     now = time.time()
     last = _whisper_last.get(chat_id, 0)
     if last and (now - last) < WHISPER_INTERVAL:
         return ""
     try:
-        sys.path.insert(0, str(WORKSPACE / "scripts"))
-        from subconscious.whisper import _filtered_items, _hash_items, _render_full, _render_diff
-        from subconscious.state import get_session as _sc_get_session, update_session as _sc_update_session
-        from subconscious.config import ensure_dirs
+        # Get last user message as search query
+        recent = _get_messages(chat_id, days=1)
+        user_msgs = [m for m in recent if m["role"] == "user"]
+        if not user_msgs:
+            return ""
+        query = (user_msgs[-1].get("content") or "")[:500]
 
-        ensure_dirs()
-        sc_session_id = f"localchat-{chat_id}"
-        current_items = _filtered_items()
-        current_hash = _hash_items(current_items)
+        # Skip commands and very short messages
+        if not query or query.startswith("/") or len(query.strip()) < 10:
+            _whisper_last[chat_id] = now
+            return ""
 
-        session = _sc_get_session(sc_session_id) or {}
-        previous_hash = str(session.get("last_whisper_hash", "") or "")
-        previous_items = session.get("last_whisper_items")
-        previous_items = previous_items if isinstance(previous_items, list) else None
+        # Strip system-reminder tags from query
+        if "<system-reminder>" in query:
+            import re
+            query = re.sub(r"<system-reminder>.*?</system-reminder>", "", query, flags=re.DOTALL).strip()
+            if len(query) < 10:
+                _whisper_last[chat_id] = now
+                return ""
 
-        lines: list[str] = []
-        if not previous_hash or previous_items is None:
-            lines = _render_full(current_items)
-        elif previous_hash != current_hash:
-            lines = _render_diff(previous_items, current_items)
+        # Search for relevant memories
+        sys.path.insert(0, str(WORKSPACE / "skills" / "embedding"))
+        from memory_search import search as semantic_search
+        results = semantic_search(query, top_k=3, sources=["memory"])
 
-        _sc_update_session(
-            sc_session_id,
-            last_prompt_at=datetime.now(timezone.utc).isoformat(),
-            last_whisper_hash=current_hash,
-            last_whisper_items=current_items,
-        )
+        # Filter by score threshold
+        relevant = [r for r in results if r.get("score", 0) >= 0.65]
+        if not relevant:
+            _whisper_last[chat_id] = now
+            return ""
+
+        # Format as whisper
+        lines = ["<subconscious_whisper>"]
+        lines.append("Relevant memories for this conversation:")
+        for r in relevant:
+            name = Path(r["file"]).stem
+            lines.append(f"- [{name}] (score={r['score']:.2f}) {r.get('content', '')[:200]}")
+        lines.append("</subconscious_whisper>")
+
         _whisper_last[chat_id] = now
-        if lines:
-            log(f"Whisper injected for chat={chat_id} ({len(lines)} lines)")
-            return "\n".join(lines) + "\n\n"
-        return ""
+        log(f"Whisper injected for chat={chat_id} ({len(relevant)} memories)")
+        return "\n".join(lines) + "\n\n"
     except Exception as e:
         log(f"Whisper error: {e}")
         return ""
@@ -1807,6 +1843,14 @@ async def lifespan(app: FastAPI):
             for evt in _recovery_pending.values():
                 evt.set()
             _recovery_pending.clear()
+        # Reindex embeddings (incremental — only changed files)
+        try:
+            sys.path.insert(0, str(WORKSPACE / "skills" / "embedding"))
+            from memory_search import index_all
+            stats = await asyncio.to_thread(index_all, force=False)
+            log(f"embedding reindex: memory={stats.get('memory', {})} transcripts={stats.get('transcripts', {})}")
+        except Exception as e:
+            log(f"embedding reindex failed (non-fatal): {e}")
     asyncio.create_task(_startup_recovery())
     try:
         yield
@@ -1943,7 +1987,28 @@ async def api_context(chat_id: str, request: Request):
 
 @app.get("/health")
 async def health():
-    return JSONResponse({"ok": True, "clients": len(_clients), "chats": len(_get_chats())})
+    return JSONResponse({
+        "ok": True, "clients": len(_clients), "chats": len(_get_chats()),
+        "model": MODEL, "whisper": ENABLE_SUBCONSCIOUS_WHISPER,
+    })
+
+
+@app.get("/api/embedding/status")
+async def api_embedding_status():
+    """Return embedding index status."""
+    try:
+        idx_dir = WORKSPACE / "state" / "embeddings"
+        result = {}
+        for name, meta_file in [("memory", "memory_meta.json"), ("transcripts", "transcript_meta.json")]:
+            meta_path = idx_dir / meta_file
+            if meta_path.exists():
+                meta = json.loads(meta_path.read_text())
+                result[name] = {"files": len(meta)}
+            else:
+                result[name] = {"files": 0}
+        return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.post("/api/alerts")
@@ -2745,6 +2810,12 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         if _recall_context:
             prompt = f"{_recall_context}{prompt}"
 
+        # Inject whisper for Ollama/Grok (Claude gets it via _build_turn_payload)
+        if ENABLE_SUBCONSCIOUS_WHISPER and backend in ("ollama", "xai"):
+            whisper = _get_whisper_text(chat_id)
+            if whisper:
+                prompt = f"{whisper}{prompt}"
+
         display_prompt = prompt
         make_query_input = None
         if backend in ("ollama", "xai"):
@@ -3161,6 +3232,23 @@ border-radius:6px;border:none;cursor:pointer}
 font-size:9px;font-weight:700;min-width:16px;height:16px;border-radius:8px;
 display:flex;align-items:center;justify-content:center;padding:0 4px}
 .alert-badge .count:empty{display:none}
+.settings-panel{position:fixed;top:40px;right:8px;width:340px;max-height:80vh;
+background:#1a1a2e;border:1px solid #333;border-radius:12px;z-index:9997;
+overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.5);display:none}
+.settings-panel.show{display:block}
+.settings-header{display:flex;align-items:center;justify-content:space-between;
+padding:10px 14px;border-bottom:1px solid #333;font-size:13px;font-weight:600;color:#ccc}
+.settings-header button{background:transparent;border:none;color:#888;font-size:18px;cursor:pointer}
+.settings-header button:hover{color:#fff}
+.settings-body{padding:8px 14px}
+.settings-section{margin-bottom:14px}
+.settings-label{font-size:12px;font-weight:600;color:var(--accent);display:block;margin-bottom:4px}
+.settings-hint{font-size:11px;color:#666;margin-bottom:4px}
+.settings-value{font-size:12px;color:#aaa}
+.settings-section select{width:100%;padding:6px 8px;border-radius:6px;border:1px solid #444;
+background:#111;color:#ddd;font-size:13px;outline:none}
+.settings-section select:disabled{opacity:0.5}
+.settings-section select:focus{border-color:var(--accent)}
 .alerts-panel{position:fixed;top:40px;right:8px;width:380px;max-height:70vh;
 background:#1a1a2e;border:1px solid #333;border-radius:12px;z-index:9998;
 overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.5);display:none}
@@ -3230,6 +3318,7 @@ font-weight:600;font-size:13px;cursor:pointer}
   <span class="status ok" id="statusDot"></span>
   <span class="mode-badge {{MODE_CLASS}}" id="modeBadge">{{MODE_LABEL}}</span>
   <span class="alert-badge" id="alertBadge" onclick="toggleAlertsPanel()" title="Alerts">&#128276;<span class="count" id="alertCount"></span></span>
+  <button class="btn-icon" id="settingsBtn" title="Settings" onclick="toggleSettings()">&#9881;</button>
   <button class="btn-icon" id="refreshBtn" title="Refresh" onclick="window.location.reload()">&#8635;</button>
 </div>
 <div class="alerts-panel" id="alertsPanel">
@@ -3238,6 +3327,39 @@ font-weight:600;font-size:13px;cursor:pointer}
     <button onclick="clearAllAlerts()">Clear All</button>
   </div>
   <div id="alertsList"></div>
+</div>
+
+<div class="settings-panel" id="settingsPanel">
+  <div class="settings-header">
+    <span>Settings</span>
+    <button onclick="toggleSettings()">&times;</button>
+  </div>
+  <div class="settings-body">
+    <div class="settings-section">
+      <label class="settings-label">Chat Model</label>
+      <div class="settings-hint" id="chatModelHint">Select a chat first</div>
+      <select id="chatModelSelect" disabled onchange="changeChatModel(this.value)">
+        <option value="">Loading...</option>
+      </select>
+    </div>
+    <div class="settings-section">
+      <label class="settings-label">Server Default</label>
+      <div class="settings-value" id="serverModelDisplay">--</div>
+    </div>
+    <div class="settings-section">
+      <label class="settings-label">Local Models (Ollama)</label>
+      <div class="settings-value" id="ollamaModelsList">--</div>
+    </div>
+    <div class="settings-section">
+      <label class="settings-label">Memory Whisper</label>
+      <div class="settings-hint">Injects relevant memories into each turn</div>
+      <div class="settings-value" id="whisperStatus">--</div>
+    </div>
+    <div class="settings-section">
+      <label class="settings-label">Embedding Index</label>
+      <div class="settings-value" id="embeddingStatus">--</div>
+    </div>
+  </div>
 </div>
 
 <div class="usage-bar" id="usageBar">
@@ -4029,6 +4151,121 @@ function toggleAlertsPanel() {
   const panel = document.getElementById('alertsPanel');
   const showing = panel.classList.toggle('show');
   if (showing) loadAlerts();
+  // Close settings if open
+  document.getElementById('settingsPanel').classList.remove('show');
+}
+
+// --- Settings Panel ---
+let _settingsModels = [];  // cached model list
+
+function toggleSettings() {
+  const panel = document.getElementById('settingsPanel');
+  const showing = panel.classList.toggle('show');
+  if (showing) {
+    loadSettingsData();
+    // Close alerts if open
+    document.getElementById('alertsPanel').classList.remove('show');
+  }
+}
+
+async function loadSettingsData() {
+  // Server default model
+  try {
+    const r = await fetch('/api/health', {credentials: 'same-origin'});
+    if (r.ok) {
+      const d = await r.json();
+      document.getElementById('serverModelDisplay').textContent = d.model || '--';
+      document.getElementById('whisperStatus').textContent = d.whisper ? 'Enabled' : 'Disabled';
+    }
+  } catch(e) {}
+
+  // Local Ollama models
+  try {
+    const r = await fetch('/api/models/local', {credentials: 'same-origin'});
+    if (r.ok) {
+      const models = await r.json();
+      const localNames = models.map(m => m.id + ' (' + m.sizeGb + 'GB)');
+      document.getElementById('ollamaModelsList').textContent = localNames.join(', ') || 'None found';
+      _settingsModels = models;
+    }
+  } catch(e) {}
+
+  // Embedding status
+  try {
+    const r = await fetch('/api/embedding/status', {credentials: 'same-origin'});
+    if (r.ok) {
+      const d = await r.json();
+      const parts = [];
+      if (d.memory) parts.push('Memory: ' + d.memory.files + ' files');
+      if (d.transcripts) parts.push('Transcripts: ' + d.transcripts.files + ' files');
+      document.getElementById('embeddingStatus').textContent = parts.join(' | ') || '--';
+    }
+  } catch(e) { document.getElementById('embeddingStatus').textContent = 'Not available'; }
+
+  // Chat model selector
+  updateChatModelSelect();
+}
+
+function updateChatModelSelect() {
+  const sel = document.getElementById('chatModelSelect');
+  const hint = document.getElementById('chatModelHint');
+  if (!currentChat) {
+    sel.disabled = true;
+    hint.textContent = 'Select a chat first';
+    sel.innerHTML = '<option value="">--</option>';
+    return;
+  }
+  sel.disabled = false;
+  // Get current chat's model from sidebar data
+  const item = document.querySelector('.chat-item[data-id="' + currentChat + '"]');
+  const chatTitle = item?.dataset?.title || 'this chat';
+  hint.textContent = 'Model for: ' + chatTitle;
+
+  // Build option list: cloud models + local models
+  const cloudModels = [
+    {id: 'claude-opus-4-6', name: 'Claude Opus 4.6'},
+    {id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6'},
+    {id: 'grok-4', name: 'Grok 4'},
+    {id: 'grok-4-fast', name: 'Grok 4 Fast'},
+  ];
+  sel.innerHTML = '';
+  cloudModels.forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = m.name;
+    sel.appendChild(opt);
+  });
+  // Add separator + local models
+  if (_settingsModels.length) {
+    const sep = document.createElement('option');
+    sep.disabled = true;
+    sep.textContent = '── Local Models ──';
+    sel.appendChild(sep);
+    _settingsModels.forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.displayName || m.id;
+      sel.appendChild(opt);
+    });
+  }
+
+  // Fetch current chat's model from context endpoint
+  fetch('/api/chats/' + currentChat + '/context', {credentials: 'same-origin'})
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      if (d && d.model) sel.value = d.model;
+    })
+    .catch(() => {});
+}
+
+function changeChatModel(model) {
+  if (!currentChat || !model) return;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({action: 'set_chat_model', chat_id: currentChat, model: model}));
+    dbg('set_chat_model:', currentChat, model);
+    // Update hint
+    document.getElementById('chatModelHint').textContent = 'Switched to: ' + model;
+  }
 }
 function panelAlertAction(action, alertId) {
   fetch('/api/alerts/' + alertId + '/' + action, {method:'POST'}).then(r => {
