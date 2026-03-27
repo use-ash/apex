@@ -150,6 +150,12 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
             "readonly": True,
             "description": "Whether XAI_API_KEY is set",
         },
+        "openai_configured": {
+            "type": "bool",
+            "default": False,
+            "readonly": True,
+            "description": "Whether OPENAI_API_KEY is set",
+        },
     },
 }
 
@@ -361,4 +367,6 @@ class Config:
             return bool(os.environ.get("APEX_ALERT_TOKEN") or os.environ.get("LOCALCHAT_ALERT_TOKEN"))
         if key == "xai_configured":
             return bool(os.environ.get("XAI_API_KEY"))
+        if key == "openai_configured":
+            return bool(os.environ.get("OPENAI_API_KEY"))
         return False

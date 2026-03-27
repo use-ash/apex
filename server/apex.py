@@ -133,6 +133,9 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "grok-4-fast": 2_000_000,
     "mlx:mlx-community/Qwen3.5-35B-A3B-4bit": 128_000,
     "codex:gpt-5.4": 1_000_000,
+    "codex:gpt-4.1": 1_000_000,
+    "codex:gpt-4.1-mini": 1_000_000,
+    "codex:gpt-4.1-nano": 1_000_000,
     "codex:o3": 200_000,
     "codex:o4-mini": 200_000,
 }
@@ -427,7 +430,8 @@ def _get_workspace_context(chat_id: str) -> str:
         summary = _compaction_summaries.pop(chat_id, None)
         if summary:
             log(f"Injecting recovery context for chat={chat_id}")
-            recent = _get_recent_exchange_context(chat_id, pairs=2)
+            # Recovery summary is sufficient context — the SDK session already has
+            # conversation history, so skip recent exchanges to avoid duplicates
             ctx = (
                 f"<system-reminder>\n# Session Recovery\n"
                 f"You are resuming a conversation after a session reset.\n\n"
@@ -435,8 +439,6 @@ def _get_workspace_context(chat_id: str) -> str:
                 f"IMPORTANT: Pick up where you left off. If a task was in-progress, continue it. "
                 f"If questions were pending, address them. Do not start over or re-introduce yourself.\n</system-reminder>"
             )
-            if recent:
-                ctx += "\n\n" + recent
             return ctx + "\n\n"
         return ""
     parts: list[str] = []
@@ -479,13 +481,23 @@ def _get_workspace_context(chat_id: str) -> str:
         if skill_entries:
             catalog = "\n".join(skill_entries)
             parts.append(f"<system-reminder>\n# Available Skills\nYou can use these skills. For /recall, /codex, /grok the server handles dispatch automatically. For thinking skills, follow the instructions below.\n\n{catalog[:6000]}\n</system-reminder>")
-    # Inject recent conversation exchanges for continuity
-    recent = _get_recent_exchange_context(chat_id, pairs=2)
-    if recent:
-        parts.append(recent)
+    # Inject recent conversation exchanges for continuity — but ONLY for fresh
+    # sessions. If we're resuming an existing SDK session, it already has the
+    # full conversation history; injecting recent exchanges creates duplicates
+    # that confuse Claude into answering the previous question instead of the
+    # current one.
+    chat = _get_chat(chat_id)
+    has_existing_session = bool(chat and chat.get("claude_session_id"))
+    if not has_existing_session:
+        recent = _get_recent_exchange_context(chat_id, pairs=2)
+        if recent:
+            parts.append(recent)
     if parts:
         _session_context_sent.add(chat_id)
-        log(f"Workspace context injected for chat={chat_id} (CLAUDE.md + MEMORY.md + skills + recent exchanges)")
+        ctx_parts = "CLAUDE.md + MEMORY.md + skills"
+        if not has_existing_session:
+            ctx_parts += " + recent exchanges"
+        log(f"Workspace context injected for chat={chat_id} ({ctx_parts})")
         return "\n\n".join(parts) + "\n\n"
     return ""
 
@@ -938,19 +950,22 @@ async def _handle_skill(websocket, chat_id: str, skill: str, args: str, display_
 WHISPER_INTERVAL = 300  # seconds between whisper injections (5 min)
 _whisper_last: dict[str, float] = {}  # chat_id -> last whisper timestamp
 
-def _get_whisper_text(chat_id: str) -> str:
-    """Inject relevant memories based on recent conversation topic via embeddings."""
+def _get_whisper_text(chat_id: str, current_prompt: str = "") -> str:
+    """Inject relevant memories based on current conversation topic via embeddings."""
     now = time.time()
     last = _whisper_last.get(chat_id, 0)
     if last and (now - last) < WHISPER_INTERVAL:
         return ""
     try:
-        # Get last user message as search query
-        recent = _get_messages(chat_id, days=1)
-        user_msgs = [m for m in recent if m["role"] == "user"]
-        if not user_msgs:
-            return ""
-        query = (user_msgs[-1].get("content") or "")[:500]
+        # Use current prompt as search query (not the previous one from DB)
+        query = (current_prompt or "")[:500]
+        if not query:
+            # Fallback to last saved message only if no current prompt
+            recent = _get_messages(chat_id, days=1)
+            user_msgs = [m for m in recent if m["role"] == "user"]
+            if not user_msgs:
+                return ""
+            query = (user_msgs[-1].get("content") or "")[:500]
 
         # Skip commands and very short messages
         if not query or query.startswith("/") or len(query.strip()) < 10:
@@ -1194,7 +1209,7 @@ def _build_turn_payload(chat_id: str, prompt: str, attachments: list[dict]) -> t
         if item["type"] == "image"
     ]
     workspace_ctx = _get_workspace_context(chat_id)
-    whisper = _get_whisper_text(chat_id) if ENABLE_SUBCONSCIOUS_WHISPER else ""
+    whisper = _get_whisper_text(chat_id, current_prompt=query_prompt) if ENABLE_SUBCONSCIOUS_WHISPER else ""
     prefix = f"{workspace_ctx}{whisper}".strip()
     final_prompt = query_prompt or ("What do you see?" if image_blocks else "")
     if prefix:
@@ -1898,12 +1913,20 @@ async def lifespan(app: FastAPI):
             for evt in _recovery_pending.values():
                 evt.set()
             _recovery_pending.clear()
-        # Reindex embeddings (incremental — only changed files)
+        # Export Apex transcripts to .jsonl for unified search
         try:
             embed_path = str(WORKSPACE / "skills" / "embedding")
             if embed_path not in sys.path:
                 sys.path.insert(0, embed_path)
             import importlib
+            export_mod = importlib.import_module("apex_export")
+            importlib.reload(export_mod)
+            export_stats = await asyncio.to_thread(export_mod.export_apex_transcripts, since_hours=72)
+            log(f"apex transcript export: {export_stats}")
+        except Exception as e:
+            log(f"apex transcript export failed (non-fatal): {e}")
+        # Reindex embeddings (incremental — only changed files)
+        try:
             mod = importlib.import_module("memory_search")
             importlib.reload(mod)
             stats = await asyncio.to_thread(mod.index_all, force=False)
@@ -2282,6 +2305,7 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
     # Spawn codex CLI
     proc = await asyncio.create_subprocess_exec(
         CODEX_CLI, "exec", "--json", "--ephemeral",
+        "--skip-git-repo-check",
         "-m", cli_model, "-s", "read-only", "-C", str(WORKSPACE), "-",
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
@@ -2410,7 +2434,12 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
         content = m["content"]
         if "<system-reminder>" in content:
             continue
-        messages.append({"role": m["role"], "content": content})
+        role = m["role"]
+        # Only include user/assistant messages — skip tool results from prior turns
+        # (OpenAI requires tool_call_id on tool messages which we don't store)
+        if role not in ("user", "assistant"):
+            continue
+        messages.append({"role": role, "content": content})
 
     # Build user message — inject images in Ollama format if present
     user_msg: dict = {"role": "user", "content": prompt}
@@ -2443,6 +2472,18 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 workspace=str(WORKSPACE),
                 api_key=XAI_API_KEY,
                 api_url="https://api.x.ai/v1",
+            )
+        elif backend == "codex":
+            # Strip "codex:" prefix — OpenAI API uses model names directly
+            codex_model = effective_model[6:]
+            result = await run_tool_loop(
+                ollama_url=OLLAMA_BASE_URL,
+                model=codex_model,
+                messages=messages,
+                emit_event=emit,
+                workspace=str(WORKSPACE),
+                api_key=OPENAI_API_KEY,
+                api_url="https://api.openai.com/v1",
             )
         elif backend == "mlx":
             # Strip "mlx:" prefix — MLX server uses HF model IDs
@@ -2496,28 +2537,37 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 chunk = json.loads(line.decode())
                 if chunk.get("done"):
                     break
-                content = chunk.get("message", {}).get("content", "")
+                msg = chunk.get("message", {})
+                thinking = msg.get("thinking", "")
+                content = msg.get("content", "")
+                if thinking:
+                    chunk_queue.put_nowait(("thinking", thinking))
                 if content:
-                    chunk_queue.put_nowait(content)
+                    chunk_queue.put_nowait(("text", content))
         except Exception as e:
-            chunk_queue.put_nowait(f"__ERROR__:{e}")
+            chunk_queue.put_nowait(("error", str(e)))
         finally:
             chunk_queue.put_nowait(None)
 
     asyncio.get_event_loop().run_in_executor(None, _stream_ollama)
-    result_text, is_error, error_msg = "", False, ""
+    result_text, thinking_text, is_error, error_msg = "", "", False, ""
     while True:
         chunk = await chunk_queue.get()
         if chunk is None:
             break
-        if chunk.startswith("__ERROR__:"):
-            error_msg = chunk[10:]
+        chunk_type, chunk_data = chunk
+        if chunk_type == "error":
+            error_msg = chunk_data
             is_error = True
             log(f"ollama error: {error_msg}")
             await _send_stream_event(chat_id, {"type": "error", "message": f"Ollama: {error_msg}"})
             break
-        result_text += chunk
-        await _send_stream_event(chat_id, {"type": "text", "text": chunk})
+        elif chunk_type == "thinking":
+            thinking_text += chunk_data
+            await _send_stream_event(chat_id, {"type": "thinking", "text": chunk_data})
+        elif chunk_type == "text":
+            result_text += chunk_data
+            await _send_stream_event(chat_id, {"type": "text", "text": chunk_data})
 
     _est = _estimate_tokens(chat_id) + len(result_text) // 4
     _cw = MODEL_CONTEXT_WINDOWS.get(effective_model, MODEL_CONTEXT_DEFAULT)
@@ -2529,7 +2579,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
     })
     return {"text": result_text, "is_error": is_error, "error": error_msg or None,
             "cost_usd": 0, "tokens_in": 0, "tokens_out": 0,
-            "session_id": None, "thinking": "", "tool_events": "[]"}
+            "session_id": None, "thinking": thinking_text, "tool_events": "[]"}
 
 
 # --- Usage meter (replicates terminal statusline) -------------------------
@@ -3051,15 +3101,15 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         if _recall_context:
             prompt = f"{_recall_context}{prompt}"
 
-        # Inject whisper for Ollama/Grok (Claude gets it via _build_turn_payload)
-        if ENABLE_SUBCONSCIOUS_WHISPER and backend in ("ollama", "xai", "mlx"):
-            whisper = _get_whisper_text(chat_id)
+        # Inject whisper for Ollama/Grok/Codex (Claude gets it via _build_turn_payload)
+        if ENABLE_SUBCONSCIOUS_WHISPER and backend in ("ollama", "xai", "mlx", "codex"):
+            whisper = _get_whisper_text(chat_id, current_prompt=prompt)
             if whisper:
                 prompt = f"{whisper}{prompt}"
 
         display_prompt = prompt
         make_query_input = None
-        if backend in ("ollama", "xai", "mlx"):
+        if backend in ("ollama", "xai", "mlx", "codex"):
             # Local/xAI models — build display prompt with attachment labels
             display_prompt = user_visible_prompt if _recall_context else prompt
             if attachments:
@@ -3106,8 +3156,8 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
 
         result: dict | None = None
 
-        # --- Local model / xAI path (Ollama or xAI API) ---
-        if backend in ("ollama", "xai", "mlx"):
+        # --- Local model / xAI / Codex path ---
+        if backend in ("ollama", "xai", "mlx", "codex"):
             try:
                 result = await _run_ollama_chat(chat_id, prompt, model=chat_model, attachments=attachments)
             except Exception as ollama_err:
@@ -4473,6 +4523,10 @@ function updateChatModelSelect() {
     {id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6'},
     {id: 'grok-4', name: 'Grok 4'},
     {id: 'grok-4-fast', name: 'Grok 4 Fast'},
+    {id: 'codex:gpt-4.1', name: 'GPT-4.1'},
+    {id: 'codex:gpt-4.1-mini', name: 'GPT-4.1 Mini'},
+    {id: 'codex:gpt-5.4', name: 'GPT-5.4'},
+    {id: 'codex:o4-mini', name: 'o4-mini'},
   ];
   sel.innerHTML = '';
   cloudModels.forEach(m => {

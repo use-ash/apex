@@ -486,6 +486,19 @@ async def api_status_models():
             "detail": "XAI_API_KEY not found in environment",
         }
 
+    # Codex — check for OpenAI API key
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if openai_key:
+        results["codex"] = {
+            "status": "configured",
+            "detail": "OPENAI_API_KEY is set",
+        }
+    else:
+        results["codex"] = {
+            "status": "not_configured",
+            "detail": "OPENAI_API_KEY not found in environment",
+        }
+
     # Overall status
     statuses = [r["status"] for r in results.values()]
     if all(s in ("reachable", "configured") for s in statuses):
@@ -1435,9 +1448,17 @@ ENV_PATH = Path.home() / ".openclaw" / ".env"
 _PROVIDER_KEY_MAP: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "xai": "XAI_API_KEY",
+    "openai": "OPENAI_API_KEY",
     "telegram_bot": "TELEGRAM_BOT_TOKEN",
     "telegram_chat": "TELEGRAM_CHAT_ID",
 }
+
+_CODEX_MODEL_OPTIONS: list[str] = [
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-5.4",
+    "o4-mini",
+]
 
 
 def _read_env_file() -> str:
@@ -1741,6 +1762,44 @@ async def api_models_grok():
 
 
 # ---------------------------------------------------------------------------
+# GET /api/models/codex — Codex (OpenAI) API status
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/models/codex")
+async def api_models_codex():
+    """Check Codex (OpenAI) API key status and CLI availability."""
+    import subprocess
+    env_set = bool(os.environ.get("OPENAI_API_KEY", ""))
+    dotenv_set = _env_has_key("OPENAI_API_KEY") if not env_set else False
+
+    cli_available = False
+    cli_version = None
+    try:
+        result = subprocess.run(
+            ["/opt/homebrew/bin/codex", "--version"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            cli_available = True
+            cli_version = result.stdout.strip()
+    except Exception:
+        pass
+
+    status = "configured" if ((env_set or dotenv_set) and cli_available) else "not_configured"
+
+    return JSONResponse({
+        "status": status,
+        "env_var_set": env_set,
+        "dotenv_set": dotenv_set,
+        "api_key_configured": env_set or dotenv_set,
+        "cli_available": cli_available,
+        "cli_version": cli_version,
+        "default_model": _CODEX_MODEL_OPTIONS[0],
+        "models": _CODEX_MODEL_OPTIONS,
+    })
+
+
+# ---------------------------------------------------------------------------
 # GET /api/credentials — Which keys are configured (booleans only)
 # ---------------------------------------------------------------------------
 
@@ -1752,6 +1811,7 @@ async def api_credentials():
         "credentials": {
             "anthropic": _env_has_key("ANTHROPIC_API_KEY"),
             "xai": _env_has_key("XAI_API_KEY"),
+            "openai": _env_has_key("OPENAI_API_KEY"),
             "telegram_bot": _env_has_key("TELEGRAM_BOT_TOKEN"),
             "telegram_chat": _env_has_key("TELEGRAM_CHAT_ID"),
             "alert_token": _env_has_key("APEX_ALERT_TOKEN") or _env_has_key("LOCALCHAT_ALERT_TOKEN"),
@@ -1767,6 +1827,7 @@ _CREDENTIAL_KEY_PATTERNS: dict[str, tuple[str, int, int]] = {
     # provider: (prefix_or_empty, min_length, max_length)
     "anthropic": ("sk-ant-", 20, 200),
     "xai": ("xai-", 20, 200),
+    "openai": ("sk-", 20, 200),
     "telegram_bot": ("", 30, 100),   # format: 123456:ABC-DEF...
     "telegram_chat": ("", 5, 20),    # numeric chat ID
 }

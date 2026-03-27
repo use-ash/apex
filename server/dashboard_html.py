@@ -1518,6 +1518,16 @@ select {
                         <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
                     </div>
                 </div>
+
+                <div class="card">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6v6H9z"/></svg>
+                        CODEX
+                    </div>
+                    <div id="provider-codex-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
             </div>
 
             <!-- Default Model Selector -->
@@ -2830,20 +2840,21 @@ async function loadModels() {
     if (btnRefresh) btnRefresh.disabled = true;
 
     try {
-        const [claude, ollama, grok, creds] = await Promise.allSettled([
+        const [claude, ollama, grok, codex, creds] = await Promise.allSettled([
             apiFetch("/models/claude"),
             apiFetch("/models/ollama"),
             apiFetch("/models/grok"),
+            apiFetch("/models/codex"),
             apiFetch("/credentials"),
         ]);
 
-        modelsData = { claude: claude, ollama: ollama, grok: grok };
+        modelsData = { claude: claude, ollama: ollama, grok: grok, codex: codex };
         if (creds.status === "fulfilled") {
             credentialsData = creds.value.credentials || creds.value || {};
         }
 
-        renderProviderCards(claude, ollama, grok);
-        renderDefaultModelSelector(claude, ollama, grok);
+        renderProviderCards(claude, ollama, grok, codex);
+        renderDefaultModelSelector(claude, ollama, grok, codex);
         renderCredentialsTable();
         renderAlertConfig();
     } catch (err) {
@@ -2856,7 +2867,7 @@ window.loadModels = loadModels;
 
 /* -- Render: Provider Status Cards ---------------------------------- */
 
-function renderProviderCards(claude, ollama, grok) {
+function renderProviderCards(claude, ollama, grok, codex) {
     /* Claude */
     const claudeEl = document.getElementById("provider-claude-content");
     if (claude.status === "rejected") {
@@ -2974,11 +2985,50 @@ function renderProviderCards(claude, ollama, grok) {
                 '<span class="stat-value">' + d.latency_ms + ' ms</span>' +
             '</div>' : '');
     }
+
+    /* Codex */
+    const codexEl = document.getElementById("provider-codex-content");
+    if (codex.status === "rejected") {
+        codexEl.innerHTML = renderError("Could not reach Codex API");
+    } else {
+        const d = codex.value;
+        const ok = d.status === "ok" || d.status === "reachable" || d.status === "configured" || d.reachable === true;
+        const dotClass = ok ? "green" : "red";
+        const apiKey = d.api_key_configured !== undefined ? d.api_key_configured : (credentialsData.openai || false);
+        const cliAvail = d.cli_available || false;
+        const cliVer = d.cli_version || null;
+
+        codexEl.innerHTML =
+            '<div class="stat-row">' +
+                '<span class="stat-label">Status</span>' +
+                '<span class="stat-value status-inline">' +
+                    '<span class="status-dot ' + dotClass + '"></span>' +
+                    (ok ? "Configured" : "Not configured") +
+                '</span>' +
+            '</div>' +
+            '<div class="stat-row">' +
+                '<span class="stat-label">CLI</span>' +
+                '<span class="stat-value text-' + (cliAvail ? "green" : "red") + '">' +
+                    (cliAvail ? "Available" : "Not found") +
+                '</span>' +
+            '</div>' +
+            (cliVer ?
+            '<div class="stat-row">' +
+                '<span class="stat-label">CLI Version</span>' +
+                '<span class="stat-value mono">' + esc(cliVer) + '</span>' +
+            '</div>' : '') +
+            '<div class="stat-row">' +
+                '<span class="stat-label">API Key</span>' +
+                '<span class="stat-value text-' + (apiKey ? "green" : "red") + '">' +
+                    (apiKey ? "Configured" : "Not set") +
+                '</span>' +
+            '</div>';
+    }
 }
 
 /* -- Render: Default Model Selector --------------------------------- */
 
-function renderDefaultModelSelector(claude, ollama, grok) {
+function renderDefaultModelSelector(claude, ollama, grok, codex) {
     const sel = document.getElementById("default-model-select");
     var options = '<option value="" disabled>Select a model...</option>';
 
@@ -3019,6 +3069,20 @@ function renderDefaultModelSelector(claude, ollama, grok) {
             for (var k = 0; k < gModels.length; k++) {
                 var gName = typeof gModels[k] === "string" ? gModels[k] : gModels[k].name || gModels[k].id;
                 options += '<option value="grok:' + esc(gName) + '">' + esc(gName) + '</option>';
+            }
+            options += '</optgroup>';
+        }
+    }
+
+    /* Codex models */
+    if (codex.status === "fulfilled") {
+        var cd = codex.value;
+        var cModels = cd.models || (cd.model ? [cd.model] : [cd.default_model].filter(Boolean));
+        if (cModels.length > 0) {
+            options += '<optgroup label="Codex">';
+            for (var m = 0; m < cModels.length; m++) {
+                var cName = typeof cModels[m] === "string" ? cModels[m] : cModels[m].name || cModels[m].id;
+                options += '<option value="codex:' + esc(cName) + '">' + esc(cName) + '</option>';
             }
             options += '</optgroup>';
         }
@@ -3066,6 +3130,7 @@ function renderCredentialsTable() {
     var providers = [
         { key: "anthropic", name: "Claude (Anthropic)" },
         { key: "xai", name: "Grok (xAI)" },
+        { key: "openai", name: "Codex (OpenAI)" },
         { key: "telegram_bot", name: "Telegram Bot Token" },
         { key: "telegram_chat", name: "Telegram Chat ID" },
     ];
@@ -3093,10 +3158,11 @@ function renderCredentialsTable() {
 
 function updateCredential(provider) {
     currentCredentialProvider = provider;
-    var names = { anthropic: "Claude API Key", xai: "Grok API Key", telegram_bot: "Telegram Bot Token", telegram_chat: "Telegram Chat ID" };
+    var names = { anthropic: "Claude API Key", xai: "Grok API Key", openai: "OpenAI API Key", telegram_bot: "Telegram Bot Token", telegram_chat: "Telegram Chat ID" };
     var hints = {
         anthropic: "Starts with sk-ant-... (paste from console.anthropic.com)",
         xai: "Starts with xai-... (paste from console.x.ai)",
+        openai: "Starts with sk-... (paste from platform.openai.com/api-keys)",
         telegram_bot: "Format: 123456789:ABCdef... (from @BotFather)",
         telegram_chat: "Numeric chat ID (e.g. 5072593158)"
     };
