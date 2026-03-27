@@ -4,14 +4,56 @@ import Security
 
 @Observable
 final class CertificateManager {
-    private static let identityLabel = "com.openclaw.localchat.client"
-    private static let caLabel = "com.openclaw.localchat.ca"
+    private static let identityLabel = "com.apex.apexchat.client"
+    private static let caLabel = "com.apex.apexchat.ca"
+
+    // Migration: check old keychain labels
+    private static let legacyIdentityLabel = "com.openclaw.localchat.client"
+    private static let legacyCaLabel = "com.openclaw.localchat.ca"
 
     var hasIdentity: Bool = false
     var importError: String?
 
     init() {
+        Self.migrateKeychainLabels()
         hasIdentity = loadIdentity() != nil
+    }
+
+    static func migrateKeychainLabels() {
+        // Check if identity exists under old label
+        let oldIdentityQuery: [String: Any] = [
+            kSecClass as String: kSecClassIdentity,
+            kSecAttrLabel as String: legacyIdentityLabel,
+            kSecReturnRef as String: true
+        ]
+        var result: CFTypeRef?
+        if SecItemCopyMatching(oldIdentityQuery as CFDictionary, &result) == errSecSuccess {
+            // Update label to new value
+            let updateQuery: [String: Any] = [
+                kSecClass as String: kSecClassIdentity,
+                kSecAttrLabel as String: legacyIdentityLabel
+            ]
+            let updateAttrs: [String: Any] = [
+                kSecAttrLabel as String: identityLabel
+            ]
+            SecItemUpdate(updateQuery as CFDictionary, updateAttrs as CFDictionary)
+        }
+        // Same for CA cert
+        let oldCaQuery: [String: Any] = [
+            kSecClass as String: kSecClassCertificate,
+            kSecAttrLabel as String: legacyCaLabel,
+            kSecReturnRef as String: true
+        ]
+        if SecItemCopyMatching(oldCaQuery as CFDictionary, &result) == errSecSuccess {
+            let updateQuery: [String: Any] = [
+                kSecClass as String: kSecClassCertificate,
+                kSecAttrLabel as String: legacyCaLabel
+            ]
+            let updateAttrs: [String: Any] = [
+                kSecAttrLabel as String: caLabel
+            ]
+            SecItemUpdate(updateQuery as CFDictionary, updateAttrs as CFDictionary)
+        }
     }
 
     // MARK: - Import

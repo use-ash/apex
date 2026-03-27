@@ -174,7 +174,7 @@ struct SettingsView: View {
                 }
 
                 Section("About") {
-                    Text("LocalChat for iOS connects directly to your LocalChat server over HTTPS and WebSocket, and streams responses into a single persistent conversation.")
+                    Text("ApexChat for iOS connects directly to your ApexChat server over HTTPS and WebSocket, and streams responses into a single persistent conversation.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

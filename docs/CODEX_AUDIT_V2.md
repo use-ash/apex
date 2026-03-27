@@ -1,4 +1,4 @@
-LocalChat v2 follow-up fixes applied in `scripts/localchat.py`.
+Apex v2 follow-up fixes applied in `scripts/localchat.py`.
 
 Changes:
 - Extended the `resumeConnection()` wait-for-open window from 5s to 15s and added a timeout debug log so slow cold reconnects after iOS page eviction do not give up early.

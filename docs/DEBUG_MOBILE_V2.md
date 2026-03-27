@@ -1,9 +1,9 @@
-# LocalChat Mobile Reconnection — Debug Report V2
+# Apex Mobile Reconnection — Debug Report V2
 
 **Date:** 2026-03-24
 **File:** `scripts/localchat.py` (~2444 lines after Codex v1 fixes)
 **Platform:** iOS Safari PWA over WireGuard VPN + mTLS
-**Prereq:** Read `debug_localchat.md` for full architecture and Bugs 1-6.
+**Prereq:** Read `DEBUG_MOBILE_V1.md` for full architecture and Bugs 1-6.
 
 ## V1 Fix Results (Codex pass 1)
 

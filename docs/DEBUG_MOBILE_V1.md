@@ -1,4 +1,4 @@
-# LocalChat Mobile Reconnection — Debug Report
+# Apex Mobile Reconnection — Debug Report
 
 **Date:** 2026-03-24
 **File:** `scripts/localchat.py` (single-file server, ~2260 lines)
@@ -6,7 +6,7 @@
 
 ## Context
 
-LocalChat is a single-file FastAPI server embedding all HTML/JS/CSS inline. It streams Claude SDK responses over a WebSocket. On iOS, locking the phone kills the WebSocket and suspends all JavaScript. The goal is seamless resume: unlock the phone and pick up where you left off, including mid-stream responses.
+Apex is a single-file FastAPI server embedding all HTML/JS/CSS inline. It streams Claude SDK responses over a WebSocket. On iOS, locking the phone kills the WebSocket and suspends all JavaScript. The goal is seamless resume: unlock the phone and pick up where you left off, including mid-stream responses.
 
 ## Architecture (Relevant Parts)
 

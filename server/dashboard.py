@@ -235,7 +235,7 @@ async def api_status():
     active_sessions = 0
     model = "unknown"
     try:
-        import localchat as _lc
+        import apex as _lc
         connected_clients = len(getattr(_lc, "_chat_ws", {}))
         active_sessions = len(getattr(_lc, "_clients", {}))
         model = getattr(_lc, "MODEL", "unknown")
@@ -340,7 +340,7 @@ async def api_status_tls():
 
     certs = {
         "ca": _ssl_dir / "ca.crt",
-        "server": _ssl_dir / "localchat.crt",
+        "server": _ssl_dir / "apex.crt",
         "client": _ssl_dir / "client.crt",
     }
 
@@ -801,7 +801,7 @@ async def api_tls_server():
     if _ssl_dir is None:
         return _not_initialized()
 
-    srv_path = _ssl_dir / "localchat.crt"
+    srv_path = _ssl_dir / "apex.crt"
     if not srv_path.exists():
         return _error("Server certificate not found", "SERVER_CERT_NOT_FOUND", 404)
 
@@ -826,7 +826,7 @@ async def api_tls_clients_list():
     for crt_path in sorted(_ssl_dir.glob("*.crt")):
         name = crt_path.stem
         # Skip CA and server certs
-        if name in ("ca", "localchat"):
+        if name in ("ca", "apex"):
             continue
         info = _parse_cert_full(crt_path)
         entry: dict[str, Any] = {"cn": name}
@@ -1139,9 +1139,9 @@ async def api_tls_server_renew():
     if not ext_cnf.exists():
         return _error("ext.cnf not found — cannot determine SANs", "EXT_CNF_NOT_FOUND", 404)
 
-    key_path = _ssl_dir / "localchat.key"
-    csr_path = _ssl_dir / "localchat.csr"
-    crt_path = _ssl_dir / "localchat.crt"
+    key_path = _ssl_dir / "apex.key"
+    csr_path = _ssl_dir / "apex.csr"
+    crt_path = _ssl_dir / "apex.crt"
 
     steps = [
         # 1. Generate new server key
@@ -1150,7 +1150,7 @@ async def api_tls_server_renew():
         ["openssl", "req", "-new",
          "-key", str(key_path),
          "-out", str(csr_path),
-         "-subj", "/CN=localchat"],
+         "-subj", "/CN=apex"],
         # 3. Sign with CA using ext.cnf for SANs
         ["openssl", "x509", "-req",
          "-in", str(csr_path),
@@ -1303,7 +1303,7 @@ async def api_tls_sans_update(request: Request):
         "distinguished_name = req_dn\n"
         "\n"
         "[req_dn]\n"
-        "CN = localchat\n"
+        "CN = apex\n"
         "\n"
         "[v3_req]\n"
         "basicConstraints = CA:FALSE\n"
@@ -1531,7 +1531,7 @@ async def api_config_models_default(request: Request):
 
     # Update module-level MODEL var in the main server module
     try:
-        import localchat as _lc
+        import apex as _lc
         _lc.MODEL = model
     except Exception:
         pass
@@ -1736,7 +1736,7 @@ async def api_credentials():
             "xai": _env_has_key("XAI_API_KEY"),
             "telegram_bot": _env_has_key("TELEGRAM_BOT_TOKEN"),
             "telegram_chat": _env_has_key("TELEGRAM_CHAT_ID"),
-            "alert_token": _env_has_key("LOCALCHAT_ALERT_TOKEN"),
+            "alert_token": _env_has_key("APEX_ALERT_TOKEN") or _env_has_key("LOCALCHAT_ALERT_TOKEN"),
         },
     })
 
@@ -1796,7 +1796,7 @@ async def api_credentials_update(provider: str, request: Request):
 async def api_credentials_alert_token_rotate():
     """Generate a new random alert token (32 bytes, base64url).
 
-    Updates LOCALCHAT_ALERT_TOKEN in .env and the running config.
+    Updates APEX_ALERT_TOKEN in .env and the running config.
     Returns the new token (only time it is exposed).
     """
     import secrets
@@ -1806,12 +1806,12 @@ async def api_credentials_alert_token_rotate():
     new_token = base64.urlsafe_b64encode(token_bytes).decode().rstrip("=")
 
     try:
-        _update_env_var("LOCALCHAT_ALERT_TOKEN", new_token)
+        _update_env_var("APEX_ALERT_TOKEN", new_token)
     except Exception as e:
         _log.error(f"Failed to update .env: {e}")
         return _error("Failed to update credentials file", "ENV_WRITE_ERROR")
 
-    os.environ["LOCALCHAT_ALERT_TOKEN"] = new_token
+    os.environ["APEX_ALERT_TOKEN"] = new_token
 
     return JSONResponse({
         "status": "ok",
@@ -1830,7 +1830,7 @@ async def api_alerts_config():
     telegram_configured = (
         _env_has_key("TELEGRAM_BOT_TOKEN") and _env_has_key("TELEGRAM_CHAT_ID")
     )
-    alert_token_set = _env_has_key("LOCALCHAT_ALERT_TOKEN")
+    alert_token_set = _env_has_key("APEX_ALERT_TOKEN") or _env_has_key("LOCALCHAT_ALERT_TOKEN")
 
     # Fetch distinct alert categories from DB
     categories: list[str] = []
@@ -2016,7 +2016,7 @@ async def api_alerts_test():
 # Phase 4 — Workspace, Skills, Guardrails, Sessions
 # ===========================================================================
 
-WORKSPACE = Path(os.environ.get("LOCALCHAT_WORKSPACE", os.getcwd()))
+WORKSPACE = Path(os.environ.get("APEX_WORKSPACE", os.environ.get("LOCALCHAT_WORKSPACE", os.getcwd())))
 
 
 # ---------------------------------------------------------------------------
@@ -2451,11 +2451,11 @@ async def api_sessions():
 async def api_sessions_compact(chat_id: str):
     """Force compaction on a chat session."""
     try:
-        import localchat as lc
+        import apex as lc
         result = await lc._maybe_compact_chat(chat_id)
     except AttributeError:
         return _error(
-            "_maybe_compact_chat not available in localchat module",
+            "_maybe_compact_chat not available in apex module",
             "NOT_IMPLEMENTED",
             status=501,
         )
@@ -2479,7 +2479,7 @@ async def api_sessions_delete(chat_id: str):
     """Kill a session: disconnect client and clear session_id in DB."""
     # Disconnect the client
     try:
-        import localchat as lc
+        import apex as lc
         await lc._disconnect_client(chat_id)
     except AttributeError:
         pass  # Function may not exist yet — still clear DB below
@@ -2513,7 +2513,7 @@ async def api_sessions_delete(chat_id: str):
 # ===========================================================================
 
 _LOG_LINE_RE = re.compile(
-    r"^\[localchat\s+(\d{2}:\d{2}:\d{2})\]\s*(\w+)?\s*(.*)",
+    r"^\[apex\s+(\d{2}:\d{2}:\d{2})\]\s*(\w+)?\s*(.*)",
 )
 
 
@@ -2546,7 +2546,7 @@ def _tail_lines(filepath: Path, n: int) -> list[str]:
 
 
 def _parse_log_line(line: str) -> dict[str, str]:
-    """Parse a localchat log line into {timestamp, level, message}."""
+    """Parse an apex log line into {timestamp, level, message}."""
     m = _LOG_LINE_RE.match(line)
     if m:
         return {
@@ -2567,7 +2567,7 @@ async def api_logs(lines: int = 100, search: str = "", level: str = ""):
     if _state_dir is None:
         return _not_initialized()
 
-    log_path = _state_dir / "localchat.log"
+    log_path = _state_dir / "apex.log"
     if not log_path.exists():
         return JSONResponse({"lines": [], "total": 0, "file_exists": False})
 
@@ -2605,7 +2605,7 @@ async def api_logs_stream():
     if _state_dir is None:
         return _not_initialized()
 
-    log_path = _state_dir / "localchat.log"
+    log_path = _state_dir / "apex.log"
 
     async def _event_generator():
         """Async generator that tails the log file and yields SSE events."""
@@ -2653,12 +2653,12 @@ async def api_logs_stream():
 
 @dashboard_app.post("/api/logs/clear")
 async def api_logs_clear():
-    """Rotate: rename localchat.log -> localchat.log.1, create fresh log."""
+    """Rotate: rename apex.log -> apex.log.1, create fresh log."""
     if _state_dir is None:
         return _not_initialized()
 
-    log_path = _state_dir / "localchat.log"
-    backup_path = _state_dir / "localchat.log.1"
+    log_path = _state_dir / "apex.log"
+    backup_path = _state_dir / "apex.log.1"
 
     if not log_path.exists():
         return JSONResponse({"status": "ok", "detail": "No log file to rotate"})
@@ -2670,7 +2670,7 @@ async def api_logs_clear():
         return JSONResponse({
             "status": "ok",
             "rotated_size": old_size,
-            "detail": f"Rotated {old_size} bytes to localchat.log.1",
+            "detail": f"Rotated {old_size} bytes to apex.log.1",
         })
     except OSError as e:
         _log.error(f"Failed to rotate log: {e}")
@@ -2904,7 +2904,7 @@ async def api_uploads_cleanup(days: int = 7):
 # POST /api/backup — Create backup tarball
 # ---------------------------------------------------------------------------
 
-_BACKUP_FILES = ["localchat.db", "config.json", "guardrail_whitelist.json"]
+_BACKUP_FILES = ["apex.db", "config.json", "guardrail_whitelist.json"]
 
 
 @dashboard_app.post("/api/backup")
@@ -3069,9 +3069,9 @@ async def api_backup_restore(request: Request):
 
         extracted = list(tmp_dir.rglob("*"))
         extracted_names = [p.name for p in extracted if p.is_file()]
-        if not any(n in extracted_names for n in ("localchat.db", "config.json")):
+        if not any(n in extracted_names for n in ("apex.db", "localchat.db", "config.json")):
             return _error(
-                "Archive does not contain localchat.db or config.json",
+                "Archive does not contain apex.db or config.json",
                 "INVALID_BACKUP",
                 400,
             )

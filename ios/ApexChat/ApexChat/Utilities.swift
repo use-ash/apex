@@ -23,7 +23,7 @@ extension UIPasteboard {
 extension Logger {
     /// Create a logger with the app's bundle subsystem.
     static func app(_ category: String) -> Logger {
-        Logger(subsystem: "com.openclaw.localchat", category: category)
+        Logger(subsystem: "com.apex.apexchat", category: category)
     }
 }
 

@@ -22,7 +22,7 @@ from pathlib import Path
 
 
 def _workspace() -> Path:
-    return Path(os.environ.get("APEX_WORKSPACE", os.environ.get("LOCALCHAT_WORKSPACE", os.getcwd())))
+    return Path(os.environ.get("LOCALCHAT_WORKSPACE", os.getcwd()))
 
 
 def _gate_pending_path(workspace: Path | None = None) -> Path:

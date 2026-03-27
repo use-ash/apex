@@ -1,4 +1,4 @@
-# LocalChat Troubleshooting Log
+# Apex Troubleshooting Log
 
 ## Session: 2026-03-24
 
@@ -6,7 +6,7 @@
 **Symptom:** `ws auth failed` spam, WebSocket rejects all connections after restart.
 **Root cause:** `SESSION_SIGNING_KEY` was `secrets.token_hex(32)` — regenerated on every restart, invalidating all existing cookies.
 **Fix 1:** Changed to deterministic key derived from password + file inode. **Failed** — inode changes when file is rewritten by editors.
-**Fix 2:** Changed to `hashlib.sha256((PASSWORD + "localchat-stable-salt").encode()).hexdigest()`. **Still failed** — old cookies from before the key change remain in browser.
+**Fix 2:** Changed to `hashlib.sha256((PASSWORD + "apex-stable-salt").encode()).hexdigest()`. **Still failed** — old cookies from before the key change remain in browser.
 **Fix 3:** Changed cookie to `httponly=False` so JS can read it dynamically via `document.cookie`. Added `getToken()` function. **Partially worked** — but embedded `{{WS_TOKEN}}` in HTML still used on initial load.
 **Fix 4:** Added `wsAuthFailCount` — after 3 WS auth failures, redirect to `/login`. **Didn't help** because the redirect itself was cached.
 **Final resolution:** Replaced entire auth system with mTLS (see Issue 6).
@@ -46,8 +46,8 @@ async def _make_stream(blocks):
 
 ### Issue 7: No debug output in tmux
 **Symptom:** Server runs but no debug-level HTTP/WebSocket logging in the tmux pane.
-**Root cause:** `uvicorn.run()` was changed to use `log_level=os.environ.get("LOCALCHAT_LOG_LEVEL", "info")` which defaults to `info`. The launch script doesn't set the env var.
-**Fix:** To get debug output, add `export LOCALCHAT_LOG_LEVEL=debug` to `launch_localchat.sh` or run manually with that env var.
+**Root cause:** `uvicorn.run()` was changed to use `log_level=os.environ.get("APEX_LOG_LEVEL", "info")` which defaults to `info`. The launch script doesn't set the env var.
+**Fix:** To get debug output, add `export APEX_LOG_LEVEL=debug` to `launch_localchat.sh` or run manually with that env var.
 
 ### Issue 8: Tool events and thinking not persisted to DB
 **Symptom:** After phone lock/unlock, chat history loads but tool blocks and thinking sections are missing.
@@ -87,6 +87,6 @@ state/ssl/
 ├── ca.crt + ca.key          — OpenClaw Local CA (root, 5yr)
 ├── localchat.crt + .key     — Server cert (SANs: 10.8.0.2, 192.168.86.214, 127.0.0.1)
 ├── client.crt + .key        — Client cert (CN=dana-localchat, clientAuth EKU)
-├── client.p12               — PKCS#12 bundle for iOS (password: localchat)
+├── client.p12               — PKCS#12 bundle for iOS (password: apex)
 └── ext.cnf                  — Extension config for cert generation
 ```

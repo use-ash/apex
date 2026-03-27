@@ -1,10 +1,10 @@
 ---
-name: project_localchat
-description: LocalChat — local web chat for Claude Code over WireGuard. v1.2 shipped with persistent sessions, attachments, voice notes, PWA.
+name: project_apex
+description: Apex — local web chat for Claude Code over WireGuard. v1.2 shipped with persistent sessions, attachments, voice notes, PWA.
 type: project
 ---
 
-## LocalChat
+## Apex
 
 Local web chat for Claude Code. Zero third-party data flow. Phone → WireGuard → Mac.
 
@@ -22,7 +22,7 @@ Local web chat for Claude Code. Zero third-party data flow. Phone → WireGuard 
 - Voice notes (MediaRecorder → local Whisper transcription)
 - Chat history with auto-titling
 - PWA manifest (Add to Home Screen on iOS)
-- Configurable model (default Sonnet, LOCALCHAT_MODEL env var)
+- Configurable model (default Sonnet, APEX_MODEL env var)
 - Binds to 0.0.0.0 (WireGuard accessible)
 
 **Known issues being addressed in other session:**
@@ -32,6 +32,6 @@ Local web chat for Claude Code. Zero third-party data flow. Phone → WireGuard 
 - iOS Safari cookie fixes (httponly removed, dynamic WS_TOKEN)
 - Session invalidation on restart (signing key stability)
 
-**Env vars:** LOCALCHAT_AUTH (required), LOCALCHAT_HOST, LOCALCHAT_PORT, LOCALCHAT_MODEL, LOCALCHAT_TRUSTED
+**Env vars:** APEX_AUTH (required), APEX_HOST, APEX_PORT, APEX_MODEL, APEX_TRUSTED (legacy: LOCALCHAT_* also accepted)
 
 **JS syntax lesson:** Embedded JS inside Python strings breaks when using nested quotes in innerHTML. Use `&quot;` for HTML attributes inside template literals. Always extract JS and run `node --check` before deploying.

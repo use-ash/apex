@@ -25,19 +25,19 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
         "host": {
             "type": "str",
             "default": "0.0.0.0",
-            "env": "LOCALCHAT_HOST",
+            "env": "APEX_HOST",
             "description": "Listen address",
         },
         "port": {
             "type": "int",
             "default": 8300,
-            "env": "LOCALCHAT_PORT",
+            "env": "APEX_PORT",
             "description": "Listen port",
         },
         "debug": {
             "type": "bool",
             "default": False,
-            "env": "LOCALCHAT_DEBUG",
+            "env": "APEX_DEBUG",
             "description": "Enable verbose debug logging",
         },
     },
@@ -45,7 +45,7 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
         "default_model": {
             "type": "str",
             "default": "claude-sonnet-4-6",
-            "env": "LOCALCHAT_MODEL",
+            "env": "APEX_MODEL",
             "description": "Default AI model",
             "choices": [
                 "claude-opus-4-6",
@@ -58,20 +58,20 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
         "permission_mode": {
             "type": "str",
             "default": "acceptEdits",
-            "env": "LOCALCHAT_PERMISSION_MODE",
+            "env": "APEX_PERMISSION_MODE",
             "description": "Claude SDK permission mode",
             "choices": ["acceptEdits", "bypassPermissions", "plan"],
         },
         "ollama_url": {
             "type": "str",
             "default": "http://localhost:11434",
-            "env": "LOCALCHAT_OLLAMA_URL",
+            "env": "APEX_OLLAMA_URL",
             "description": "Ollama API base URL",
         },
         "compaction_threshold": {
             "type": "int",
             "default": 100_000,
-            "env": "LOCALCHAT_COMPACTION_THRESHOLD",
+            "env": "APEX_COMPACTION_THRESHOLD",
             "description": "Input tokens before auto-compaction",
             "min": 10_000,
             "max": 2_000_000,
@@ -79,7 +79,7 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
         "compaction_model": {
             "type": "str",
             "default": "gemma3:27b",
-            "env": "LOCALCHAT_COMPACTION_MODEL",
+            "env": "APEX_COMPACTION_MODEL",
             "description": "Ollama model for compaction summaries",
         },
         "max_turns": {
@@ -94,13 +94,13 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
         "path": {
             "type": "str",
             "default": "",
-            "env": "LOCALCHAT_WORKSPACE",
+            "env": "APEX_WORKSPACE",
             "description": "Agent workspace directory",
         },
         "enable_whisper": {
             "type": "bool",
             "default": False,
-            "env": "LOCALCHAT_ENABLE_WHISPER",
+            "env": "APEX_ENABLE_WHISPER",
             "description": "Enable audio transcription via Whisper",
         },
     },
@@ -115,7 +115,7 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
             "type": "bool",
             "default": False,
             "readonly": True,
-            "description": "Whether LOCALCHAT_ALERT_TOKEN is set",
+            "description": "Whether APEX_ALERT_TOKEN is set",
         },
         "xai_configured": {
             "type": "bool",
@@ -331,7 +331,7 @@ class Config:
         if key == "telegram_configured":
             return bool(os.environ.get("TELEGRAM_BOT_TOKEN"))
         if key == "alert_token_configured":
-            return bool(os.environ.get("LOCALCHAT_ALERT_TOKEN"))
+            return bool(os.environ.get("APEX_ALERT_TOKEN") or os.environ.get("LOCALCHAT_ALERT_TOKEN"))
         if key == "xai_configured":
             return bool(os.environ.get("XAI_API_KEY"))
         return False

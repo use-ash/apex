@@ -12,8 +12,8 @@ import UserNotifications
 /// 4. We fire local notifications for each new alert
 /// 5. Re-schedule the task for immediate re-poll
 enum BackgroundManager {
-    static let keepAliveTaskIdentifier = "com.openclaw.localchat.keepalive"
-    private static let logger = Logger(subsystem: "com.openclaw.localchat", category: "Background")
+    static let keepAliveTaskIdentifier = "com.apex.apexchat.keepalive"
+    private static let logger = Logger(subsystem: "com.apex.apexchat", category: "Background")
 
     private static var connectionManager: ConnectionManager?
     private static var apiClient: APIClient?

@@ -4,7 +4,7 @@ import Security
 
 final class TLSDelegate: NSObject, URLSessionDelegate {
     private let certificateManager: CertificateManager
-    private let logger = Logger(subsystem: "com.openclaw.localchat", category: "TLS")
+    private let logger = Logger(subsystem: "com.apex.apexchat", category: "TLS")
 
     init(certificateManager: CertificateManager) {
         self.certificateManager = certificateManager

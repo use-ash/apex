@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""LocalChat — Local web chat for Claude Code.
+"""Apex — Local web chat for Claude Code.
 
 Zero third-party data flow. FastAPI + WebSocket + Claude Agent SDK.
 All conversation data stays on this machine. Persistent sessions — no
 subprocess respawning per turn. Auth via mTLS (client certificate).
 
 Usage:
-    python3 localchat.py
-    # or via setup wizard: python3 setup_localchat.py
+    python3 apex.py
+    # or via setup wizard: python3 setup_apex.py
 
 Env vars:
-    LOCALCHAT_SSL_CERT       — server certificate
-    LOCALCHAT_SSL_KEY        — server private key
-    LOCALCHAT_SSL_CA         — CA cert for client verification (mTLS)
-    LOCALCHAT_HOST           — bind address (default: 0.0.0.0)
-    LOCALCHAT_PORT           — port (default: 8300)
-    LOCALCHAT_MODEL          — Claude model (default: claude-sonnet-4-6)
-    LOCALCHAT_WORKSPACE      — working directory for Claude SDK (default: cwd)
-    LOCALCHAT_PERMISSION_MODE — SDK permission mode (default: acceptEdits)
-    LOCALCHAT_DEBUG          — enable verbose debug logging (default: false)
+    APEX_SSL_CERT            — server certificate
+    APEX_SSL_KEY             — server private key
+    APEX_SSL_CA              — CA cert for client verification (mTLS)
+    APEX_HOST                — bind address (default: 0.0.0.0)
+    APEX_PORT                — port (default: 8300)
+    APEX_MODEL               — Claude model (default: claude-sonnet-4-6)
+    APEX_WORKSPACE           — working directory for Claude SDK (default: cwd)
+    APEX_PERMISSION_MODE     — SDK permission mode (default: acceptEdits)
+    APEX_DEBUG               — enable verbose debug logging (default: false)
 """
 
 from __future__ import annotations
@@ -83,32 +83,43 @@ from dashboard import dashboard_app, init_dashboard
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-HOST = os.environ.get("LOCALCHAT_HOST", "0.0.0.0")
-PORT = int(os.environ.get("LOCALCHAT_PORT", "8300"))
-SSL_CERT = os.environ.get("LOCALCHAT_SSL_CERT", "")
-SSL_KEY = os.environ.get("LOCALCHAT_SSL_KEY", "")
-SSL_CA = os.environ.get("LOCALCHAT_SSL_CA", "")
-LOCALCHAT_ROOT = Path(os.environ.get("LOCALCHAT_ROOT", Path(__file__).resolve().parent.parent))
-WORKSPACE = Path(os.environ.get("LOCALCHAT_WORKSPACE", os.getcwd()))
-MODEL = os.environ.get("LOCALCHAT_MODEL", "claude-sonnet-4-6")
-PERMISSION_MODE = os.environ.get("LOCALCHAT_PERMISSION_MODE", "acceptEdits")
-DEBUG = os.environ.get("LOCALCHAT_DEBUG", "").lower() in {"1", "true", "yes"}
-ALERT_TOKEN = os.environ.get("LOCALCHAT_ALERT_TOKEN", "")
+HOST = os.environ.get("APEX_HOST", os.environ.get("LOCALCHAT_HOST", "0.0.0.0"))
+PORT = int(os.environ.get("APEX_PORT", os.environ.get("LOCALCHAT_PORT", "8300")))
+SSL_CERT = os.environ.get("APEX_SSL_CERT", os.environ.get("LOCALCHAT_SSL_CERT", ""))
+SSL_KEY = os.environ.get("APEX_SSL_KEY", os.environ.get("LOCALCHAT_SSL_KEY", ""))
+SSL_CA = os.environ.get("APEX_SSL_CA", os.environ.get("LOCALCHAT_SSL_CA", ""))
+APEX_ROOT = Path(os.environ.get("APEX_ROOT", os.environ.get("LOCALCHAT_ROOT", Path(__file__).resolve().parent.parent)))
+WORKSPACE = Path(os.environ.get("APEX_WORKSPACE", os.environ.get("LOCALCHAT_WORKSPACE", os.getcwd())))
+MODEL = os.environ.get("APEX_MODEL", os.environ.get("LOCALCHAT_MODEL", "claude-sonnet-4-6"))
+PERMISSION_MODE = os.environ.get("APEX_PERMISSION_MODE", os.environ.get("LOCALCHAT_PERMISSION_MODE", "acceptEdits"))
+DEBUG = os.environ.get("APEX_DEBUG", os.environ.get("LOCALCHAT_DEBUG", "")).lower() in {"1", "true", "yes"}
+ALERT_TOKEN = os.environ.get("APEX_ALERT_TOKEN", os.environ.get("LOCALCHAT_ALERT_TOKEN", ""))
 XAI_API_KEY = os.environ.get("XAI_API_KEY", "")
-DB_PATH = LOCALCHAT_ROOT / "state" / "localchat.db"
-LOG_PATH = LOCALCHAT_ROOT / "state" / "localchat.log"
+DB_PATH = APEX_ROOT / "state" / "apex.db"
+LOG_PATH = APEX_ROOT / "state" / "apex.log"
+
+# Migration: rename localchat.db → apex.db
+_old_db = DB_PATH.parent / "localchat.db"
+if not DB_PATH.exists() and _old_db.exists():
+    _old_db.rename(DB_PATH)
+
+# Migration: rename localchat.log → apex.log
+_old_log = LOG_PATH.parent / "localchat.log"
+if not LOG_PATH.exists() and _old_log.exists():
+    _old_log.rename(LOG_PATH)
+
 LOG_MAX = 5 * 1024 * 1024  # 5MB
-UPLOAD_DIR = LOCALCHAT_ROOT / "state" / "uploads"
+UPLOAD_DIR = APEX_ROOT / "state" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 IMAGE_TYPES = {"jpg", "jpeg", "png", "gif", "webp"}
 TEXT_TYPES = {"txt", "py", "json", "csv", "md", "yaml", "yml", "toml", "cfg", "ini", "log", "html", "css", "js", "ts", "sh"}
 MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB
 MAX_TEXT_SIZE = 1 * 1024 * 1024    # 1MB
 MAX_AUDIO_SIZE = 10 * 1024 * 1024  # 10MB
-WHISPER_BIN = os.environ.get("LOCALCHAT_WHISPER_BIN", shutil.which("whisper") or "whisper")
+WHISPER_BIN = os.environ.get("APEX_WHISPER_BIN", os.environ.get("LOCALCHAT_WHISPER_BIN", shutil.which("whisper") or "whisper"))
 SDK_QUERY_TIMEOUT = 30
 SDK_STREAM_TIMEOUT = 300
-ENABLE_SUBCONSCIOUS_WHISPER = os.environ.get("LOCALCHAT_ENABLE_WHISPER", "").lower() in {"1", "true", "yes"}
+ENABLE_SUBCONSCIOUS_WHISPER = os.environ.get("APEX_ENABLE_WHISPER", os.environ.get("LOCALCHAT_ENABLE_WHISPER", "")).lower() in {"1", "true", "yes"}
 ENABLE_SKILL_DISPATCH = True  # server-side /recall, /codex, /grok dispatch
 
 # Model context window sizes (input tokens)
@@ -122,9 +133,9 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 MODEL_CONTEXT_DEFAULT = 128_000  # fallback for local/unknown models
 
 # Auto-compaction — rotate SDK session when cumulative input tokens get too high
-COMPACTION_THRESHOLD = int(os.environ.get("LOCALCHAT_COMPACTION_THRESHOLD", "100000"))  # input tokens
-COMPACTION_OLLAMA_MODEL = os.environ.get("LOCALCHAT_COMPACTION_MODEL", "gemma3:27b")
-OLLAMA_BASE_URL = os.environ.get("LOCALCHAT_OLLAMA_URL", "http://localhost:11434")
+COMPACTION_THRESHOLD = int(os.environ.get("APEX_COMPACTION_THRESHOLD", os.environ.get("LOCALCHAT_COMPACTION_THRESHOLD", "100000")))  # input tokens
+COMPACTION_OLLAMA_MODEL = os.environ.get("APEX_COMPACTION_MODEL", os.environ.get("LOCALCHAT_COMPACTION_MODEL", "gemma3:27b"))
+OLLAMA_BASE_URL = os.environ.get("APEX_OLLAMA_URL", os.environ.get("LOCALCHAT_OLLAMA_URL", "http://localhost:11434"))
 COMPACTION_OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/generate"
 COMPACTION_OLLAMA_TIMEOUT = 30
 
@@ -547,10 +558,10 @@ def _run_recall(args: str) -> str:
         parts.append(f"## Keyword Search Results\n\n{keyword_output}")
 
     if parts:
-        _log_skill_invocation("recall", success=True, duration_sec=elapsed, context=query[:80], source="localchat")
+        _log_skill_invocation("recall", success=True, duration_sec=elapsed, context=query[:80], source="apex")
         return "\n\n".join(parts)
 
-    _log_skill_invocation("recall", success=False, duration_sec=elapsed, context=query[:80], source="localchat")
+    _log_skill_invocation("recall", success=False, duration_sec=elapsed, context=query[:80], source="apex")
     return f"No results found for: {args}"
 
 
@@ -584,19 +595,19 @@ def _run_improve(args: str) -> str:
         output = result.stdout.strip()
         if result.returncode != 0:
             _log_skill_invocation("skill-improver", success=False, duration_sec=elapsed,
-                                  error=result.stderr.strip()[:200], context=skill_name, source="localchat")
+                                  error=result.stderr.strip()[:200], context=skill_name, source="apex")
             return f"Analysis error: {result.stderr.strip()}"
         _log_skill_invocation("skill-improver", success=True, duration_sec=elapsed,
-                              context=skill_name, source="localchat")
+                              context=skill_name, source="apex")
         return output
     except subprocess.TimeoutExpired:
         _log_skill_invocation("skill-improver", success=False, duration_sec=30.0,
-                              error="timeout", context=skill_name, source="localchat")
+                              error="timeout", context=skill_name, source="apex")
         return "Skill analysis timed out."
     except Exception as e:
         _log_skill_invocation("skill-improver", success=False,
                               duration_sec=_time.monotonic() - t0, error=str(e)[:200],
-                              context=skill_name, source="localchat")
+                              context=skill_name, source="apex")
         return f"Analysis error: {e}"
 
 
@@ -604,8 +615,8 @@ def _run_codex_background(args: str, chat_id: str) -> str:
     """Launch codex as a background task. Returns status message."""
     if not args:
         return "Usage: /codex <prompt for codex>"
-    prompt_file = WORKSPACE / f"codex_localchat_{chat_id[:8]}.md"
-    response_file = WORKSPACE / f"codex_localchat_{chat_id[:8]}_response.md"
+    prompt_file = WORKSPACE / f"codex_apex_{chat_id[:8]}.md"
+    response_file = WORKSPACE / f"codex_apex_{chat_id[:8]}_response.md"
     prompt_file.write_text(args)
     script = WORKSPACE / "skills" / "codex" / "run_codex.sh"
     if not script.exists():
@@ -617,10 +628,10 @@ def _run_codex_background(args: str, chat_id: str) -> str:
             cwd=str(WORKSPACE),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        _log_skill_invocation("codex", success=True, context=args[:80], source="localchat")
+        _log_skill_invocation("codex", success=True, context=args[:80], source="apex")
         return f"Codex task launched in background.\nPrompt: `{prompt_file.name}`\nResponse will be at: `{response_file.name}`\n\nI'll check the response when it's ready. You can also ask me to check with: \"check codex response\""
     except Exception as e:
-        _log_skill_invocation("codex", success=False, error=str(e)[:200], context=args[:80], source="localchat")
+        _log_skill_invocation("codex", success=False, error=str(e)[:200], context=args[:80], source="apex")
         return f"Codex launch error: {e}"
 
 
@@ -670,8 +681,8 @@ def _run_grok(args: str, chat_id: str) -> str | dict:
     if not prompt_text:
         return "Usage: /grok <research question> [--bookmarks [N]] [--search] [--research] [--thinking LEVEL]"
 
-    prompt_file = WORKSPACE / f"grok_localchat_{chat_id[:8]}.md"
-    response_file = WORKSPACE / f"grok_localchat_{chat_id[:8]}_response.md"
+    prompt_file = WORKSPACE / f"grok_apex_{chat_id[:8]}.md"
+    response_file = WORKSPACE / f"grok_apex_{chat_id[:8]}_response.md"
     # Clear stale response file so watcher doesn't read old data
     if response_file.exists():
         response_file.unlink()
@@ -688,14 +699,14 @@ def _run_grok(args: str, chat_id: str) -> str | dict:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         flags_str = f" ({' '.join(extra_flags)})" if extra_flags else ""
-        _log_skill_invocation("grok", success=True, context=args[:80], source="localchat")
+        _log_skill_invocation("grok", success=True, context=args[:80], source="apex")
         return {
             "status": f"Grok research launched in background{flags_str}...",
             "bg_proc": proc,
             "bg_response_file": str(response_file),
         }
     except Exception as e:
-        _log_skill_invocation("grok", success=False, error=str(e)[:200], context=args[:80], source="localchat")
+        _log_skill_invocation("grok", success=False, error=str(e)[:200], context=args[:80], source="apex")
         return f"Grok launch error: {e}"
 
 
@@ -721,7 +732,7 @@ def _run_approve(args: str, chat_id: str = "") -> str:
             return "\n".join(lines)
     result = _resolve_approval(approval_id, "approved")
     if result:
-        _log_skill_invocation("gate", success=True, context=f"approved:{result.get('skill','?')}", source="localchat")
+        _log_skill_invocation("gate", success=True, context=f"approved:{result.get('skill','?')}", source="apex")
         return f"✅ Approved: {result.get('skill', '?')}"
     return f"Approval ID '{approval_id}' not found or already resolved."
 
@@ -746,7 +757,7 @@ def _run_reject(args: str, chat_id: str = "") -> str:
             return "\n".join(lines)
     result = _resolve_approval(approval_id, "rejected")
     if result:
-        _log_skill_invocation("gate", success=True, context=f"rejected:{result.get('skill','?')}", source="localchat")
+        _log_skill_invocation("gate", success=True, context=f"rejected:{result.get('skill','?')}", source="apex")
         return f"❌ Rejected: {result.get('skill', '?')}"
     return f"Approval ID '{approval_id}' not found or already resolved."
 
@@ -948,7 +959,7 @@ _log_lock = threading.Lock()
 
 def log(msg: str) -> None:
     line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
-    print(f"[localchat {datetime.now().strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
+    print(f"[apex {datetime.now().strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
     with _log_lock:
         try:
             LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -1367,7 +1378,7 @@ def _get_alert(alert_id: str) -> dict | None:
             "body": row[4], "acked": bool(row[5]), "created_at": row[6], "metadata": meta}
 
 
-GUARDRAIL_WHITELIST = LOCALCHAT_ROOT / "state" / "guardrail_whitelist.json"
+GUARDRAIL_WHITELIST = APEX_ROOT / "state" / "guardrail_whitelist.json"
 
 
 def _add_whitelist_entry(tool: str, target: str, alert_id: str, ttl_seconds: int = 3600) -> dict:
@@ -1802,13 +1813,13 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
 async def lifespan(app: FastAPI):
     _init_db()
     # Initialize Apex Dashboard
-    _apex_config = ApexConfig(LOCALCHAT_ROOT / "state")
+    _apex_config = ApexConfig(APEX_ROOT / "state")
     init_dashboard(
-        state_dir=LOCALCHAT_ROOT / "state",
+        state_dir=APEX_ROOT / "state",
         db_path=DB_PATH,
-        ssl_dir=LOCALCHAT_ROOT / "state" / "ssl",
+        ssl_dir=APEX_ROOT / "state" / "ssl",
     )
-    log(f"LocalChat starting on {HOST}:{PORT} [mTLS]")
+    log(f"Apex starting on {HOST}:{PORT} [mTLS]")
     # Startup recovery — pre-generate recovery context in background (non-blocking)
     async def _startup_recovery():
         try:
@@ -1859,7 +1870,7 @@ async def lifespan(app: FastAPI):
             await _disconnect_client(chat_id)
 
 
-app = FastAPI(title="LocalChat", docs_url=None, redoc_url=None, lifespan=lifespan)
+app = FastAPI(title="Apex", docs_url=None, redoc_url=None, lifespan=lifespan)
 app.mount("/admin", dashboard_app)
 
 
@@ -2363,7 +2374,7 @@ def _fetch_usage_data(token: str) -> dict | None:
                 "Authorization": f"Bearer {token}",
                 "anthropic-beta": "oauth-2025-04-20",
                 "Accept": "application/json",
-                "User-Agent": "localchat/1.0",
+                "User-Agent": "apex/1.0",
             },
         )
         resp = urllib.request.urlopen(req, timeout=10)
@@ -2508,7 +2519,7 @@ async def api_transcribe(request: Request, file: UploadFile = File(...)):
         return JSONResponse({"error": "Audio too large"}, status_code=400)
 
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "webm"
-    with tempfile.TemporaryDirectory(prefix="localchat-whisper-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="apex-whisper-") as tmp_dir:
         input_path = Path(tmp_dir) / f"audio.{ext}"
         input_path.write_bytes(data)
         log(f"transcribing: {len(data)} bytes ({ext})")
@@ -2721,7 +2732,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                     await _safe_ws_send_json(websocket, {"type": "stream_start", "chat_id": chat_id}, chat_id=chat_id)
                     await _safe_ws_send_json(websocket, {"type": "stream_delta", "chat_id": chat_id, "delta": reply}, chat_id=chat_id)
                     await _safe_ws_send_json(websocket, {"type": "stream_end", "chat_id": chat_id}, chat_id=chat_id)
-                    _log_skill_invocation("gate", success=True, context=f"{decision}:{result.get('skill','?')}", source="localchat")
+                    _log_skill_invocation("gate", success=True, context=f"{decision}:{result.get('skill','?')}", source="apex")
                     return
 
     # --- Skill dispatch: intercept /recall, /codex, /grok before SDK ---
@@ -2769,7 +2780,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                     )
                     prompt = skill_args or prompt
                     log(f"Thinking skill dispatch: /{skill} args={skill_args[:60]!r}")
-                    _log_skill_invocation(skill, success=True, context=(skill_args or "")[:80], source="localchat")
+                    _log_skill_invocation(skill, success=True, context=(skill_args or "")[:80], source="apex")
             elif skill in _DIRECT_SKILL_HANDLERS:
                 handled = await _handle_skill(websocket, chat_id, skill, skill_args, prompt)
                 if handled:
@@ -3003,8 +3014,8 @@ async def index(request: Request):
 @app.get("/manifest.json")
 async def manifest():
     return JSONResponse({
-        "name": "LocalChat",
-        "short_name": "LocalChat",
+        "name": "ApexChat",
+        "short_name": "ApexChat",
         "description": "Local Claude Code chat over WireGuard",
         "start_url": "/",
         "display": "standalone",
@@ -3048,11 +3059,11 @@ CHAT_HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="LocalChat">
+<meta name="apple-mobile-web-app-title" content="ApexChat">
 <meta name="theme-color" content="#0F172A">
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/icon.svg">
-<title>LocalChat</title>
+<title>ApexChat</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:#0F172A;--surface:#1E293B;--card:#334155;--text:#F1F5F9;--dim:#94A3B8;
@@ -3314,7 +3325,7 @@ font-weight:600;font-size:13px;cursor:pointer}
 
 <div class="topbar">
   <button class="btn-icon" id="menuBtn">&#9776;</button>
-  <h1 id="chatTitle">LocalChat</h1>
+  <h1 id="chatTitle">ApexChat</h1>
   <span class="status ok" id="statusDot"></span>
   <span class="mode-badge {{MODE_CLASS}}" id="modeBadge">{{MODE_LABEL}}</span>
   <span class="alert-badge" id="alertBadge" onclick="toggleAlertsPanel()" title="Alerts">&#128276;<span class="count" id="alertCount"></span></span>
@@ -3529,8 +3540,9 @@ function markStreamActivity(reason = '') {
   if (!streaming) return;
   lastStreamEventAt = Date.now();
   clearStreamWatchdog();
-  // Use longer timeout when a tool is actively running (Codex, Grok can take minutes)
-  const timeout = hasActiveTool() ? 300000 : 30000;  // 5 min for tools, 30s otherwise
+  // Use longer timeout when a tool is running or model is thinking
+  const isThinking = currentBubble && currentBubble.querySelector('.thinking-block.open');
+  const timeout = (hasActiveTool() || isThinking) ? 300000 : 30000;  // 5 min for tools/thinking, 30s otherwise
   streamWatchdog = setTimeout(() => {
     if (!streaming) return;
     if (Date.now() - lastStreamEventAt < (timeout - 500)) {
@@ -3621,7 +3633,7 @@ function setCurrentChat(id, title) {
   } else {
     sessionStorage.removeItem('currentChatId');
   }
-  document.getElementById('chatTitle').textContent = title || 'LocalChat';
+  document.getElementById('chatTitle').textContent = title || 'ApexChat';
   setActiveChatUI();
   updateSendBtn();
   refreshDebugState('chat-selected');
@@ -4830,7 +4842,7 @@ async function selectChat(id, title, chatType, category) {
 
   dbg(' selectChat:', id, title, 'type:', currentChatType);
   const seq = ++selectChatSeq;
-  setCurrentChat(id, title || 'LocalChat');
+  setCurrentChat(id, title || 'ApexChat');
   closeSidebar();
   // Attach WS to the selected chat so we receive live stream events
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -5309,18 +5321,18 @@ msgEl.addEventListener('touchcancel', () => {
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     if not (SSL_CERT and SSL_KEY and SSL_CA):
-        print("ERROR: mTLS requires LOCALCHAT_SSL_CERT, LOCALCHAT_SSL_KEY, and LOCALCHAT_SSL_CA", file=sys.stderr)
-        print("Usage: ./scripts/launch_localchat.sh", file=sys.stderr)
+        print("ERROR: mTLS requires APEX_SSL_CERT, APEX_SSL_KEY, and APEX_SSL_CA", file=sys.stderr)
+        print("Usage: ./server/launch_apex.sh", file=sys.stderr)
         sys.exit(1)
 
-    print(f"\n  LocalChat v1.0")
+    print(f"\n  Apex v1.0")
     print(f"  https://{HOST}:{PORT}")
     print(f"  Model: {MODEL}")
     print(f"  Auth: mTLS (client certificate)")
     print(f"  CA: {SSL_CA}")
     print()
 
-    log_lvl = os.environ.get("LOCALCHAT_LOG_LEVEL", "info")
+    log_lvl = os.environ.get("APEX_LOG_LEVEL", os.environ.get("LOCALCHAT_LOG_LEVEL", "info"))
     uvicorn.run(
         app, host=HOST, port=PORT, log_level=log_lvl,
         ssl_certfile=SSL_CERT,

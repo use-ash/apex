@@ -1,21 +1,21 @@
-"""LocalChat alert client — drop-in for trading scripts.
+"""Apex alert client — drop-in for trading scripts.
 
 Usage:
-    from alert_client import send_localchat_alert
-    send_localchat_alert("plan_h", "critical", "SPY signal detected", body="CALL @ $542.30")
+    from alert_client import send_apex_alert
+    send_apex_alert("plan_h", "critical", "SPY signal detected", body="CALL @ $542.30")
 """
 
 import json, os, ssl, urllib.request
 
-_SERVER = os.environ.get("LOCALCHAT_SERVER", "https://10.8.0.2:8300")
-_TOKEN = os.environ.get("LOCALCHAT_ALERT_TOKEN", "")
+_SERVER = os.environ.get("APEX_SERVER", os.environ.get("LOCALCHAT_SERVER", "https://10.8.0.2:8300"))
+_TOKEN = os.environ.get("APEX_ALERT_TOKEN", os.environ.get("LOCALCHAT_ALERT_TOKEN", ""))
 
 
-def send_localchat_alert(
+def send_apex_alert(
     source: str, severity: str, title: str, body: str = "",
     *, metadata: dict | None = None, timeout: int = 5
 ) -> bool:
-    """Post alert to LocalChat. Returns True on success."""
+    """Post alert to Apex. Returns True on success."""
     if not _TOKEN:
         return False
     ctx = ssl.create_default_context()
@@ -38,3 +38,7 @@ def send_localchat_alert(
         return True
     except Exception:
         return False
+
+
+# Backward-compat alias
+send_localchat_alert = send_apex_alert

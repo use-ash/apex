@@ -4,7 +4,7 @@ import SwiftUI
 import UserNotifications
 
 @main
-struct LocalChatApp: App {
+struct ApexChatApp: App {
     @AppStorage("did_request_notification_permission") private var didRequestNotificationPermission = false
     @Environment(\.scenePhase) private var scenePhase
     @State private var appState = AppState()
@@ -68,7 +68,7 @@ struct LocalChatApp: App {
             do {
                 try await center.requestAuthorization(options: [.alert, .sound, .badge])
             } catch {
-                Logger(subsystem: "com.openclaw.localchat", category: "App").error("Notification auth error: \(error.localizedDescription, privacy: .public)")
+                Logger(subsystem: "com.apex.apexchat", category: "App").error("Notification auth error: \(error.localizedDescription, privacy: .public)")
             }
         }
     }

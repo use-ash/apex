@@ -10,7 +10,7 @@
 	</array>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>com.openclaw.localchat.keepalive</string>
+		<string>com.apex.apexchat.keepalive</string>
 	</array>
 	<key>CFBundleGetInfoString</key>
 	<string></string>

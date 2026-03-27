@@ -61,7 +61,7 @@ struct OnboardingView: View {
             Text("Import Certificate")
                 .font(.title2.bold())
 
-            Text("Import your client certificate (.p12 file) to connect securely to your LocalChat server.")
+            Text("Import your client certificate (.p12 file) to connect securely to your ApexChat server.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
@@ -157,7 +157,7 @@ struct OnboardingView: View {
             Text("Server Connection")
                 .font(.title2.bold())
 
-            Text("Enter your LocalChat server address. Make sure you're connected to your VPN.")
+            Text("Enter your ApexChat server address. Make sure you're connected to your VPN.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 

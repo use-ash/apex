@@ -1,45 +1,45 @@
 #!/bin/bash
-# Launch LocalChat with mTLS (client certificate auth)
-# Usage: cd localchat && bash server/launch_localchat.sh
+# Launch Apex with mTLS (client certificate auth)
+# Usage: cd apex && bash server/launch_apex.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LOCALCHAT_ROOT="$(dirname "$SCRIPT_DIR")"
-SSL_DIR="$LOCALCHAT_ROOT/state/ssl"
+APEX_ROOT="$(dirname "$SCRIPT_DIR")"
+SSL_DIR="$APEX_ROOT/state/ssl"
 
 # Generate client cert if missing
 if [ ! -f "$SSL_DIR/client.p12" ]; then
     echo "Generating client certificate..."
     openssl genrsa -out "$SSL_DIR/client.key" 2048 2>/dev/null
-    openssl req -new -key "$SSL_DIR/client.key" -subj "/CN=localchat-client" \
+    openssl req -new -key "$SSL_DIR/client.key" -subj "/CN=apex-client" \
       | openssl x509 -req -CA "$SSL_DIR/ca.crt" -CAkey "$SSL_DIR/ca.key" \
         -CAcreateserial -days 825 -sha256 \
         -extfile <(printf "basicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=clientAuth") \
         -out "$SSL_DIR/client.crt" 2>/dev/null
     openssl pkcs12 -export -out "$SSL_DIR/client.p12" \
       -inkey "$SSL_DIR/client.key" -in "$SSL_DIR/client.crt" \
-      -certfile "$SSL_DIR/ca.crt" -passout pass:localchat 2>/dev/null
+      -certfile "$SSL_DIR/ca.crt" -passout pass:apex 2>/dev/null
     echo ""
     echo "  Client cert created: $SSL_DIR/client.p12"
     echo "  AirDrop this file to your phone."
-    echo "  Install password: localchat"
+    echo "  Install password: apex"
     echo ""
 fi
 
-kill $(pgrep -f localchat.py) 2>/dev/null
+kill $(pgrep -f apex.py) 2>/dev/null
 sleep 1
 
-export LOCALCHAT_SSL_CERT="$SSL_DIR/localchat.crt"
-export LOCALCHAT_SSL_KEY="$SSL_DIR/localchat.key"
-export LOCALCHAT_SSL_CA="$SSL_DIR/ca.crt"
+export APEX_SSL_CERT="$SSL_DIR/apex.crt"
+export APEX_SSL_KEY="$SSL_DIR/apex.key"
+export APEX_SSL_CA="$SSL_DIR/ca.crt"
 
-export LOCALCHAT_ROOT="$LOCALCHAT_ROOT"
+export APEX_ROOT="$APEX_ROOT"
 
-# Source credentials (.env has XAI_API_KEY, LOCALCHAT_ALERT_TOKEN, etc.)
+# Source credentials (.env has XAI_API_KEY, APEX_ALERT_TOKEN, etc.)
 if [ -f "$HOME/.openclaw/.env" ]; then
     set -a
     source "$HOME/.openclaw/.env"
     set +a
 fi
 
-echo "Starting LocalChat with mTLS..."
-python3 "$SCRIPT_DIR/localchat.py"
+echo "Starting Apex with mTLS..."
+python3 "$SCRIPT_DIR/apex.py"

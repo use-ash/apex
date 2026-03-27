@@ -1,15 +1,15 @@
-# LocalChat
+# Apex
 
-Private Claude chat interface — native iOS client + Python server. Runs over WireGuard VPN with mTLS client certificate auth.
+Private Claude chat interface — native iOS client (ApexChat) + Python server. Runs over WireGuard VPN with mTLS client certificate auth.
 
 ## Structure
 
 ```
-localchat/
+apex/
 ├── server/           # FastAPI + WebSocket + Claude Agent SDK
 │   ├── localchat.py  # Single-file server (port 8300)
 │   └── launch_localchat.sh
-├── ios/              # SwiftUI native client (in progress)
+├── ios/              # SwiftUI native client (ApexChat)
 ├── production/       # Deployment configs, cron, systemd
 ├── docs/             # Design docs, debug logs, plans
 └── state/            # Runtime data (not committed)
@@ -31,6 +31,6 @@ cd server && bash launch_localchat.sh
 ## Architecture
 
 - **Server:** FastAPI, persistent Claude SDK sessions, SQLite, WebSocket streaming
-- **iOS Client:** SwiftUI, URLSessionWebSocketTask, mTLS, background survival
+- **iOS Client (ApexChat):** SwiftUI, URLSessionWebSocketTask, mTLS, background survival
 - **Auth:** mTLS client certificates over WireGuard VPN
 - **Protocol:** JSON over WebSocket (see docs/IOS_NATIVE_PLAN.md for full spec)

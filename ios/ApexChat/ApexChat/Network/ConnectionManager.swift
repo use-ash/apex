@@ -17,7 +17,7 @@ final class ConnectionManager {
     private var pongTimer: Timer?
     private var reconnectAttempts: Int = 0
     private let maxReconnectDelay: TimeInterval = 15
-    private let logger = Logger(subsystem: "com.openclaw.localchat", category: "WebSocket")
+    private let logger = Logger(subsystem: "com.apex.apexchat", category: "WebSocket")
     private var intentionalDisconnect = false
     private var wantsConnection = false
     private let delegate: TLSDelegate

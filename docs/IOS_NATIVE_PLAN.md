@@ -1,9 +1,9 @@
-# LocalChat Swift — Native iOS Client Plan
+# ApexChat Swift — Native iOS Client Plan
 
 **Status:** Planning
 **Created:** 2026-03-24
 **Problem:** iOS Safari PWA kills WebSocket after ~30s lock. Native app survives via URLSessionWebSocketTask + background modes.
-**Approach:** Client-side only. Zero server changes. SwiftUI app speaks the existing LocalChat WebSocket + REST protocol.
+**Approach:** Client-side only. Zero server changes. SwiftUI app speaks the existing Apex WebSocket + REST protocol.
 
 ---
 
@@ -59,7 +59,7 @@ The native app eliminates the entire class of reconnection bugs. The server alre
          │ wss://macstudio:8300/ws
          ▼
 ┌─────────────────────────────────┐
-│  LocalChat Server (unchanged)   │
+│  Apex Server (unchanged)        │
 │  FastAPI + Claude Agent SDK     │
 └─────────────────────────────────┘
 ```
@@ -74,8 +74,8 @@ The native app eliminates the entire class of reconnection bugs. The server alre
 
 **Files:**
 ```
-LocalChat/
-├── LocalChatApp.swift              # @main, app lifecycle
+ApexChat/
+├── ApexChatApp.swift               # @main, app lifecycle
 ├── Models/
 │   ├── Chat.swift                  # Chat model (id, title, created_at, updated_at)
 │   └── Message.swift               # Message model (id, role, content, tool_events, thinking, cost, tokens)
@@ -358,7 +358,7 @@ Phase 3 is the payoff — once that works, the lock/unlock problem is solved per
 
 ## Open Questions
 
-1. **Xcode project location:** `~/Developer/LocalChat/` or inside openclaw workspace?
+1. **Xcode project location:** `~/Developer/ApexChat/` or inside openclaw workspace?
 2. **Cert bundling vs runtime import:** Bundle .p12 in app (simpler) or let user import via Files (more flexible for rotation)?
 3. **Local message cache:** Mirror server DB in local CoreData/SwiftData for offline viewing? Or always fetch from server (simpler, we're always on VPN anyway)?
 4. **Minimum iOS version:** iOS 16 (SwiftUI improvements, NavigationSplitView) or iOS 17 (Observable macro)?

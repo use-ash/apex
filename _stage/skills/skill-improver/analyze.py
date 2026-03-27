@@ -23,7 +23,7 @@ from statistics import mean, median
 # ---------------------------------------------------------------------------
 
 def _workspace() -> Path:
-    return Path(os.environ.get("APEX_WORKSPACE", os.environ.get("LOCALCHAT_WORKSPACE", os.getcwd())))
+    return Path(os.environ.get("LOCALCHAT_WORKSPACE", os.getcwd()))
 
 def _skill_dir(skill_name: str, workspace: Path | None = None) -> Path:
     ws = workspace or _workspace()

@@ -1,15 +1,15 @@
 ---
-name: LocalChat mobile access and mTLS auth
-description: LocalChat mobile setup over VPN with mTLS client cert auth, SDK streaming fixes, and troubleshooting log
+name: Apex mobile access and mTLS auth
+description: Apex mobile setup over VPN with mTLS client cert auth, SDK streaming fixes, and troubleshooting log
 type: project
 ---
 
-LocalChat (`scripts/localchat.py`) serves over HTTPS with mTLS client certificate auth. Full troubleshooting log at `scripts/localchat_troubleshooting.md`.
+Apex (`scripts/localchat.py`) serves over HTTPS with mTLS client certificate auth. Full troubleshooting log at `docs/TROUBLESHOOTING.md`.
 
 **Auth: mTLS (CERT_OPTIONAL)**
 - Password auth fully stripped. No cookies, no sessions, no tokens.
 - `ssl_cert_reqs=ssl.CERT_OPTIONAL` — browsers don't send client certs for WebSocket upgrades, so CERT_REQUIRED breaks WebSocket. VPN is the security boundary.
-- Client cert: `state/ssl/client.p12` (AirDrop to phone, password: `localchat`)
+- Client cert: `state/ssl/client.p12` (AirDrop to phone, password: `apex`)
 - CA: `state/ssl/ca.crt` (OpenClaw Local CA)
 - Server cert SANs: 10.8.0.2 (VPN), 192.168.86.214 (LAN), 127.0.0.1
 
@@ -24,4 +24,4 @@ LocalChat (`scripts/localchat.py`) serves over HTTPS with mTLS client certificat
 
 **Why:** Dana wants mobile Claude access over WireGuard VPN. Also a reference impl for ASH customer service chat.
 
-**How to apply:** Read `scripts/localchat_troubleshooting.md` before touching auth or SDK code. 10 issues documented with root causes and fixes.
+**How to apply:** Read `docs/TROUBLESHOOTING.md` before touching auth or SDK code. 10 issues documented with root causes and fixes.

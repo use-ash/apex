@@ -29,7 +29,7 @@ from analyze import build_report, analyze_metrics, load_metrics, detect_issues, 
 
 
 def _workspace() -> Path:
-    return Path(os.environ.get("APEX_WORKSPACE", os.environ.get("LOCALCHAT_WORKSPACE", os.getcwd())))
+    return Path(os.environ.get("LOCALCHAT_WORKSPACE", os.getcwd()))
 
 
 def scan_all_skills(workspace: Path | None = None, days: int = 30) -> list[dict]:
@@ -147,7 +147,7 @@ def main():
     print()
 
     if flagged:
-        print(f"FLAGGED ({len(flagged)}):")
+        print(f"🔴 FLAGGED ({len(flagged)}):")
         for r in flagged:
             reasons = ", ".join(r.get("reasons", []))
             rate = f"{r['success_rate']}%" if r["success_rate"] is not None else "n/a"
@@ -155,7 +155,7 @@ def main():
         print()
 
     if healthy:
-        print(f"HEALTHY ({len(healthy)}):")
+        print(f"🟢 HEALTHY ({len(healthy)}):")
         for r in healthy:
             rate = f"{r['success_rate']}%" if r["success_rate"] is not None else "n/a"
             dur = f"{r['avg_duration']:.1f}s" if r.get("avg_duration") else "n/a"
@@ -163,7 +163,7 @@ def main():
         print()
 
     if inactive:
-        print(f"NO DATA ({len(inactive)}):")
+        print(f"⚪ NO DATA ({len(inactive)}):")
         for r in inactive:
             print(f"   {r['skill']}")
         print()
@@ -173,7 +173,7 @@ def main():
         flagged_names = [r["skill"] for r in flagged]
         saved = run_auto_improve(flagged_names, ws, args.days)
         for path in saved:
-            print(f"   {path}")
+            print(f"   📄 {path}")
         print(f"\nDone. {len(saved)} reports generated.")
         print("Review with: /improve <skill_name>")
     elif flagged:

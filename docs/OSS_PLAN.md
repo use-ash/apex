@@ -1,10 +1,10 @@
 ---
-name: LocalChat OSS extraction plan
-description: Plan to open-source LocalChat as a standalone single-file Claude chat server
+name: Apex OSS extraction plan
+description: Plan to open-source Apex as a standalone single-file Claude chat server
 type: project
 ---
 
-LocalChat (`scripts/localchat.py`) is a candidate for OSS release as a standalone self-hosted Claude chat interface.
+Apex (`scripts/localchat.py`) is a candidate for OSS release as a standalone self-hosted Claude chat interface.
 
 **What it is:** Single-file Python chat server (~1600 lines) with inline HTML/CSS/JS. Zero build step. Runs Claude via the Agent SDK with streaming, persistent sessions, file uploads, and TLS.
 
@@ -14,10 +14,10 @@ LocalChat (`scripts/localchat.py`) is a candidate for OSS release as a standalon
 - Strip hardcoded workspace path (`/Users/dana/.openclaw/workspace`)
 - Make password setup a first-run flow (not env var)
 - Remove OpenClaw-specific hooks/references
-- Make model configurable via env var (already done: `LOCALCHAT_MODEL`)
+- Make model configurable via env var (already done: `APEX_MODEL`)
 - Add proper README with screenshots
 - License: MIT
-- Repo: `use-ash/localchat` or standalone
+- Repo: `use-ash/apex` or standalone
 
 **Could also serve as:** ASH customer service chat (swap system prompt, scope tools, add per-tenant isolation). The transport layer, auth, and streaming are production-grade.
 
