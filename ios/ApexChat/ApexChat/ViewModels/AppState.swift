@@ -320,6 +320,29 @@ final class AppState {
         }
     }
 
+    func refreshCurrentView() async {
+        if !connectionManager.isConnected {
+            connectionManager.connect()
+        }
+
+        await loadChats()
+
+        if persistentChatId == nil {
+            await ensurePersistentChat()
+        } else {
+            await refreshPersistentChat()
+        }
+
+        if let chatId = persistentChatId {
+            connectionManager.send(.attach(chatId: chatId))
+            await loadMessages(chatId)
+            await fetchContext()
+        }
+
+        await loadAlerts()
+        await fetchUsage()
+    }
+
     static func alertCategory(for source: String) -> String {
         switch source {
         case "plan_h", "plan_c", "plan_h_backstop", "plan_m", "plan_alpha", "regime":

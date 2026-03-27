@@ -1448,9 +1448,12 @@ ENV_PATH = Path.home() / ".openclaw" / ".env"
 _PROVIDER_KEY_MAP: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "xai": "XAI_API_KEY",
+    "xai_management": "XAI_MANAGEMENT_KEY",
+    "xai_team_id": "XAI_TEAM_ID",
     "openai": "OPENAI_API_KEY",
     "telegram_bot": "TELEGRAM_BOT_TOKEN",
     "telegram_chat": "TELEGRAM_CHAT_ID",
+    "google": "GOOGLE_API_KEY",
 }
 
 _CODEX_MODEL_OPTIONS: list[str] = [
@@ -1811,6 +1814,8 @@ async def api_credentials():
         "credentials": {
             "anthropic": _env_has_key("ANTHROPIC_API_KEY"),
             "xai": _env_has_key("XAI_API_KEY"),
+            "xai_management": _env_has_key("XAI_MANAGEMENT_KEY"),
+            "xai_team_id": _env_has_key("XAI_TEAM_ID"),
             "openai": _env_has_key("OPENAI_API_KEY"),
             "telegram_bot": _env_has_key("TELEGRAM_BOT_TOKEN"),
             "telegram_chat": _env_has_key("TELEGRAM_CHAT_ID"),
@@ -1827,9 +1832,12 @@ _CREDENTIAL_KEY_PATTERNS: dict[str, tuple[str, int, int]] = {
     # provider: (prefix_or_empty, min_length, max_length)
     "anthropic": ("sk-ant-", 20, 200),
     "xai": ("xai-", 20, 200),
+    "xai_management": ("xai-token-", 20, 200),
+    "xai_team_id": ("", 20, 60),  # UUID format
     "openai": ("sk-", 20, 200),
     "telegram_bot": ("", 30, 100),   # format: 123456:ABC-DEF...
     "telegram_chat": ("", 5, 20),    # numeric chat ID
+    "google": ("AIza", 20, 200),
 }
 _credential_rate: dict[str, float] = {}  # provider -> last update timestamp
 _CREDENTIAL_RATE_LIMIT = 5.0  # seconds between updates per provider
@@ -2161,8 +2169,11 @@ WORKSPACE = Path(os.environ.get("APEX_WORKSPACE", os.environ.get("LOCALCHAT_WORK
 
 @dashboard_app.get("/api/workspace")
 async def api_workspace():
-    """Workspace overview: path, CLAUDE.md exists, memory count, skills count."""
+    """Workspace overview: path, project md exists, memory count, skills count."""
+    # Prefer APEX.md (model-agnostic), fall back to CLAUDE.md for backward compat
+    apex_md = WORKSPACE / "APEX.md"
     claude_md = WORKSPACE / "CLAUDE.md"
+    project_md = apex_md if apex_md.exists() else claude_md
     memory_dir = WORKSPACE / "memory"
     skills_dir = WORKSPACE / "skills"
 
@@ -2173,7 +2184,8 @@ async def api_workspace():
 
     return JSONResponse({
         "workspace": str(WORKSPACE),
-        "claude_md_exists": claude_md.exists(),
+        "claude_md_exists": project_md.exists(),
+        "project_md_name": project_md.name,
         "memory_file_count": memory_count,
         "skills_count": skills_count,
     })
@@ -2185,18 +2197,22 @@ async def api_workspace():
 
 @dashboard_app.get("/api/workspace/claude-md")
 async def api_workspace_claude_md_get():
-    """Return the contents of CLAUDE.md."""
+    """Return the contents of APEX.md (or CLAUDE.md fallback)."""
+    # Prefer APEX.md (model-agnostic), fall back to CLAUDE.md for backward compat
+    apex_md = WORKSPACE / "APEX.md"
     claude_md = WORKSPACE / "CLAUDE.md"
-    if not claude_md.exists():
-        return _error("CLAUDE.md not found", "NOT_FOUND", status=404)
+    project_md = apex_md if apex_md.exists() else claude_md
+    if not project_md.exists():
+        return _error("Project instructions file not found (tried APEX.md and CLAUDE.md)", "NOT_FOUND", status=404)
     try:
-        content = claude_md.read_text(encoding="utf-8")
+        content = project_md.read_text(encoding="utf-8")
     except Exception as e:
-        _log.error(f"Failed to read CLAUDE.md: {e}")
-        return _error("Failed to read CLAUDE.md", "READ_ERROR")
+        _log.error(f"Failed to read {project_md.name}: {e}")
+        return _error(f"Failed to read {project_md.name}", "READ_ERROR")
     return JSONResponse({
         "content": content,
-        "size_bytes": claude_md.stat().st_size,
+        "filename": project_md.name,
+        "size_bytes": project_md.stat().st_size,
     })
 
 
@@ -2206,27 +2222,30 @@ async def api_workspace_claude_md_get():
 
 @dashboard_app.put("/api/workspace/claude-md")
 async def api_workspace_claude_md_put(request: Request):
-    """Write CLAUDE.md after backing up to CLAUDE.md.bak."""
+    """Write APEX.md (or CLAUDE.md fallback) after backing up."""
     body = await request.json()
     content = body.get("content")
     if content is None:
         return _error("Missing 'content' field", "BAD_REQUEST", status=400)
 
+    # Prefer APEX.md (model-agnostic), fall back to CLAUDE.md for backward compat
+    apex_md = WORKSPACE / "APEX.md"
     claude_md = WORKSPACE / "CLAUDE.md"
-    bak = WORKSPACE / "CLAUDE.md.bak"
+    project_md = apex_md if apex_md.exists() else claude_md
+    bak = WORKSPACE / f"{project_md.name}.bak"
 
     try:
-        if claude_md.exists():
-            shutil.copy2(str(claude_md), str(bak))
-        claude_md.write_text(content, encoding="utf-8")
+        if project_md.exists():
+            shutil.copy2(str(project_md), str(bak))
+        project_md.write_text(content, encoding="utf-8")
     except Exception as e:
-        _log.error(f"Failed to write CLAUDE.md: {e}")
-        return _error("Failed to write CLAUDE.md", "WRITE_ERROR")
+        _log.error(f"Failed to write {project_md.name}: {e}")
+        return _error(f"Failed to write {project_md.name}", "WRITE_ERROR")
 
     return JSONResponse({
         "status": "ok",
-        "message": "CLAUDE.md updated (backup saved to CLAUDE.md.bak)",
-        "size_bytes": claude_md.stat().st_size,
+        "message": f"{project_md.name} updated (backup saved to {bak.name})",
+        "size_bytes": project_md.stat().st_size,
     })
 
 

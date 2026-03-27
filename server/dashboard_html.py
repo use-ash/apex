@@ -3129,7 +3129,9 @@ function renderCredentialsTable() {
     var tbody = document.getElementById("credentials-tbody");
     var providers = [
         { key: "anthropic", name: "Claude (Anthropic)" },
-        { key: "xai", name: "Grok (xAI)" },
+        { key: "xai", name: "Grok API Key" },
+        { key: "xai_management", name: "Grok Management Key" },
+        { key: "xai_team_id", name: "Grok Team ID" },
         { key: "openai", name: "Codex (OpenAI)" },
         { key: "telegram_bot", name: "Telegram Bot Token" },
         { key: "telegram_chat", name: "Telegram Chat ID" },
@@ -3158,10 +3160,12 @@ function renderCredentialsTable() {
 
 function updateCredential(provider) {
     currentCredentialProvider = provider;
-    var names = { anthropic: "Claude API Key", xai: "Grok API Key", openai: "OpenAI API Key", telegram_bot: "Telegram Bot Token", telegram_chat: "Telegram Chat ID" };
+    var names = { anthropic: "Claude API Key", xai: "Grok API Key", xai_management: "Grok Management Key", xai_team_id: "Grok Team ID", openai: "OpenAI API Key", telegram_bot: "Telegram Bot Token", telegram_chat: "Telegram Chat ID" };
     var hints = {
         anthropic: "Starts with sk-ant-... (paste from console.anthropic.com)",
         xai: "Starts with xai-... (paste from console.x.ai)",
+        xai_management: "Starts with xai-token-... (from console.x.ai > Settings > Management Keys)",
+        xai_team_id: "UUID from console.x.ai/team/default/settings/team",
         openai: "Starts with sk-... (paste from platform.openai.com/api-keys)",
         telegram_bot: "Format: 123456789:ABCdef... (from @BotFather)",
         telegram_chat: "Numeric chat ID (e.g. 5072593158)"
@@ -3171,7 +3175,7 @@ function updateCredential(provider) {
     document.getElementById("credential-input-help").textContent = hints[provider] || "Enter the new " + (names[provider] || "credential").toLowerCase();
     var input = document.getElementById("credential-input");
     input.value = "";
-    input.type = provider === "telegram_chat" ? "text" : "password";
+    input.type = (provider === "telegram_chat" || provider === "xai_team_id") ? "text" : "password";
     input.autocomplete = "off";
     document.getElementById("btn-save-credential").disabled = false;
     openModal("modal-credential");

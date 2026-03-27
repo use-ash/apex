@@ -137,6 +137,12 @@ struct ChatView: View {
             .onAppear {
                 scrollToBottom(proxy: proxy)
             }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+                scheduleKeyboardAwareScroll(proxy: proxy)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { _ in
+                scheduleKeyboardAwareScroll(proxy: proxy)
+            }
         }
         .onAppear {
             appState.streamMessageHandler = handleStreamMessage
@@ -265,6 +271,18 @@ struct ChatView: View {
             withAnimation(.easeOut(duration: 0.2)) {
                 proxy.scrollTo(lastId, anchor: .bottom)
             }
+        }
+    }
+
+    private func scheduleKeyboardAwareScroll(proxy: ScrollViewProxy) {
+        scrollToBottom(proxy: proxy)
+
+        DispatchQueue.main.async {
+            scrollToBottom(proxy: proxy)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+            scrollToBottom(proxy: proxy)
         }
     }
 

@@ -41,5 +41,16 @@ if [ -f "$HOME/.openclaw/.env" ]; then
     set +a
 fi
 
+# First-run detection — run setup wizard if no CA cert exists
+if [ ! -f "$SSL_DIR/ca.crt" ]; then
+    echo ""
+    echo "  First run detected. Starting setup wizard..."
+    echo ""
+    python3 "$(dirname "$APEX_ROOT")/setup.py" || {
+        echo "Setup failed. You can also run: python3 setup.py"
+        exit 1
+    }
+fi
+
 echo "Starting Apex with mTLS..."
 python3 "$SCRIPT_DIR/apex.py"

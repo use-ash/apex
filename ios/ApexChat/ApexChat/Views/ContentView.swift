@@ -7,7 +7,7 @@ struct ContentView: View {
     @State private var isShowingSettings: Bool = false
     @State private var isShowingSearch: Bool = false
     @State private var isShowingChannels: Bool = false
-    @State private var channelDragOffset: CGFloat = 0
+    @State private var canDismissChannelDrawer: Bool = true
     @State private var searchText: String = ""
     @State private var openSettingsAfterConnectionSheet: Bool = false
     @State private var showUsageBanner: Bool = false
@@ -16,7 +16,8 @@ struct ContentView: View {
     @State private var selectedToastAlert: Alert?
     @State private var isShowingBellSheet: Bool = false
     @State private var bellSelectedAlert: Alert?
-    @State private var preBellChatId: String?
+    @State private var showBellClearAllConfirmation: Bool = false
+    @State private var isRefreshing: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -40,15 +41,23 @@ struct ContentView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .zIndex(1)
                 }
+
+                if !isShowingChannels {
+                    HStack(spacing: 0) {
+                        Color.clear
+                            .frame(width: drawerEdgeActivationWidth)
+                            .contentShape(Rectangle())
+                            .highPriorityGesture(channelOpenGesture)
+                        Spacer(minLength: 0)
+                    }
+                }
             }
             .animation(.spring(response: 0.24, dampingFraction: 0.88), value: isShowingSearch)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
-                        withAnimation(.easeOut(duration: 0.25)) {
-                            isShowingChannels = true
-                        }
+                        openChannelDrawer()
                     } label: {
                         Image(systemName: "line.3.horizontal")
                     }
@@ -65,6 +74,21 @@ struct ContentView: View {
                         connectionPill
                     }
                     .buttonStyle(.plain)
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        Task { await refreshTopBarData() }
+                    } label: {
+                        if isRefreshing {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.body)
+                        }
+                    }
+                    .disabled(isRefreshing)
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
@@ -108,22 +132,11 @@ struct ContentView: View {
         .sheet(isPresented: $isShowingSettings) {
             SettingsView(appState: appState)
         }
-        .sheet(isPresented: $isShowingBellSheet) {
+        .sheet(isPresented: $isShowingBellSheet, onDismiss: handleBellSheetDismiss) {
             bellAlertListSheet
         }
-        .sheet(item: $bellSelectedAlert) { alert in
-            AlertDetailView(alert: alert, appState: appState)
-                .onDisappear {
-                    // Return to the chat we were on before tapping the alert
-                    if let prevId = preBellChatId,
-                       let prevChat = appState.chats.first(where: { $0.id == prevId }) {
-                        appState.switchToChat(prevChat)
-                        preBellChatId = nil
-                    }
-                }
-        }
         .overlay {
-            if isShowingChannels || channelDragOffset > 0 {
+            if isShowingChannels {
                 channelDrawer
             }
         }
@@ -171,26 +184,6 @@ struct ContentView: View {
         .sheet(item: $selectedToastAlert) { alert in
             AlertDetailView(alert: alert, appState: appState)
         }
-        .simultaneousGesture(
-            DragGesture(coordinateSpace: .global)
-                .onChanged { value in
-                    if value.startLocation.x < 50 && value.translation.width > 0 {
-                        channelDragOffset = value.translation.width
-                    }
-                }
-                .onEnded { value in
-                    if value.startLocation.x < 50 && value.translation.width > 60 {
-                        withAnimation(.easeOut(duration: 0.25)) {
-                            isShowingChannels = true
-                            channelDragOffset = 0
-                        }
-                    } else {
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            channelDragOffset = 0
-                        }
-                    }
-                }
-        )
         .onAppear {
             appState.startUsagePolling()
             flashUsageBanner()
@@ -210,6 +203,15 @@ struct ContentView: View {
         }
     }
 
+    @MainActor
+    private func refreshTopBarData() async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+
+        await appState.refreshCurrentView()
+    }
+
     // MARK: - Bell Alert List Sheet
 
     private var bellAlertListSheet: some View {
@@ -220,22 +222,7 @@ struct ContentView: View {
                 } else {
                     ForEach(appState.alerts) { alert in
                         Button {
-                            isShowingBellSheet = false
-                            // Save current chat so we can return after detail closes
-                            preBellChatId = appState.persistentChatId
-                            // Navigate to the matching alerts channel
-                            let sourceCategory = AppState.alertCategory(for: alert.source)
-                            if let channel = appState.chats.first(where: {
-                                $0.type == "alerts" && $0.category == sourceCategory
-                            }) ?? appState.chats.first(where: {
-                                $0.type == "alerts" && ($0.category == nil || $0.category?.isEmpty == true)
-                            }) {
-                                appState.switchToChat(channel)
-                            }
-                            // Open alert detail after a brief delay for navigation
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                bellSelectedAlert = alert
-                            }
+                            bellSelectedAlert = alert
                         } label: {
                             HStack(alignment: .top, spacing: 10) {
                                 Image(systemName: alert.severityIcon)
@@ -296,9 +283,27 @@ struct ContentView: View {
             .navigationTitle("Alerts")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if !appState.alerts.isEmpty {
+                        Button("Clear All", role: .destructive) {
+                            showBellClearAllConfirmation = true
+                        }
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { isShowingBellSheet = false }
                 }
+            }
+            .navigationDestination(item: $bellSelectedAlert) { alert in
+                AlertDetailView(alert: alert, appState: appState)
+            }
+            .alert("Clear All Alerts", isPresented: $showBellClearAllConfirmation) {
+                Button("Clear All", role: .destructive) {
+                    Task { await appState.deleteAllAlerts() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Delete all alerts? This cannot be undone.")
             }
         }
     }
@@ -335,19 +340,15 @@ struct ContentView: View {
     // MARK: - Channel Drawer
 
     private let drawerWidth: CGFloat = 300
+    private let drawerEdgeActivationWidth: CGFloat = 96
 
     private var channelDrawer: some View {
-        let openOffset: CGFloat = 0
-        let closedOffset: CGFloat = -drawerWidth
-        let currentOffset: CGFloat = isShowingChannels
-            ? openOffset
-            : closedOffset + min(channelDragOffset, drawerWidth)
-
         return ZStack(alignment: .leading) {
             // Scrim
-            Color.black.opacity(scrimOpacity)
+            Color.black.opacity(0.4)
                 .ignoresSafeArea()
                 .onTapGesture {
+                    guard canDismissChannelDrawer else { return }
                     withAnimation(.easeOut(duration: 0.25)) {
                         isShowingChannels = false
                     }
@@ -367,7 +368,6 @@ struct ContentView: View {
             })
             .frame(width: drawerWidth)
             .background(.ultraThickMaterial)
-            .offset(x: currentOffset)
             .gesture(
                 DragGesture()
                     .onEnded { value in
@@ -379,11 +379,30 @@ struct ContentView: View {
                     }
             )
         }
+        .transition(.move(edge: .leading))
     }
 
-    private var scrimOpacity: Double {
-        if isShowingChannels { return 0.4 }
-        return Double(min(channelDragOffset / drawerWidth, 1.0)) * 0.4
+    private var channelOpenGesture: some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .global)
+            .onChanged { value in
+                guard !isShowingChannels else { return }
+                guard value.startLocation.x <= drawerEdgeActivationWidth else { return }
+                guard value.translation.width > 0 else { return }
+                guard value.translation.width > abs(value.translation.height) else { return }
+                if value.translation.width > 20 {
+                    openChannelDrawer()
+                }
+            }
+    }
+
+    private func openChannelDrawer() {
+        canDismissChannelDrawer = false
+        withAnimation(.easeOut(duration: 0.25)) {
+            isShowingChannels = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            canDismissChannelDrawer = true
+        }
     }
 
     // MARK: - Toolbar
@@ -430,5 +449,9 @@ struct ContentView: View {
         guard openSettingsAfterConnectionSheet else { return }
         openSettingsAfterConnectionSheet = false
         isShowingSettings = true
+    }
+
+    private func handleBellSheetDismiss() {
+        bellSelectedAlert = nil
     }
 }

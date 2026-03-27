@@ -95,6 +95,8 @@ PERMISSION_MODE = os.environ.get("APEX_PERMISSION_MODE", os.environ.get("LOCALCH
 DEBUG = os.environ.get("APEX_DEBUG", os.environ.get("LOCALCHAT_DEBUG", "")).lower() in {"1", "true", "yes"}
 ALERT_TOKEN = os.environ.get("APEX_ALERT_TOKEN", os.environ.get("LOCALCHAT_ALERT_TOKEN", ""))
 XAI_API_KEY = os.environ.get("XAI_API_KEY", "")
+XAI_MANAGEMENT_KEY = os.environ.get("XAI_MANAGEMENT_KEY", "")
+XAI_TEAM_ID = os.environ.get("XAI_TEAM_ID", "3b0d4936-ce44-4571-a053-1e296bc9f6cd")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 CODEX_CLI = os.environ.get("CODEX_CLI_PATH", "/opt/homebrew/bin/codex")
 DB_PATH = APEX_ROOT / "state" / "apex.db"
@@ -132,12 +134,11 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "grok-4": 2_000_000,
     "grok-4-fast": 2_000_000,
     "mlx:mlx-community/Qwen3.5-35B-A3B-4bit": 128_000,
-    "codex:gpt-5.4": 1_000_000,
-    "codex:gpt-4.1": 1_000_000,
-    "codex:gpt-4.1-mini": 1_000_000,
-    "codex:gpt-4.1-nano": 1_000_000,
-    "codex:o3": 200_000,
-    "codex:o4-mini": 200_000,
+    "codex:gpt-5.4": 272_000,
+    "codex:gpt-5.4-mini": 272_000,
+    "codex:gpt-5.3-codex": 272_000,
+    "codex:gpt-5.2": 272_000,
+    "codex:gpt-5.1-codex-max": 272_000,
 }
 MODEL_CONTEXT_DEFAULT = 128_000  # fallback for local/unknown models
 
@@ -452,11 +453,14 @@ def _get_workspace_context(chat_id: str) -> str:
             f"IMPORTANT: Pick up where you left off. If a task was in-progress, continue it. "
             f"If questions were pending, address them. Do not start over or re-introduce yourself.\n</system-reminder>"
         )
+    # Prefer APEX.md (model-agnostic), fall back to CLAUDE.md for backward compat
+    apex_md = WORKSPACE / "APEX.md"
     claude_md = WORKSPACE / "CLAUDE.md"
+    project_md = apex_md if apex_md.exists() else claude_md
     memory_md = WORKSPACE / "memory" / "MEMORY.md"
     skills_dir = WORKSPACE / "skills"
-    if claude_md.exists():
-        parts.append(f"<system-reminder>\n# CLAUDE.md (project instructions)\n{claude_md.read_text()[:8000]}\n</system-reminder>")
+    if project_md.exists():
+        parts.append(f"<system-reminder>\n# Project Instructions\n{project_md.read_text()[:8000]}\n</system-reminder>")
     if memory_md.exists():
         parts.append(f"<system-reminder>\n# MEMORY.md (persistent memory)\n{memory_md.read_text()[:4000]}\n</system-reminder>")
     # Build skills catalog from SKILL.md files
@@ -2474,7 +2478,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 api_url="https://api.x.ai/v1",
             )
         elif backend == "codex":
-            # Strip "codex:" prefix — OpenAI API uses model names directly
+            # Strip "codex:" prefix — route through ChatGPT backend (subscription billing)
             codex_model = effective_model[6:]
             result = await run_tool_loop(
                 ollama_url=OLLAMA_BASE_URL,
@@ -2482,8 +2486,8 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 messages=messages,
                 emit_event=emit,
                 workspace=str(WORKSPACE),
-                api_key=OPENAI_API_KEY,
-                api_url="https://api.openai.com/v1",
+                api_key="chatgpt-oauth",
+                api_url="chatgpt",
             )
         elif backend == "mlx":
             # Strip "mlx:" prefix — MLX server uses HF model IDs
@@ -2744,6 +2748,89 @@ async def api_usage():
         }
 
     return JSONResponse(result)
+
+
+# --- Grok (xAI) usage ---
+
+_GROK_USAGE_CACHE: dict = {}
+_GROK_USAGE_CACHE_TS: float = 0
+
+
+def _fetch_grok_usage() -> dict | None:
+    """Fetch xAI prepaid credit balance via Management API."""
+    global _GROK_USAGE_CACHE, _GROK_USAGE_CACHE_TS
+    if not XAI_MANAGEMENT_KEY:
+        return None
+    now = time.time()
+    if now - _GROK_USAGE_CACHE_TS < _USAGE_CACHE_TTL and _GROK_USAGE_CACHE:
+        return _GROK_USAGE_CACHE
+
+    try:
+        headers = {
+            "Authorization": f"Bearer {XAI_MANAGEMENT_KEY}",
+            "Accept": "application/json",
+            "User-Agent": "Apex/1.0",
+        }
+
+        # 1) Prepaid ledger balance
+        req = urllib.request.Request(
+            f"https://management-api.x.ai/v1/billing/teams/{XAI_TEAM_ID}/prepaid/balance",
+            headers=headers,
+        )
+        resp = urllib.request.urlopen(req, timeout=10)
+        bal_data = json.loads(resp.read(1_000_000))
+
+        purchased_cents = 0
+        ledger_spent_cents = 0
+        for c in bal_data.get("changes", []):
+            val = int(c.get("amount", {}).get("val", 0))
+            if val < 0:
+                purchased_cents += abs(val)
+            else:
+                ledger_spent_cents += val
+        ledger_balance = purchased_cents - ledger_spent_cents
+
+        # 2) Current-month invoice preview (un-reconciled spend)
+        current_month_cents = 0
+        try:
+            req2 = urllib.request.Request(
+                f"https://management-api.x.ai/v1/billing/teams/{XAI_TEAM_ID}/postpaid/invoice/preview",
+                headers=headers,
+            )
+            resp2 = urllib.request.urlopen(req2, timeout=10)
+            inv_data = json.loads(resp2.read(1_000_000))
+            for line in inv_data.get("coreInvoice", {}).get("lines", []):
+                current_month_cents += int(line.get("amount", "0"))
+        except Exception:
+            pass  # best-effort — ledger balance is still useful
+
+        remaining_cents = ledger_balance - current_month_cents
+        total_spent_cents = ledger_spent_cents + current_month_cents
+
+        result = {
+            "balance_usd": round(remaining_cents / 100.0, 2),
+            "purchased_usd": round(purchased_cents / 100.0, 2),
+            "spent_usd": round(total_spent_cents / 100.0, 2),
+        }
+        _GROK_USAGE_CACHE = result
+        _GROK_USAGE_CACHE_TS = now
+        return result
+    except Exception as e:
+        log(f"grok usage API error: {type(e).__name__}: {e}")
+        if _GROK_USAGE_CACHE:
+            _GROK_USAGE_CACHE_TS = now
+            return _GROK_USAGE_CACHE
+        return None
+
+
+@app.get("/api/usage/grok")
+async def api_usage_grok():
+    if not XAI_MANAGEMENT_KEY:
+        return JSONResponse({"error": "no management key"}, status_code=401)
+    usage = _fetch_grok_usage()
+    if not usage:
+        return JSONResponse({"error": "fetch failed"}, status_code=502)
+    return JSONResponse(usage)
 
 
 # --- File upload ---
@@ -3348,13 +3435,21 @@ CHAT_HTML = """<!DOCTYPE html>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:#0F172A;--surface:#1E293B;--card:#334155;--text:#F1F5F9;--dim:#94A3B8;
 --accent:#0EA5E9;--green:#10B981;--red:#EF4444;--yellow:#F59E0B;
---sat:env(safe-area-inset-top);--sab:env(safe-area-inset-bottom)}
+--panel-bg:#1A1A2E;--panel-border:#333;--panel-text:#E5E7EB;--panel-muted:#888;
+--panel-input-bg:#111827;--debug-bg:#111827;--debug-border:#233047;--debug-state:#93C5FD;--debug-log:#A7F3D0;
+--sat:env(safe-area-inset-top);--sab:env(safe-area-inset-bottom);--sidebar-width:min(300px,80vw);
+--chat-font-scale:1}
 body{background:var(--bg);color:var(--text);font-family:-apple-system,system-ui,sans-serif;
 height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+body.theme-light{--bg:#F8FAFC;--surface:#FFFFFF;--card:#D8E1EB;--text:#0F172A;--dim:#64748B;
+--accent:#0284C7;--green:#059669;--red:#DC2626;--yellow:#D97706;
+--panel-bg:#FFFFFF;--panel-border:#CBD5E1;--panel-text:#0F172A;--panel-muted:#64748B;
+--panel-input-bg:#F8FAFC;--debug-bg:#E2E8F0;--debug-border:#CBD5E1;--debug-state:#1D4ED8;--debug-log:#047857}
 
 /* Top bar */
 .topbar{background:var(--surface);padding:12px 16px;padding-top:calc(12px + var(--sat));
-display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--card);min-height:52px;flex-shrink:0}
+display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--card);min-height:52px;flex-shrink:0;
+transition:margin-left .2s ease}
 .topbar h1{font-size:16px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .status{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .status.ok{background:var(--green)}
@@ -3366,18 +3461,21 @@ display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--card);min-
 .btn-icon{background:none;border:none;color:var(--dim);font-size:20px;cursor:pointer;padding:4px 8px;min-width:44px;min-height:44px;display:flex;align-items:center;justify-content:center}
 
 /* Messages */
-.messages{flex:1;overflow-y:auto;padding:12px 16px;-webkit-overflow-scrolling:touch}
+.messages{flex:1;overflow-y:auto;padding:12px 16px;-webkit-overflow-scrolling:touch;transition:margin-left .2s ease}
 .msg{margin-bottom:12px;max-width:85%;-webkit-user-select:text;user-select:text}
 .msg.user{margin-left:auto;background:var(--accent);color:white;padding:10px 14px;
-border-radius:16px 16px 4px 16px;font-size:15px;line-height:1.4;word-break:break-word}
+border-radius:16px 16px 4px 16px;font-size:calc(15px * var(--chat-font-scale));line-height:1.4;word-break:break-word}
 .msg.assistant{margin-right:auto}
 .msg.assistant .bubble{background:var(--surface);padding:10px 14px;
-border-radius:16px 16px 16px 4px;font-size:15px;line-height:1.5;word-break:break-word}
-.msg.assistant .bubble code{background:var(--card);padding:1px 4px;border-radius:3px;font-size:13px}
+border-radius:16px 16px 16px 4px;font-size:calc(15px * var(--chat-font-scale));line-height:1.5;word-break:break-word}
+.msg.assistant .bubble code{background:var(--card);padding:1px 4px;border-radius:3px;font-size:calc(13px * var(--chat-font-scale))}
 .msg.assistant .bubble pre{background:var(--bg);padding:10px;border-radius:6px;overflow-x:auto;
-margin:8px 0;font-size:13px;line-height:1.4}
+margin:8px 0;font-size:calc(13px * var(--chat-font-scale));line-height:1.4}
 .msg.assistant .bubble pre code{background:none;padding:0}
 .msg.assistant .bubble h2,.msg.assistant .bubble h3,.msg.assistant .bubble h4{line-height:1.3;margin:10px 0 6px}
+.msg.assistant .bubble h2{font-size:calc(1.5em * var(--chat-font-scale))}
+.msg.assistant .bubble h3{font-size:calc(1.3em * var(--chat-font-scale))}
+.msg.assistant .bubble h4{font-size:calc(1.1em * var(--chat-font-scale))}
 .msg.assistant .bubble p + p,.msg.assistant .bubble p + ul,.msg.assistant .bubble p + ol,
 .msg.assistant .bubble ul + p,.msg.assistant .bubble ol + p,.msg.assistant .bubble pre + p{margin-top:8px}
 .msg.assistant .bubble ul,.msg.assistant .bubble ol{padding-left:20px;margin:8px 0}
@@ -3400,16 +3498,16 @@ max-height:300px;overflow-y:auto}
 margin-bottom:6px;overflow:hidden}
 .tool-header{padding:8px 12px;font-size:12px;color:var(--accent);cursor:pointer;
 display:flex;align-items:center;gap:6px;user-select:none}
-.tool-summary{font-size:12px;color:var(--dim);padding:4px 12px 6px;line-height:1.4}
-.tool-summary code{background:var(--surface);padding:1px 4px;border-radius:3px;font-size:11px}
-.tool-body{padding:0 12px 8px 12px;font-size:12px;color:var(--dim);
+.tool-summary{font-size:calc(12px * var(--chat-font-scale));color:var(--dim);padding:4px 12px 6px;line-height:1.4}
+.tool-summary code{background:var(--surface);padding:1px 4px;border-radius:3px;font-size:calc(11px * var(--chat-font-scale))}
+.tool-body{padding:0 12px 8px 12px;font-size:calc(12px * var(--chat-font-scale));color:var(--dim);
 line-height:1.4;display:none}
 .tool-block.open .tool-body{display:block}
 .tool-block.open .tool-header .arrow{transform:rotate(90deg)}
 .tool-header .arrow{transition:transform 0.2s}
 .tool-status{margin-left:auto;font-size:14px}
 .tool-body pre{background:var(--surface);padding:8px;border-radius:4px;overflow-x:auto;
-font-size:11px;margin:4px 0;max-height:200px;overflow-y:auto}
+font-size:calc(11px * var(--chat-font-scale));margin:4px 0;max-height:200px;overflow-y:auto}
 
 /* Cost footer */
 .cost{font-size:11px;color:var(--dim);margin-top:4px;padding-left:4px}
@@ -3421,7 +3519,7 @@ background:var(--accent);margin-left:2px;animation:blink 1s infinite}
 
 /* Composer */
 .composer{background:var(--surface);padding:8px 12px;padding-bottom:calc(8px + var(--sab));
-border-top:1px solid var(--card);display:flex;align-items:flex-end;gap:8px;flex-shrink:0}
+border-top:1px solid var(--card);display:flex;align-items:flex-end;gap:8px;flex-shrink:0;transition:margin-left .2s ease}
 .composer textarea{flex:1;background:var(--bg);color:var(--text);border:1px solid var(--card);
 border-radius:12px;padding:10px 14px;font-size:16px;resize:none;outline:none;
 max-height:120px;line-height:1.4;font-family:inherit}
@@ -3438,21 +3536,25 @@ display:flex;align-items:center;justify-content:center}
 .composer label.btn-compose{position:relative;display:flex;align-items:center;justify-content:center}
 .btn-compose:active{background:var(--accent);color:white}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
-.attach-preview{display:flex;gap:6px;padding:0 12px;overflow-x:auto;flex-shrink:0}
+.attach-preview{display:flex;gap:6px;padding:0 12px;overflow-x:auto;flex-shrink:0;transition:margin-left .2s ease}
 .attach-preview:empty{display:none}
 .attach-item{background:var(--card);border-radius:8px;padding:4px 8px;display:flex;align-items:center;
 gap:4px;font-size:12px;color:var(--dim);flex-shrink:0;max-width:150px}
 .attach-item img{width:32px;height:32px;object-fit:cover;border-radius:4px}
 .attach-item .remove{cursor:pointer;color:var(--red);font-size:14px;margin-left:4px}
-.transcribing{color:var(--yellow);font-size:12px;padding:4px 12px}
+.transcribing{color:var(--yellow);font-size:12px;padding:4px 12px;transition:margin-left .2s ease}
 
 /* History sidebar */
-.sidebar{position:fixed;top:0;left:0;width:min(300px,80vw);height:100dvh;background:var(--surface);
+.sidebar{position:fixed;top:0;left:0;width:var(--sidebar-width);height:100dvh;background:var(--surface);
 z-index:100;transform:translateX(-100%);transition:transform 0.2s;padding-top:var(--sat);overflow-y:auto}
 .sidebar.open{transform:translateX(0)}
 .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99;display:none}
 .sidebar-overlay.open{display:block}
-.sidebar h2{padding:16px;font-size:16px;border-bottom:1px solid var(--card)}
+.sidebar-header{display:flex;align-items:center;justify-content:space-between;padding:16px;border-bottom:1px solid var(--card)}
+.sidebar h2{font-size:16px}
+.sidebar-pin{background:transparent;border:none;color:var(--dim);font-size:18px;cursor:pointer;
+width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center}
+.sidebar-pin:hover,.sidebar-pin.active{background:var(--card);color:var(--accent)}
 .sidebar .chat-item{padding:12px 16px;border-bottom:1px solid var(--bg);cursor:pointer;
 font-size:14px;color:var(--dim);min-height:44px;display:flex;align-items:center}
 .sidebar .chat-item:active{background:var(--card)}
@@ -3467,7 +3569,7 @@ font-weight:600;border-bottom:1px solid var(--bg);min-height:44px;display:flex;a
 /* Usage bar */
 .usage-bar{background:var(--surface);padding:4px 16px 6px;border-bottom:1px solid var(--card);
 display:none;gap:12px;flex-shrink:0;cursor:pointer;
-transition:opacity 0.3s ease,max-height 0.3s ease;overflow:hidden;max-height:60px}
+transition:opacity 0.3s ease,max-height 0.3s ease,margin-left .2s ease;overflow:hidden;max-height:60px}
 .usage-bar.visible{display:flex}
 .usage-bar.fading{opacity:0;max-height:0;padding:0 16px}
 .usage-label{font-size:9px;font-weight:700;color:var(--dim);letter-spacing:0.5px;text-transform:uppercase;
@@ -3479,13 +3581,16 @@ writing-mode:vertical-lr;text-orientation:mixed;align-self:center;opacity:0.5}
 .usage-bucket .reset{font-size:9px;color:var(--dim);opacity:0.6}
 .usage-track{height:3px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden}
 .usage-fill{height:100%;border-radius:2px;transition:width 0.4s ease,background 0.4s ease}
+.usage-toggle{background:none;border:none;color:var(--dim);cursor:pointer;
+font-size:11px;padding:2px 6px;opacity:0.4;align-self:center;flex-shrink:0}
+.usage-toggle:hover{opacity:0.8}
 .usage-fill.green{background:var(--green)}
 .usage-fill.orange{background:var(--yellow)}
 .usage-fill.red{background:var(--red)}
 
 /* Context bar */
 .context-bar{display:none;flex-shrink:0;align-items:center;justify-content:flex-end;
-gap:6px;padding:2px 16px 3px;background:var(--bg)}
+gap:6px;padding:2px 16px 3px;background:var(--bg);transition:margin-left .2s ease}
 .context-bar.visible{display:flex}
 .context-detail{font-size:9px;font-weight:600;color:var(--dim);font-variant-numeric:tabular-nums;
 white-space:nowrap;opacity:0.7}
@@ -3496,10 +3601,10 @@ white-space:nowrap;opacity:0.7}
 .context-fill.red{background:var(--red)}
 
 /* Debug bar */
-.debugbar{background:#111827;border-top:1px solid #233047;padding:6px 12px;flex-shrink:0}
-.debug-state{color:#93C5FD;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+.debugbar{background:var(--debug-bg);border-top:1px solid var(--debug-border);padding:6px 12px;flex-shrink:0}
+.debug-state{color:var(--debug-state);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
 font-size:11px;white-space:pre-wrap}
-.debug-log{color:#A7F3D0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+.debug-log{color:var(--debug-log);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
 line-height:1.35;max-height:88px;overflow-y:auto;white-space:pre-wrap;margin-top:4px}
 .alert-toast{position:fixed;top:0;left:0;right:0;z-index:9999;padding:8px 12px;
 transform:translateY(-100%);transition:transform .3s ease;pointer-events:none}
@@ -3528,69 +3633,78 @@ font-size:9px;font-weight:700;min-width:16px;height:16px;border-radius:8px;
 display:flex;align-items:center;justify-content:center;padding:0 4px}
 .alert-badge .count:empty{display:none}
 .settings-panel{position:fixed;top:40px;right:8px;width:340px;max-height:80vh;
-background:#1a1a2e;border:1px solid #333;border-radius:12px;z-index:9997;
+background:var(--panel-bg);border:1px solid var(--panel-border);border-radius:12px;z-index:9997;
 overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.5);display:none}
 .settings-panel.show{display:block}
 .settings-header{display:flex;align-items:center;justify-content:space-between;
-padding:10px 14px;border-bottom:1px solid #333;font-size:13px;font-weight:600;color:#ccc}
-.settings-header button{background:transparent;border:none;color:#888;font-size:18px;cursor:pointer}
-.settings-header button:hover{color:#fff}
+padding:10px 14px;border-bottom:1px solid var(--panel-border);font-size:13px;font-weight:600;color:var(--panel-text)}
+.settings-header button{background:transparent;border:none;color:var(--panel-muted);font-size:18px;cursor:pointer}
+.settings-header button:hover{color:var(--panel-text)}
 .settings-body{padding:8px 14px}
 .settings-section{margin-bottom:14px}
 .settings-label{font-size:12px;font-weight:600;color:var(--accent);display:block;margin-bottom:4px}
-.settings-hint{font-size:11px;color:#666;margin-bottom:4px}
-.settings-value{font-size:12px;color:#aaa}
-.settings-section select{width:100%;padding:6px 8px;border-radius:6px;border:1px solid #444;
-background:#111;color:#ddd;font-size:13px;outline:none}
+.settings-hint{font-size:11px;color:var(--panel-muted);margin-bottom:4px}
+.settings-value{font-size:12px;color:var(--panel-muted)}
+.settings-section select{width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--panel-border);
+background:var(--panel-input-bg);color:var(--panel-text);font-size:13px;outline:none}
 .settings-section select:disabled{opacity:0.5}
 .settings-section select:focus{border-color:var(--accent)}
 .alerts-panel{position:fixed;top:40px;right:8px;width:380px;max-height:70vh;
-background:#1a1a2e;border:1px solid #333;border-radius:12px;z-index:9998;
+background:var(--panel-bg);border:1px solid var(--panel-border);border-radius:12px;z-index:9998;
 overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.5);display:none}
 .alerts-panel.show{display:block}
 .alerts-panel-header{display:flex;align-items:center;justify-content:space-between;
-padding:10px 14px;border-bottom:1px solid #333;font-size:13px;font-weight:600;color:#ccc}
-.alerts-panel-header button{background:transparent;border:none;color:#888;
+padding:10px 14px;border-bottom:1px solid var(--panel-border);font-size:13px;font-weight:600;color:var(--panel-text)}
+.alerts-panel-header button{background:transparent;border:none;color:var(--panel-muted);
 font-size:11px;cursor:pointer}
-.alerts-panel-header button:hover{color:#fff}
-.alert-item{padding:10px 14px;border-bottom:1px solid #222;font-size:12px;
+.alerts-panel-header button:hover{color:var(--panel-text)}
+.alert-item{padding:10px 14px;border-bottom:1px solid var(--panel-border);font-size:12px;
 display:flex;align-items:flex-start;gap:8px}
 .alert-item.acked{opacity:.4}
 .alert-item .ai-icon{font-size:14px;flex-shrink:0;margin-top:1px}
 .alert-item .ai-body{flex:1;min-width:0}
 .alert-item .ai-source{font-size:9px;font-weight:700;text-transform:uppercase;
-letter-spacing:.5px;color:#888}
-.alert-item .ai-title{font-weight:600;color:#e5e5e5;margin-top:1px}
-.alert-item .ai-time{font-size:10px;color:#666;margin-top:2px}
+letter-spacing:.5px;color:var(--panel-muted)}
+.alert-item .ai-title{font-weight:600;color:var(--panel-text);margin-top:1px}
+.alert-item .ai-time{font-size:10px;color:var(--panel-muted);margin-top:2px}
 .alert-item .ai-actions{display:flex;gap:4px;flex-shrink:0}
 .alert-item .ai-actions button{font-size:10px;padding:3px 8px;border-radius:5px;
 border:none;cursor:pointer;font-weight:600}
 .alert-detail-overlay{position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);
 display:flex;align-items:center;justify-content:center;padding:20px}
-.alert-detail-card{background:#1a1a2e;border-radius:16px;max-width:500px;width:100%;
+.alert-detail-card{background:var(--panel-bg);border-radius:16px;max-width:500px;width:100%;
 max-height:80vh;overflow-y:auto;box-shadow:0 12px 40px rgba(0,0,0,.5)}
 .alert-detail-card .ad-header{display:flex;align-items:center;gap:10px;padding:16px 20px;
-border-bottom:1px solid #333}
+border-bottom:1px solid var(--panel-border)}
 .alert-detail-card .ad-icon{font-size:28px}
 .alert-detail-card .ad-source{font-size:10px;font-weight:700;text-transform:uppercase;
 letter-spacing:.5px;padding:3px 8px;border-radius:10px;display:inline-block}
-.alert-detail-card .ad-time{font-size:11px;color:#888;margin-top:4px}
-.alert-detail-card .ad-close{margin-left:auto;background:none;border:none;color:#888;
+.alert-detail-card .ad-time{font-size:11px;color:var(--panel-muted);margin-top:4px}
+.alert-detail-card .ad-close{margin-left:auto;background:none;border:none;color:var(--panel-muted);
 font-size:20px;cursor:pointer;padding:4px 8px}
-.alert-detail-card .ad-close:hover{color:#fff}
-.alert-detail-card .ad-section{padding:12px 20px;border-bottom:1px solid #222}
-.alert-detail-card .ad-label{font-size:10px;font-weight:600;color:#888;
+.alert-detail-card .ad-close:hover{color:var(--panel-text)}
+.alert-detail-card .ad-section{padding:12px 20px;border-bottom:1px solid var(--panel-border)}
+.alert-detail-card .ad-label{font-size:10px;font-weight:600;color:var(--panel-muted);
 text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
-.alert-detail-card .ad-title{font-size:16px;font-weight:600;color:#e5e5e5}
-.alert-detail-card .ad-body{font-size:13px;color:#bbb;white-space:pre-wrap;
+.alert-detail-card .ad-title{font-size:16px;font-weight:600;color:var(--panel-text)}
+.alert-detail-card .ad-body{font-size:13px;color:var(--panel-muted);white-space:pre-wrap;
 font-family:ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.5}
-.alert-detail-card .ad-meta-key{font-size:10px;font-weight:600;color:#888;
+.alert-detail-card .ad-meta-key{font-size:10px;font-weight:600;color:var(--panel-muted);
 text-transform:uppercase}
-.alert-detail-card .ad-meta-val{font-size:12px;color:#ccc;
+.alert-detail-card .ad-meta-val{font-size:12px;color:var(--panel-text);
 font-family:ui-monospace,monospace;word-break:break-all}
 .alert-detail-card .ad-actions{display:flex;gap:8px;padding:16px 20px}
 .alert-detail-card .ad-actions button{flex:1;padding:8px;border-radius:8px;border:none;
 font-weight:600;font-size:13px;cursor:pointer}
+body.sidebar-pinned .sidebar{transform:translateX(0);box-shadow:8px 0 24px rgba(0,0,0,0.18)}
+body.sidebar-pinned .sidebar-overlay{display:none!important}
+body.sidebar-pinned .topbar,
+body.sidebar-pinned .usage-bar,
+body.sidebar-pinned .context-bar,
+body.sidebar-pinned .messages,
+body.sidebar-pinned .attach-preview,
+body.sidebar-pinned .transcribing,
+body.sidebar-pinned .composer{margin-left:var(--sidebar-width)}
 </style>
 </head>
 <body>
@@ -3613,6 +3727,7 @@ font-weight:600;font-size:13px;cursor:pointer}
   <span class="status ok" id="statusDot"></span>
   <span class="mode-badge {{MODE_CLASS}}" id="modeBadge">{{MODE_LABEL}}</span>
   <span class="alert-badge" id="alertBadge" onclick="toggleAlertsPanel()" title="Alerts">&#128276;<span class="count" id="alertCount"></span></span>
+  <button class="btn-icon" id="themeBtn" title="Toggle theme">&#9681;</button>
   <button class="btn-icon" id="settingsBtn" title="Settings" onclick="toggleSettings()">&#9881;</button>
   <button class="btn-icon" id="refreshBtn" title="Refresh" onclick="window.location.reload()">&#8635;</button>
 </div>
@@ -3654,11 +3769,30 @@ font-weight:600;font-size:13px;cursor:pointer}
       <label class="settings-label">Embedding Index</label>
       <div class="settings-value" id="embeddingStatus">--</div>
     </div>
+    <div class="settings-section">
+      <label class="settings-label">Usage Meter</label>
+      <select id="usageMeterSelect" onchange="changeUsageMeterMode(this.value)">
+        <option value="always">Always visible</option>
+        <option value="auto">Auto-hide (5s)</option>
+        <option value="off">Off</option>
+      </select>
+    </div>
+    <div class="settings-section">
+      <label class="settings-label">Text Size</label>
+      <div class="settings-hint">
+        <span>Font Scale</span>
+        <span id="fontScaleValue">100%</span>
+      </div>
+      <input type="range" id="fontScaleSlider" min="70" max="200" step="10" value="100">
+      <button id="fontScaleResetBtn" type="button" style="display:none;margin-top:8px;background:none;border:none;color:var(--accent);cursor:pointer;font-size:12px;padding:0">
+        Reset to Default
+      </button>
+    </div>
   </div>
 </div>
 
 <div class="usage-bar" id="usageBar">
-  <span class="usage-label">Claude</span>
+  <span class="usage-label" id="usageLabel">Claude</span>
   <div class="usage-bucket" id="usageSession">
     <div class="label-row">
       <span class="label">Session</span>
@@ -3673,10 +3807,14 @@ font-weight:600;font-size:13px;cursor:pointer}
     </div>
     <div class="usage-track"><div class="usage-fill green" id="usageWeeklyFill" style="width:0%"></div></div>
   </div>
+  <button class="usage-toggle" id="usageToggle" title="Hide usage meter" onclick="event.stopPropagation(); toggleUsageMeter();">&#10005;</button>
 </div>
 
 <div class="sidebar" id="sidebar">
-  <h2>Chats</h2>
+  <div class="sidebar-header">
+    <h2>Chats</h2>
+    <button class="sidebar-pin" id="pinSidebarBtn" title="Pin sidebar" aria-pressed="false">&#128204;</button>
+  </div>
   <div class="new-btn" id="newChatBtn">+ New Chat</div>
   <div id="chatList"></div>
 </div>
@@ -3702,7 +3840,7 @@ font-weight:600;font-size:13px;cursor:pointer}
     &#128206;
     <input type="file" id="fileInput" style="position:absolute;width:0;height:0;overflow:hidden;opacity:0" multiple accept="image/*,.txt,.py,.json,.csv,.md,.yaml,.yml,.toml,.sh,.js,.ts,.html,.css">
   </label>
-  <textarea id="input" rows="1" placeholder="Message Claude..." autocomplete="off"></textarea>
+  <textarea id="input" rows="1" placeholder="Message..." autocomplete="off"></textarea>
   <button class="btn-compose" id="sendBtn" title="Send">&#9654;</button>
 </div>
 
@@ -3919,6 +4057,8 @@ function setCurrentChat(id, title) {
   }
   document.getElementById('chatTitle').textContent = title || 'ApexChat';
   setActiveChatUI();
+  updateUsageBarVisibility();
+  startUsagePolling();
   updateSendBtn();
   refreshDebugState('chat-selected');
 }
@@ -4500,6 +4640,8 @@ async function loadSettingsData() {
 
   // Chat model selector
   updateChatModelSelect();
+  updateUsageBarVisibility();
+  applyChatFontScale();
 }
 
 function updateChatModelSelect() {
@@ -4523,10 +4665,11 @@ function updateChatModelSelect() {
     {id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6'},
     {id: 'grok-4', name: 'Grok 4'},
     {id: 'grok-4-fast', name: 'Grok 4 Fast'},
-    {id: 'codex:gpt-4.1', name: 'GPT-4.1'},
-    {id: 'codex:gpt-4.1-mini', name: 'GPT-4.1 Mini'},
     {id: 'codex:gpt-5.4', name: 'GPT-5.4'},
-    {id: 'codex:o4-mini', name: 'o4-mini'},
+    {id: 'codex:gpt-5.4-mini', name: 'GPT-5.4 Mini'},
+    {id: 'codex:gpt-5.3-codex', name: 'GPT-5.3'},
+    {id: 'codex:gpt-5.2', name: 'GPT-5.2'},
+    {id: 'codex:gpt-5.1-codex-max', name: 'GPT-5.1 Max'},
   ];
   sel.innerHTML = '';
   cloudModels.forEach(m => {
@@ -4553,7 +4696,13 @@ function updateChatModelSelect() {
   fetch('/api/chats/' + currentChat + '/context', {credentials: 'same-origin'})
     .then(r => r.ok ? r.json() : null)
     .then(d => {
-      if (d && d.model) sel.value = d.model;
+      if (d && d.model) {
+        sel.value = d.model;
+        const item = document.querySelector('.chat-item[data-id="' + currentChat + '"]');
+        if (item) item.dataset.model = d.model;
+        updateUsageBarVisibility();
+        startUsagePolling();
+      }
     })
     .catch(() => {});
 }
@@ -4563,6 +4712,9 @@ function changeChatModel(model) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({action: 'set_chat_model', chat_id: currentChat, model: model}));
     dbg('set_chat_model:', currentChat, model);
+    const item = document.querySelector('.chat-item[data-id="' + currentChat + '"]');
+    if (item) item.dataset.model = model;
+    updateUsageBarVisibility();
     // Update hint
     document.getElementById('chatModelHint').textContent = 'Switched to: ' + model;
   }
@@ -5040,6 +5192,7 @@ async function loadChats() {
     d.dataset.title = c.title || 'Untitled';
     d.dataset.type = c.type || 'chat';
     d.dataset.category = c.category || '';
+    d.dataset.model = c.model || '';
     d.onclick = () => selectChat(c.id, c.title, c.type, c.category).catch(err => reportError('selectChat click', err));
     d.ondblclick = (e) => { e.stopPropagation(); startRenameChat(d, c.id, c.title || 'Untitled'); };
     d.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteChat(c.id, c.title || 'Untitled'); };
@@ -5060,6 +5213,7 @@ async function loadChats() {
     list.appendChild(d);
   });
   setActiveChatUI();
+  updateUsageBarVisibility();
   refreshDebugState('loadChats');
   return chats;
 }
@@ -5133,6 +5287,47 @@ let _lastSelectChatId = null;
 let _lastSelectChatTime = 0;
 
 let currentChatType = 'chat';
+let sidebarPinned = localStorage.getItem('sidebarPinned') === '1';
+let themeMode = localStorage.getItem('themeMode')
+  || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+let chatFontScale = Number(localStorage.getItem('chatFontScale') || '1');
+if (!Number.isFinite(chatFontScale)) chatFontScale = 1;
+chatFontScale = Math.min(Math.max(chatFontScale, 0.7), 2.0);
+
+function applyTheme() {
+  document.body.classList.toggle('theme-light', themeMode === 'light');
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', themeMode === 'light' ? '#F8FAFC' : '#0F172A');
+  const btn = document.getElementById('themeBtn');
+  if (btn) {
+    btn.textContent = themeMode === 'light' ? '☀' : '☾';
+    btn.title = themeMode === 'light' ? 'Switch to dark mode' : 'Switch to light mode';
+  }
+}
+
+function toggleTheme() {
+  themeMode = themeMode === 'light' ? 'dark' : 'light';
+  localStorage.setItem('themeMode', themeMode);
+  applyTheme();
+}
+
+function applyChatFontScale() {
+  document.documentElement.style.setProperty('--chat-font-scale', String(chatFontScale));
+  const slider = document.getElementById('fontScaleSlider');
+  const value = document.getElementById('fontScaleValue');
+  const reset = document.getElementById('fontScaleResetBtn');
+  const percent = Math.round(chatFontScale * 100);
+  if (slider) slider.value = String(percent);
+  if (value) value.textContent = `${percent}%`;
+  if (reset) reset.style.display = chatFontScale === 1 ? 'none' : 'inline-block';
+}
+
+function setChatFontScale(nextScale) {
+  chatFontScale = Math.min(Math.max(nextScale, 0.7), 2.0);
+  localStorage.setItem('chatFontScale', String(chatFontScale));
+  applyChatFontScale();
+}
+
 async function selectChat(id, title, chatType, category) {
   // Debounce: skip if same chat selected within 500ms
   const now = Date.now();
@@ -5249,12 +5444,38 @@ async function newChat() {
 
 // --- Sidebar ---
 function openSidebar() {
+  if (sidebarPinned) {
+    applySidebarPinnedState();
+    return;
+  }
   document.getElementById('sidebar').classList.add('open');
   document.getElementById('sidebarOverlay').classList.add('open');
 }
 function closeSidebar() {
+  if (sidebarPinned) return;
   document.getElementById('sidebar').classList.remove('open');
   document.getElementById('sidebarOverlay').classList.remove('open');
+}
+
+function applySidebarPinnedState() {
+  const body = document.body;
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebarOverlay');
+  const pinBtn = document.getElementById('pinSidebarBtn');
+  if (!body || !sidebar || !overlay || !pinBtn) return;
+
+  body.classList.toggle('sidebar-pinned', sidebarPinned);
+  sidebar.classList.toggle('open', sidebarPinned);
+  overlay.classList.remove('open');
+  pinBtn.classList.toggle('active', sidebarPinned);
+  pinBtn.setAttribute('aria-pressed', sidebarPinned ? 'true' : 'false');
+  pinBtn.title = sidebarPinned ? 'Unpin sidebar' : 'Pin sidebar';
+}
+
+function toggleSidebarPin() {
+  sidebarPinned = !sidebarPinned;
+  localStorage.setItem('sidebarPinned', sidebarPinned ? '1' : '0');
+  applySidebarPinnedState();
 }
 
 // --- Attachments ---
@@ -5389,7 +5610,14 @@ if ('serviceWorker' in navigator) {
 // --- Init ---
 document.getElementById('menuBtn').onclick = openSidebar;
 document.getElementById('sidebarOverlay').onclick = closeSidebar;
-document.getElementById('newChatBtn').onclick = () => { closeSidebar(); newChat().catch(err => reportError('newChat click', err)); };
+document.getElementById('pinSidebarBtn').onclick = toggleSidebarPin;
+document.getElementById('themeBtn').onclick = toggleTheme;
+document.getElementById('fontScaleSlider').oninput = (e) => setChatFontScale(Number(e.target.value) / 100);
+document.getElementById('fontScaleResetBtn').onclick = () => setChatFontScale(1);
+document.getElementById('newChatBtn').onclick = () => {
+  if (!sidebarPinned) closeSidebar();
+  newChat().catch(err => reportError('newChat click', err));
+};
 document.getElementById('sendBtn').onclick = () => {
   if (streaming) {
     ws.send(JSON.stringify({action: 'stop', chat_id: currentChat}));
@@ -5520,57 +5748,219 @@ async function fetchContext(chatId) {
   } catch (e) { dbg('context fetch error:', e.message); }
 }
 
-// --- Usage bar ---
+// --- Usage bar (model-aware, toggleable) ---
 function usageColor(pct) { return pct >= 90 ? 'red' : pct >= 70 ? 'orange' : 'green'; }
 let _usageHideTimer = null;
 let _lastUsageData = null;
+let _usageInterval = null;
+let _lastUsageProvider = null;
+
+function selectedChatModel() {
+  if (!currentChat) return '';
+  const item = document.querySelector('.chat-item[data-id="' + currentChat + '"]');
+  return item?.dataset?.model || document.getElementById('serverModelDisplay')?.textContent || '';
+}
+
+function isClaudeModel(model) { return typeof model === 'string' && model.startsWith('claude-'); }
+function isCodexModel(model) { return typeof model === 'string' && model.startsWith('codex:'); }
+function isGrokModel(model) { return typeof model === 'string' && model.startsWith('grok-'); }
+
+function getUsageProvider() {
+  const model = selectedChatModel();
+  if (isClaudeModel(model)) return 'claude';
+  if (isCodexModel(model)) return 'codex';
+  if (isGrokModel(model)) return 'grok';
+  return null;
+}
+
+// Usage meter mode: 'always' | 'auto' | 'off'
+function getUsageMeterMode() {
+  // Migrate old toggle key
+  if (localStorage.getItem('usageMeterOff') === '1' && !localStorage.getItem('usageMeterMode')) {
+    localStorage.setItem('usageMeterMode', 'off');
+    localStorage.removeItem('usageMeterOff');
+  }
+  return localStorage.getItem('usageMeterMode') || 'auto';
+}
+function setUsageMeterMode(mode) { localStorage.setItem('usageMeterMode', mode); localStorage.removeItem('usageMeterOff'); }
+
+function updateUsageBarVisibility() {
+  const bar = document.getElementById('usageBar');
+  if (!bar) return false;
+  const provider = getUsageProvider();
+  const mode = getUsageMeterMode();
+  const shouldShow = currentChatType !== 'alerts' && provider !== null && mode !== 'off';
+  if (!shouldShow) {
+    bar.classList.remove('visible', 'fading');
+    bar.style.display = 'none';
+    return false;
+  }
+  const label = document.getElementById('usageLabel');
+  if (label) label.textContent = provider === 'codex' ? 'ChatGPT' : provider === 'grok' ? 'Grok' : 'Claude';
+  bar.style.display = '';
+  if (mode === 'always') {
+    bar.classList.add('visible');
+    bar.classList.remove('fading');
+    clearTimeout(_usageHideTimer);
+  }
+  return true;
+}
 
 function showUsageBar() {
   const bar = document.getElementById('usageBar');
-  if (!bar || !_lastUsageData) return;
+  if (!bar || !_lastUsageData || !updateUsageBarVisibility()) return;
   bar.classList.add('visible');
   bar.classList.remove('fading');
   clearTimeout(_usageHideTimer);
-  _usageHideTimer = setTimeout(() => {
-    bar.classList.add('fading');
-    setTimeout(() => { bar.classList.remove('visible', 'fading'); }, 350);
-  }, 5000);
+  if (getUsageMeterMode() === 'auto') {
+    _usageHideTimer = setTimeout(() => {
+      bar.classList.add('fading');
+      setTimeout(() => { bar.classList.remove('visible', 'fading'); }, 350);
+    }, 5000);
+  }
 }
 
 function renderUsage(data) {
   const bar = document.getElementById('usageBar');
-  if (!bar || !data || !data.session) { if (bar) bar.classList.remove('visible'); return; }
+  if (!bar || !data || !data.session) {
+    if (bar) { bar.classList.remove('visible', 'fading'); bar.style.display = 'none'; }
+    return;
+  }
   _lastUsageData = data;
   const s = data.session, w = data.weekly;
-  document.getElementById('usageSessionPct').textContent = s.utilization + '%';
-  document.getElementById('usageSessionReset').textContent = '(' + s.resets_in + ')';
-  const sf = document.getElementById('usageSessionFill');
-  sf.style.width = Math.min(s.utilization, 100) + '%';
-  sf.className = 'usage-fill ' + usageColor(s.utilization);
-  document.getElementById('usageSessionPct').style.color =
-    s.utilization >= 90 ? 'var(--red)' : s.utilization >= 70 ? 'var(--yellow)' : 'var(--green)';
 
-  document.getElementById('usageWeeklyPct').textContent = w.utilization + '%';
-  document.getElementById('usageWeeklyReset').textContent = '(' + w.resets_in + ')';
+  // Session bar — may be "N/A" for Codex
+  const isNA = s.resets_in === 'N/A';
+  document.getElementById('usageSessionPct').textContent = isNA ? '' : s.utilization + '%';
+  document.getElementById('usageSessionReset').textContent = isNA ? 'Included' : '(' + s.resets_in + ')';
+  const sf = document.getElementById('usageSessionFill');
+  sf.style.width = isNA ? '0%' : Math.min(s.utilization, 100) + '%';
+  sf.className = 'usage-fill ' + (isNA ? 'green' : usageColor(s.utilization));
+  document.getElementById('usageSessionPct').style.color =
+    isNA ? 'var(--dim)' : s.utilization >= 90 ? 'var(--red)' : s.utilization >= 70 ? 'var(--yellow)' : 'var(--green)';
+
+  // Weekly bar
+  const wNA = w.resets_in === 'N/A';
+  document.getElementById('usageWeeklyPct').textContent = wNA ? '' : w.utilization + '%';
+  document.getElementById('usageWeeklyReset').textContent = wNA ? 'Flat rate' : '(' + w.resets_in + ')';
   const wf = document.getElementById('usageWeeklyFill');
-  wf.style.width = Math.min(w.utilization, 100) + '%';
-  wf.className = 'usage-fill ' + usageColor(w.utilization);
+  wf.style.width = wNA ? '0%' : Math.min(w.utilization, 100) + '%';
+  wf.className = 'usage-fill ' + (wNA ? 'green' : usageColor(w.utilization));
   document.getElementById('usageWeeklyPct').style.color =
-    w.utilization >= 90 ? 'var(--red)' : w.utilization >= 70 ? 'var(--yellow)' : 'var(--green)';
-  showUsageBar();
+    wNA ? 'var(--dim)' : w.utilization >= 90 ? 'var(--red)' : w.utilization >= 70 ? 'var(--yellow)' : 'var(--green)';
+
+  if (updateUsageBarVisibility()) showUsageBar();
 }
 
 document.getElementById('usageBar').addEventListener('click', () => showUsageBar());
 
-async function fetchUsage() {
+// --- Toggle: X button hides, settings control mode ---
+function toggleUsageMeter() {
+  setUsageMeterMode('off');
+  updateUsageBarVisibility();
+  const sel = document.getElementById('usageMeterSelect');
+  if (sel) sel.value = 'off';
+}
+function changeUsageMeterMode(mode) {
+  setUsageMeterMode(mode);
+  updateUsageBarVisibility();
+  if (mode !== 'off') startUsagePolling();
+}
+
+// --- Smart polling (only active provider) ---
+async function fetchClaudeUsage() {
   try {
     const r = await fetch('/api/usage');
     if (r.ok) renderUsage(await r.json());
-  } catch (e) { dbg('usage fetch error:', e.message); }
+  } catch (e) { dbg('claude usage fetch error:', e.message); }
 }
 
-fetchUsage();
-setInterval(fetchUsage, 300000);
+function fetchCodexUsage() {
+  // Codex usage API is Cloudflare-protected — show subscription status
+  renderUsage({
+    session: { utilization: 0, resets_in: 'N/A' },
+    weekly: { utilization: 0, resets_in: 'N/A' },
+  });
+}
+
+async function fetchGrokUsage() {
+  try {
+    const r = await fetch('/api/usage/grok');
+    if (!r.ok) return;
+    const data = await r.json();
+    const bal = data.balance_usd || 0;
+    const total = data.purchased_usd || 100;
+    const spent = data.spent_usd || 0;
+    const pct = total > 0 ? Math.round((bal / total) * 100) : 0;
+
+    // Use renderUsage for visibility/show logic, then override labels
+    renderUsage({
+      session: { utilization: pct, resets_in: '' },
+      weekly: { utilization: 0, resets_in: 'N/A' },
+    });
+
+    // Override session bar to show credit balance
+    const lbl = document.querySelector('#usageSession .label');
+    if (lbl) lbl.textContent = 'Credits';
+    const pctEl = document.getElementById('usageSessionPct');
+    if (pctEl) {
+      pctEl.textContent = '$' + bal.toFixed(2);
+      pctEl.style.color = bal >= 20 ? 'var(--green)' : bal >= 5 ? 'var(--yellow)' : 'var(--red)';
+    }
+    document.getElementById('usageSessionReset').textContent = 'of $' + total.toFixed(0) + ' remaining';
+    const sf = document.getElementById('usageSessionFill');
+    if (sf) {
+      sf.style.width = pct + '%';
+      sf.className = 'usage-fill ' + (bal >= 20 ? 'green' : bal >= 5 ? 'orange' : 'red');
+    }
+    // Override weekly to show spent
+    const wlbl = document.querySelector('#usageWeekly .label');
+    if (wlbl) wlbl.textContent = 'Spent';
+    document.getElementById('usageWeeklyPct').textContent = '$' + spent.toFixed(2);
+    document.getElementById('usageWeeklyPct').style.color = 'var(--dim)';
+    document.getElementById('usageWeeklyReset').textContent = '';
+    const wf = document.getElementById('usageWeeklyFill');
+    if (wf) { wf.style.width = '0%'; }
+  } catch (e) { dbg('grok usage fetch error:', e.message); }
+}
+
+function startUsagePolling() {
+  const provider = getUsageProvider();
+  const mode = getUsageMeterMode();
+  // Reset if provider changed or not yet started
+  if (provider !== _lastUsageProvider || !_usageInterval) {
+    _lastUsageProvider = provider;
+    clearInterval(_usageInterval);
+    _usageInterval = null;
+    _lastUsageData = null;
+    // Reset labels when switching providers
+    const lbl = document.querySelector('#usageSession .label');
+    if (lbl) lbl.textContent = 'Session';
+  }
+
+  if (!provider || mode === 'off') {
+    updateUsageBarVisibility();
+    return;
+  }
+
+  const fetchFn = provider === 'grok' ? fetchGrokUsage : provider === 'codex' ? fetchCodexUsage : fetchClaudeUsage;
+  fetchFn();
+  // Poll Claude and Grok (Codex is static)
+  if (provider !== 'codex') {
+    _usageInterval = setInterval(fetchFn, 300000);
+  }
+  updateUsageBarVisibility();
+}
+
+applyTheme();
+applyChatFontScale();
+applySidebarPinnedState();
+// Init usage meter mode from localStorage
+(function() {
+  const sel = document.getElementById('usageMeterSelect');
+  if (sel) sel.value = getUsageMeterMode();
+})();
+startUsagePolling();
 
 connect();
 setTimeout(() => { ensureInitialized('timer-fallback').catch(() => {}); }, 1500);
@@ -5632,8 +6022,11 @@ msgEl.addEventListener('touchcancel', () => {
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     if not (SSL_CERT and SSL_KEY and SSL_CA):
-        print("ERROR: mTLS requires APEX_SSL_CERT, APEX_SSL_KEY, and APEX_SSL_CA", file=sys.stderr)
-        print("Usage: ./server/launch_apex.sh", file=sys.stderr)
+        print("\n  Apex requires TLS certificates to run securely.", file=sys.stderr)
+        print("  Run the setup wizard first:\n", file=sys.stderr)
+        print("    python3 setup.py\n", file=sys.stderr)
+        print("  Or for a quick start:\n", file=sys.stderr)
+        print("    python3 setup.py --fast\n", file=sys.stderr)
         sys.exit(1)
 
     print(f"\n  Apex v1.0")

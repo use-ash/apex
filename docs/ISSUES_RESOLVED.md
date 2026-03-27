@@ -111,6 +111,21 @@ Format: `[component] title` — what broke, why, how it was fixed.
 **Fix:** Replaced Grok API with local pipeline: yfinance fetches earnings dates, news, sector/analyst data; Ollama `qwen3.5:35b-a3b` generates verdicts. Auto-AVOID rule skips LLM for earnings within 10 days. Streaming API used because Qwen 3.5 thinking mode consumes non-streaming token budgets silently.
 **OSS note:** Expensive API calls for structured research can often be replaced by free data APIs + local models. Document the yfinance + Ollama pattern as a reference architecture for cost-sensitive deployments.
 
+### #16 — [server] ChatGPT backend integration — GPT-5.4 via subscription
+**When:** 2026-03-27 &bull; **Component:** backend / cost
+**Symptom:** Codex models (GPT-5.4, etc.) in Apex required a paid OpenAI API key ($OPENAI_API_KEY) and charged per-token API rates.
+**Root cause:** Apex routed `codex:` models to `api.openai.com/v1` using the standard OpenAI API, which requires a separate paid API key and doesn't use ChatGPT subscription credits.
+**Discovery:** The Codex desktop app uses OAuth tokens stored in `~/.codex/auth.json` to call `https://chatgpt.com/backend-api/codex/responses` — a separate backend that bills against the ChatGPT subscription (Team/Plus), not API credits. The token has scopes `api.connectors.read/invoke` (not `model.request`), and requires `ChatGPT-Account-ID` header + `client_version` query param + `stream: true, store: false`.
+**Fix:** Added `_call_chatgpt_backend()` to `tool_loop.py` — reads OAuth tokens from `~/.codex/auth.json`, streams SSE from ChatGPT backend, parses Responses API format, auto-refreshes expired tokens. Apex routes `codex:` models through this backend. Available models: gpt-5.4, gpt-5.4-mini, gpt-5.3-codex, gpt-5.2, gpt-5.1-codex-max (all 272K context, web search capable).
+**OSS note:** For OSS users, this requires a ChatGPT subscription + Codex desktop app installed (for OAuth login flow). Document the auth.json token format and refresh mechanism. Consider adding a first-run OAuth flow to Apex itself.
+
+### #17 — [server] Usage meter 429 rate limiting + model-aware toggle
+**When:** 2026-03-27 &bull; **Component:** usage / frontend
+**Symptom:** Constant 429 errors from Anthropic usage API (~every 8 minutes). Usage meter always visible regardless of model. No way to hide it.
+**Root cause:** Terminal statusline (`claude_usage.py`) had `CACHE_TTL=60` while Apex server had 300s. The statusline hammered the API every ~60s, causing 429s. Also: usage bar polled `/api/usage` unconditionally even when using non-Claude models.
+**Fix:** (1) Aligned `claude_usage.py` CACHE_TTL to 300s. (2) Model-aware usage bar — detects `claude-*` vs `codex:*` vs other, shows label "Claude" or "ChatGPT" accordingly, hides entirely for Ollama/Grok/MLX. (3) Smart polling — only fetches from the active provider's API. (4) Toggle on/off — X button on the bar + checkbox in Settings, persisted in localStorage.
+**OSS note:** Usage polling must share a single cache across all consumers (server, statusline, browser). Document the shared cache file pattern. Codex usage API is Cloudflare-protected and not accessible with OAuth tokens — needs browser session or future API exposure.
+
 ### #13 — [infra] Model health dots show red despite valid keys
 **When:** 2026-03-27 &bull; **Component:** dashboard
 **Symptom:** Dashboard health indicators red even though API keys are configured.
