@@ -28,17 +28,28 @@ final class APIClient {
         return try JSONDecoder().decode([Chat].self, from: data)
     }
 
-    func createChat(model: String? = nil, type: String? = nil, category: String? = nil) async throws -> String {
+    func createChat(model: String? = nil, type: String? = nil, category: String? = nil, profileId: String? = nil) async throws -> String {
         var body: Data? = nil
-        if model != nil || type != nil || category != nil {
+        if model != nil || type != nil || category != nil || profileId != nil {
             var dict: [String: String] = [:]
             if let model { dict["model"] = model }
             if let type { dict["type"] = type }
             if let category { dict["category"] = category }
+            if let profileId, !profileId.isEmpty { dict["profile_id"] = profileId }
             body = try JSONSerialization.data(withJSONObject: dict)
         }
         let data = try await request("POST", path: "/api/chats", body: body)
         return try JSONDecoder().decode(CreateChatResponse.self, from: data).id
+    }
+
+    func fetchProfiles() async throws -> [AgentProfile] {
+        let data = try await request("GET", path: "/api/profiles")
+        return try JSONDecoder().decode(ProfilesResponse.self, from: data).profiles
+    }
+
+    func updateChatProfile(chatId: String, profileId: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["profile_id": profileId])
+        _ = try await request("PATCH", path: "/api/chats/\(chatId)", body: body)
     }
 
     func fetchMessages(chatId: String, days: Int = 3) async throws -> [Message] {

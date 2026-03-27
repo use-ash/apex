@@ -17,6 +17,7 @@ final class AppState {
     ]
 
     var chats: [Chat] = []
+    var profiles: [AgentProfile] = []
 
     var persistentChatId: String? {
         didSet {
@@ -233,6 +234,40 @@ final class AppState {
         }
     }
 
+    func createChannelWithProfile(_ profileId: String) async {
+        do {
+            let chatId = try await apiClient.createChat(profileId: profileId)
+            await loadChats()
+            if let chat = chats.first(where: { $0.id == chatId }) {
+                switchToChat(chat)
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    func loadProfiles() async {
+        do {
+            profiles = try await apiClient.fetchProfiles()
+        } catch {
+            // Profiles are supplementary — silent fail
+        }
+    }
+
+    func updateChatProfile(_ chatId: String, profileId: String) async {
+        do {
+            try await apiClient.updateChatProfile(chatId: chatId, profileId: profileId)
+            await loadChats()
+            if let updated = chats.first(where: { $0.id == chatId }) {
+                if currentChat?.id == chatId {
+                    currentChat = updated
+                }
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
     func renameChannel(_ chatId: String, to newTitle: String) async {
         do {
             try await apiClient.renameChat(chatId: chatId, title: newTitle)
@@ -326,6 +361,7 @@ final class AppState {
         }
 
         await loadChats()
+        await loadProfiles()
 
         if persistentChatId == nil {
             await ensurePersistentChat()
@@ -397,9 +433,13 @@ final class AppState {
             title: "New Chat",
             model: nil,
             type: nil,
+            category: nil,
             claudeSessionId: nil,
             createdAt: now,
-            updatedAt: now
+            updatedAt: now,
+            profileId: nil,
+            profileName: nil,
+            profileAvatar: nil
         )
     }
 

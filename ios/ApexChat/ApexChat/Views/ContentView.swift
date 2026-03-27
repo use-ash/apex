@@ -408,15 +408,27 @@ struct ContentView: View {
     // MARK: - Toolbar
 
     private var connectionPill: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Circle()
                 .fill(appState.connectionManager.isConnected ? .green : .red)
                 .frame(width: 8, height: 8)
 
-            Text(appState.modelDisplayName)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
+            if let avatar = appState.currentChat?.profileAvatar, !avatar.isEmpty {
+                Text(avatar)
+                    .font(.subheadline)
+            }
+
+            if let profileName = appState.currentChat?.profileName, !profileName.isEmpty {
+                Text(profileName)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+            } else {
+                Text(appState.modelDisplayName)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)

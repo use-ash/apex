@@ -4,9 +4,52 @@ struct NewChannelView: View {
     @Bindable var appState: AppState
     @Environment(\.dismiss) private var dismiss
 
+    @State private var selectedProfile: AgentProfile?
+    @State private var isLoadingProfiles = true
+
     var body: some View {
         NavigationStack {
             List {
+                if !appState.profiles.isEmpty {
+                    Section("Agent Profiles") {
+                        ForEach(appState.profiles) { profile in
+                            Button {
+                                createWithProfile(profile)
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Text(profile.avatar.isEmpty ? "\u{1F4AC}" : profile.avatar)
+                                        .font(.title2)
+                                        .frame(width: 36, alignment: .center)
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(profile.name)
+                                            .font(.body.weight(.semibold))
+                                            .foregroundStyle(.primary)
+                                        if !profile.roleDescription.isEmpty {
+                                            Text(profile.roleDescription)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(2)
+                                        }
+                                    }
+
+                                    Spacer()
+
+                                    if !profile.model.isEmpty {
+                                        Text(profile.modelDisplayName)
+                                            .font(.caption2)
+                                            .foregroundStyle(.blue)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(.blue.opacity(0.1))
+                                            .clipShape(Capsule())
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Section("Claude") {
                     ForEach(AppState.supportedModels.filter { $0.id.hasPrefix("claude-") }) { model in
                         Button {
@@ -61,6 +104,17 @@ struct NewChannelView: View {
                     Button("Cancel") { dismiss() }
                 }
             }
+            .task {
+                await appState.loadProfiles()
+                isLoadingProfiles = false
+            }
+        }
+    }
+
+    private func createWithProfile(_ profile: AgentProfile) {
+        Task {
+            await appState.createChannelWithProfile(profile.id)
+            dismiss()
         }
     }
 

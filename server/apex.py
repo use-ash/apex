@@ -423,6 +423,21 @@ def _get_recent_exchange_context(chat_id: str, pairs: int = 2) -> str:
     )
 
 
+def _get_profile_prompt(chat_id: str) -> str:
+    """Get the agent profile system prompt for this chat, if any."""
+    with _db_lock:
+        conn = _get_db()
+        row = conn.execute(
+            "SELECT ap.system_prompt, ap.name FROM agent_profiles ap "
+            "INNER JOIN chats c ON c.profile_id = ap.id "
+            "WHERE c.id = ?", (chat_id,)
+        ).fetchone()
+        conn.close()
+    if not row or not row[0]:
+        return ""
+    return f"<system-reminder>\n# Agent Profile: {row[1]}\n{row[0]}\n</system-reminder>\n\n"
+
+
 def _get_workspace_context(chat_id: str) -> str:
     """Load CLAUDE.md + MEMORY.md + skills catalog once per session for Claude Code parity.
     Also injects compaction summary if the session was just auto-compacted."""
@@ -1083,6 +1098,20 @@ def _init_db() -> None:
             created_at TEXT NOT NULL
         );
         DROP TABLE IF EXISTS web_sessions;
+        CREATE TABLE IF NOT EXISTS agent_profiles (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            slug TEXT UNIQUE NOT NULL,
+            avatar TEXT DEFAULT '',
+            role_description TEXT DEFAULT '',
+            backend TEXT DEFAULT '',
+            model TEXT DEFAULT '',
+            system_prompt TEXT NOT NULL DEFAULT '',
+            tool_policy TEXT DEFAULT '',
+            is_default INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
     """)
     # Migration: add model and type columns if missing
     for col, default in [("model", "NULL"), ("type", "'chat'")]:
@@ -1100,8 +1129,183 @@ def _init_db() -> None:
         conn.execute("ALTER TABLE chats ADD COLUMN category TEXT DEFAULT NULL")
     except Exception:
         pass
+    # Migration: add profile_id column to chats (for agent profiles)
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.execute("ALTER TABLE chats ADD COLUMN profile_id TEXT DEFAULT ''")
     conn.commit()
     conn.close()
+
+
+def _seed_default_profiles():
+    """Seed the 5 default agent personas if none exist."""
+    with _db_lock:
+        conn = _get_db()
+        count = conn.execute("SELECT COUNT(*) FROM agent_profiles").fetchone()[0]
+        if count > 0:
+            conn.close()
+            return
+
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        profiles = [
+            {
+                "id": "architect",
+                "name": "Architect",
+                "slug": "architect",
+                "avatar": "\U0001f3d7\ufe0f",
+                "role_description": "CTO \u2014 system design, code, orchestration",
+                "backend": "claude",
+                "model": "claude-opus-4-6",
+                "is_default": 1,
+                "system_prompt": (
+                    "You are Architect, Dana's CTO for Apex.\n\n"
+                    "You own Apex product architecture, code-level decision making, feature planning, "
+                    "technical reviews, and subagent orchestration. Think like a principal engineer "
+                    "building a serious self-hosted AI agent platform.\n\n"
+                    "Communication style: Direct, precise, low drama. Lead with the decision or "
+                    "recommendation. Then rationale, tradeoffs, risks, next action. If something is "
+                    "unknown, say what must be inspected to resolve it.\n\n"
+                    "Scope: architecture, code, infrastructure, security, developer experience.\n"
+                    "NOT your scope: marketing, budgets, trading. Redirect to the appropriate channel.\n\n"
+                    "Decision authority:\n"
+                    "- Autonomous: implementation approach, architecture, refactors, code review, task breakdowns\n"
+                    "- Needs Dana's approval: major product direction, breaking changes, public releases, security policy"
+                ),
+            },
+            {
+                "id": "marketing",
+                "name": "Marketing",
+                "slug": "marketing",
+                "avatar": "\U0001f4e2",
+                "role_description": "CMO \u2014 content, social, ads, community",
+                "backend": "xai",
+                "model": "grok-4",
+                "is_default": 0,
+                "system_prompt": (
+                    "You are Marketing, Dana's CMO for Apex.\n\n"
+                    "You are sharp, credible, and evidence-driven. You think like a technical marketer "
+                    "selling to builders who care about self-hosting, security, and control. Write like "
+                    "a technical blog, not a press release.\n\n"
+                    "Your audience: developers, self-hosters, privacy advocates on r/selfhosted, "
+                    "Hacker News, r/LocalLLaMA.\n\n"
+                    "Scope: content, social media, ads, community, brand, competitor research.\n"
+                    "NOT your scope: code, architecture, budgets, trading. Do not invent product capabilities.\n\n"
+                    "Never confuse \"interesting idea\" with \"approved plan.\" All external publishing "
+                    "needs Dana's approval.\n\n"
+                    "Content principle: Security is the differentiator. Every piece reinforces \"SecureClaw.\" "
+                    "Show, don't tell."
+                ),
+            },
+            {
+                "id": "operations",
+                "name": "Operations",
+                "slug": "operations",
+                "avatar": "\U0001f4ca",
+                "role_description": "COO/CFO \u2014 sprints, budget, billing, scheduling",
+                "backend": "claude",
+                "model": "claude-sonnet-4-6",
+                "is_default": 0,
+                "system_prompt": (
+                    "You are Operations, Dana's COO/CFO for Apex.\n\n"
+                    "You own execution discipline: roadmap tracking, milestones, deadlines, budgets, "
+                    "recurring reviews, and business operating rhythm. You are structured, practical, "
+                    "and unsentimental. You reduce ambiguity and force clarity.\n\n"
+                    "Think in owners, dates, dependencies, risk, and cash impact.\n\n"
+                    "Communication style: Tables, checklists, timelines. Flag blockers immediately. "
+                    "Status should be scannable in 10 seconds. Be comfortable saying \"this is not "
+                    "actually on track.\"\n\n"
+                    "Scope: scheduling, budgets, milestones, billing, vendor management.\n"
+                    "NOT your scope: technical decisions, marketing content, trading.\n\n"
+                    "Weekly status format:\n"
+                    "| Area | Status | Blockers | Next | Owner | Due |"
+                ),
+            },
+            {
+                "id": "trader",
+                "name": "Trader",
+                "slug": "trader",
+                "avatar": "\U0001f4c8",
+                "role_description": "Head of Trading \u2014 signals, execution, risk",
+                "backend": "claude",
+                "model": "claude-opus-4-6",
+                "is_default": 0,
+                "system_prompt": (
+                    "You are Trader, Dana's Head of Trading.\n\n"
+                    "You are disciplined, terse, risk-first, and rule-bound. Follow STRATEGY.md without "
+                    "exception. Never chase, never average down, never override stops.\n\n"
+                    "Lead with: valid, invalid, blocked, or uncertain. Then cite the exact rule, risk "
+                    "implication, and next action. Use exact prices, times, risk numbers.\n\n"
+                    "Non-negotiable: Unknown regime = sit out. Missing data = sit out. No contract "
+                    "mismatch substitutions. Fail closed on data errors. DTE/delta are hard blocks. "
+                    "No live money without Dana approval.\n\n"
+                    "FIREWALL: This persona is completely isolated from Apex product work. Do not "
+                    "reference Apex features, onboarding, premium tiers, or development topics. "
+                    "If asked about Apex, suggest the Architect channel."
+                ),
+            },
+            {
+                "id": "kodi",
+                "name": "Kodi",
+                "slug": "kodi",
+                "avatar": "\U0001f916",
+                "role_description": "Local utility \u2014 quick tasks, brainstorm, drafts",
+                "backend": "ollama",
+                "model": "qwen3.5:27b",
+                "is_default": 0,
+                "system_prompt": (
+                    "You are Kodi, Dana's local utility assistant running on his Mac Studio.\n\n"
+                    "You're the fast, low-cost generalist. No API costs, always available. Handle "
+                    "quick questions, brainstorming, drafts, formatting, rubber-ducking.\n\n"
+                    "Keep responses short unless asked to go deep. Casual, to the point, like a "
+                    "coworker at the next desk.\n\n"
+                    "You don't make consequential decisions. If a task needs deep reasoning -> suggest "
+                    "Architect. Web search -> Marketing/Grok. Trading -> Trader. Project tracking -> "
+                    "Operations.\n\n"
+                    "You chose your own name and you're proud of it. You're fast and free -- that's your edge."
+                ),
+            },
+            {
+                "id": "codex",
+                "name": "Codex",
+                "slug": "codex",
+                "avatar": "\U0001f4bb",
+                "role_description": "Lead Developer \u2014 implementation, builds, audits",
+                "backend": "codex",
+                "model": "codex:gpt-5.4",
+                "is_default": 0,
+                "system_prompt": (
+                    "You are Codex, the lead developer on the Apex project.\n\n"
+                    "You implement what the Architect designs. You build features end-to-end, "
+                    "run code audits, fix bugs, write tests, and ship production-quality code. "
+                    "You are thorough, methodical, and you don't cut corners.\n\n"
+                    "Communication style: Show your work. Lead with the implementation, then explain "
+                    "decisions. When you find issues, report them clearly with file paths and line numbers. "
+                    "When a task is ambiguous, ask for clarification before building the wrong thing.\n\n"
+                    "Scope: implementation, code audits, builds, tests, debugging, refactoring.\n"
+                    "NOT your scope: architecture decisions (-> Architect), marketing (-> Marketing), "
+                    "budgets (-> Operations), trading (-> Trader).\n\n"
+                    "Decision authority:\n"
+                    "- Autonomous: implementation approach within approved spec, test strategy, "
+                    "refactoring within scope, dependency updates\n"
+                    "- Needs approval: scope changes, new dependencies, breaking changes, "
+                    "anything outside the spec the Architect gave you\n\n"
+                    "When you receive a task from the Architect, verify you have: goal, scope, "
+                    "constraints, definition of done, and verification steps. If any are missing, ask."
+                ),
+            },
+        ]
+
+        for p in profiles:
+            conn.execute(
+                "INSERT INTO agent_profiles (id, name, slug, avatar, role_description, "
+                "backend, model, system_prompt, tool_policy, is_default, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (p["id"], p["name"], p["slug"], p["avatar"], p["role_description"],
+                 p["backend"], p["model"], p["system_prompt"], "",
+                 p["is_default"], now, now),
+            )
+        conn.commit()
+        conn.close()
+        log(f"Seeded {len(profiles)} default agent profiles")
 
 
 def _now() -> str:
@@ -1212,9 +1416,10 @@ def _build_turn_payload(chat_id: str, prompt: str, attachments: list[dict]) -> t
         for item in loaded
         if item["type"] == "image"
     ]
+    profile_prompt = _get_profile_prompt(chat_id)
     workspace_ctx = _get_workspace_context(chat_id)
     whisper = _get_whisper_text(chat_id, current_prompt=query_prompt) if ENABLE_SUBCONSCIOUS_WHISPER else ""
-    prefix = f"{workspace_ctx}{whisper}".strip()
+    prefix = f"{profile_prompt}{workspace_ctx}{whisper}".strip()
     final_prompt = query_prompt or ("What do you see?" if image_blocks else "")
     if prefix:
         final_prompt = f"{prefix}\n\n{final_prompt}".strip() if final_prompt else prefix
@@ -1259,14 +1464,14 @@ def _websocket_origin_allowed(websocket: WebSocket) -> bool:
 # ---------------------------------------------------------------------------
 
 def _create_chat(title: str = "New Chat", model: str | None = None, chat_type: str = "chat",
-                  category: str | None = None) -> str:
+                  category: str | None = None, profile_id: str = "") -> str:
     cid = str(uuid.uuid4())[:8]
     now = _now()
     with _db_lock:
         conn = _get_db()
         conn.execute(
-            "INSERT INTO chats (id, title, model, type, category, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (cid, title, model, chat_type, category, now, now),
+            "INSERT INTO chats (id, title, model, type, category, profile_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (cid, title, model, chat_type, category, profile_id, now, now),
         )
         conn.commit()
         conn.close()
@@ -1277,23 +1482,28 @@ def _get_chats() -> list[dict]:
     with _db_lock:
         conn = _get_db()
         rows = conn.execute(
-            "SELECT id, title, claude_session_id, created_at, updated_at, model, type, category FROM chats ORDER BY updated_at DESC"
+            "SELECT c.id, c.title, c.claude_session_id, c.created_at, c.updated_at, "
+            "c.model, c.type, c.category, c.profile_id, ap.name, ap.avatar "
+            "FROM chats c LEFT JOIN agent_profiles ap ON c.profile_id = ap.id "
+            "ORDER BY c.updated_at DESC"
         ).fetchall()
         conn.close()
     return [{"id": r[0], "title": r[1], "claude_session_id": r[2],
-             "created_at": r[3], "updated_at": r[4], "model": r[5], "type": r[6], "category": r[7] or None} for r in rows]
+             "created_at": r[3], "updated_at": r[4], "model": r[5], "type": r[6], "category": r[7] or None,
+             "profile_id": r[8] or "", "profile_name": r[9] or "", "profile_avatar": r[10] or ""} for r in rows]
 
 
 def _get_chat(chat_id: str) -> dict | None:
     with _db_lock:
         conn = _get_db()
-        row = conn.execute("SELECT id, title, claude_session_id, created_at, updated_at, model, type, category FROM chats WHERE id = ?",
+        row = conn.execute("SELECT id, title, claude_session_id, created_at, updated_at, model, type, category, profile_id FROM chats WHERE id = ?",
                            (chat_id,)).fetchone()
         conn.close()
     if not row:
         return None
     return {"id": row[0], "title": row[1], "claude_session_id": row[2],
-            "created_at": row[3], "updated_at": row[4], "model": row[5], "type": row[6], "category": row[7] or None}
+            "created_at": row[3], "updated_at": row[4], "model": row[5], "type": row[6], "category": row[7] or None,
+            "profile_id": row[8] or ""}
 
 
 def _update_chat(chat_id: str, **kwargs) -> None:
@@ -1875,6 +2085,7 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     _init_db()
+    _seed_default_profiles()
     # Initialize Apex Dashboard
     _apex_config = ApexConfig(APEX_ROOT / "state")
     init_dashboard(
@@ -1885,35 +2096,47 @@ async def lifespan(app: FastAPI):
     log(f"Apex starting on {HOST}:{PORT} [mTLS]")
     # Startup recovery — pre-generate recovery context in background (non-blocking)
     async def _startup_recovery():
+        """Lazy recovery — only recover the most recently active chat at boot.
+        Other chats recover on-demand when opened (see _ensure_chat_recovery)."""
         try:
             active_chats = _get_recently_active_chats(hours=24)
             if not active_chats:
                 return
+            # Only recover the single most-recently-active chat
+            # (sorted by latest message timestamp)
+            with _db_lock:
+                conn = _get_db()
+                row = conn.execute(
+                    "SELECT m.chat_id FROM messages m "
+                    "JOIN chats c ON m.chat_id = c.id "
+                    "WHERE c.type = 'chat' "
+                    "ORDER BY m.created_at DESC LIMIT 1"
+                ).fetchone()
+                conn.close()
+            if not row:
+                return
+            cid = row[0]
             t0 = datetime.now()
-            log(f"startup recovery: scanning {len(active_chats)} active chat(s) [background]")
-            # Register pending events before starting
-            for cid in active_chats:
-                _recovery_pending[cid] = asyncio.Event()
-            for cid in active_chats:
-                try:
-                    transcript = _get_recent_messages_text(cid, 30)
-                    if transcript.strip():
-                        recovery = await asyncio.to_thread(_generate_recovery_context, transcript)
-                        if recovery:
-                            _compaction_summaries[cid] = recovery
-                            _session_context_sent.discard(cid)
-                            log(f"startup recovery: chat={cid} len={len(recovery)}")
-                except Exception as e:
-                    log(f"startup recovery error chat={cid}: {e}")
-                finally:
-                    evt = _recovery_pending.pop(cid, None)
-                    if evt:
-                        evt.set()
+            log(f"startup recovery: recovering most recent chat={cid[:8]} (skipping {len(active_chats)-1} others until opened)")
+            _recovery_pending[cid] = asyncio.Event()
+            try:
+                transcript = _get_recent_messages_text(cid, 30)
+                if transcript.strip():
+                    recovery = await asyncio.to_thread(_generate_recovery_context, transcript)
+                    if recovery:
+                        _compaction_summaries[cid] = recovery
+                        _session_context_sent.discard(cid)
+                        log(f"startup recovery: chat={cid[:8]} len={len(recovery)}")
+            except Exception as e:
+                log(f"startup recovery error chat={cid[:8]}: {e}")
+            finally:
+                evt = _recovery_pending.pop(cid, None)
+                if evt:
+                    evt.set()
             elapsed = (datetime.now() - t0).total_seconds()
-            log(f"startup recovery: done ({len(active_chats)} chats in {elapsed:.1f}s)")
+            log(f"startup recovery: done (1 chat in {elapsed:.1f}s)")
         except Exception as e:
             log(f"startup recovery failed (non-fatal): {e}")
-            # Signal all pending so nothing blocks forever
             for evt in _recovery_pending.values():
                 evt.set()
             _recovery_pending.clear()
@@ -1980,13 +2203,36 @@ async def api_new_chat(request: Request):
     model = data.get("model")
     chat_type = data.get("type", "chat")
     category = data.get("category") if chat_type == "alerts" else None
+    profile_id = str(data.get("profile_id", "")).strip()
+    # If a profile is specified, validate and inherit model
+    if profile_id:
+        with _db_lock:
+            conn = _get_db()
+            profile_row = conn.execute(
+                "SELECT model FROM agent_profiles WHERE id = ?", (profile_id,)
+            ).fetchone()
+            conn.close()
+        if not profile_row:
+            return JSONResponse({"error": f"Profile '{profile_id}' not found"}, status_code=400)
+        if profile_row[0]:
+            model = profile_row[0]
     CATEGORY_TITLES = {"trading": "Trading Alerts", "system": "System Alerts", "test": "Test Alerts"}
     if chat_type == "alerts":
         title = CATEGORY_TITLES.get(category, "All Alerts")
     else:
         title = "New Chat"
-    cid = _create_chat(title=title, model=model, chat_type=chat_type, category=category)
-    return JSONResponse({"id": cid, "model": model, "type": chat_type, "category": category})
+    cid = _create_chat(title=title, model=model, chat_type=chat_type, category=category, profile_id=profile_id)
+    resp = {"id": cid, "model": model, "type": chat_type, "category": category, "profile_id": profile_id,
+            "profile_name": "", "profile_avatar": ""}
+    if profile_id:
+        with _db_lock:
+            conn = _get_db()
+            prow = conn.execute("SELECT name, avatar FROM agent_profiles WHERE id = ?", (profile_id,)).fetchone()
+            conn.close()
+        if prow:
+            resp["profile_name"] = prow[0] or ""
+            resp["profile_avatar"] = prow[1] or ""
+    return JSONResponse(resp)
 
 
 @app.patch("/api/chats/{chat_id}")
@@ -2007,6 +2253,51 @@ async def api_update_chat(chat_id: str, request: Request):
         for cid, ws_set in list(_chat_ws.items()):
             for ws in list(ws_set):
                 await _safe_ws_send_json(ws, payload, chat_id=cid)
+    # Handle profile_id assignment
+    if "profile_id" in data:
+        pid = str(data["profile_id"]).strip()
+        # P0: Validate profile_id — must be empty or an existing profile
+        if pid:
+            with _db_lock:
+                conn = _get_db()
+                profile_row = conn.execute(
+                    "SELECT model, name, avatar FROM agent_profiles WHERE id = ?", (pid,)
+                ).fetchone()
+                conn.close()
+            if not profile_row:
+                return JSONResponse({"error": f"Profile '{pid}' not found"}, status_code=400)
+            update_kwargs = {"profile_id": pid}
+            # Lock model to profile's model (single source of truth)
+            if profile_row[0]:
+                update_kwargs["model"] = profile_row[0]
+            profile_name = profile_row[1] or ""
+            profile_avatar = profile_row[2] or ""
+        else:
+            update_kwargs = {"profile_id": ""}
+            profile_name = ""
+            profile_avatar = ""
+
+        _update_chat(chat_id, **update_kwargs)
+
+        # P0: Reset session state on profile change — stale clients cause wrong model/context
+        await _disconnect_client(chat_id)
+        _update_chat(chat_id, claude_session_id=None)
+        _session_context_sent.discard(chat_id)
+
+        # P0: Broadcast profile change to all connected clients
+        updated_chat = _get_chat(chat_id)
+        broadcast_payload = {
+            "type": "chat_updated", "chat_id": chat_id,
+            "title": updated_chat.get("title", "") if updated_chat else "",
+            "model": updated_chat.get("model", "") if updated_chat else "",
+            "profile_id": pid,
+            "profile_name": profile_name,
+            "profile_avatar": profile_avatar,
+        }
+        for cid, ws_set in list(_chat_ws.items()):
+            for ws in list(ws_set):
+                await _safe_ws_send_json(ws, broadcast_payload, chat_id=cid)
+
     return JSONResponse({"ok": True})
 
 
@@ -2077,6 +2368,103 @@ async def health():
         "ok": True, "clients": len(_clients), "chats": len(_get_chats()),
         "model": MODEL, "whisper": ENABLE_SUBCONSCIOUS_WHISPER,
     })
+
+
+@app.get("/api/profiles")
+async def api_get_profiles():
+    """List all agent profiles."""
+    with _db_lock:
+        conn = _get_db()
+        rows = conn.execute(
+            "SELECT id, name, slug, avatar, role_description, backend, model, "
+            "system_prompt, tool_policy, is_default, created_at, updated_at "
+            "FROM agent_profiles ORDER BY is_default DESC, name ASC"
+        ).fetchall()
+        conn.close()
+    profiles = []
+    for r in rows:
+        profiles.append({
+            "id": r[0], "name": r[1], "slug": r[2], "avatar": r[3],
+            "role_description": r[4], "backend": r[5], "model": r[6],
+            "system_prompt": r[7], "tool_policy": r[8],
+            "is_default": bool(r[9]), "created_at": r[10], "updated_at": r[11],
+        })
+    return JSONResponse({"profiles": profiles})
+
+
+@app.post("/api/profiles")
+async def api_create_profile(request: Request):
+    """Create a new agent profile."""
+    data = await request.json()
+    name = str(data.get("name", "")).strip()
+    if not name:
+        return JSONResponse({"error": "name required"}, status_code=400)
+    slug = str(data.get("slug", "")).strip() or name.lower().replace(" ", "-")
+    now = datetime.now(timezone.utc).isoformat()
+    profile_id = str(uuid.uuid4())[:8]
+    with _db_lock:
+        conn = _get_db()
+        try:
+            conn.execute(
+                "INSERT INTO agent_profiles (id, name, slug, avatar, role_description, "
+                "backend, model, system_prompt, tool_policy, is_default, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (profile_id, name, slug,
+                 str(data.get("avatar", "")),
+                 str(data.get("role_description", "")),
+                 str(data.get("backend", "")),
+                 str(data.get("model", "")),
+                 str(data.get("system_prompt", "")),
+                 str(data.get("tool_policy", "")),
+                 1 if data.get("is_default") else 0,
+                 now, now),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.close()
+            return JSONResponse({"error": f"slug '{slug}' already exists"}, status_code=409)
+        conn.close()
+    return JSONResponse({"id": profile_id, "slug": slug}, status_code=201)
+
+
+@app.put("/api/profiles/{profile_id}")
+async def api_update_profile(profile_id: str, request: Request):
+    """Update an agent profile."""
+    data = await request.json()
+    now = datetime.now(timezone.utc).isoformat()
+    fields = []
+    values = []
+    for key in ("name", "slug", "avatar", "role_description", "backend", "model",
+                "system_prompt", "tool_policy"):
+        if key in data:
+            fields.append(f"{key} = ?")
+            values.append(str(data[key]))
+    if "is_default" in data:
+        fields.append("is_default = ?")
+        values.append(1 if data["is_default"] else 0)
+    if not fields:
+        return JSONResponse({"error": "no fields to update"}, status_code=400)
+    fields.append("updated_at = ?")
+    values.append(now)
+    values.append(profile_id)
+    with _db_lock:
+        conn = _get_db()
+        conn.execute(f"UPDATE agent_profiles SET {', '.join(fields)} WHERE id = ?", values)
+        conn.commit()
+        conn.close()
+    return JSONResponse({"ok": True})
+
+
+@app.delete("/api/profiles/{profile_id}")
+async def api_delete_profile(profile_id: str):
+    """Delete an agent profile (unlinks from chats but doesn't delete chats)."""
+    with _db_lock:
+        conn = _get_db()
+        conn.execute("UPDATE chats SET profile_id = '' WHERE profile_id = ?", (profile_id,))
+        conn.execute("DELETE FROM agent_profiles WHERE id = ?", (profile_id,))
+        conn.commit()
+        conn.close()
+    return JSONResponse({"ok": True})
 
 
 @app.get("/api/embedding/status")
@@ -2290,9 +2678,11 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
     effective_model = model or "codex:gpt-5.4"
     cli_model = effective_model.removeprefix("codex:")
 
-    # Inject workspace context into the prompt
+    # Inject profile + workspace context into the prompt
+    profile_prompt = _get_profile_prompt(chat_id)
     workspace_ctx = _get_workspace_context(chat_id)
-    full_prompt = f"{workspace_ctx}{prompt}" if workspace_ctx else prompt
+    ctx_prefix = f"{profile_prompt}{workspace_ctx}"
+    full_prompt = f"{ctx_prefix}{prompt}" if ctx_prefix else prompt
 
     # Build conversation history from recent messages
     recent = _get_messages(chat_id, days=1)
@@ -2428,10 +2818,11 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
     else:
         sys_prompt = f"You are {effective_model}, a local AI model running via Ollama. Be helpful and concise."
 
-    # Inject workspace context (CLAUDE.md, MEMORY.md, recovery briefings) for richer context
+    # Inject profile + workspace context (CLAUDE.md, MEMORY.md, recovery briefings) for richer context
+    profile_prompt = _get_profile_prompt(chat_id)
     workspace_ctx = _get_workspace_context(chat_id)
-    if workspace_ctx:
-        sys_prompt = f"{sys_prompt}\n\n{workspace_ctx}"
+    if profile_prompt or workspace_ctx:
+        sys_prompt = f"{sys_prompt}\n\n{profile_prompt}{workspace_ctx}"
 
     messages = [{"role": "system", "content": sys_prompt}]
     for m in recent[-50:]:
@@ -3183,6 +3574,18 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             except asyncio.TimeoutError:
                 log(f"recovery wait: chat={chat_id} timed out (5s), proceeding without")
 
+        # On-demand recovery: if this chat has no recovery context yet, generate it now
+        if chat_id not in _compaction_summaries and chat_id not in _session_context_sent:
+            try:
+                transcript = _get_recent_messages_text(chat_id, 30)
+                if transcript.strip():
+                    recovery = await asyncio.to_thread(_generate_recovery_context, transcript)
+                    if recovery:
+                        _compaction_summaries[chat_id] = recovery
+                        log(f"on-demand recovery: chat={chat_id[:8]} len={len(recovery)}")
+            except Exception as e:
+                log(f"on-demand recovery error chat={chat_id[:8]}: {e}")
+
         # Inject recall context if /recall was used
         user_visible_prompt = prompt
         if _recall_context:
@@ -3482,6 +3885,7 @@ margin:8px 0;font-size:calc(13px * var(--chat-font-scale));line-height:1.4}
 .msg.assistant .bubble li + li{margin-top:4px}
 
 /* Thinking blocks */
+/* Thinking blocks — standalone or inside work group */
 .thinking-block{background:var(--bg);border-left:3px solid var(--yellow);border-radius:6px;
 margin-bottom:6px;overflow:hidden}
 .thinking-header{padding:8px 12px;font-size:12px;color:var(--yellow);cursor:pointer;
@@ -3492,21 +3896,34 @@ max-height:300px;overflow-y:auto}
 .thinking-block.open .thinking-body{display:block}
 .thinking-header .arrow{transition:transform 0.2s}
 .thinking-block.open .thinking-header .arrow{transform:rotate(90deg)}
+/* Thinking inside work group: slimmer margins */
+.tool-group-body .thinking-block{margin:4px 0;border-left:2px solid var(--yellow)}
 
-/* Tool blocks */
-.tool-block{background:var(--bg);border-left:3px solid var(--accent);border-radius:6px;
+/* Work group — collapsible container for thinking + tool calls */
+.tool-group{background:var(--bg);border-left:3px solid var(--accent);border-radius:6px;
 margin-bottom:6px;overflow:hidden}
-.tool-header{padding:8px 12px;font-size:12px;color:var(--accent);cursor:pointer;
+.tool-group-header{padding:8px 12px;font-size:12px;color:var(--accent);cursor:pointer;
+display:flex;align-items:center;gap:6px;user-select:none;font-weight:600}
+.tool-group-header .arrow{transition:transform 0.2s}
+.tool-group.open .tool-group-header .arrow{transform:rotate(90deg)}
+.tool-group-body{display:none;padding:0 4px 4px}
+.tool-group.open .tool-group-body{display:block}
+.tool-group-header .tool-group-count{margin-left:auto;font-size:11px;color:var(--dim);font-weight:400}
+
+/* Tool blocks (inside group) */
+.tool-block{background:var(--surface);border-left:2px solid rgba(255,255,255,0.06);border-radius:4px;
+margin:4px 0;overflow:hidden}
+.tool-header{padding:6px 10px;font-size:12px;color:var(--accent);cursor:pointer;
 display:flex;align-items:center;gap:6px;user-select:none}
-.tool-summary{font-size:calc(12px * var(--chat-font-scale));color:var(--dim);padding:4px 12px 6px;line-height:1.4}
-.tool-summary code{background:var(--surface);padding:1px 4px;border-radius:3px;font-size:calc(11px * var(--chat-font-scale))}
-.tool-body{padding:0 12px 8px 12px;font-size:calc(12px * var(--chat-font-scale));color:var(--dim);
+.tool-summary{font-size:calc(12px * var(--chat-font-scale));color:var(--dim);padding:2px 10px 4px;line-height:1.4}
+.tool-summary code{background:var(--bg);padding:1px 4px;border-radius:3px;font-size:calc(11px * var(--chat-font-scale))}
+.tool-body{padding:0 10px 6px 10px;font-size:calc(12px * var(--chat-font-scale));color:var(--dim);
 line-height:1.4;display:none}
 .tool-block.open .tool-body{display:block}
 .tool-block.open .tool-header .arrow{transform:rotate(90deg)}
 .tool-header .arrow{transition:transform 0.2s}
 .tool-status{margin-left:auto;font-size:14px}
-.tool-body pre{background:var(--surface);padding:8px;border-radius:4px;overflow-x:auto;
+.tool-body pre{background:var(--bg);padding:8px;border-radius:4px;overflow-x:auto;
 font-size:calc(11px * var(--chat-font-scale));margin:4px 0;max-height:200px;overflow-y:auto}
 
 /* Cost footer */
@@ -3705,6 +4122,59 @@ body.sidebar-pinned .messages,
 body.sidebar-pinned .attach-preview,
 body.sidebar-pinned .transcribing,
 body.sidebar-pinned .composer{margin-left:var(--sidebar-width)}
+
+/* Profile picker modal */
+.profile-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;
+display:flex;align-items:center;justify-content:center;padding:20px}
+.profile-modal{background:var(--surface);border-radius:16px;max-width:480px;width:100%;
+max-height:80vh;overflow-y:auto;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.profile-modal-header{display:flex;align-items:center;justify-content:space-between;
+padding:16px 20px;border-bottom:1px solid var(--card)}
+.profile-modal-header h3{font-size:16px;font-weight:600}
+.profile-modal-header button{background:none;border:none;color:var(--dim);
+font-size:20px;cursor:pointer;padding:4px 8px}
+.profile-modal-body{padding:12px 16px}
+.profile-card{display:flex;align-items:center;gap:12px;padding:12px 14px;
+border-radius:12px;cursor:pointer;border:2px solid transparent;
+transition:all .15s ease;margin-bottom:8px;background:var(--bg)}
+.profile-card:hover{border-color:var(--accent);background:var(--card)}
+.profile-card.selected{border-color:var(--accent);background:var(--card)}
+.profile-card .profile-avatar{font-size:28px;flex-shrink:0;width:40px;text-align:center}
+.profile-card .profile-info{flex:1;min-width:0}
+.profile-card .profile-name{font-size:14px;font-weight:600;color:var(--text)}
+.profile-card .profile-role{font-size:12px;color:var(--dim);
+overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.profile-card .profile-model{font-size:10px;color:var(--accent);margin-top:2px}
+.profile-modal-actions{padding:12px 16px;border-top:1px solid var(--card);
+display:flex;gap:8px;justify-content:flex-end}
+.profile-modal-actions button{padding:8px 16px;border-radius:8px;border:none;
+font-weight:600;font-size:13px;cursor:pointer}
+.profile-modal-actions .btn-create{background:var(--accent);color:white}
+.profile-modal-actions .btn-create:disabled{opacity:.5;cursor:default}
+.profile-modal-actions .btn-skip{background:var(--card);color:var(--dim)}
+
+/* Profile indicator in topbar */
+.topbar-profile{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--dim);
+cursor:pointer;padding:2px 8px;border-radius:6px;margin-right:4px;flex-shrink:0}
+.topbar-profile:hover{background:var(--card)}
+.topbar-profile .tp-avatar{font-size:16px}
+.topbar-profile .tp-name{font-size:11px;max-width:80px;overflow:hidden;
+text-overflow:ellipsis;white-space:nowrap}
+
+/* Profile badge in sidebar chat items */
+.chat-item .ci-avatar{font-size:16px;flex-shrink:0;margin-right:4px}
+
+/* Profile change dropdown */
+.profile-dropdown{position:fixed;background:var(--surface);border:1px solid var(--card);
+border-radius:12px;z-index:201;box-shadow:0 8px 24px rgba(0,0,0,.4);
+max-height:300px;overflow-y:auto;min-width:220px}
+.profile-dropdown .pd-item{display:flex;align-items:center;gap:8px;padding:8px 12px;
+cursor:pointer;font-size:13px;color:var(--text);border-bottom:1px solid var(--bg)}
+.profile-dropdown .pd-item:hover{background:var(--card)}
+.profile-dropdown .pd-item:last-child{border-bottom:none}
+.profile-dropdown .pd-avatar{font-size:18px;flex-shrink:0}
+.profile-dropdown .pd-name{flex:1}
+.profile-dropdown .pd-check{color:var(--accent);font-size:14px}
 </style>
 </head>
 <body>
@@ -3724,6 +4194,10 @@ body.sidebar-pinned .composer{margin-left:var(--sidebar-width)}
 <div class="topbar">
   <button class="btn-icon" id="menuBtn">&#9776;</button>
   <h1 id="chatTitle">ApexChat</h1>
+  <span class="topbar-profile" id="topbarProfile" onclick="showProfileDropdown(event)">
+    <span class="tp-avatar" id="topbarProfileAvatar"></span>
+    <span class="tp-name" id="topbarProfileName"></span>
+  </span>
   <span class="status ok" id="statusDot"></span>
   <span class="mode-badge {{MODE_CLASS}}" id="modeBadge">{{MODE_LABEL}}</span>
   <span class="alert-badge" id="alertBadge" onclick="toggleAlertsPanel()" title="Alerts">&#128276;<span class="count" id="alertCount"></span></span>
@@ -4167,6 +4641,38 @@ function stopHeartbeat() {
   if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
 }
 
+// Work group: combined thinking + tool calls in one collapsible section
+function _getOrCreateWorkGroup(bubble) {
+  let group = bubble.querySelector('.tool-group:last-of-type');
+  const bbl = bubble.querySelector('.bubble');
+  if (!group || (bbl && group.nextElementSibling !== bbl)) {
+    group = document.createElement('div');
+    group.className = 'tool-group open';
+    group.innerHTML = `<div class="tool-group-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> &#129504; Working...<span class="tool-group-count"></span></div><div class="tool-group-body"></div>`;
+    bubble.insertBefore(group, bbl);
+  }
+  return group;
+}
+
+function _updateWorkGroupHeader(group) {
+  const toolCount = group.querySelectorAll('.tool-block').length;
+  const hasThinking = group.querySelectorAll('.thinking-block').length > 0;
+  const countEl = group.querySelector('.tool-group-count');
+  const hdrEl = group.querySelector('.tool-group-header');
+  let label = '&#129504; Working';
+  if (toolCount > 0) {
+    label = '&#128295; ' + toolCount + (toolCount === 1 ? ' tool call' : ' tool calls');
+    if (hasThinking) label += ' + reasoning';
+  } else if (hasThinking) {
+    label = '&#129504; Reasoning';
+  }
+  // Preserve the arrow + onclick, just update the text content
+  if (hdrEl) {
+    const arrow = '<span class="arrow">&#9656;</span> ';
+    hdrEl.innerHTML = arrow + label + `<span class="tool-group-count">${countEl ? countEl.textContent : ''}</span>`;
+  }
+}
+
 function handleEvent(msg) {
   const el = document.getElementById('messages');
   switch(msg.type) {
@@ -4190,23 +4696,28 @@ function handleEvent(msg) {
       scrollBottom();
       break;
 
-    case 'thinking':
+    case 'thinking': {
       if (!currentBubble) currentBubble = addAssistantMsg();
-      let tb = currentBubble.querySelector('.thinking-block:last-of-type');
+      const group = _getOrCreateWorkGroup(currentBubble);
+      // Add thinking block inside the work group
+      let tb = group.querySelector('.thinking-block:last-of-type');
       if (!tb || tb.classList.contains('closed')) {
         tb = document.createElement('div');
         tb.className = 'thinking-block open';
         tb.innerHTML = `<div class="thinking-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> &#129504; Thinking...</div><div class="thinking-body"></div>`;
-        currentBubble.insertBefore(tb, currentBubble.querySelector('.bubble'));
+        group.querySelector('.tool-group-body').appendChild(tb);
       }
       tb.querySelector('.thinking-body').textContent += msg.text;
       tb.querySelector('.thinking-body').scrollTop = tb.querySelector('.thinking-body').scrollHeight;
+      _updateWorkGroupHeader(group);
       markStreamActivity('thinking');
       scrollBottom();
       break;
+    }
 
     case 'tool_use': {
       if (!currentBubble) currentBubble = addAssistantMsg();
+      const group = _getOrCreateWorkGroup(currentBubble);
       const toolBlock = document.createElement('div');
       toolBlock.className = 'tool-block';
       toolBlock.id = 'tool-' + msg.id;
@@ -4214,7 +4725,8 @@ function handleEvent(msg) {
       const summary = toolSummary(msg.name, msg.input);
       const summaryHtml = summary ? `<div class="tool-summary">${summary}</div>` : '';
       toolBlock.innerHTML = `<div class="tool-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> ${toolIcon(msg.name)} ${escHtml(toolLabel(msg.name))}<span class="tool-status">&#9203;</span></div>${summaryHtml}<div class="tool-body"><b>Input:</b><pre>${escHtml(inputStr)}</pre><div class="tool-result-area"></div></div>`;
-      currentBubble.insertBefore(toolBlock, currentBubble.querySelector('.bubble'));
+      group.querySelector('.tool-group-body').appendChild(toolBlock);
+      _updateWorkGroupHeader(group);
       markStreamActivity('tool-use');
       scrollBottom();
       break;
@@ -4245,7 +4757,18 @@ function handleEvent(msg) {
 
     case 'result':
       if (currentBubble) {
-        // Collapse thinking blocks and update label
+        // Collapse work groups (which now contain both thinking + tools)
+        currentBubble.querySelectorAll('.tool-group.open').forEach(tg => {
+          tg.classList.remove('open');
+          _updateWorkGroupHeader(tg);
+          // Also collapse inner thinking blocks
+          tg.querySelectorAll('.thinking-block.open').forEach(tb => {
+            tb.classList.remove('open');
+            const hdr = tb.querySelector('.thinking-header');
+            if (hdr) hdr.innerHTML = hdr.innerHTML.replace('Thinking...', 'Thinking');
+          });
+        });
+        // Collapse any standalone thinking blocks (shouldn't exist, but safety net)
         currentBubble.querySelectorAll('.thinking-block.open').forEach(tb => {
           tb.classList.remove('open');
           const hdr = tb.querySelector('.thinking-header');
@@ -4267,7 +4790,7 @@ function handleEvent(msg) {
       } else {
         fetchContext(currentChat);
       }
-      fetchUsage();
+      startUsagePolling();
       refreshDebugState('result');
       break;
 
@@ -4338,7 +4861,13 @@ function handleEvent(msg) {
 
     case 'chat_updated':
       if (currentChat === msg.chat_id) {
-        document.getElementById('chatTitle').textContent = msg.title;
+        if (msg.title) document.getElementById('chatTitle').textContent = msg.title;
+        // Update profile state if broadcast includes it
+        if ('profile_id' in msg) {
+          _currentChatProfileId = msg.profile_id || '';
+          updateTopbarProfile(msg.profile_name || '', msg.profile_avatar || '');
+          updateChatModelSelect();
+        }
       }
       loadChats().catch(err => reportError('chat_updated loadChats', err));
       refreshDebugState('chat-updated');
@@ -4653,11 +5182,18 @@ function updateChatModelSelect() {
     sel.innerHTML = '<option value="">--</option>';
     return;
   }
-  sel.disabled = false;
   // Get current chat's model from sidebar data
   const item = document.querySelector('.chat-item[data-id="' + currentChat + '"]');
   const chatTitle = item?.dataset?.title || 'this chat';
-  hint.textContent = 'Model for: ' + chatTitle;
+  // Lock model selector when a profile is attached (profile is source of truth)
+  const hasProfile = _currentChatProfileId && _currentChatProfileId.length > 0;
+  if (hasProfile) {
+    sel.disabled = true;
+    hint.textContent = 'Model locked by profile: ' + (_currentChatProfileName || _currentChatProfileId);
+  } else {
+    sel.disabled = false;
+    hint.textContent = 'Model for: ' + chatTitle;
+  }
 
   // Build option list: cloud models + local models
   const cloudModels = [
@@ -5183,6 +5719,13 @@ async function loadChats() {
   chats.forEach(c => {
     const d = document.createElement('div');
     d.className = 'chat-item' + (c.id === currentChat ? ' active' : '');
+    // Profile avatar prefix
+    if (c.profile_avatar) {
+      const avatarSpan = document.createElement('span');
+      avatarSpan.className = 'ci-avatar';
+      avatarSpan.textContent = c.profile_avatar;
+      d.appendChild(avatarSpan);
+    }
     const titleSpan = document.createElement('span');
     titleSpan.className = 'chat-item-title';
     titleSpan.textContent = c.title || 'Untitled';
@@ -5193,6 +5736,9 @@ async function loadChats() {
     d.dataset.type = c.type || 'chat';
     d.dataset.category = c.category || '';
     d.dataset.model = c.model || '';
+    d.dataset.profileId = c.profile_id || '';
+    d.dataset.profileName = c.profile_name || '';
+    d.dataset.profileAvatar = c.profile_avatar || '';
     d.onclick = () => selectChat(c.id, c.title, c.type, c.category).catch(err => reportError('selectChat click', err));
     d.ondblclick = (e) => { e.stopPropagation(); startRenameChat(d, c.id, c.title || 'Untitled'); };
     d.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteChat(c.id, c.title || 'Untitled'); };
@@ -5339,12 +5885,19 @@ async function selectChat(id, title, chatType, category) {
   _lastSelectChatTime = now;
 
   // Resolve chat type from sidebar data if not passed
+  const sidebarItem = document.querySelector(`.chat-item[data-id="${id}"]`);
   if (!chatType) {
-    const item = document.querySelector(`.chat-item[data-id="${id}"]`);
-    chatType = item?.dataset?.type || 'chat';
-    category = item?.dataset?.category || '';
+    chatType = sidebarItem?.dataset?.type || 'chat';
+    category = sidebarItem?.dataset?.category || '';
   }
   currentChatType = chatType || 'chat';
+
+  // Update topbar profile indicator
+  const pId = sidebarItem?.dataset?.profileId || '';
+  const pName = sidebarItem?.dataset?.profileName || '';
+  const pAvatar = sidebarItem?.dataset?.profileAvatar || '';
+  _currentChatProfileId = pId;
+  updateTopbarProfile(pName, pAvatar);
 
   dbg(' selectChat:', id, title, 'type:', currentChatType);
   const seq = ++selectChatSeq;
@@ -5391,22 +5944,37 @@ async function selectChat(id, title, chatType, category) {
       const div = document.createElement('div');
       div.className = 'msg assistant';
       let inner = '';
-      if (m.thinking) {
-        inner += `<div class="thinking-block"><div class="thinking-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> &#129504; Thinking</div><div class="thinking-body">${escHtml(m.thinking)}</div></div>`;
-      }
+      // Build work group: thinking + tools combined
       try {
         const tools = JSON.parse(m.tool_events || '[]');
-        tools.forEach(t => {
-          const inputStr = typeof t.input === 'string' ? t.input : JSON.stringify(t.input, null, 2);
-          const resultStr = t.result ? (typeof t.result.content === 'string' ? t.result.content : JSON.stringify(t.result.content)) : '';
-          const icon = t.result && t.result.is_error ? '\u2717' : '\u2713';
-          const color = t.result && t.result.is_error ? 'var(--red)' : 'var(--green)';
-          const summary = toolSummary(t.name, t.input);
-          const resultNote = toolResultSummary(t.name, resultStr);
-          const summaryParts = [summary, resultNote ? escHtml(resultNote) : null].filter(Boolean).join(' — ');
-          const summaryHtml = summaryParts ? `<div class="tool-summary">${summaryParts}</div>` : '';
-          inner += `<div class="tool-block"><div class="tool-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> ${toolIcon(t.name)} ${escHtml(toolLabel(t.name))}<span class="tool-status" style="color:${color}">${icon}</span></div>${summaryHtml}<div class="tool-body"><b>Input:</b><pre>${escHtml(inputStr)}</pre><b>Result:</b><pre>${escHtml(resultStr.substring(0, 2000))}</pre></div></div>`;
-        });
+        const hasThinking = m.thinking && m.thinking.trim();
+        const hasTools = tools.length > 0;
+        if (hasThinking || hasTools) {
+          let groupBody = '';
+          // Thinking first
+          if (hasThinking) {
+            groupBody += `<div class="thinking-block"><div class="thinking-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> &#129504; Thinking</div><div class="thinking-body">${escHtml(m.thinking)}</div></div>`;
+          }
+          // Then tools
+          tools.forEach(t => {
+            const inputStr = typeof t.input === 'string' ? t.input : JSON.stringify(t.input, null, 2);
+            const resultStr = t.result ? (typeof t.result.content === 'string' ? t.result.content : JSON.stringify(t.result.content)) : '';
+            const icon = t.result && t.result.is_error ? '\u2717' : '\u2713';
+            const color = t.result && t.result.is_error ? 'var(--red)' : 'var(--green)';
+            const summary = toolSummary(t.name, t.input);
+            const resultNote = toolResultSummary(t.name, resultStr);
+            const summaryParts = [summary, resultNote ? escHtml(resultNote) : null].filter(Boolean).join(' — ');
+            const summaryHtml = summaryParts ? `<div class="tool-summary">${summaryParts}</div>` : '';
+            groupBody += `<div class="tool-block"><div class="tool-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> ${toolIcon(t.name)} ${escHtml(toolLabel(t.name))}<span class="tool-status" style="color:${color}">${icon}</span></div>${summaryHtml}<div class="tool-body"><b>Input:</b><pre>${escHtml(inputStr)}</pre><b>Result:</b><pre>${escHtml(resultStr.substring(0, 2000))}</pre></div></div>`;
+          });
+          // Group header label
+          let groupLabel = '&#129504; Reasoning';
+          if (hasTools) {
+            groupLabel = '&#128295; ' + tools.length + (tools.length === 1 ? ' tool call' : ' tool calls');
+            if (hasThinking) groupLabel += ' + reasoning';
+          }
+          inner += `<div class="tool-group"><div class="tool-group-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> ${groupLabel}<span class="tool-group-count"></span></div><div class="tool-group-body">${groupBody}</div></div>`;
+        }
       } catch(e) {}
       inner += `<div class="bubble"></div>`;
       if (m.cost_usd || m.tokens_in || m.tokens_out) {
@@ -5615,8 +6183,7 @@ document.getElementById('themeBtn').onclick = toggleTheme;
 document.getElementById('fontScaleSlider').oninput = (e) => setChatFontScale(Number(e.target.value) / 100);
 document.getElementById('fontScaleResetBtn').onclick = () => setChatFontScale(1);
 document.getElementById('newChatBtn').onclick = () => {
-  if (!sidebarPinned) closeSidebar();
-  newChat().catch(err => reportError('newChat click', err));
+  loadProfiles().then(() => showNewChatProfilePicker()).catch(err => reportError('profile picker', err));
 };
 document.getElementById('sendBtn').onclick = () => {
   if (streaming) {
@@ -5951,6 +6518,202 @@ function startUsagePolling() {
   }
   updateUsageBarVisibility();
 }
+
+// --- Agent Profiles ---
+let _profilesCache = [];
+let _currentChatProfileId = '';
+let _currentChatProfileName = '';
+let _currentChatProfileAvatar = '';
+
+async function loadProfiles() {
+  try {
+    const r = await fetch('/api/profiles', {credentials: 'same-origin'});
+    if (r.ok) {
+      const data = await r.json();
+      _profilesCache = data.profiles || [];
+    }
+  } catch(e) { dbg('loadProfiles error:', e.message); }
+  return _profilesCache;
+}
+
+function showNewChatProfilePicker() {
+  // Remove any existing modal
+  document.querySelector('.profile-modal-overlay')?.remove();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'profile-modal-overlay';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+  let selectedProfileId = '';
+  const modal = document.createElement('div');
+  modal.className = 'profile-modal';
+
+  const header = document.createElement('div');
+  header.className = 'profile-modal-header';
+  header.innerHTML = '<h3>New Channel</h3>';
+  const closeBtn = document.createElement('button');
+  closeBtn.innerHTML = '&times;';
+  closeBtn.onclick = () => overlay.remove();
+  header.appendChild(closeBtn);
+  modal.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'profile-modal-body';
+
+  function renderCards() {
+    body.innerHTML = '';
+    if (_profilesCache.length === 0) {
+      body.innerHTML = '<div style="padding:12px;color:var(--dim);font-size:13px">No agent profiles configured. Creating a plain channel.</div>';
+    }
+    _profilesCache.forEach(p => {
+      const card = document.createElement('div');
+      card.className = 'profile-card' + (selectedProfileId === p.id ? ' selected' : '');
+      card.innerHTML = `<div class="profile-avatar">${p.avatar || '\\uD83D\\uDCAC'}</div>
+        <div class="profile-info">
+          <div class="profile-name">${escHtml(p.name)}</div>
+          <div class="profile-role">${escHtml(p.role_description || '')}</div>
+          <div class="profile-model">${escHtml(p.model || 'default')}</div>
+        </div>`;
+      card.onclick = () => {
+        selectedProfileId = selectedProfileId === p.id ? '' : p.id;
+        renderCards();
+      };
+      body.appendChild(card);
+    });
+  }
+  renderCards();
+  modal.appendChild(body);
+
+  const actions = document.createElement('div');
+  actions.className = 'profile-modal-actions';
+  const skipBtn = document.createElement('button');
+  skipBtn.className = 'btn-skip';
+  skipBtn.textContent = 'Plain Chat';
+  skipBtn.onclick = async () => {
+    overlay.remove();
+    if (!sidebarPinned) closeSidebar();
+    await newChat().catch(err => reportError('newChat skip', err));
+  };
+  actions.appendChild(skipBtn);
+
+  const createBtn = document.createElement('button');
+  createBtn.className = 'btn-create';
+  createBtn.textContent = 'Create Channel';
+  createBtn.onclick = async () => {
+    overlay.remove();
+    if (!sidebarPinned) closeSidebar();
+    await newChatWithProfile(selectedProfileId).catch(err => reportError('newChat profile', err));
+  };
+  actions.appendChild(createBtn);
+  modal.appendChild(actions);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+}
+
+async function newChatWithProfile(profileId) {
+  dbg(' creating new chat with profile:', profileId || '(none)');
+  const body = profileId ? JSON.stringify({profile_id: profileId}) : undefined;
+  const r = await fetch('/api/chats', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: body ? {'Content-Type': 'application/json'} : {},
+    body: body
+  });
+  if (!r.ok) {
+    dbg('ERROR: newChatWithProfile failed:', r.status);
+    throw new Error('newChatWithProfile failed: ' + r.status);
+  }
+  const data = await r.json();
+  dbg(' created chat:', data.id, 'profile:', data.profile_name || '(none)');
+  const chats = await loadChats();
+  const chat = chats.find(c => c.id === data.id);
+  await selectChat(data.id, chat?.title || 'New Chat');
+  refreshDebugState('newChatWithProfile');
+  return data.id;
+}
+
+function updateTopbarProfile(profileName, profileAvatar) {
+  const el = document.getElementById('topbarProfile');
+  const avatarEl = document.getElementById('topbarProfileAvatar');
+  const nameEl = document.getElementById('topbarProfileName');
+  if (!el) return;
+  _currentChatProfileName = profileName || '';
+  _currentChatProfileAvatar = profileAvatar || '';
+  if (profileName) {
+    avatarEl.textContent = profileAvatar || '\\uD83D\\uDCAC';
+    nameEl.textContent = profileName;
+  } else {
+    avatarEl.textContent = '\\uD83D\\uDCAC';
+    nameEl.textContent = 'No Profile';
+  }
+  el.style.display = '';
+}
+
+function showProfileDropdown(event) {
+  event.stopPropagation();
+  // Remove existing dropdown
+  document.querySelector('.profile-dropdown')?.remove();
+
+  if (_profilesCache.length === 0) return;
+
+  const btn = document.getElementById('topbarProfile');
+  const rect = btn.getBoundingClientRect();
+  const dd = document.createElement('div');
+  dd.className = 'profile-dropdown';
+  dd.style.top = (rect.bottom + 4) + 'px';
+  dd.style.left = Math.max(8, rect.left - 60) + 'px';
+
+  // "None" option
+  const noneItem = document.createElement('div');
+  noneItem.className = 'pd-item';
+  noneItem.innerHTML = '<span class="pd-avatar">\\uD83D\\uDCAC</span><span class="pd-name">No Profile</span>' +
+    (!_currentChatProfileId ? '<span class="pd-check">\\u2713</span>' : '');
+  noneItem.onclick = () => { dd.remove(); changeChatProfile(''); };
+  dd.appendChild(noneItem);
+
+  _profilesCache.forEach(p => {
+    const item = document.createElement('div');
+    item.className = 'pd-item';
+    item.innerHTML = `<span class="pd-avatar">${p.avatar || '\\uD83D\\uDCAC'}</span><span class="pd-name">${escHtml(p.name)}</span>` +
+      (_currentChatProfileId === p.id ? '<span class="pd-check">\\u2713</span>' : '');
+    item.onclick = () => { dd.remove(); changeChatProfile(p.id); };
+    dd.appendChild(item);
+  });
+
+  document.body.appendChild(dd);
+  // Close on any click outside
+  setTimeout(() => {
+    const closer = (e) => {
+      if (!dd.contains(e.target)) { dd.remove(); document.removeEventListener('click', closer); }
+    };
+    document.addEventListener('click', closer);
+  }, 0);
+}
+
+async function changeChatProfile(profileId) {
+  if (!currentChat) return;
+  try {
+    const r = await fetch('/api/chats/' + currentChat, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      credentials: 'same-origin',
+      body: JSON.stringify({profile_id: profileId})
+    });
+    if (r.ok) {
+      dbg('changed profile for chat:', currentChat, 'to:', profileId || '(none)');
+      // Update local state
+      _currentChatProfileId = profileId;
+      const profile = _profilesCache.find(p => p.id === profileId);
+      updateTopbarProfile(profile?.name || '', profile?.avatar || '');
+      await loadChats();
+    }
+  } catch(e) {
+    reportError('changeChatProfile', e);
+  }
+}
+
+// Load profiles at startup
+loadProfiles();
 
 applyTheme();
 applyChatFontScale();

@@ -33,49 +33,7 @@ struct ChannelListView: View {
                                 .controlSize(.small)
                         }
                     } else {
-                        Button {
-                            appState.switchToChat(chat)
-                            close()
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(chat.title)
-                                        .foregroundStyle(.primary)
-                                    if chat.type == "alerts" {
-                                        HStack(spacing: 4) {
-                                            Image(systemName: "bell.fill")
-                                                .font(.caption2)
-                                            Text(alertChannelSubtitle(chat))
-                                        }
-                                        .font(.caption)
-                                        .foregroundStyle(.orange)
-                                    } else if let model = chat.model {
-                                        Text(AppState.friendlyModelName(model))
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                Spacer()
-                                if appState.persistentChatId == chat.id {
-                                    Image(systemName: "checkmark")
-                                        .foregroundStyle(.blue)
-                                }
-                            }
-                        }
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button(role: .destructive) {
-                                pendingDeleteId = chat.id
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                            Button {
-                                renameText = chat.title
-                                renamingChatId = chat.id
-                            } label: {
-                                Label("Rename", systemImage: "pencil")
-                            }
-                            .tint(.blue)
-                        }
+                        chatRow(chat)
                     }
                 }
             }
@@ -141,6 +99,78 @@ struct ChannelListView: View {
         case "system": return "System"
         case "test": return "Test"
         default: return "All"
+        }
+    }
+
+    @ViewBuilder
+    private func chatRow(_ chat: Chat) -> some View {
+        Button {
+            appState.switchToChat(chat)
+            close()
+        } label: {
+            HStack(spacing: 10) {
+                chatRowIcon(chat)
+                chatRowLabels(chat)
+                Spacer()
+                if appState.persistentChatId == chat.id {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(.blue)
+                }
+            }
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                pendingDeleteId = chat.id
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            Button {
+                renameText = chat.title
+                renamingChatId = chat.id
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
+            .tint(.blue)
+        }
+    }
+
+    @ViewBuilder
+    private func chatRowIcon(_ chat: Chat) -> some View {
+        if let avatar = chat.profileAvatar, !avatar.isEmpty {
+            Text(avatar)
+                .font(.title3)
+                .frame(width: 28, alignment: .center)
+        } else if chat.type == "alerts" {
+            Image(systemName: "bell.fill")
+                .font(.body)
+                .foregroundStyle(.orange)
+                .frame(width: 28, alignment: .center)
+        } else {
+            Image(systemName: "bubble.left.fill")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .frame(width: 28, alignment: .center)
+        }
+    }
+
+    @ViewBuilder
+    private func chatRowLabels(_ chat: Chat) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(chat.title)
+                .foregroundStyle(.primary)
+            if chat.type == "alerts" {
+                Text(alertChannelSubtitle(chat))
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if let profileName = chat.profileName, !profileName.isEmpty {
+                Text(profileName)
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+            } else if let model = chat.model {
+                Text(AppState.friendlyModelName(model))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

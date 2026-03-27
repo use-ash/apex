@@ -9,12 +9,18 @@ struct Chat: Identifiable, Codable, Comparable {
     let claudeSessionId: String?
     let createdAt: String
     let updatedAt: String
+    var profileId: String?
+    var profileName: String?
+    var profileAvatar: String?
 
     enum CodingKeys: String, CodingKey {
         case id, title, model, type, category
         case claudeSessionId = "claude_session_id"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+        case profileId = "profile_id"
+        case profileName = "profile_name"
+        case profileAvatar = "profile_avatar"
     }
 
     static func < (lhs: Chat, rhs: Chat) -> Bool {

@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-struct Alert: Identifiable, Codable {
+struct Alert: Identifiable, Codable, Hashable {
     let id: String
     let source: String
     let severity: String
