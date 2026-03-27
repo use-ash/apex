@@ -680,7 +680,8 @@ async def _update_config_section(section: str, request: Request) -> JSONResponse
         _log.warning(f"Config update unknown section: {e}")
         return _error("Unknown configuration section", "UNKNOWN_SECTION", status=400)
     except ValueError as e:
-        return _error(str(e), "VALIDATION_ERROR", status=422)
+        _log.warning(f"Config validation error: {e}")
+        return _error("Invalid configuration value", "VALIDATION_ERROR", status=422)
     except Exception as e:
         _log.error(f"Config update failed: {e}")
         return _error("Configuration update failed", "CONFIG_WRITE_ERROR")
@@ -1555,7 +1556,8 @@ async def api_config_models_default(request: Request):
             "models", {"default_model": model}
         )
     except ValueError as e:
-        return _error(str(e), "VALIDATION_ERROR", status=422)
+        _log.warning(f"Config validation error: {e}")
+        return _error("Invalid configuration value", "VALIDATION_ERROR", status=422)
     except Exception as e:
         _log.error(f"Config update failed: {e}")
         return _error("Configuration update failed", "CONFIG_WRITE_ERROR")
@@ -1598,7 +1600,8 @@ async def api_config_models_permission(request: Request):
             "models", {"permission_mode": mode}
         )
     except ValueError as e:
-        return _error(str(e), "VALIDATION_ERROR", status=422)
+        _log.warning(f"Config validation error: {e}")
+        return _error("Invalid configuration value", "VALIDATION_ERROR", status=422)
     except Exception as e:
         _log.error(f"Config update failed: {e}")
         return _error("Configuration update failed", "CONFIG_WRITE_ERROR")

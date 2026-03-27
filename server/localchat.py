@@ -35,7 +35,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 import urllib.request
@@ -133,6 +133,7 @@ COMPACTION_OLLAMA_TIMEOUT = 30
 # ---------------------------------------------------------------------------
 _compaction_summaries: dict[str, str] = {}  # chat_id -> summary text from last compaction
 _last_compacted_at: dict[str, str] = {}  # chat_id -> ISO timestamp of last compaction
+_recovery_pending: dict[str, asyncio.Event] = {}  # chat_id -> event, set when recovery done
 
 
 def _get_cumulative_tokens_in(chat_id: str) -> int:
@@ -222,17 +223,23 @@ def _get_recent_messages_text(chat_id: str, limit: int = 30) -> str:
     return "\n".join(lines)
 
 
-def _generate_compaction_summary(transcript: str) -> str:
-    """Call Ollama to generate a conversation summary for compaction."""
+def _generate_recovery_context(transcript: str) -> str:
+    """Call Ollama to generate structured recovery context for session continuity."""
     prompt = (
-        "Summarize this conversation in 3-5 bullet points. Focus on:\n"
-        "- What the user was working on\n"
-        "- Key decisions made\n"
-        "- Unfinished tasks or pending items\n"
-        "- Any corrections the user gave\n\n"
-        "Be concise. This summary will be injected into a fresh AI session "
-        "so the assistant can continue seamlessly.\n\n"
-        f"Conversation:\n{transcript}"
+        "Analyze this conversation transcript and produce a recovery briefing "
+        "for an AI assistant resuming after a session reset.\n\n"
+        "Format your response EXACTLY like this:\n"
+        "## Task: [one-line description of what user was working on]\n"
+        "## Status: [in-progress | completed | blocked | idle]\n"
+        "## Last Action: [what was happening right before this point]\n"
+        "## Pending: [any unanswered questions, unresolved decisions, or next steps — 'none' if clear]\n"
+        "## Key Decisions: [important choices made during the conversation]\n\n"
+        "Rules:\n"
+        "- Be concise — this gets injected into a fresh AI session\n"
+        "- If the conversation was idle/casual, just say Status: idle\n"
+        "- If a task was mid-execution (code being written, build in progress), say Status: in-progress\n"
+        "- Focus on what the assistant needs to CONTINUE, not rehash\n\n"
+        f"Transcript:\n{transcript}"
     )
     payload = json.dumps({
         "model": COMPACTION_OLLAMA_MODEL,
@@ -249,8 +256,23 @@ def _generate_compaction_summary(transcript: str) -> str:
         body = json.loads(resp.read().decode())
         return body.get("response", "").strip()
     except Exception as e:
-        log(f"compaction summary failed: {e}")
+        log(f"recovery context generation failed: {e}")
         return ""
+
+
+def _get_recently_active_chats(hours: int = 24) -> list[str]:
+    """Return chat_ids (type='chat' only) with messages in the last N hours."""
+    cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+    with _db_lock:
+        conn = _get_db()
+        rows = conn.execute(
+            "SELECT DISTINCT m.chat_id FROM messages m "
+            "JOIN chats c ON m.chat_id = c.id "
+            "WHERE c.type = 'chat' AND m.created_at > ?",
+            (cutoff,),
+        ).fetchall()
+        conn.close()
+    return [r[0] for r in rows]
 
 
 async def _maybe_compact_chat(chat_id: str) -> bool:
@@ -269,7 +291,7 @@ async def _maybe_compact_chat(chat_id: str) -> bool:
 
     # Generate summary from recent messages via Ollama
     transcript = await asyncio.to_thread(_get_recent_messages_text, chat_id, 30)
-    summary = await asyncio.to_thread(_generate_compaction_summary, transcript)
+    summary = await asyncio.to_thread(_generate_recovery_context, transcript)
 
     if summary:
         _compaction_summaries[chat_id] = summary
@@ -355,13 +377,14 @@ def _get_workspace_context(chat_id: str) -> str:
         # Even after context was sent, check for compaction summary (one-shot injection)
         summary = _compaction_summaries.pop(chat_id, None)
         if summary:
-            log(f"Injecting compaction summary for chat={chat_id}")
+            log(f"Injecting recovery context for chat={chat_id}")
             recent = _get_recent_exchange_context(chat_id, pairs=2)
             ctx = (
-                f"<system-reminder>\n# Session Continuity (auto-compacted)\n"
-                f"This conversation was automatically compacted to save tokens. "
-                f"Here is the summary of the prior conversation:\n\n{summary}\n\n"
-                f"Continue seamlessly from where the conversation left off.\n</system-reminder>"
+                f"<system-reminder>\n# Session Recovery\n"
+                f"You are resuming a conversation after a session reset.\n\n"
+                f"## Recovery Briefing\n{summary}\n\n"
+                f"IMPORTANT: Pick up where you left off. If a task was in-progress, continue it. "
+                f"If questions were pending, address them. Do not start over or re-introduce yourself.\n</system-reminder>"
             )
             if recent:
                 ctx += "\n\n" + recent
@@ -372,10 +395,11 @@ def _get_workspace_context(chat_id: str) -> str:
     summary = _compaction_summaries.pop(chat_id, None)
     if summary:
         parts.append(
-            f"<system-reminder>\n# Session Continuity (auto-compacted)\n"
-            f"This conversation was automatically compacted to save tokens. "
-            f"Here is the summary of the prior conversation:\n\n{summary}\n\n"
-            f"Continue seamlessly from where the conversation left off.\n</system-reminder>"
+            f"<system-reminder>\n# Session Recovery\n"
+            f"You are resuming a conversation after a session reset.\n\n"
+            f"## Recovery Briefing\n{summary}\n\n"
+            f"IMPORTANT: Pick up where you left off. If a task was in-progress, continue it. "
+            f"If questions were pending, address them. Do not start over or re-introduce yourself.\n</system-reminder>"
         )
     claude_md = WORKSPACE / "CLAUDE.md"
     memory_md = WORKSPACE / "memory" / "MEMORY.md"
@@ -1749,6 +1773,41 @@ async def lifespan(app: FastAPI):
         ssl_dir=LOCALCHAT_ROOT / "state" / "ssl",
     )
     log(f"LocalChat starting on {HOST}:{PORT} [mTLS]")
+    # Startup recovery — pre-generate recovery context in background (non-blocking)
+    async def _startup_recovery():
+        try:
+            active_chats = _get_recently_active_chats(hours=24)
+            if not active_chats:
+                return
+            t0 = datetime.now()
+            log(f"startup recovery: scanning {len(active_chats)} active chat(s) [background]")
+            # Register pending events before starting
+            for cid in active_chats:
+                _recovery_pending[cid] = asyncio.Event()
+            for cid in active_chats:
+                try:
+                    transcript = _get_recent_messages_text(cid, 30)
+                    if transcript.strip():
+                        recovery = await asyncio.to_thread(_generate_recovery_context, transcript)
+                        if recovery:
+                            _compaction_summaries[cid] = recovery
+                            _session_context_sent.discard(cid)
+                            log(f"startup recovery: chat={cid} len={len(recovery)}")
+                except Exception as e:
+                    log(f"startup recovery error chat={cid}: {e}")
+                finally:
+                    evt = _recovery_pending.pop(cid, None)
+                    if evt:
+                        evt.set()
+            elapsed = (datetime.now() - t0).total_seconds()
+            log(f"startup recovery: done ({len(active_chats)} chats in {elapsed:.1f}s)")
+        except Exception as e:
+            log(f"startup recovery failed (non-fatal): {e}")
+            # Signal all pending so nothing blocks forever
+            for evt in _recovery_pending.values():
+                evt.set()
+            _recovery_pending.clear()
+    asyncio.create_task(_startup_recovery())
     try:
         yield
     finally:
@@ -2672,6 +2731,15 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         return
 
     try:
+        # Wait briefly for startup recovery if this chat is still pending
+        recovery_evt = _recovery_pending.get(chat_id)
+        if recovery_evt:
+            try:
+                await asyncio.wait_for(recovery_evt.wait(), timeout=5.0)
+                log(f"recovery wait: chat={chat_id} ready")
+            except asyncio.TimeoutError:
+                log(f"recovery wait: chat={chat_id} timed out (5s), proceeding without")
+
         # Inject recall context if /recall was used
         user_visible_prompt = prompt
         if _recall_context:
@@ -2775,6 +2843,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                     if DEBUG: log(f"DBG RECOVERY: resume FAILED: {type(resume_error).__name__}: {resume_error}")
                     await _disconnect_client(chat_id)
                     _update_chat(chat_id, claude_session_id=None)
+                    _session_context_sent.discard(chat_id)  # re-inject workspace context on fresh session
                     if DEBUG: log(f"DBG RECOVERY: session_id NUKED, trying fresh...")
                     try:
                         options = _make_options(model=chat_model, session_id=None)
