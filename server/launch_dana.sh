@@ -7,7 +7,7 @@ export APEX_MODEL="claude-opus-4-6"
 export APEX_PERMISSION_MODE="bypassPermissions"
 export APEX_DEBUG=1
 export APEX_ENABLE_WHISPER=1
-# APEX_ALERT_TOKEN — set in ~/.apex/.env or export before running
+export APEX_ENV_FILE="$HOME/.openclaw/.env"
 
 # Load API keys from .env
 if [ -f "$HOME/.openclaw/.env" ]; then

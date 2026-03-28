@@ -2071,13 +2071,36 @@ _stream_buffers: dict[str, deque[tuple[int, dict]]] = {}
 _stream_seq: dict[str, int] = {}
 _chat_send_locks: dict[str, asyncio.Lock] = {}
 _STREAM_BUFFER_MAX = 200
-ALERT_CATEGORY_MAP = {
+_DEFAULT_ALERT_CATEGORIES = {
     "guardrail": "system",
     "watchdog": "system",
     "system": "system",
     "test": "test",
     "custom": "custom",
 }
+
+
+def _load_alert_category_map() -> dict[str, str]:
+    """Load alert category map from config.json, falling back to defaults.
+
+    Users can extend the map by adding an "alert_categories" object to
+    state/config.json without modifying code. Survives upgrades.
+    """
+    merged = dict(_DEFAULT_ALERT_CATEGORIES)
+    try:
+        cfg_path = APEX_ROOT / "state" / "config.json"
+        if cfg_path.exists():
+            import json as _json
+            data = _json.loads(cfg_path.read_text())
+            custom = data.get("alert_categories", {})
+            if isinstance(custom, dict):
+                merged.update(custom)
+    except Exception:
+        pass
+    return merged
+
+
+ALERT_CATEGORY_MAP = _load_alert_category_map()
 
 
 def _alert_category(source: str) -> str:
@@ -2621,6 +2644,14 @@ async def api_new_chat(request: Request):
         if profile_row[0]:
             model = profile_row[0]
     CATEGORY_TITLES = {"system": "System Alerts", "test": "Test Alerts", "custom": "Custom Alerts"}
+    # Extend titles from config.json alert_category_titles (survives upgrades)
+    try:
+        cfg_path = APEX_ROOT / "state" / "config.json"
+        if cfg_path.exists():
+            _cfg = json.loads(cfg_path.read_text())
+            CATEGORY_TITLES.update(_cfg.get("alert_category_titles", {}))
+    except Exception:
+        pass
     if chat_type == "alerts":
         title = CATEGORY_TITLES.get(category, "All Alerts")
     elif chat_type == "thread":
