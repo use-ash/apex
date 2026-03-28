@@ -100,8 +100,8 @@ XAI_TEAM_ID = os.environ.get("XAI_TEAM_ID", "3b0d4936-ce44-4571-a053-1e296bc9f6c
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 CODEX_CLI = os.environ.get("CODEX_CLI_PATH", "/opt/homebrew/bin/codex")
 GROUPS_ENABLED = os.environ.get("APEX_GROUPS_ENABLED", "").lower() in {"1", "true", "yes"}
-DB_PATH = APEX_ROOT / "state" / "apex.db"
-LOG_PATH = APEX_ROOT / "state" / "apex.log"
+DB_PATH = APEX_ROOT / "state" / os.environ.get("APEX_DB_NAME", "apex.db")
+LOG_PATH = APEX_ROOT / "state" / os.environ.get("APEX_LOG_NAME", "apex.log")
 
 # Migration: rename localchat.db → apex.db
 _old_db = DB_PATH.parent / "localchat.db"
