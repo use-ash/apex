@@ -1971,7 +1971,8 @@ _clients: dict[str, ClaudeSDKClient] = {}
 _chat_locks: dict[str, asyncio.Lock] = {}
 _chat_ws: dict[str, set[WebSocket]] = {}  # chat_id -> ALL connected WebSockets (multi-viewer)
 _ws_chat: dict[WebSocket, str] = {}  # reverse: ws -> current chat_id (for detach on re-attach)
-_active_send_tasks: dict[str, dict[str, object]] = {}  # chat_id -> {task, stream_id}
+_active_send_tasks: dict[str, dict[str, dict[str, object]]] = {}
+# chat_id -> {stream_id -> {task, stream_id, name, avatar, profile_id}}
 _current_stream_id: contextvars.ContextVar[str] = contextvars.ContextVar("apex_stream_id", default="")
 _current_group_profile_id: contextvars.ContextVar[str] = contextvars.ContextVar("apex_group_profile_id", default="")
 
@@ -2003,6 +2004,91 @@ def _detach_ws(ws: WebSocket) -> None:
             old_set.discard(ws)
             if not old_set:
                 _chat_ws.pop(old, None)
+
+
+def _stream_task_is_active(task: object) -> bool:
+    if not isinstance(task, asyncio.Task) or task.done():
+        return False
+    try:
+        return task.cancelling() == 0
+    except Exception:
+        return True
+
+
+def _get_active_stream_entries(chat_id: str) -> list[tuple[str, dict[str, object]]]:
+    streams = _active_send_tasks.get(chat_id) or {}
+    active: list[tuple[str, dict[str, object]]] = []
+    stale_ids: list[str] = []
+    for stream_id, info in list(streams.items()):
+        if _stream_task_is_active(info.get("task")):
+            active.append((stream_id, info))
+        else:
+            stale_ids.append(stream_id)
+    for stream_id in stale_ids:
+        streams.pop(stream_id, None)
+    if streams:
+        _active_send_tasks[chat_id] = streams
+    else:
+        _active_send_tasks.pop(chat_id, None)
+    return active
+
+
+def _has_active_stream(chat_id: str, exclude_stream_id: str = "") -> bool:
+    return any(stream_id != exclude_stream_id for stream_id, _ in _get_active_stream_entries(chat_id))
+
+
+def _set_active_send_task(
+    chat_id: str,
+    stream_id: str,
+    task: asyncio.Task,
+    *,
+    name: str = "",
+    avatar: str = "",
+    profile_id: str = "",
+) -> None:
+    _active_send_tasks.setdefault(chat_id, {})[stream_id] = {
+        "task": task,
+        "stream_id": stream_id,
+        "name": name,
+        "avatar": avatar,
+        "profile_id": profile_id,
+    }
+
+
+def _update_active_send_task(
+    chat_id: str,
+    stream_id: str,
+    *,
+    name: str | None = None,
+    avatar: str | None = None,
+    profile_id: str | None = None,
+) -> None:
+    streams = _active_send_tasks.get(chat_id)
+    if not streams:
+        return
+    info = streams.get(stream_id)
+    if not info:
+        return
+    if name is not None:
+        info["name"] = name
+    if avatar is not None:
+        info["avatar"] = avatar
+    if profile_id is not None:
+        info["profile_id"] = profile_id
+
+
+def _remove_active_send_task(chat_id: str, stream_id: str, task: asyncio.Task | None = None) -> None:
+    streams = _active_send_tasks.get(chat_id)
+    if not streams:
+        return
+    info = streams.get(stream_id)
+    if not info:
+        return
+    if task is not None and info.get("task") is not task:
+        return
+    streams.pop(stream_id, None)
+    if not streams:
+        _active_send_tasks.pop(chat_id, None)
 
 
 _stream_buffers: dict[str, deque[tuple[int, dict]]] = {}
@@ -2171,6 +2257,23 @@ async def _send_stream_event(chat_id: str, payload: dict) -> None:
             ws_set.discard(ws)
         if not ws_set:
             _chat_ws.pop(chat_id, None)
+
+
+async def _send_active_streams(chat_id: str) -> None:
+    """Send the current active stream roster to all viewers of this chat."""
+    streams = []
+    for stream_id, info in _get_active_stream_entries(chat_id):
+        streams.append({
+            "stream_id": stream_id,
+            "name": str(info.get("name", "")),
+            "avatar": str(info.get("avatar", "")),
+            "profile_id": str(info.get("profile_id", "")),
+        })
+    await _send_stream_event(chat_id, {
+        "type": "active_streams",
+        "chat_id": chat_id,
+        "streams": streams,
+    })
 
 
 async def _disconnect_client(chat_id: str) -> None:
@@ -2641,11 +2744,21 @@ async def api_update_chat(chat_id: str, request: Request):
         _update_chat(chat_id, claude_session_id=None)
         _session_context_sent.discard(chat_id)
         if not had_sdk_client:
-            entry = _active_send_tasks.pop(chat_id, None) or {}
-            send_task = entry.get("task")
-            if isinstance(send_task, asyncio.Task) and not send_task.done():
-                send_task.cancel()
-                await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id, "stream_id": entry.get("stream_id", "")})
+            for stream_id, entry in list((_active_send_tasks.get(chat_id) or {}).items()):
+                send_task = entry.get("task")
+                if isinstance(send_task, asyncio.Task) and not send_task.done():
+                    send_task.cancel()
+                    await _send_stream_event(chat_id, {
+                        "type": "stream_end",
+                        "chat_id": chat_id,
+                        "stream_id": stream_id,
+                    })
+                _remove_active_send_task(chat_id, stream_id, send_task if isinstance(send_task, asyncio.Task) else None)
+            if _get_chat(chat_id) and (_get_chat(chat_id) or {}).get("type") == "group":
+                await _send_active_streams(chat_id)
+            if not _has_active_stream(chat_id):
+                _stream_buffers.pop(chat_id, None)
+                _stream_seq.pop(chat_id, None)
 
         # P0: Broadcast profile change to all connected clients
         updated_chat = _get_chat(chat_id)
@@ -3956,10 +4069,11 @@ async def websocket_endpoint(websocket: WebSocket):
                                     break
                             if replay_ok:
                                 _attach_ws(websocket, attach_id)
-                                entry = _active_send_tasks.get(attach_id) or {}
+                                active_entries = _get_active_stream_entries(attach_id)
+                                active_stream_id = active_entries[0][0] if active_entries else ""
                                 replay_ok = await _safe_ws_send_json(
                                     websocket,
-                                    {"type": "stream_reattached", "chat_id": attach_id, "stream_id": entry.get("stream_id", "")},
+                                    {"type": "stream_reattached", "chat_id": attach_id, "stream_id": active_stream_id},
                                     chat_id=attach_id,
                                 )
                             if not replay_ok:
@@ -4037,32 +4151,56 @@ async def websocket_endpoint(websocket: WebSocket):
                 send_data["stream_id"] = stream_id
                 task = asyncio.create_task(_handle_send_action(websocket, send_data))
                 if send_chat_id:
-                    _active_send_tasks[send_chat_id] = {"task": task, "stream_id": stream_id}
-                    def _cleanup_send_task(t: asyncio.Task, cid=send_chat_id):
-                        entry = _active_send_tasks.get(cid)
-                        if entry and entry.get("task") is t:
-                            _active_send_tasks.pop(cid, None)
+                    _set_active_send_task(send_chat_id, stream_id, task)
+
+                    def _cleanup_send_task(t: asyncio.Task, cid=send_chat_id, sid=stream_id):
+                        _remove_active_send_task(cid, sid, t)
                     task.add_done_callback(_cleanup_send_task)
                 _track_task(task)
             elif action == "stop":
                 chat_id = data.get("chat_id", "")
                 requested_stream_id = str(data.get("stream_id") or "")
                 if chat_id:
-                    entry = _active_send_tasks.get(chat_id) or {}
-                    active_stream_id = str(entry.get("stream_id") or "")
-                    if requested_stream_id and active_stream_id and requested_stream_id != active_stream_id:
+                    active_entries = list(_get_active_stream_entries(chat_id))
+                    if requested_stream_id:
+                        active_entries = [item for item in active_entries if item[0] == requested_stream_id]
+                    if not active_entries:
                         continue
-                    # Interrupt all Claude SDK clients for this chat (solo + group agent keys)
-                    for ck in list(_clients):
-                        if ck == chat_id or ck.startswith(chat_id + ":"):
+
+                    client_keys: set[str] = set()
+                    for _, entry in active_entries:
+                        profile_id = str(entry.get("profile_id") or "")
+                        if profile_id:
+                            client_keys.add(f"{chat_id}:{profile_id}")
+                        else:
+                            client_keys.add(chat_id)
+
+                    if requested_stream_id and not client_keys:
+                        client_keys = {chat_id}
+
+                    if requested_stream_id:
+                        for ck in client_keys:
+                            client = _clients.get(ck)
+                            if not client:
+                                continue
                             try:
-                                await _clients[ck].interrupt()
+                                await client.interrupt()
                             except Exception:
                                 pass
-                    send_task = entry.get("task")
-                    if isinstance(send_task, asyncio.Task) and not send_task.done():
-                        send_task.cancel()
-                        await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id})
+                    else:
+                        for ck in list(_clients):
+                            if ck == chat_id or ck.startswith(chat_id + ":"):
+                                try:
+                                    await _clients[ck].interrupt()
+                                except Exception:
+                                    pass
+
+                    for _, entry in active_entries:
+                        send_task = entry.get("task")
+                        if isinstance(send_task, asyncio.Task) and not send_task.done():
+                            send_task.cancel()
+
+                    await _send_active_streams(chat_id)
 
     except WebSocketDisconnect as wd:
         log(f"websocket disconnected ws={ws_id} code={wd.code if hasattr(wd, 'code') else '?'}")
@@ -4166,13 +4304,37 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
     if not chat:
         await _safe_ws_send_json(websocket, {"type": "error", "message": "Chat not found"}, chat_id=chat_id)
         return
+    is_group_chat = chat.get("type") == "group"
 
     # Per-chat model routing — fallback to global MODEL
     chat_model = chat.get("model") or MODEL
     backend = _get_model_backend(chat_model)
 
     # --- Group @mention routing ---
-    group_agent = _resolve_group_agent(chat_id, chat, prompt)
+    group_agent = None
+    target_profile_id = str(data.get("target_agent") or "").strip()
+    if target_profile_id and is_group_chat:
+        members = _get_group_members(chat_id)
+        for m in members:
+            if m["profile_id"] == target_profile_id:
+                group_agent = {
+                    "profile_id": m["profile_id"],
+                    "name": m["name"],
+                    "avatar": m["avatar"],
+                    "model": m["model"],
+                    "backend": _get_model_backend(m["model"]),
+                    "clean_prompt": prompt,
+                }
+                break
+        if not group_agent:
+            await _safe_ws_send_json(
+                websocket,
+                {"type": "error", "message": f"Target agent not found: {target_profile_id}"},
+                chat_id=chat_id,
+            )
+            return
+    if group_agent is None:
+        group_agent = _resolve_group_agent(chat_id, chat, prompt)
     if group_agent:
         chat_model = group_agent["model"]
         backend = _get_model_backend(chat_model)
@@ -4287,15 +4449,25 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         # Register this WS in the registry so the stream can find it
         original_ws = websocket
         _attach_ws(websocket, chat_id)
-        _reset_stream_buffer(chat_id)
+        if not _has_active_stream(chat_id, exclude_stream_id=stream_id):
+            _reset_stream_buffer(chat_id)
 
         # Include speaker info in stream_start so webapp can render header during streaming
         stream_start_event = {"type": "stream_start", "chat_id": chat_id}
         if group_agent:
+            _update_active_send_task(
+                chat_id,
+                stream_id,
+                name=group_agent["name"],
+                avatar=group_agent["avatar"],
+                profile_id=group_agent["profile_id"],
+            )
             stream_start_event["speaker_name"] = group_agent["name"]
             stream_start_event["speaker_avatar"] = group_agent["avatar"]
             stream_start_event["speaker_id"] = group_agent["profile_id"]
         await _send_stream_event(chat_id, stream_start_event)
+        if is_group_chat:
+            await _send_active_streams(chat_id)
 
         result: dict | None = None
 
@@ -4417,12 +4589,13 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id})
             log(f"stream_end sent: chat={chat_id} viewers={len(_chat_ws.get(chat_id, set()))}")
         finally:
-            _stream_buffers.pop(chat_id, None)
-            _stream_seq.pop(chat_id, None)
-            entry = _active_send_tasks.get(chat_id)
             current_task = asyncio.current_task()
-            if entry and entry.get("task") is current_task:
-                _active_send_tasks.pop(chat_id, None)
+            _remove_active_send_task(chat_id, stream_id, current_task if isinstance(current_task, asyncio.Task) else None)
+            if is_group_chat:
+                await _send_active_streams(chat_id)
+            if not _has_active_stream(chat_id):
+                _stream_buffers.pop(chat_id, None)
+                _stream_seq.pop(chat_id, None)
             _current_group_profile_id.reset(group_profile_token)
             _current_stream_id.reset(stream_token)
 
@@ -4611,6 +4784,35 @@ display:flex;align-items:center;justify-content:center}
 .composer button:disabled{background:var(--card);color:var(--dim)}
 .composer button.stop{background:var(--red)}
 .composer button.transcribing{background:var(--yellow);color:var(--bg)}
+.ask-next-bar{position:absolute;bottom:100%;left:0;right:0;padding:8px 12px;display:flex;gap:8px;align-items:center;
+opacity:0;transform:translateY(8px);pointer-events:none;transition:opacity .2s ease,transform .2s ease;z-index:10}
+.ask-next-bar.show{opacity:1;transform:translateY(0);pointer-events:auto}
+.ask-next-label{font-size:11px;color:var(--dim);white-space:nowrap;flex-shrink:0}
+.ask-next-chip{display:flex;align-items:center;gap:6px;padding:7px 14px;
+border-radius:20px;border:1px solid var(--card);background:var(--surface);
+color:var(--text);font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap;transition:all .15s ease}
+.ask-next-chip:hover{border-color:var(--accent);background:rgba(14,165,233,0.06)}
+.ask-next-chip:active{background:var(--accent);border-color:var(--accent);color:#fff;transform:scale(.96)}
+.ask-next-chip .chip-emoji{font-size:15px}
+.ask-next-dismiss{margin-left:auto;width:24px;height:24px;border-radius:50%;border:none;
+background:var(--card);color:var(--dim);font-size:14px;cursor:pointer;display:flex;
+align-items:center;justify-content:center;flex-shrink:0}
+.ask-next-dismiss:hover{background:var(--surface);color:var(--text)}
+.stop-menu{position:absolute;bottom:100%;right:0;margin-bottom:8px;
+background:var(--surface);border:1px solid var(--card);border-radius:14px;
+padding:6px;min-width:180px;box-shadow:0 8px 32px rgba(0,0,0,0.45);z-index:100;
+opacity:0;transform:translateY(8px);pointer-events:none;transition:opacity .15s ease,transform .15s ease}
+.stop-menu.show{opacity:1;transform:translateY(0);pointer-events:auto}
+.stop-menu button{display:flex;align-items:center;gap:10px;width:100%;padding:10px 12px;
+background:none;border:none;color:var(--text);font-size:14px;cursor:pointer;border-radius:10px;transition:background .15s ease}
+.stop-menu button:hover{background:var(--bg)}
+.stop-menu button:active{background:var(--bg)}
+.stop-menu button .stop-dot{width:8px;height:8px;border-radius:50%;background:var(--red);
+animation:dotPulse 1.2s ease-in-out infinite;flex-shrink:0}
+.stop-menu button .agent-time{margin-left:auto;font-size:11px;color:var(--dim)}
+.stop-menu hr{border:none;border-top:1px solid var(--card);margin:4px 0}
+.stop-menu .stop-all{color:var(--red);font-weight:500}
+@keyframes dotPulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.7)}}
 .btn-compose{min-width:44px;min-height:44px;border-radius:50%;border:none;
 background:var(--card);color:var(--dim);font-size:18px;cursor:pointer;flex-shrink:0;
 display:flex;align-items:center;justify-content:center}
@@ -4912,7 +5114,7 @@ transition:all 0.2s;user-select:none;margin-bottom:4px}
 .tool-pill:hover{border-color:var(--accent);background:rgba(14,165,233,0.06)}
 .thinking-pill:hover{border-color:var(--yellow);background:rgba(245,158,11,0.06)}
 .tool-pill:active,.thinking-pill:active{transform:scale(0.98)}
-.tool-pill .pill-icon{font-size:14px;flex-shrink:0}
+.tool-pill .pill-icon,.thinking-pill .pill-icon{font-size:14px;flex-shrink:0}
 .tool-pill .pill-label,.thinking-pill .pill-label{font-size:13px;color:var(--text);font-weight:500}
 .tool-pill .pill-dim,.thinking-pill .pill-dim{color:var(--dim);font-weight:400;font-size:12px}
 .tool-pill .pill-chevron,.thinking-pill .pill-chevron{color:var(--dim);font-size:13px;margin-left:2px}
@@ -4925,6 +5127,11 @@ border-radius:50%;animation:spin 0.8s linear infinite;flex-shrink:0}
 .tool-pill.streaming .pill-bar{height:100%;background:var(--accent);border-radius:2px;transition:width 0.3s ease}
 .tool-pill.active-pill{border-color:var(--accent);background:rgba(14,165,233,0.06)}
 .tool-pill.active-pill .pill-chevron{color:var(--accent)}
+.thinking-pill.streaming{border-color:rgba(245,158,11,0.35);background:rgba(245,158,11,0.05)}
+.thinking-pill.streaming .pill-label{color:var(--yellow)}
+.thinking-pill.streaming .pill-live{width:8px;height:8px;border-radius:50%;background:var(--yellow);
+animation:dotPulse 1.4s ease-in-out infinite;flex-shrink:0;margin-left:2px}
+.thinking-pill.streaming .pill-chevron{display:none}
 .thinking-pill.active-pill{border-color:var(--yellow);background:rgba(245,158,11,0.06)}
 .thinking-pill.active-pill .pill-chevron,.thinking-pill.active-pill .pill-label{color:var(--yellow)}
 
@@ -5177,6 +5384,7 @@ font-family:'SF Mono','Fira Code',monospace}
 </div>
 <div class="drop-overlay" id="dropOverlay"><div class="drop-overlay-inner">&#128206; Drop files to attach</div></div>
 <div class="composer" id="composerBar" style="position:relative">
+  <div class="ask-next-bar" id="askNextBar"></div>
   <div class="mention-popup" id="mentionPopup"></div>
   <label class="btn-compose" id="attachBtn" title="Attach file" style="cursor:pointer">
     &#128206;
@@ -5184,6 +5392,7 @@ font-family:'SF Mono','Fira Code',monospace}
   </label>
   <textarea id="input" rows="1" placeholder="Message..." autocomplete="off"></textarea>
   <button class="btn-compose" id="sendBtn" title="Send">&#9654;</button>
+  <div class="stop-menu" id="stopMenu"></div>
 </div>
 
 <script>
@@ -5201,11 +5410,29 @@ let currentBubble = null;
 let currentSpeaker = null; // {name, avatar, id} for group @mention routing
 let currentStreamId = '';
 let composerHasDraft = false;
+let lastSubmittedPrompt = '';
+const activeStreams = new Map(); // stream_id -> {name, avatar, profile_id}
+const _answeredAgents = new Set(); // profile_ids that already answered the current user prompt
 
 // Per-stream context: supports concurrent agent streams without clobbering
 const _streamCtx = {};  // stream_id -> {bubble, speaker, toolPill, toolCalls, ...}
 function _newStreamCtx(streamId, speaker) {
-  return { id: streamId, bubble: null, speaker: speaker, toolPill: null, thinkingPill: null, toolCalls: [], thinkingText: '', thinkingStart: null, toolsStart: null, completedToolCount: 0 };
+  return {
+    id: streamId,
+    bubble: null,
+    speaker: speaker,
+    toolPill: null,
+    thinkingPill: null,
+    thinkingBlock: null,
+    liveThinkingPill: null,
+    liveThinkingTimer: null,
+    thinkingCollapsed: false,
+    toolCalls: [],
+    thinkingText: '',
+    thinkingStart: null,
+    toolsStart: null,
+    completedToolCount: 0,
+  };
 }
 function _getCtx(msg) {
   return _streamCtx[msg.stream_id || currentStreamId] || null;
@@ -5231,6 +5458,115 @@ let mediaStream = null;
 let recording = false;
 let recordingChunks = [];
 let transcribing = false;
+
+function refreshComposerDraftState() {
+  const inputEl = document.getElementById('input');
+  composerHasDraft = Boolean((inputEl && inputEl.value.trim()) || pendingAttachments.length);
+  if (composerHasDraft) hideAgentChips();
+  updateSendBtn();
+}
+
+let _chipDismissTimer = null;
+
+function hideAgentChips() {
+  if (_chipDismissTimer) { clearTimeout(_chipDismissTimer); _chipDismissTimer = null; }
+  const bar = document.getElementById('askNextBar');
+  if (bar) bar.classList.remove('show');
+}
+
+function renderAgentChips() {
+  const bar = document.getElementById('askNextBar');
+  if (!bar) return;
+  if (currentChatType !== 'group' || !currentGroupMembers.length || !currentChat) {
+    hideAgentChips();
+    return;
+  }
+  const excludeIds = new Set(_answeredAgents);
+  activeStreams.forEach(info => {
+    if (info && info.profile_id) excludeIds.add(info.profile_id);
+  });
+  const available = currentGroupMembers.filter(member => !excludeIds.has(member.profile_id));
+  if (!available.length) {
+    hideAgentChips();
+    return;
+  }
+  bar.innerHTML = '';
+  const label = document.createElement('span');
+  label.className = 'ask-next-label';
+  label.innerHTML = 'Ask&nbsp;next';
+  bar.appendChild(label);
+  available.forEach(member => {
+    const btn = document.createElement('button');
+    btn.className = 'ask-next-chip';
+    btn.type = 'button';
+    btn.innerHTML = `<span class="chip-emoji">${member.avatar || ''}</span> ${member.name}`;
+    btn.onclick = () => askAgent(member.profile_id);
+    bar.appendChild(btn);
+  });
+  const dismiss = document.createElement('button');
+  dismiss.className = 'ask-next-dismiss';
+  dismiss.type = 'button';
+  dismiss.title = 'Dismiss';
+  dismiss.innerHTML = '&#10005;';
+  dismiss.onclick = () => hideAgentChips();
+  bar.appendChild(dismiss);
+  bar.classList.add('show');
+  // Auto-dismiss after 10s
+  if (_chipDismissTimer) clearTimeout(_chipDismissTimer);
+  _chipDismissTimer = setTimeout(() => hideAgentChips(), 10000);
+}
+
+function hideStopMenu() {
+  document.getElementById('stopMenu')?.classList.remove('show');
+}
+
+function _elapsedLabel(startedAt) {
+  if (!startedAt) return '';
+  const sec = Math.round((Date.now() - startedAt) / 1000);
+  if (sec < 60) return `${sec}s`;
+  return `${Math.floor(sec / 60)}m${sec % 60}s`;
+}
+
+function renderStopMenu() {
+  const menu = document.getElementById('stopMenu');
+  if (!menu) return;
+  menu.innerHTML = '';
+  Array.from(activeStreams.values()).forEach(stream => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.innerHTML = `<span class="stop-dot"></span>${stream.avatar || ''} Stop ${stream.name || 'agent'}<span class="agent-time">${_elapsedLabel(stream.startedAt)}</span>`;
+    btn.onclick = () => stopStream(stream.stream_id);
+    menu.appendChild(btn);
+  });
+  if (activeStreams.size > 1) {
+    menu.appendChild(document.createElement('hr'));
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'stop-all';
+    btn.textContent = 'Stop All';
+    btn.onclick = () => stopAllStreams();
+    menu.appendChild(btn);
+  }
+}
+
+function stopStream(streamId) {
+  if (!currentChat || !ws || ws.readyState !== WebSocket.OPEN || !streamId) return;
+  ws.send(JSON.stringify({action: 'stop', chat_id: currentChat, stream_id: streamId}));
+  hideStopMenu();
+}
+
+function stopAllStreams() {
+  if (!currentChat || !ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({action: 'stop', chat_id: currentChat}));
+  hideStopMenu();
+}
+
+function toggleStopMenu() {
+  const menu = document.getElementById('stopMenu');
+  if (!menu || activeStreams.size <= 1) return;
+  renderStopMenu();
+  menu.classList.toggle('show');
+}
 
 function dbg(...args) {
   const ts = new Date().toLocaleTimeString();
@@ -5324,7 +5660,7 @@ function markStreamActivity(reason = '') {
   lastStreamEventAt = Date.now();
   clearStreamWatchdog();
   // Use longer timeout when a tool is running or model is thinking
-  const isThinking = currentBubble && currentBubble.querySelector('.thinking-block.open');
+  const isThinking = currentBubble && currentBubble.querySelector('.thinking-block, .thinking-pill.streaming');
   const timeout = (hasActiveTool() || isThinking) ? 300000 : 30000;  // 5 min for tools/thinking, 30s otherwise
   streamWatchdog = setTimeout(() => {
     if (!streaming) return;
@@ -5535,7 +5871,7 @@ function _getOrCreateWorkGroup(bubble) {
   if (!group || (bbl && group.nextElementSibling !== bbl)) {
     group = document.createElement('div');
     group.className = 'tool-group open';
-    group.innerHTML = `<div class="tool-group-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> &#129504; Working...<span class="tool-group-count"></span></div><div class="tool-group-body"></div>`;
+    group.innerHTML = `<div class="tool-group-header" onclick="_toggleCollapsible(this)"><span class="arrow">&#9656;</span> &#129504; Working...<span class="tool-group-count"></span></div><div class="tool-group-body"></div>`;
     bubble.insertBefore(group, bbl);
   }
   return group;
@@ -5768,6 +6104,119 @@ function _createThinkingPill(ctx, durationMs) {
   return pill;
 }
 
+function _clearLiveThinkingTimer(ctx) {
+  if (ctx && ctx.liveThinkingTimer) {
+    clearInterval(ctx.liveThinkingTimer);
+    ctx.liveThinkingTimer = null;
+  }
+}
+
+function _teardownLiveThinking(ctx) {
+  if (!ctx) return;
+  _clearLiveThinkingTimer(ctx);
+  if (ctx.liveThinkingPill && ctx.liveThinkingPill.isConnected) {
+    ctx.liveThinkingPill.remove();
+  }
+  ctx.liveThinkingPill = null;
+  ctx.thinkingCollapsed = false;
+}
+
+function _updateLiveThinkingPill(ctx) {
+  if (!ctx) return null;
+  const pill = ctx.liveThinkingPill;
+  if (!pill || !pill.isConnected) return null;
+  const durationMs = ctx.thinkingStart ? (Date.now() - ctx.thinkingStart) : 0;
+  pill._thinkingText = ctx.thinkingText;
+  pill._thinkingDuration = durationMs;
+  pill.innerHTML = `<span class="pill-icon">&#129504;</span><span class="pill-label">Thinking...</span><span class="pill-dim">${_formatDuration(durationMs) || ''}</span><span class="pill-live"></span>`;
+  return pill;
+}
+
+function _getOrCreateLiveThinkingPill(ctx, group) {
+  if (!ctx) return null;
+  _ensureCtxBubble(ctx);
+  const hostGroup = group || _getOrCreateWorkGroup(ctx.bubble);
+  let pill = ctx.liveThinkingPill;
+  if (!pill || !pill.isConnected) {
+    pill = document.createElement('div');
+    pill.className = 'thinking-pill streaming';
+    pill.dataset.streamId = ctx.id;
+    pill.onclick = () => _restoreThinkingFromPill(ctx.id);
+    ctx.liveThinkingPill = pill;
+  }
+  const body = hostGroup.querySelector('.tool-group-body');
+  const firstTool = body.querySelector('.tool-block');
+  if (pill.parentElement !== body || pill.nextSibling !== firstTool) {
+    body.insertBefore(pill, firstTool);
+  }
+  _updateLiveThinkingPill(ctx);
+  if (!ctx.liveThinkingTimer) {
+    ctx.liveThinkingTimer = setInterval(() => {
+      if (!ctx.thinkingCollapsed || !ctx.liveThinkingPill || !ctx.liveThinkingPill.isConnected) {
+        _clearLiveThinkingTimer(ctx);
+        return;
+      }
+      _updateLiveThinkingPill(ctx);
+    }, 1000);
+  }
+  return pill;
+}
+
+function _anchoredMutateWhenScrolled(anchorEl, mutate) {
+  const scroller = document.getElementById('messages');
+  const shouldAnchor = Boolean(scroller && _userScrolledUp && anchorEl && anchorEl.isConnected);
+  const before = shouldAnchor ? anchorEl.getBoundingClientRect().top : null;
+  const afterEl = mutate() || anchorEl;
+  if (shouldAnchor) {
+    const target = afterEl && afterEl.isConnected ? afterEl : (anchorEl && anchorEl.isConnected ? anchorEl : null);
+    if (target) {
+      _programmaticScroll = true;
+      scroller.scrollTop += (target.getBoundingClientRect().top - before);
+      _userScrolledUp = true;
+      requestAnimationFrame(() => { _programmaticScroll = false; });
+    }
+  }
+  return afterEl;
+}
+
+function _setThinkingCollapsed(ctx, collapsed) {
+  if (!ctx || !ctx.bubble) return;
+  const group = _getOrCreateWorkGroup(ctx.bubble);
+  let block = (ctx.thinkingBlock && ctx.thinkingBlock.isConnected) ? ctx.thinkingBlock : group.querySelector(`.thinking-block[data-stream-id="${ctx.id}"]`) || group.querySelector('.thinking-block:last-of-type');
+  if (!block) return;
+  ctx.thinkingBlock = block;
+  const body = block.querySelector('.thinking-body');
+  const anchorEl = collapsed ? block : ((ctx.liveThinkingPill && ctx.liveThinkingPill.isConnected) ? ctx.liveThinkingPill : block);
+  _anchoredMutateWhenScrolled(anchorEl, () => {
+    ctx.thinkingCollapsed = collapsed;
+    if (collapsed) {
+      block.classList.remove('open');
+      block.style.display = 'none';
+      _updateWorkGroupHeader(group);
+      return _getOrCreateLiveThinkingPill(ctx, group);
+    }
+    block.style.display = '';
+    block.classList.add('open');
+    if (body) {
+      body.textContent = ctx.thinkingText || '';
+      body.scrollTop = body.scrollHeight;
+    }
+    if (ctx.liveThinkingPill && ctx.liveThinkingPill.isConnected) {
+      ctx.liveThinkingPill.remove();
+    }
+    ctx.liveThinkingPill = null;
+    _clearLiveThinkingTimer(ctx);
+    _updateWorkGroupHeader(group);
+    return block;
+  });
+}
+
+function _restoreThinkingFromPill(streamId) {
+  const ctx = _streamCtx[streamId];
+  if (!ctx) return;
+  _setThinkingCollapsed(ctx, false);
+}
+
 function _captureExpandedState() {
   const panel = document.getElementById('sidePanel');
   const current = new Set();
@@ -5910,6 +6359,22 @@ function openThinkingPanel(pillEl) {
 function handleEvent(msg) {
   const el = document.getElementById('messages');
   switch(msg.type) {
+    case 'active_streams':
+      if (msg.chat_id && currentChat && msg.chat_id !== currentChat) break;
+      const prevStreams = new Map(activeStreams);
+      activeStreams.clear();
+      (msg.streams || []).forEach(stream => {
+        if (!stream || !stream.stream_id) return;
+        const prev = prevStreams.get(stream.stream_id);
+        stream.startedAt = prev ? prev.startedAt : Date.now();
+        activeStreams.set(stream.stream_id, stream);
+      });
+      if (currentChatType === 'group' && !streaming) {
+        renderAgentChips();
+      }
+      updateSendBtn();
+      break;
+
     case 'stream_start': {
       const sid = msg.stream_id || ('_s' + Date.now());
       const speaker = msg.speaker_name ? {name: msg.speaker_name, avatar: msg.speaker_avatar || '', id: msg.speaker_id || ''} : null;
@@ -5924,6 +6389,15 @@ function handleEvent(msg) {
       currentSpeaker = speaker;
       sessionStorage.setItem('streamingChatId', msg.chat_id || currentChat || '');
       markStreamActivity('stream-start');
+      activeStreams.set(sid, {
+        stream_id: sid,
+        name: msg.speaker_name || '',
+        avatar: msg.speaker_avatar || '',
+        profile_id: msg.speaker_id || '',
+        startedAt: Date.now(),
+      });
+      hideAgentChips();
+      hideStopMenu();
       updateSendBtn();
 
       refreshDebugState('stream-start');
@@ -5953,18 +6427,25 @@ function handleEvent(msg) {
       if (!ctx.thinkingStart) ctx.thinkingStart = Date.now();
       ctx.thinkingText += msg.text || '';
       const group = _getOrCreateWorkGroup(ctx.bubble);
-      let tb = group.querySelector('.thinking-block:last-of-type');
+      let tb = (ctx.thinkingBlock && ctx.thinkingBlock.isConnected) ? ctx.thinkingBlock : group.querySelector(`.thinking-block[data-stream-id="${ctx.id}"]`) || group.querySelector('.thinking-block:last-of-type');
       if (!tb) {
         tb = document.createElement('div');
         tb.className = 'thinking-block open';
-        tb.innerHTML = `<div class="thinking-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> &#129504; Thinking...</div><div class="thinking-body"></div>`;
+        tb.dataset.streamId = ctx.id;
+        tb.innerHTML = `<div class="thinking-header" onclick="_toggleThinkingBlock(this)"><span class="arrow">&#9656;</span> &#129504; Thinking...</div><div class="thinking-body"></div>`;
         group.querySelector('.tool-group-body').appendChild(tb);
       }
-      tb.querySelector('.thinking-body').textContent += msg.text;
-      tb.querySelector('.thinking-body').scrollTop = tb.querySelector('.thinking-body').scrollHeight;
+      ctx.thinkingBlock = tb;
+      if (ctx.thinkingCollapsed) {
+        _getOrCreateLiveThinkingPill(ctx, group);
+      } else {
+        const thinkingBody = tb.querySelector('.thinking-body');
+        thinkingBody.textContent = ctx.thinkingText;
+        thinkingBody.scrollTop = thinkingBody.scrollHeight;
+      }
       _updateWorkGroupHeader(group);
       markStreamActivity('thinking');
-      scrollBottom();
+      if (!ctx.thinkingCollapsed) scrollBottom();
       break;
     }
 
@@ -6025,6 +6506,7 @@ function handleEvent(msg) {
       currentBubble = ctx.bubble;
       if (ctx.bubble) {
         if (ctx.thinkingText) {
+          _teardownLiveThinking(ctx);
           ctx.bubble.querySelectorAll('.thinking-block').forEach(tb => tb.remove());
           ctx.bubble.querySelectorAll('.tool-group').forEach(group => {
             if (!group.querySelector('.tool-block') && !group.querySelector('.thinking-block')) {
@@ -6034,6 +6516,8 @@ function handleEvent(msg) {
             }
           });
           _createThinkingPill(ctx, ctx.thinkingStart ? (Date.now() - ctx.thinkingStart) : 0);
+        } else {
+          _teardownLiveThinking(ctx);
         }
         if (ctx.toolCalls.length > 0) {
           const totalTime = ctx.toolsStart ? (Date.now() - ctx.toolsStart) : 0;
@@ -6062,7 +6546,27 @@ function handleEvent(msg) {
 
     case 'stream_end': {
       const sid = msg.stream_id || currentStreamId;
-      if (sid) delete _streamCtx[sid];
+      // Track which agent just finished so chips exclude them
+      if (sid) {
+        const finished = activeStreams.get(sid);
+        if (finished && finished.profile_id) _answeredAgents.add(finished.profile_id);
+        const ctx = _streamCtx[sid] || null;
+        if (ctx) {
+          if (ctx.thinkingText && !(ctx.thinkingPill && ctx.thinkingPill.isConnected)) {
+            _teardownLiveThinking(ctx);
+            ctx.bubble?.querySelectorAll('.thinking-block').forEach(tb => tb.remove());
+            _createThinkingPill(ctx, ctx.thinkingStart ? (Date.now() - ctx.thinkingStart) : 0);
+          } else {
+            _teardownLiveThinking(ctx);
+          }
+        }
+        delete _streamCtx[sid];
+        activeStreams.delete(sid);
+      } else if (activeStreams.size === 1) {
+        const [, only] = activeStreams.entries().next().value;
+        if (only && only.profile_id) _answeredAgents.add(only.profile_id);
+        activeStreams.clear();
+      }
       const remaining = Object.keys(_streamCtx);
       streaming = _isAnyStreamActive();
       if (!streaming) {
@@ -6075,6 +6579,10 @@ function handleEvent(msg) {
         currentStreamId = remaining[remaining.length - 1] || '';
         currentBubble = _getCurrentBubble();
         currentSpeaker = currentStreamId ? _streamCtx[currentStreamId]?.speaker || null : null;
+      }
+      hideStopMenu();
+      if (currentChatType === 'group' && msg.chat_id === currentChat) {
+        renderAgentChips();
       }
       updateSendBtn();
   
@@ -6110,13 +6618,16 @@ function handleEvent(msg) {
       // This fires when the client thought a stream might be running
       // (sessionStorage had streamingChatId) but it already finished.
       dbg('attach ok, no active stream for chat:', msg.chat_id);
+      Object.values(_streamCtx).forEach(ctx => _teardownLiveThinking(ctx));
       Object.keys(_streamCtx).forEach(k => delete _streamCtx[k]);
+      activeStreams.clear();
       sessionStorage.removeItem('streamingChatId');
       streaming = false;
       currentStreamId = '';
       currentBubble = null;
       currentSpeaker = null;
       clearStreamWatchdog();
+      hideStopMenu();
       updateSendBtn();
 
       // Skip reload if we already have messages loaded for this chat
@@ -6131,9 +6642,11 @@ function handleEvent(msg) {
       // Stream finished while we were disconnected. Reload from DB.
       dbg('stream completed while disconnected, reloading chat:', msg.chat_id);
       streaming = false;
+      activeStreams.clear();
       currentBubble = null;
       sessionStorage.removeItem('streamingChatId');
       clearStreamWatchdog();
+      hideStopMenu();
       updateSendBtn();
 
       // Always reload on stream_complete — we may have missed messages
@@ -6147,7 +6660,6 @@ function handleEvent(msg) {
       // Another client sent a message on this chat — show it
       if (msg.chat_id === currentChat && msg.content) {
         addUserMsg(msg.content);
-        scrollBottom();
       }
       break;
 
@@ -6189,8 +6701,10 @@ function handleEvent(msg) {
     case 'error':
       addSystemMsg(msg.message || 'Unknown error');
       streaming = false;
+      activeStreams.clear();
       clearStreamWatchdog();
       sessionStorage.removeItem('streamingChatId');
+      hideStopMenu();
       updateSendBtn();
   
       refreshDebugState('event-error');
@@ -6221,7 +6735,7 @@ function addUserMsg(text) {
   div.className = 'msg user';
   div.textContent = text;
   el.appendChild(div);
-  scrollBottom();
+  scrollBottomForce();
 }
 
 function addSystemMsg(text) {
@@ -6233,10 +6747,95 @@ function addSystemMsg(text) {
   scrollBottom();
 }
 
-function scrollBottom() {
+/* --- Smart scroll: only auto-scroll if user is near bottom --- */
+let _userScrolledUp = false;
+const _SCROLL_THRESHOLD = 150; // px from bottom to count as "near bottom"
+
+function _isNearBottom() {
   const el = document.getElementById('messages');
-  el.scrollTop = el.scrollHeight;
+  if (!el) return true;
+  return (el.scrollHeight - el.scrollTop - el.clientHeight) < _SCROLL_THRESHOLD;
 }
+
+function scrollBottom() {
+  // Smart version: only scroll if user hasn't scrolled up
+  if (_userScrolledUp) {
+    _showNewContentPill();
+    return;
+  }
+  scrollBottomForce();
+}
+
+function scrollBottomForce() {
+  const el = document.getElementById('messages');
+  if (!el) return;
+  el.scrollTop = el.scrollHeight;
+  _userScrolledUp = false;
+  _hideNewContentPill();
+}
+
+function _showNewContentPill() {
+  let pill = document.getElementById('newContentPill');
+  if (pill) { pill.style.display = 'flex'; return; }
+  pill = document.createElement('div');
+  pill.id = 'newContentPill';
+  pill.textContent = '\u2193 New';
+  pill.style.cssText = 'position:absolute;bottom:80px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:600;cursor:pointer;z-index:200;display:flex;align-items:center;gap:4px;box-shadow:0 2px 8px rgba(0,0,0,0.3);transition:opacity 0.2s';
+  pill.onclick = () => { scrollBottomForce(); };
+  const container = document.getElementById('messages').parentElement;
+  container.style.position = 'relative';
+  container.appendChild(pill);
+}
+
+function _hideNewContentPill() {
+  const pill = document.getElementById('newContentPill');
+  if (pill) pill.style.display = 'none';
+}
+
+// Toggle collapsible block with scroll-position anchoring
+let _programmaticScroll = false;
+function _toggleCollapsible(headerEl) {
+  const block = headerEl.parentElement;
+  const scroller = document.getElementById('messages');
+  const wasScrolledUp = _userScrolledUp;
+  const beforeTop = block.getBoundingClientRect().top;
+  block.classList.toggle('open');
+  if (scroller && wasScrolledUp) {
+    _programmaticScroll = true;
+    const afterTop = block.getBoundingClientRect().top;
+    scroller.scrollTop += (afterTop - beforeTop);
+    _userScrolledUp = true;
+    requestAnimationFrame(() => { _programmaticScroll = false; });
+  }
+}
+function _toggleThinkingBlock(headerEl) {
+  const block = headerEl ? headerEl.parentElement : null;
+  const sid = block && block.dataset ? block.dataset.streamId : '';
+  const ctx = sid ? _streamCtx[sid] : null;
+  if (ctx) {
+    _setThinkingCollapsed(ctx, true);
+    return;
+  }
+  _toggleCollapsible(headerEl);
+}
+
+// Attach scroll listener once DOM is ready
+(function _initScrollWatch() {
+  function attach() {
+    const el = document.getElementById('messages');
+    if (!el) { setTimeout(attach, 100); return; }
+    el.addEventListener('scroll', () => {
+      if (_programmaticScroll) return;
+      _userScrolledUp = !_isNearBottom();
+      if (!_userScrolledUp) _hideNewContentPill();
+    }, {passive: true});
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', attach);
+  } else {
+    attach();
+  }
+})();
 
 // --- Alerts channel view (renders in main messages area) ---
 function renderAlertsList(alerts) {
@@ -6434,6 +7033,8 @@ document.addEventListener('click', (e) => {
   const settingsPanel = document.getElementById('settingsPanel');
   const alertBadge = document.getElementById('alertBadge');
   const settingsBtn = document.getElementById('settingsBtn');
+  const stopMenu = document.getElementById('stopMenu');
+  const sendBtn = document.getElementById('sendBtn');
   // Close alerts panel if click is outside it and outside the bell
   if (alertsPanel.classList.contains('show') &&
       !alertsPanel.contains(e.target) && !alertBadge.contains(e.target)) {
@@ -6443,6 +7044,10 @@ document.addEventListener('click', (e) => {
   if (settingsPanel.classList.contains('show') &&
       !settingsPanel.contains(e.target) && !(settingsBtn && settingsBtn.contains(e.target))) {
     settingsPanel.classList.remove('show');
+  }
+  if (stopMenu && stopMenu.classList.contains('show') &&
+      !stopMenu.contains(e.target) && !(sendBtn && sendBtn.contains(e.target))) {
+    hideStopMenu();
   }
 });
 
@@ -6829,16 +7434,19 @@ function renderMarkdown(el) {
 
 function updateSendBtn() {
   const btn = document.getElementById('sendBtn');
-  if (streaming) {
+  const canSend = Boolean(currentChat && ws && ws.readyState === WebSocket.OPEN);
+  const showStop = streaming && !composerHasDraft;
+  if (showStop) {
     btn.innerHTML = '&#9632;';
-    btn.className = 'stop';
-    btn.disabled = false;
-    btn.title = 'Stop';
+    btn.className = 'btn-compose compose-action is-stop';
+    btn.disabled = !canSend;
+    btn.title = activeStreams.size > 1 ? 'Choose stream to stop' : 'Stop';
   } else {
     btn.innerHTML = '&#9654;';
-    btn.className = '';
-    btn.disabled = !currentChat || !ws || ws.readyState !== WebSocket.OPEN;
+    btn.className = 'btn-compose compose-action is-send';
+    btn.disabled = !canSend;
     btn.title = btn.disabled ? 'Waiting for chat initialization' : 'Send';
+    hideStopMenu();
   }
 }
 
@@ -6983,9 +7591,12 @@ async function toggleVoiceRecording() {
 }
 
 // --- Send ---
-async function send() {
+async function send(options = {}) {
+  const targetAgent = options.targetAgent || '';
+  const allowLastPrompt = Boolean(options.allowLastPrompt);
   const input = document.getElementById('input');
-  const text = input.value.trim();
+  const rawText = input.value.trim();
+  const text = rawText || (allowLastPrompt ? lastSubmittedPrompt : '');
   dbg(' send:', {text: text?.substring(0,30), currentChat, streaming, wsState: ws?.readyState});
   if (!text && pendingAttachments.length === 0) return;
   if (!currentChat) {
@@ -7003,20 +7614,31 @@ async function send() {
     addSystemMsg('Chat initialization failed. Check the debug bar.');
     return;
   }
-  if (streaming) { dbg(' already streaming'); return; }
   if (!ws || ws.readyState !== WebSocket.OPEN) { dbg('ERROR: ws not open'); return; }
+  _userScrolledUp = false;
+  _hideNewContentPill();
   const attachmentSummary = pendingAttachments.length ? `Attachments: ${pendingAttachments.map(att => att.name).join(', ')}` : '';
   addUserMsg([text, attachmentSummary].filter(Boolean).join('\\n') || '(attachment)');
   const msg = {action: 'send', chat_id: currentChat, prompt: text};
+  if (targetAgent) msg.target_agent = targetAgent;
   if (pendingAttachments.length > 0) {
     msg.attachments = pendingAttachments.map(a => ({id: a.id, type: a.type, name: a.name}));
   }
+  lastSubmittedPrompt = text;
+  if (!targetAgent) _answeredAgents.clear(); // New user message — reset answered set
+  hideAgentChips();
+  hideStopMenu();
   ws.send(JSON.stringify(msg));
   input.value = '';
   sessionStorage.removeItem('draftText');
   input.style.height = 'auto';
   clearAttachments();
+  refreshComposerDraftState();
   refreshDebugState('send');
+}
+
+function askAgent(profileId) {
+  send({targetAgent: profileId, allowLastPrompt: true}).catch(err => reportError('askAgent', err));
 }
 
 // --- Chats ---
@@ -7269,6 +7891,10 @@ async function selectChat(id, title, chatType, category) {
     category = sidebarItem?.dataset?.category || '';
   }
   currentChatType = chatType || 'chat';
+  activeStreams.clear();
+  _answeredAgents.clear();
+  hideAgentChips();
+  hideStopMenu();
 
   // Update topbar profile indicator
   const pId = sidebarItem?.dataset?.profileId || '';
@@ -7301,6 +7927,7 @@ async function selectChat(id, title, chatType, category) {
   }
   // Show input bar for regular chats
   document.getElementById('composerBar').style.display = '';
+  hideAgentChips();
 
   // Load group members for @mention autocomplete
   currentGroupMembers = [];
@@ -7317,6 +7944,7 @@ async function selectChat(id, title, chatType, category) {
   // Update placeholder for groups
   const inp = document.getElementById('input');
   inp.placeholder = currentGroupMembers.length ? 'Message... (type @ to mention)' : 'Message...';
+  refreshComposerDraftState();
 
   // Load messages
   const r = await fetch(`/api/chats/${id}/messages`, {credentials: 'same-origin'});
@@ -7356,6 +7984,10 @@ async function selectChat(id, title, chatType, category) {
         speaker: m.speaker_name ? {name: m.speaker_name, avatar: m.speaker_avatar || '', id: m.speaker_id || ''} : null,
         toolPill: null,
         thinkingPill: null,
+        thinkingBlock: null,
+        liveThinkingPill: null,
+        liveThinkingTimer: null,
+        thinkingCollapsed: false,
         toolCalls: [],
         thinkingText: '',
         thinkingStart: null,
@@ -7382,7 +8014,8 @@ async function selectChat(id, title, chatType, category) {
       el.appendChild(div);
     }
   });
-  scrollBottom();
+  _userScrolledUp = false;
+  scrollBottomForce();
   fetchContext(id);
   refreshDebugState('messages-loaded');
 }
@@ -7445,6 +8078,7 @@ let pendingAttachments = [];
 function clearAttachments() {
   pendingAttachments = [];
   document.getElementById('attachPreview').innerHTML = '';
+  refreshComposerDraftState();
 }
 
 async function handleFiles(files) {
@@ -7463,6 +8097,7 @@ async function handleFiles(files) {
       const preview = document.getElementById('attachPreview');
       preview.appendChild(buildAttachmentPreview(att, pendingAttachments.length - 1));
       dbg(' attached:', att.name, att.type);
+      refreshComposerDraftState();
     } catch(e) {
       dbg('ERROR: upload:', e);
     }
@@ -7476,6 +8111,7 @@ function removeAttachment(idx) {
   pendingAttachments.forEach((att, i) => {
     preview.appendChild(buildAttachmentPreview(att, i));
   });
+  refreshComposerDraftState();
 }
 
 function audioMimeType() {
@@ -7587,8 +8223,14 @@ document.getElementById('threadToggle').onclick = () => {
   btn.textContent = collapsed ? '\u25B8' : '\u25BE';
 };
 document.getElementById('sendBtn').onclick = () => {
-  if (streaming) {
-    ws.send(JSON.stringify({action: 'stop', chat_id: currentChat}));
+  if (streaming && !composerHasDraft) {
+    if (activeStreams.size > 1) {
+      toggleStopMenu();
+    } else if (activeStreams.size === 1) {
+      stopStream(activeStreams.keys().next().value || '');
+    } else {
+      stopAllStreams();
+    }
   } else {
     send().catch(err => reportError('send click', err));
   }
@@ -7634,12 +8276,14 @@ if (savedDraft) {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 120) + 'px';
 }
+refreshComposerDraftState();
 input.addEventListener('input', () => {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 120) + 'px';
   sessionStorage.setItem('draftText', input.value);
   // @mention autocomplete
   _checkMentionPopup();
+  refreshComposerDraftState();
 });
 input.addEventListener('keydown', (e) => {
   const popup = document.getElementById('mentionPopup');
