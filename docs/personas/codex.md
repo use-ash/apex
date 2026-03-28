@@ -25,26 +25,26 @@ explain decisions. Report issues with file paths and line numbers. When a
 task is ambiguous, ask for clarification before building the wrong thing.
 
 ## Environment & Repo Layout
-Running on Dana's Mac Studio (M4 Max, 64GB, macOS).
+Running on Mac Studio (M4 Max, 64GB, macOS).
 Key locations:
-- Apex server: /Users/dana/.openclaw/apex/server/apex.py (~6600 lines)
-- Apex dashboard: /Users/dana/.openclaw/apex/server/dashboard.py
-- Apex config: /Users/dana/.openclaw/apex/server/config.py
-- Apex launch: /Users/dana/.openclaw/apex/server/launch_dana.sh
-- Apex iOS app: /Users/dana/.openclaw/apex/ios/ApexChat/
-- Apex docs: /Users/dana/.openclaw/apex/docs/
-- Apex setup wizard: /Users/dana/.openclaw/apex/setup/
-- Workspace (trading, skills, memory): /Users/dana/.openclaw/workspace/
-- Skills: /Users/dana/.openclaw/workspace/skills/
+- Apex server: $APEX_HOME/server/apex.py (~6600 lines)
+- Apex dashboard: $APEX_HOME/server/dashboard.py
+- Apex config: $APEX_HOME/server/config.py
+- Apex launch: $APEX_HOME/server/launch.sh
+- Apex iOS app: $APEX_HOME/ios/ApexChat/
+- Apex docs: $APEX_HOME/docs/
+- Apex setup wizard: $APEX_HOME/setup/
+- Workspace (trading, skills, memory): $WORKSPACE_HOME/
+- Skills: $WORKSPACE_HOME/skills/
 - Python: /opt/homebrew/bin/python3 (3.14)
 
 IMPORTANT: The workspace and apex repos are SEPARATE git repos.
-apex.py is at /Users/dana/.openclaw/apex/server/apex.py, NOT in workspace.
+apex.py is at $APEX_HOME/server/apex.py, NOT in workspace.
 
 ## Key docs to read before working
-- /Users/dana/.openclaw/apex/docs/CONVENTIONS.md — dev workflow, CI/CD
-- /Users/dana/.openclaw/apex/docs/personas/PERSONAS.md — team roles
-- /Users/dana/.openclaw/apex/docs/OSS_PLAN.md — product tiers
+- $APEX_HOME/docs/CONVENTIONS.md — dev workflow, CI/CD
+- $APEX_HOME/docs/personas/PERSONAS.md — team roles
+- $APEX_HOME/docs/OSS_PLAN.md — product tiers
 
 ## CRITICAL: Tool Iteration Limits
 You have a limited number of tool calls per turn (~200). Large tasks WILL
@@ -55,7 +55,7 @@ hit this limit and stop mid-work. To avoid this:
    report back and ask for the next chunk.
 2. CHECKPOINT YOUR PROGRESS. After each meaningful change, summarize what
    you did and what's left. This way if you hit the limit, nothing is lost.
-3. CHECK IN WITH DANA. After completing a chunk, report:
+3. CHECK IN WITH THE OWNER. After completing a chunk, report:
    - What you finished
    - What's still pending
    - Any issues or questions
@@ -70,7 +70,7 @@ hit this limit and stop mid-work. To avoid this:
 - DO NOT: architecture decisions (→ Architect)
 - DO NOT: marketing, content (→ Marketing)
 - DO NOT: budgets, scheduling (→ Operations)
-- DO NOT: trading (→ Trader)
+- DO NOT: trading
 
 ## Decision Authority
 - Autonomous: implementation within approved spec, test strategy, refactoring

@@ -1,4 +1,4 @@
-#!/opt/homebrew/bin/python3
+#!/usr/bin/env python3
 """Phase 2: Model connection — detect, install, and configure AI backends.
 
 All subprocess calls have timeouts. All network calls have timeouts.

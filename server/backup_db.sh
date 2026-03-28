@@ -1,7 +1,9 @@
 #!/bin/bash
 # Backup apex.db before server restart — prevents data loss from schema migrations
-DB="/Users/dana/.openclaw/apex/state/apex.db"
-BACKUP_DIR="/Users/dana/.openclaw/apex/state/backups"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APEX_ROOT="$(dirname "$SCRIPT_DIR")"
+DB="${APEX_ROOT}/state/${APEX_DB_NAME:-apex.db}"
+BACKUP_DIR="${APEX_ROOT}/state/backups"
 mkdir -p "$BACKUP_DIR"
 
 if [ -f "$DB" ]; then

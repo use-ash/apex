@@ -1873,7 +1873,7 @@ select {
         <div class="form-field">
             <label class="form-label" for="new-client-cn">Device Name (CN)</label>
             <div class="form-help">Common name for the client certificate, e.g. "iphone" or "macbook"</div>
-            <input type="text" id="new-client-cn" placeholder="e.g. iphone-dana" style="width:100%;">
+            <input type="text" id="new-client-cn" placeholder="e.g. my-iphone" style="width:100%;">
         </div>
         <div id="new-client-result" style="display:none; margin-top:16px;"></div>
         <div class="config-actions">

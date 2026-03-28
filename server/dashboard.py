@@ -1779,7 +1779,7 @@ async def api_models_codex():
     cli_version = None
     try:
         result = subprocess.run(
-            ["/opt/homebrew/bin/codex", "--version"],
+            [shutil.which("codex") or "codex", "--version"],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:

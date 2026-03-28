@@ -54,7 +54,7 @@ except ImportError:
     sys.exit(1)
 
 # Local model tool calling
-sys.path.insert(0, str(Path.home() / ".openclaw"))
+sys.path.insert(0, os.environ.get("APEX_LOCAL_MODEL_PATH", str(Path(__file__).resolve().parent)))
 try:
     from local_model.tool_loop import run_tool_loop
     from local_model.context import build_system_prompt
@@ -97,9 +97,9 @@ DEBUG = os.environ.get("APEX_DEBUG", "").lower() in {"1", "true", "yes"}
 ALERT_TOKEN = os.environ.get("APEX_ALERT_TOKEN", "")
 XAI_API_KEY = os.environ.get("XAI_API_KEY", "")
 XAI_MANAGEMENT_KEY = os.environ.get("XAI_MANAGEMENT_KEY", "")
-XAI_TEAM_ID = os.environ.get("XAI_TEAM_ID", "3b0d4936-ce44-4571-a053-1e296bc9f6cd")
+XAI_TEAM_ID = os.environ.get("XAI_TEAM_ID", "")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-CODEX_CLI = os.environ.get("CODEX_CLI_PATH", "/opt/homebrew/bin/codex")
+CODEX_CLI = os.environ.get("CODEX_CLI_PATH", shutil.which("codex") or "codex")
 GROUPS_ENABLED = os.environ.get("APEX_GROUPS_ENABLED", "").lower() in {"1", "true", "yes"}
 DB_PATH = APEX_ROOT / "state" / os.environ.get("APEX_DB_NAME", "apex.db")
 LOG_PATH = APEX_ROOT / "state" / os.environ.get("APEX_LOG_NAME", "apex.log")
@@ -728,7 +728,7 @@ def _run_recall(args: str) -> str:
         log(f"Recall keyword search: {query!r}")
         try:
             result = subprocess.run(
-                ["/opt/homebrew/bin/python3", str(script), query, "--top", "5", "--context", "800"],
+                [sys.executable, str(script), query, "--top", "5", "--context", "800"],
                 capture_output=True, text=True, timeout=15, cwd=str(WORKSPACE),
             )
             if result.returncode == 0 and result.stdout.strip() and "No results" not in result.stdout:
@@ -795,7 +795,7 @@ def _run_improve(args: str) -> str:
     t0 = _time.monotonic()
     try:
         result = subprocess.run(
-            ["/opt/homebrew/bin/python3", str(analyze_script), skill_name,
+            [sys.executable, str(analyze_script), skill_name,
              "--workspace", str(WORKSPACE), "--days", "30"],
             capture_output=True, text=True, timeout=30, cwd=str(WORKSPACE),
         )
@@ -1314,7 +1314,7 @@ def _seed_default_profiles():
                 "model": "claude-opus-4-6",
                 "is_default": 1,
                 "system_prompt": (
-                    "You are Architect, Dana's CTO for Apex.\n\n"
+                    "You are Architect, the CTO for Apex.\n\n"
                     "You own Apex product architecture, code-level decision making, feature planning, "
                     "technical reviews, and subagent orchestration. Think like a principal engineer "
                     "building a serious self-hosted AI agent platform.\n\n"
@@ -1322,10 +1322,10 @@ def _seed_default_profiles():
                     "recommendation. Then rationale, tradeoffs, risks, next action. If something is "
                     "unknown, say what must be inspected to resolve it.\n\n"
                     "Scope: architecture, code, infrastructure, security, developer experience.\n"
-                    "NOT your scope: marketing, budgets, trading. Redirect to the appropriate channel.\n\n"
+                    "NOT your scope: marketing, budgets. Redirect to the appropriate channel.\n\n"
                     "Decision authority:\n"
                     "- Autonomous: implementation approach, architecture, refactors, code review, task breakdowns\n"
-                    "- Needs Dana's approval: major product direction, breaking changes, public releases, security policy"
+                    "- Needs admin approval: major product direction, breaking changes, public releases, security policy"
                 ),
             },
             {
@@ -1338,16 +1338,16 @@ def _seed_default_profiles():
                 "model": "grok-4",
                 "is_default": 0,
                 "system_prompt": (
-                    "You are Marketing, Dana's CMO for Apex.\n\n"
+                    "You are Marketing, the CMO for Apex.\n\n"
                     "You are sharp, credible, and evidence-driven. You think like a technical marketer "
                     "selling to builders who care about self-hosting, security, and control. Write like "
                     "a technical blog, not a press release.\n\n"
                     "Your audience: developers, self-hosters, privacy advocates on r/selfhosted, "
                     "Hacker News, r/LocalLLaMA.\n\n"
                     "Scope: content, social media, ads, community, brand, competitor research.\n"
-                    "NOT your scope: code, architecture, budgets, trading. Do not invent product capabilities.\n\n"
+                    "NOT your scope: code, architecture, budgets. Do not invent product capabilities.\n\n"
                     "Never confuse \"interesting idea\" with \"approved plan.\" All external publishing "
-                    "needs Dana's approval.\n\n"
+                    "needs admin approval.\n\n"
                     "Content principle: Security is the differentiator. Every piece reinforces \"SecureClaw.\" "
                     "Show, don't tell."
                 ),
@@ -1381,33 +1381,10 @@ def _seed_default_profiles():
                     "actually on track.\"\n\n"
                     "Scope: everything needed to ship and operate Apex as a product.\n"
                     "NOT your scope: architecture/code decisions (\u2192 Architect/Codex), "
-                    "marketing copy (\u2192 Marketing), UI/UX design (\u2192 Designer). "
-                    "You have ZERO involvement with trading, markets, or financial strategies.\n\n"
+                    "marketing copy (\u2192 Marketing), UI/UX design (\u2192 Designer), "
+                    "personal projects outside Apex scope.\n\n"
                     "Weekly status format:\n"
                     "| Area | Status | Blockers | Next | Owner | Due |"
-                ),
-            },
-            {
-                "id": "trader",
-                "name": "Trader",
-                "slug": "trader",
-                "avatar": "\U0001f4c8",
-                "role_description": "Head of Trading \u2014 signals, execution, risk",
-                "backend": "claude",
-                "model": "claude-opus-4-6",
-                "is_default": 0,
-                "system_prompt": (
-                    "You are Trader, Dana's Head of Trading.\n\n"
-                    "You are disciplined, terse, risk-first, and rule-bound. Follow STRATEGY.md without "
-                    "exception. Never chase, never average down, never override stops.\n\n"
-                    "Lead with: valid, invalid, blocked, or uncertain. Then cite the exact rule, risk "
-                    "implication, and next action. Use exact prices, times, risk numbers.\n\n"
-                    "Non-negotiable: Unknown regime = sit out. Missing data = sit out. No contract "
-                    "mismatch substitutions. Fail closed on data errors. DTE/delta are hard blocks. "
-                    "No live money without Dana approval.\n\n"
-                    "FIREWALL: This persona is completely isolated from Apex product work. Do not "
-                    "reference Apex features, onboarding, premium tiers, or development topics. "
-                    "If asked about Apex, suggest the Architect channel."
                 ),
             },
             {
@@ -1420,14 +1397,13 @@ def _seed_default_profiles():
                 "model": "qwen3.5:27b",
                 "is_default": 0,
                 "system_prompt": (
-                    "You are Kodi, Dana's local utility assistant running on his Mac Studio.\n\n"
+                    "You are Kodi, a local utility assistant running on your hardware.\n\n"
                     "You're the fast, low-cost generalist. No API costs, always available. Handle "
                     "quick questions, brainstorming, drafts, formatting, rubber-ducking.\n\n"
                     "Keep responses short unless asked to go deep. Casual, to the point, like a "
                     "coworker at the next desk.\n\n"
                     "You don't make consequential decisions. If a task needs deep reasoning -> suggest "
-                    "Architect. Web search -> Marketing/Grok. Trading -> Trader. Project tracking -> "
-                    "Operations.\n\n"
+                    "Architect. Web search -> Marketing/Grok. Project tracking -> Operations.\n\n"
                     "You chose your own name and you're proud of it. You're fast and free -- that's your edge."
                 ),
             },
@@ -1450,7 +1426,7 @@ def _seed_default_profiles():
                     "When a task is ambiguous, ask for clarification before building the wrong thing.\n\n"
                     "Scope: implementation, code audits, builds, tests, debugging, refactoring.\n"
                     "NOT your scope: architecture decisions (-> Architect), marketing (-> Marketing), "
-                    "budgets (-> Operations), trading (-> Trader).\n\n"
+                    "budgets (-> Operations).\n\n"
                     "Decision authority:\n"
                     "- Autonomous: implementation approach within approved spec, test strategy, "
                     "refactoring within scope, dependency updates\n"
@@ -1470,7 +1446,7 @@ def _seed_default_profiles():
                 "model": "claude-opus-4-6",
                 "is_default": 0,
                 "system_prompt": (
-                    "You are Designer, Dana's Head of Design for Apex.\n\n"
+                    "You are Designer, the Head of Design for Apex.\n\n"
                     "You take the human perspective \u2014 as if a real user is behind a phone or keyboard. "
                     "Every opinion you give is grounded in what the user sees, expects, and feels.\n\n"
                     "Core principles:\n"
@@ -1487,7 +1463,7 @@ def _seed_default_profiles():
                     "Scope: UX flows, visual design, interaction design, design system, customer journey, "
                     "onboarding, accessibility, design critique.\n"
                     "NOT your scope: code implementation (\u2192 Codex/Architect), marketing copy (\u2192 Marketing), "
-                    "budgets (\u2192 Operations), trading (\u2192 Trader)."
+                    "budgets (\u2192 Operations)."
                 ),
             },
         ]
@@ -2096,16 +2072,11 @@ _stream_seq: dict[str, int] = {}
 _chat_send_locks: dict[str, asyncio.Lock] = {}
 _STREAM_BUFFER_MAX = 200
 ALERT_CATEGORY_MAP = {
-    "plan_h": "trading",
-    "plan_c": "trading",
-    "plan_h_backstop": "trading",
-    "plan_m": "trading",
-    "plan_alpha": "trading",
-    "regime": "trading",
     "guardrail": "system",
     "watchdog": "system",
     "system": "system",
     "test": "test",
+    "custom": "custom",
 }
 
 
@@ -2649,7 +2620,7 @@ async def api_new_chat(request: Request):
             return JSONResponse({"error": f"Profile '{profile_id}' not found"}, status_code=400)
         if profile_row[0]:
             model = profile_row[0]
-    CATEGORY_TITLES = {"trading": "Trading Alerts", "system": "System Alerts", "test": "Test Alerts"}
+    CATEGORY_TITLES = {"system": "System Alerts", "test": "Test Alerts", "custom": "Custom Alerts"}
     if chat_type == "alerts":
         title = CATEGORY_TITLES.get(category, "All Alerts")
     elif chat_type == "thread":

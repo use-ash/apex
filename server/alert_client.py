@@ -1,13 +1,13 @@
-"""Apex alert client — drop-in for trading scripts.
+"""Apex alert client — drop-in for any script that needs to send alerts.
 
 Usage:
     from alert_client import send_apex_alert
-    send_apex_alert("plan_h", "critical", "SPY signal detected", body="CALL @ $542.30")
+    send_apex_alert("my_app", "info", "Task completed", body="Backup finished successfully")
 """
 
 import json, os, ssl, urllib.request
 
-_SERVER = os.environ.get("APEX_SERVER", "https://10.8.0.2:8300")
+_SERVER = os.environ.get("APEX_SERVER", "https://localhost:8300")
 _TOKEN = os.environ.get("APEX_ALERT_TOKEN", "")
 
 

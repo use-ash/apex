@@ -1,4 +1,4 @@
-#!/opt/homebrew/bin/python3
+#!/usr/bin/env python3
 """Hardware detection for Apex onboarding wizard.
 SECURITY: All data stays in memory. Never written to disk, never transmitted.
 """

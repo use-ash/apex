@@ -1,4 +1,4 @@
-#!/opt/homebrew/bin/python3
+#!/usr/bin/env python3
 """Phase 1: Bootstrap — get the Apex server runnable.
 
 Checks dependencies, creates directories, detects network interfaces,

@@ -1,4 +1,4 @@
-#!/opt/homebrew/bin/python3
+#!/usr/bin/env python3
 """Apex Setup Wizard — main orchestrator.
 
 Entry point for first-run onboarding and reconfiguration.

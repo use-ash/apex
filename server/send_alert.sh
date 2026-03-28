@@ -3,7 +3,7 @@
 # Usage: send_alert.sh -s source -l severity -t title [-b body]
 #        echo "body" | send_alert.sh -s source -t title
 
-SERVER="${APEX_SERVER:-https://10.8.0.2:8300}"
+SERVER="${APEX_SERVER:-https://localhost:8300}"
 TOKEN="${APEX_ALERT_TOKEN}"
 
 while getopts "s:l:t:b:" opt; do
