@@ -145,10 +145,10 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 MODEL_CONTEXT_DEFAULT = 128_000  # fallback for local/unknown models
 
 # Auto-compaction — rotate SDK session when cumulative input tokens get too high
-COMPACTION_THRESHOLD = int(os.environ.get("APEX_COMPACTION_THRESHOLD", os.environ.get("LOCALCHAT_COMPACTION_THRESHOLD", "100000")))  # input tokens
-COMPACTION_MODEL = os.environ.get("APEX_COMPACTION_MODEL", os.environ.get("LOCALCHAT_COMPACTION_MODEL", "grok-4-1-fast-non-reasoning"))
+COMPACTION_THRESHOLD = int(os.environ.get("APEX_COMPACTION_THRESHOLD", "100000"))  # input tokens
+COMPACTION_MODEL = os.environ.get("APEX_COMPACTION_MODEL", "grok-4-1-fast-non-reasoning")
 COMPACTION_OLLAMA_FALLBACK = os.environ.get("APEX_COMPACTION_OLLAMA_FALLBACK", "gemma3:27b")
-OLLAMA_BASE_URL = os.environ.get("APEX_OLLAMA_URL", os.environ.get("LOCALCHAT_OLLAMA_URL", "http://localhost:11434"))
+OLLAMA_BASE_URL = os.environ.get("APEX_OLLAMA_URL", "http://localhost:11434")
 MLX_BASE_URL = os.environ.get("APEX_MLX_URL", "http://localhost:8400")
 COMPACTION_OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/generate"
 COMPACTION_TIMEOUT = 30
@@ -9111,7 +9111,7 @@ if __name__ == "__main__":
     print(f"  CA: {SSL_CA}")
     print()
 
-    log_lvl = os.environ.get("APEX_LOG_LEVEL", os.environ.get("LOCALCHAT_LOG_LEVEL", "info"))
+    log_lvl = os.environ.get("APEX_LOG_LEVEL", "info")
     uvicorn.run(
         app, host=HOST, port=PORT, log_level=log_lvl,
         ssl_certfile=SSL_CERT,

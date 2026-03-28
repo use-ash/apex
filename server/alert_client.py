@@ -7,8 +7,8 @@ Usage:
 
 import json, os, ssl, urllib.request
 
-_SERVER = os.environ.get("APEX_SERVER", os.environ.get("LOCALCHAT_SERVER", "https://10.8.0.2:8300"))
-_TOKEN = os.environ.get("APEX_ALERT_TOKEN", os.environ.get("LOCALCHAT_ALERT_TOKEN", ""))
+_SERVER = os.environ.get("APEX_SERVER", "https://10.8.0.2:8300")
+_TOKEN = os.environ.get("APEX_ALERT_TOKEN", "")
 
 
 def send_apex_alert(
@@ -38,7 +38,3 @@ def send_apex_alert(
         return True
     except Exception:
         return False
-
-
-# Backward-compat alias
-send_localchat_alert = send_apex_alert

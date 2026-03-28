@@ -1819,7 +1819,7 @@ async def api_credentials():
             "openai": _env_has_key("OPENAI_API_KEY"),
             "telegram_bot": _env_has_key("TELEGRAM_BOT_TOKEN"),
             "telegram_chat": _env_has_key("TELEGRAM_CHAT_ID"),
-            "alert_token": _env_has_key("APEX_ALERT_TOKEN") or _env_has_key("LOCALCHAT_ALERT_TOKEN"),
+            "alert_token": _env_has_key("APEX_ALERT_TOKEN"),
         },
     })
 
@@ -1974,7 +1974,7 @@ async def api_alerts_config():
     telegram_configured = (
         _env_has_key("TELEGRAM_BOT_TOKEN") and _env_has_key("TELEGRAM_CHAT_ID")
     )
-    alert_token_set = _env_has_key("APEX_ALERT_TOKEN") or _env_has_key("LOCALCHAT_ALERT_TOKEN")
+    alert_token_set = _env_has_key("APEX_ALERT_TOKEN")
 
     # Fetch distinct alert categories from DB
     categories: list[str] = []
@@ -2160,7 +2160,7 @@ async def api_alerts_test():
 # Phase 4 — Workspace, Skills, Guardrails, Sessions
 # ===========================================================================
 
-WORKSPACE = Path(os.environ.get("APEX_WORKSPACE", os.environ.get("LOCALCHAT_WORKSPACE", os.getcwd())))
+WORKSPACE = Path(os.environ.get("APEX_WORKSPACE", os.getcwd()))
 
 
 # ---------------------------------------------------------------------------

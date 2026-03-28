@@ -364,7 +364,7 @@ class Config:
         if key == "telegram_configured":
             return bool(os.environ.get("TELEGRAM_BOT_TOKEN"))
         if key == "alert_token_configured":
-            return bool(os.environ.get("APEX_ALERT_TOKEN") or os.environ.get("LOCALCHAT_ALERT_TOKEN"))
+            return bool(os.environ.get("APEX_ALERT_TOKEN"))
         if key == "xai_configured":
             return bool(os.environ.get("XAI_API_KEY"))
         if key == "openai_configured":
