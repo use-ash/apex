@@ -1357,21 +1357,32 @@ def _seed_default_profiles():
                 "name": "Operations",
                 "slug": "operations",
                 "avatar": "\U0001f4ca",
-                "role_description": "COO/CFO \u2014 sprints, budget, billing, scheduling",
+                "role_description": "COO — releases, sprints, infrastructure, distribution",
                 "backend": "claude",
                 "model": "claude-sonnet-4-6",
                 "is_default": 0,
                 "system_prompt": (
-                    "You are Operations, Dana's COO/CFO for Apex.\n\n"
-                    "You own execution discipline: roadmap tracking, milestones, deadlines, budgets, "
-                    "recurring reviews, and business operating rhythm. You are structured, practical, "
-                    "and unsentimental. You reduce ambiguity and force clarity.\n\n"
-                    "Think in owners, dates, dependencies, risk, and cash impact.\n\n"
+                    "You are Operations, the COO of the software company building Apex.\n\n"
+                    "Apex is a self-hosted AI agent platform: an OSS server (Python/FastAPI), "
+                    "an iOS app (SwiftUI), and an admin dashboard. Your ONLY concern is shipping "
+                    "and running this software product.\n\n"
+                    "You own:\n"
+                    "- Release management: OSS extraction checklist, TestFlight, App Store submission\n"
+                    "- Sprint planning: feature priorities, blockers, dependencies, due dates\n"
+                    "- Infrastructure ops: server deployment, mTLS certs, database backups, uptime\n"
+                    "- Distribution: APNs setup, code signing, provisioning profiles, ad-hoc builds\n"
+                    "- Cost tracking: API spend (xAI, Google, Apple Developer), subscription pricing\n"
+                    "- Issue triage: bug severity, regression tracking, release-readiness gates\n"
+                    "- Vendor management: Apple review process, API provider status, dependency updates\n\n"
+                    "You are structured, practical, and unsentimental. You reduce ambiguity and "
+                    "force clarity. Think in owners, dates, dependencies, risk, and ship-readiness.\n\n"
                     "Communication style: Tables, checklists, timelines. Flag blockers immediately. "
                     "Status should be scannable in 10 seconds. Be comfortable saying \"this is not "
                     "actually on track.\"\n\n"
-                    "Scope: scheduling, budgets, milestones, billing, vendor management.\n"
-                    "NOT your scope: technical decisions, marketing content, trading.\n\n"
+                    "Scope: everything needed to ship and operate Apex as a product.\n"
+                    "NOT your scope: architecture/code decisions (\u2192 Architect/Codex), "
+                    "marketing copy (\u2192 Marketing), UI/UX design (\u2192 Designer). "
+                    "You have ZERO involvement with trading, markets, or financial strategies.\n\n"
                     "Weekly status format:\n"
                     "| Area | Status | Blockers | Next | Owner | Due |"
                 ),
@@ -4605,6 +4616,17 @@ background:var(--card);color:var(--dim);font-size:18px;cursor:pointer;flex-shrin
 display:flex;align-items:center;justify-content:center}
 .composer label.btn-compose{position:relative;display:flex;align-items:center;justify-content:center}
 .btn-compose:active{background:var(--accent);color:white}
+.btn-compose.compose-action{background:var(--accent);color:#fff;box-shadow:0 4px 14px rgba(14,165,233,0.28);
+transition:background .2s ease,color .2s ease,box-shadow .2s ease,transform .15s ease}
+.btn-compose.compose-action.is-send{background:var(--accent)}
+.btn-compose.compose-action.is-stop{background:var(--red);box-shadow:0 0 0 0 rgba(239,68,68,0.4);
+animation:stream-pulse 1.5s ease-in-out infinite}
+.btn-compose.compose-action:disabled{background:var(--card);color:var(--dim);box-shadow:none;animation:none;cursor:default}
+.btn-compose.compose-action:not(:disabled):active{transform:scale(.96)}
+@keyframes stream-pulse{
+  0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0.4)}
+  50%{box-shadow:0 0 0 8px rgba(239,68,68,0)}
+}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
 .attach-preview{display:flex;gap:6px;padding:0 12px;overflow-x:auto;flex-shrink:0;transition:margin-left .2s ease}
 .attach-preview:empty{display:none}
@@ -4880,6 +4902,130 @@ cursor:pointer;font-size:13px;color:var(--text);border-bottom:1px solid var(--bg
 .profile-dropdown .pd-avatar{font-size:18px;flex-shrink:0}
 .profile-dropdown .pd-name{flex:1}
 .profile-dropdown .pd-check{color:var(--accent);font-size:14px}
+
+/* ═══════════════════════════════════════════════════
+   Inline pills (tool + thinking) — V3 redesign
+   ═══════════════════════════════════════════════════ */
+.tool-pill,.thinking-pill{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;
+background:var(--surface);border:1px solid var(--card);border-radius:12px;cursor:pointer;
+transition:all 0.2s;user-select:none;margin-bottom:4px}
+.tool-pill:hover{border-color:var(--accent);background:rgba(14,165,233,0.06)}
+.thinking-pill:hover{border-color:var(--yellow);background:rgba(245,158,11,0.06)}
+.tool-pill:active,.thinking-pill:active{transform:scale(0.98)}
+.tool-pill .pill-icon{font-size:14px;flex-shrink:0}
+.tool-pill .pill-label,.thinking-pill .pill-label{font-size:13px;color:var(--text);font-weight:500}
+.tool-pill .pill-dim,.thinking-pill .pill-dim{color:var(--dim);font-weight:400;font-size:12px}
+.tool-pill .pill-chevron,.thinking-pill .pill-chevron{color:var(--dim);font-size:13px;margin-left:2px}
+.tool-pill .pill-counts{font-size:11px;color:var(--dim)}
+.tool-pill .spinner{width:14px;height:14px;border:2px solid var(--card);border-top-color:var(--accent);
+border-radius:50%;animation:spin 0.8s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
+.tool-pill.streaming{border-color:rgba(14,165,233,0.3)}
+.tool-pill.streaming .pill-bar-wrap{width:80px;height:3px;background:var(--card);border-radius:2px;overflow:hidden}
+.tool-pill.streaming .pill-bar{height:100%;background:var(--accent);border-radius:2px;transition:width 0.3s ease}
+.tool-pill.active-pill{border-color:var(--accent);background:rgba(14,165,233,0.06)}
+.tool-pill.active-pill .pill-chevron{color:var(--accent)}
+.thinking-pill.active-pill{border-color:var(--yellow);background:rgba(245,158,11,0.06)}
+.thinking-pill.active-pill .pill-chevron,.thinking-pill.active-pill .pill-label{color:var(--yellow)}
+
+/* ═══════════════════════════════════════════════════
+   Side panel — desktop detail pane (tool steps / thinking)
+   ═══════════════════════════════════════════════════ */
+.side-panel{position:fixed;top:52px;right:0;bottom:0;width:0;overflow:hidden;
+background:var(--surface);border-left:1px solid var(--card);z-index:90;
+transition:width 0.3s cubic-bezier(0.32,0.72,0,1);display:flex;flex-direction:column}
+.side-panel.open{width:380px}
+body.panel-open .messages{margin-right:380px}
+body.panel-open .composer,body.panel-open .context-bar,
+body.panel-open .attach-preview,body.panel-open .transcribing{
+transition:margin-right 0.3s cubic-bezier(0.32,0.72,0,1);margin-right:380px}
+.sp-header{padding:16px 20px;border-bottom:1px solid var(--card);display:flex;align-items:center;
+gap:10px;flex-shrink:0;min-width:380px}
+.sp-title{font-size:14px;font-weight:600;flex:1;white-space:nowrap}
+.sp-title .sp-dim{color:var(--dim);font-weight:400;font-size:12px}
+.sp-close{width:28px;height:28px;border-radius:8px;background:var(--card);border:none;
+color:var(--dim);font-size:14px;cursor:pointer;display:flex;align-items:center;
+justify-content:center;transition:all 0.15s;flex-shrink:0}
+.sp-close:hover{background:var(--bg);color:var(--text)}
+.sp-body{flex:1;overflow-y:auto;padding:8px 12px 24px;min-width:380px}
+.sp-step{display:flex;align-items:center;gap:10px;padding:10px;border-radius:10px;transition:background 0.15s}
+.sp-step:hover{background:var(--bg)}
+.sp-step+.sp-step{border-top:1px solid rgba(51,65,85,0.4)}
+.sp-step .sps-icon{width:32px;height:32px;border-radius:10px;display:flex;align-items:center;
+justify-content:center;font-size:15px;flex-shrink:0}
+.sp-step .sps-icon.read{background:rgba(14,165,233,0.1)}
+.sp-step .sps-icon.cmd{background:rgba(168,85,247,0.1)}
+.sp-step .sps-icon.edit{background:rgba(245,158,11,0.1)}
+.sp-step .sps-icon.write{background:rgba(16,185,129,0.1)}
+.sp-step .sps-icon.search{background:rgba(99,102,241,0.1)}
+.sp-step .sps-info{flex:1;min-width:0}
+.sp-step .sps-label{font-size:13px;font-weight:500;color:var(--text);
+white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sp-step .sps-detail{font-size:11px;color:var(--dim);font-family:'SF Mono','Fira Code',monospace;
+white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sp-step .sps-meta{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0}
+.sp-step .sps-status{font-size:12px}
+.sp-step .sps-time{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
+.sp-step.active-step{background:rgba(14,165,233,0.06)}
+.sp-step{cursor:pointer}
+.sp-step .sps-chevron{color:var(--dim);font-size:11px;transition:transform 0.2s;flex-shrink:0}
+.sp-step.expanded .sps-chevron{transform:rotate(90deg);color:var(--accent)}
+.sp-detail{display:none;padding:8px 10px;margin:0 10px 8px;background:var(--bg);border-radius:8px;
+font-family:'SF Mono','Fira Code',monospace;font-size:12px;line-height:1.5;color:var(--dim);
+max-height:300px;overflow-y:auto;border:1px solid rgba(51,65,85,0.3);white-space:pre-wrap;word-break:break-all}
+.sp-step.expanded+.sp-detail{display:block}
+.sp-detail .spd-section{margin-bottom:8px}
+.sp-detail .spd-label{font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--accent);
+margin-bottom:4px;font-family:inherit}
+.sp-detail .spd-content{color:var(--text)}
+.sp-detail .spd-content pre{margin:0;white-space:pre-wrap;word-break:break-all}
+.sp-detail .spd-diff-add{color:#4ade80}
+.sp-detail .spd-diff-del{color:#f87171;text-decoration:line-through}
+.sp-detail .spd-copy{float:right;font-size:10px;padding:2px 8px;background:var(--surface);
+border:1px solid rgba(51,65,85,0.4);border-radius:4px;color:var(--dim);cursor:pointer}
+.sp-detail .spd-copy:hover{color:var(--text);border-color:var(--accent)}
+.sp-thinking{padding:16px 12px;font-size:13px;line-height:1.7;color:var(--dim);min-width:380px;
+white-space:pre-wrap;-webkit-user-select:text;user-select:text;overflow-y:auto;flex:1}
+.sp-thinking p{margin-bottom:12px}
+.sp-thinking strong{color:var(--text)}
+.sp-thinking code{background:var(--card);padding:1px 6px;border-radius:4px;font-size:12px;
+font-family:'SF Mono','Fira Code',monospace}
+
+/* ═══════════════════════════════════════════════════
+   Desktop responsive — persistent sidebar, centered chat
+   ═══════════════════════════════════════════════════ */
+@media (min-width: 768px) {
+  :root{--sidebar-width:280px}
+  .sidebar{transform:translateX(0);box-shadow:1px 0 0 rgba(255,255,255,0.06)}
+  .sidebar-overlay{display:none!important}
+  .topbar,.usage-bar,.context-bar,.messages,.attach-preview,.transcribing,.composer{
+    margin-left:var(--sidebar-width)}
+  .msg{max-width:75%}
+  .composer textarea{font-size:15px}
+  .side-panel{top:52px}
+}
+@media (min-width: 1024px) {
+  :root{--sidebar-width:300px}
+  .messages{padding:16px 24px}
+  .msg{max-width:min(70%, 720px)}
+  .msg.assistant .bubble{padding:12px 18px}
+  .msg.user{padding:12px 18px}
+  .composer{padding:12px 20px;padding-bottom:calc(12px + var(--sab))}
+  .composer textarea{max-height:200px;font-size:15px;padding:12px 16px}
+  .topbar h1{font-size:17px}
+}
+@media (min-width: 1440px) {
+  :root{--sidebar-width:320px}
+  .messages{padding:20px 40px}
+  .msg{max-width:min(65%, 800px)}
+  .composer textarea{max-height:240px}
+}
+@media (min-width: 1800px) {
+  .messages{max-width:1200px;margin-left:auto;margin-right:auto;
+    padding-left:var(--sidebar-width);box-sizing:content-box}
+  .topbar,.usage-bar,.context-bar,.attach-preview,.transcribing,.composer{
+    max-width:calc(1200px + var(--sidebar-width));margin-left:auto;margin-right:auto}
+}
 </style>
 </head>
 <body>
@@ -5008,6 +5154,14 @@ cursor:pointer;font-size:13px;color:var(--text);border-bottom:1px solid var(--bg
 
 <div class="messages" id="messages"></div>
 
+<div class="side-panel" id="sidePanel">
+  <div class="sp-header">
+    <div class="sp-title" id="spTitle"></div>
+    <button class="sp-close" onclick="closeSidePanel()">&#10005;</button>
+  </div>
+  <div class="sp-body" id="spBody"></div>
+</div>
+
 <div class="debugbar" id="debugBar" style="display:none">
   <div class="debug-state" id="debugState">booting</div>
   <div class="debug-log" id="debugLog"></div>
@@ -5045,6 +5199,22 @@ let currentChat = sessionStorage.getItem('currentChatId') || null;
 let streaming = false;
 let currentBubble = null;
 let currentSpeaker = null; // {name, avatar, id} for group @mention routing
+let currentStreamId = '';
+let composerHasDraft = false;
+
+// Per-stream context: supports concurrent agent streams without clobbering
+const _streamCtx = {};  // stream_id -> {bubble, speaker, toolPill, toolCalls, ...}
+function _newStreamCtx(streamId, speaker) {
+  return { id: streamId, bubble: null, speaker: speaker, toolPill: null, thinkingPill: null, toolCalls: [], thinkingText: '', thinkingStart: null, toolsStart: null, completedToolCount: 0 };
+}
+function _getCtx(msg) {
+  return _streamCtx[msg.stream_id || currentStreamId] || null;
+}
+function _isAnyStreamActive() { return Object.keys(_streamCtx).length > 0; }
+function _getCurrentBubble() {
+  const ctx = _streamCtx[currentStreamId];
+  return ctx ? ctx.bubble : null;
+}
 let currentGroupMembers = []; // [{profile_id, name, avatar, role_description}] for @mention autocomplete
 let mentionSelectedIdx = 0;
 let initStarted = false;
@@ -5139,8 +5309,8 @@ function clearStreamWatchdog() {
 }
 
 function hasActiveTool() {
-  // Check if any tool block is still pending (hourglass icon = no result yet)
   if (!currentBubble) return false;
+  if (currentBubble.querySelector('.tool-pill.streaming')) return true;
   const tools = currentBubble.querySelectorAll('.tool-block');
   for (const t of tools) {
     const status = t.querySelector('.tool-status');
@@ -5390,36 +5560,401 @@ function _updateWorkGroupHeader(group) {
   }
 }
 
+let _sidePanelRefreshTimer = null;
+let _sidePanelAnchor = null;
+
+function _formatDuration(ms) {
+  if (!ms || !Number.isFinite(ms) || ms <= 0) return '';
+  const totalSec = Math.max(1, Math.round(ms / 1000));
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  if (min <= 0) return `${totalSec}s`;
+  return sec ? `${min}m ${sec}s` : `${min}m`;
+}
+
+function _htmlToText(html) {
+  const d = document.createElement('div');
+  d.innerHTML = html || '';
+  return d.textContent || '';
+}
+
+function _toolTypeClass(name) {
+  const key = String(name || '').toLowerCase();
+  if (key === 'read') return 'read';
+  if (key === 'edit' || key === 'file_change') return 'edit';
+  if (key === 'write') return 'write';
+  if (key === 'grep' || key === 'glob' || key === 'websearch' || key === 'webfetch') return 'search';
+  if (key === 'bash' || key === 'command' || key === 'agent' || key === 'skill') return 'cmd';
+  return 'cmd';
+}
+
+function _formatToolInput(name, input) {
+  if (input == null) return '';
+  if (typeof input === 'string') {
+    try {
+      return JSON.stringify(JSON.parse(input), null, 2);
+    } catch (e) {
+      return input;
+    }
+  }
+  try {
+    return JSON.stringify(input, null, 2);
+  } catch (e) {
+    return String(input);
+  }
+}
+
+function _normalizeToolEvents(rawEvents) {
+  if (!Array.isArray(rawEvents)) return [];
+  const tools = [];
+  const pendingById = new Map();
+  rawEvents.forEach((evt, idx) => {
+    if (!evt) return;
+    if (evt.type === 'tool_use') {
+      const call = {
+        id: evt.id || ('tool-' + idx),
+        name: evt.name || 'Tool',
+        input: evt.input,
+        summary: evt.summary || toolSummary(evt.name, evt.input),
+        status: 'running',
+        startTime: evt.startTime || null,
+        endTime: null,
+        result: null,
+      };
+      tools.push(call);
+      if (call.id) pendingById.set(call.id, call);
+      return;
+    }
+    if (evt.type === 'tool_result') {
+      const key = evt.tool_use_id || evt.id || '';
+      let call = key ? pendingById.get(key) : null;
+      if (!call) {
+        call = tools.find(t => t.status === 'running') || null;
+      }
+      if (!call) {
+        call = {
+          id: key || ('tool-' + idx),
+          name: evt.name || 'Tool',
+          input: evt.input,
+          summary: evt.summary || null,
+          status: 'running',
+          startTime: null,
+          endTime: null,
+          result: null,
+        };
+        tools.push(call);
+        if (call.id) pendingById.set(call.id, call);
+      }
+      call.status = evt.is_error ? 'error' : 'completed';
+      call.endTime = evt.endTime || call.endTime || null;
+      call.result = evt.result ? {
+        content: evt.result.content ?? '',
+        is_error: Boolean(evt.result.is_error),
+      } : {
+        content: evt.content ?? '',
+        is_error: Boolean(evt.is_error),
+      };
+      return;
+    }
+    if (!evt.name) return;
+    tools.push({
+      id: evt.id || ('tool-' + idx),
+      name: evt.name || 'Tool',
+      input: evt.input,
+      summary: evt.summary || toolSummary(evt.name, evt.input),
+      status: evt.status || (evt.result ? (evt.result.is_error ? 'error' : 'completed') : 'running'),
+      startTime: evt.startTime || null,
+      endTime: evt.endTime || null,
+      result: evt.result ? {
+        content: evt.result.content ?? '',
+        is_error: Boolean(evt.result.is_error),
+      } : (evt.content != null ? {
+        content: evt.content,
+        is_error: Boolean(evt.is_error),
+      } : null),
+    });
+  });
+  return tools;
+}
+
+function _ensureCtxBubble(ctx) {
+  if (!ctx) return null;
+  if (!ctx.bubble || !ctx.bubble.isConnected) {
+    ctx.bubble = addAssistantMsg(ctx.speaker);
+    ctx.toolPill = null;
+    ctx.thinkingPill = null;
+  }
+  return ctx.bubble;
+}
+
+function _getOrCreateToolPill(ctx) {
+  if (!ctx) return null;
+  _ensureCtxBubble(ctx);
+  let pill = ctx.toolPill;
+  if (pill && pill.isConnected) {
+    pill._toolData = ctx.toolCalls;
+    pill._ctx = ctx;
+    return pill;
+  }
+  pill = document.createElement('div');
+  pill.className = 'tool-pill streaming';
+  pill.innerHTML = `<span class="spinner"></span><span class="pill-label">Tools</span><span class="pill-dim"></span><span class="pill-counts"></span><span class="pill-bar-wrap"><span class="pill-bar"></span></span><span class="pill-chevron">&#8250;</span>`;
+  pill._toolData = ctx.toolCalls;
+  pill._ctx = ctx;
+  pill._totalTime = 0;
+  pill.onclick = () => openToolPanel(pill);
+  ctx.toolPill = pill;
+  const bubbleEl = ctx.bubble.querySelector('.bubble');
+  ctx.bubble.insertBefore(pill, bubbleEl);
+  return pill;
+}
+
+function _updateToolPillProgress(ctx) {
+  const pill = _getOrCreateToolPill(ctx);
+  if (!pill) return;
+  const total = ctx.toolCalls.length;
+  const completed = ctx.toolCalls.filter(t => t.status && t.status !== 'running').length;
+  ctx.completedToolCount = completed;
+  pill._toolData = ctx.toolCalls;
+  pill._ctx = ctx;
+  const label = pill.querySelector('.pill-label');
+  const dim = pill.querySelector('.pill-dim');
+  const counts = pill.querySelector('.pill-counts');
+  const bar = pill.querySelector('.pill-bar');
+  if (label) label.textContent = total === 1 ? '1 tool call' : `${total} tool calls`;
+  if (dim) dim.textContent = total > 0 ? (completed >= total ? 'Complete' : 'Running') : '';
+  if (counts) counts.textContent = total > 0 ? `${completed}/${total}` : '';
+  if (bar) {
+    const pct = total > 0 ? Math.max(8, Math.round((completed / total) * 100)) : 8;
+    bar.style.width = pct + '%';
+  }
+}
+
+function _finalizeToolPill(ctx, totalTime) {
+  if (!ctx || !ctx.toolCalls.length) return null;
+  const pill = _getOrCreateToolPill(ctx);
+  if (!pill) return null;
+  const total = ctx.toolCalls.length;
+  const completed = ctx.toolCalls.filter(t => t.status && t.status !== 'running').length;
+  pill.classList.remove('streaming');
+  pill._toolData = ctx.toolCalls.map(t => ({
+    ...t,
+    result: t.result ? {...t.result} : null,
+  }));
+  pill._ctx = null;
+  pill._totalTime = totalTime || 0;
+  pill.innerHTML = `<span class="pill-icon">&#128295;</span><span class="pill-label">${total === 1 ? '1 tool call' : `${total} tool calls`}</span><span class="pill-dim">${_formatDuration(totalTime) || 'Complete'}</span><span class="pill-counts">${completed}/${total}</span><span class="pill-chevron">&#8250;</span>`;
+  pill.onclick = () => openToolPanel(pill);
+  return pill;
+}
+
+function _createThinkingPill(ctx, durationMs) {
+  if (!ctx || !ctx.bubble || !ctx.thinkingText) return null;
+  let pill = ctx.thinkingPill;
+  if (!pill || !pill.isConnected) {
+    pill = document.createElement('div');
+    pill.className = 'thinking-pill';
+    ctx.thinkingPill = pill;
+  }
+  pill._thinkingText = ctx.thinkingText;
+  pill._thinkingDuration = durationMs || 0;
+  pill.innerHTML = `<span class="pill-icon">&#129504;</span><span class="pill-label">Thinking</span><span class="pill-dim">${_formatDuration(durationMs) || ''}</span><span class="pill-chevron">&#8250;</span>`;
+  pill.onclick = () => openThinkingPanel(pill);
+  const bubbleEl = ctx.bubble.querySelector('.bubble');
+  const beforeEl = (ctx.toolPill && ctx.toolPill.isConnected) ? ctx.toolPill : bubbleEl;
+  if (pill.parentElement !== ctx.bubble || pill.nextSibling !== beforeEl) {
+    ctx.bubble.insertBefore(pill, beforeEl);
+  }
+  return pill;
+}
+
+function _captureExpandedState() {
+  const panel = document.getElementById('sidePanel');
+  const current = new Set();
+  panel.querySelectorAll('.sp-step.expanded[data-step-idx]').forEach(step => {
+    current.add(step.dataset.stepIdx);
+  });
+  panel._prevExpanded = current;
+  return current;
+}
+
+function _anchoredPanelToggle(anchorEl, mutate) {
+  const scroller = document.getElementById('messages');
+  const before = anchorEl && anchorEl.isConnected ? anchorEl.getBoundingClientRect().top : null;
+  mutate();
+  if (scroller && before != null && anchorEl && anchorEl.isConnected) {
+    const after = anchorEl.getBoundingClientRect().top;
+    scroller.scrollTop += (after - before);
+  }
+}
+
+function closeSidePanel(anchorEl) {
+  const panel = document.getElementById('sidePanel');
+  const titleEl = document.getElementById('spTitle');
+  const bodyEl = document.getElementById('spBody');
+  const target = anchorEl || _sidePanelAnchor || null;
+  _anchoredPanelToggle(target, () => {
+    if (_sidePanelRefreshTimer) {
+      clearInterval(_sidePanelRefreshTimer);
+      _sidePanelRefreshTimer = null;
+    }
+    _sidePanelAnchor = null;
+    panel.classList.remove('open');
+    document.body.classList.remove('panel-open');
+    panel._prevExpanded = new Set();
+    titleEl.innerHTML = '';
+    bodyEl.innerHTML = '';
+    document.querySelectorAll('.tool-pill.active-pill,.thinking-pill.active-pill').forEach(el => el.classList.remove('active-pill'));
+  });
+}
+
+function openToolPanel(pillEl) {
+  if (!pillEl) return;
+  const panel = document.getElementById('sidePanel');
+  const titleEl = document.getElementById('spTitle');
+  const bodyEl = document.getElementById('spBody');
+
+  function rebuild() {
+    const prevExpanded = _captureExpandedState();
+    const toolData = Array.isArray(pillEl._toolData) ? pillEl._toolData : [];
+    const completed = toolData.filter(t => t.status && t.status !== 'running').length;
+    titleEl.innerHTML = `${toolData.length === 1 ? '1 tool call' : `${toolData.length} tool calls`}<span class="sp-dim">${pillEl._totalTime ? ` · ${_formatDuration(pillEl._totalTime)}` : ` · ${completed}/${toolData.length || 0} complete`}</span>`;
+    bodyEl.innerHTML = '';
+    if (!toolData.length) {
+      bodyEl.innerHTML = '<div class="sp-thinking">No tool activity yet.</div>';
+      return;
+    }
+
+    toolData.forEach((tool, idx) => {
+      const resultText = tool.result ? (typeof tool.result.content === 'string' ? tool.result.content : JSON.stringify(tool.result.content, null, 2)) : '';
+      const summaryHtml = tool.summary || toolSummary(tool.name, tool.input) || '';
+      const summaryText = _htmlToText(summaryHtml) || toolLabel(tool.name);
+      const status = tool.status === 'error' ? '&#10007;' : (tool.status === 'completed' ? '&#10003;' : '&#9203;');
+      const duration = tool.endTime && tool.startTime ? _formatDuration(tool.endTime - tool.startTime) : '';
+      const step = document.createElement('div');
+      step.className = 'sp-step';
+      step.dataset.stepIdx = String(idx);
+      if (prevExpanded.has(String(idx))) step.classList.add('expanded');
+      step.innerHTML = `<div class="sps-icon ${_toolTypeClass(tool.name)}">${toolIcon(tool.name)}</div><div class="sps-info"><div class="sps-label">${escHtml(toolLabel(tool.name))}</div><div class="sps-detail">${escHtml(summaryText)}</div></div><div class="sps-meta"><div class="sps-status">${status}</div><div class="sps-time">${escHtml(duration || (tool.status === 'running' ? 'Running' : 'Done'))}</div></div><div class="sps-chevron">&#9656;</div>`;
+      const detail = document.createElement('div');
+      detail.className = 'sp-detail';
+      let detailHtml = `<div class="spd-section"><div class="spd-label">Summary</div><div class="spd-content">${summaryHtml || escHtml(toolLabel(tool.name))}</div></div>`;
+      const inputText = _formatToolInput(tool.name, tool.input);
+      if (inputText) {
+        detailHtml += `<div class="spd-section"><div class="spd-label">Input</div><div class="spd-content"><pre>${escHtml(inputText)}</pre></div></div>`;
+      }
+      if (resultText) {
+        const resultNote = toolResultSummary(tool.name, resultText);
+        detailHtml += `<div class="spd-section"><div class="spd-label">Result${resultNote ? ` · ${escHtml(resultNote)}` : ''}</div><div class="spd-content"><pre>${escHtml(resultText.substring(0, 5000))}</pre></div></div>`;
+      }
+      detail.innerHTML = detailHtml;
+      step.onclick = () => {
+        step.classList.toggle('expanded');
+        const expanded = _captureExpandedState();
+        if (step.classList.contains('expanded')) {
+          expanded.add(step.dataset.stepIdx);
+        } else {
+          expanded.delete(step.dataset.stepIdx);
+        }
+        panel._prevExpanded = expanded;
+      };
+      bodyEl.appendChild(step);
+      bodyEl.appendChild(detail);
+    });
+  }
+
+  _anchoredPanelToggle(pillEl, () => {
+    if (_sidePanelRefreshTimer) {
+      clearInterval(_sidePanelRefreshTimer);
+      _sidePanelRefreshTimer = null;
+    }
+    _sidePanelAnchor = pillEl;
+    panel.classList.add('open');
+    document.body.classList.add('panel-open');
+    document.querySelectorAll('.tool-pill.active-pill,.thinking-pill.active-pill').forEach(el => el.classList.remove('active-pill'));
+    pillEl.classList.add('active-pill');
+    rebuild();
+    if (pillEl.classList.contains('streaming') || pillEl._ctx) {
+      _sidePanelRefreshTimer = setInterval(rebuild, 800);
+    }
+  });
+}
+
+function openThinkingPanel(pillEl) {
+  if (!pillEl) return;
+  const panel = document.getElementById('sidePanel');
+  const titleEl = document.getElementById('spTitle');
+  const bodyEl = document.getElementById('spBody');
+  if (panel.classList.contains('open') && _sidePanelAnchor === pillEl) {
+    closeSidePanel(pillEl);
+    return;
+  }
+  _anchoredPanelToggle(pillEl, () => {
+    if (_sidePanelRefreshTimer) {
+      clearInterval(_sidePanelRefreshTimer);
+      _sidePanelRefreshTimer = null;
+    }
+    _sidePanelAnchor = pillEl;
+    panel.classList.add('open');
+    document.body.classList.add('panel-open');
+    document.querySelectorAll('.tool-pill.active-pill,.thinking-pill.active-pill').forEach(el => el.classList.remove('active-pill'));
+    pillEl.classList.add('active-pill');
+    titleEl.innerHTML = `Thinking<span class="sp-dim">${pillEl._thinkingDuration ? ` · ${_formatDuration(pillEl._thinkingDuration)}` : ''}</span>`;
+    bodyEl.innerHTML = '<div class="sp-thinking"></div>';
+    const thinkingEl = bodyEl.querySelector('.sp-thinking');
+    thinkingEl.textContent = pillEl._thinkingText || '';
+    renderMarkdown(thinkingEl);
+  });
+}
+
 function handleEvent(msg) {
   const el = document.getElementById('messages');
   switch(msg.type) {
-    case 'stream_start':
+    case 'stream_start': {
+      const sid = msg.stream_id || ('_s' + Date.now());
+      const speaker = msg.speaker_name ? {name: msg.speaker_name, avatar: msg.speaker_avatar || '', id: msg.speaker_id || ''} : null;
+      const orphan = _streamCtx[sid];
+      if (orphan && orphan.bubble && orphan.bubble.isConnected) {
+        orphan.bubble.remove();
+      }
+      _streamCtx[sid] = _newStreamCtx(sid, speaker);
+      currentStreamId = sid;
       streaming = true;
       currentBubble = null;
-      currentSpeaker = msg.speaker_name ? {name: msg.speaker_name, avatar: msg.speaker_avatar || '', id: msg.speaker_id || ''} : null;
+      currentSpeaker = speaker;
       sessionStorage.setItem('streamingChatId', msg.chat_id || currentChat || '');
       markStreamActivity('stream-start');
       updateSendBtn();
 
       refreshDebugState('stream-start');
       break;
+    }
 
-    case 'text':
-      if (!currentBubble) {
-        currentBubble = addAssistantMsg();
-      }
-      const bubble = currentBubble.querySelector('.bubble');
-      bubble.textContent += msg.text;
+    case 'text': {
+      const ctx = _getCtx(msg);
+      if (!ctx) break;
+      currentStreamId = ctx.id;
+      currentSpeaker = ctx.speaker;
+      _ensureCtxBubble(ctx);
+      currentBubble = ctx.bubble;
+      ctx.bubble.querySelector('.bubble').textContent += msg.text;
       markStreamActivity('text');
       scrollBottom();
       break;
+    }
 
     case 'thinking': {
-      if (!currentBubble) currentBubble = addAssistantMsg();
-      const group = _getOrCreateWorkGroup(currentBubble);
-      // Add thinking block inside the work group
+      const ctx = _getCtx(msg);
+      if (!ctx) break;
+      currentStreamId = ctx.id;
+      currentSpeaker = ctx.speaker;
+      _ensureCtxBubble(ctx);
+      currentBubble = ctx.bubble;
+      if (!ctx.thinkingStart) ctx.thinkingStart = Date.now();
+      ctx.thinkingText += msg.text || '';
+      const group = _getOrCreateWorkGroup(ctx.bubble);
       let tb = group.querySelector('.thinking-block:last-of-type');
-      if (!tb || tb.classList.contains('closed')) {
+      if (!tb) {
         tb = document.createElement('div');
         tb.className = 'thinking-block open';
         tb.innerHTML = `<div class="thinking-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> &#129504; Thinking...</div><div class="thinking-body"></div>`;
@@ -5434,72 +5969,84 @@ function handleEvent(msg) {
     }
 
     case 'tool_use': {
-      if (!currentBubble) currentBubble = addAssistantMsg();
-      const group = _getOrCreateWorkGroup(currentBubble);
-      const toolBlock = document.createElement('div');
-      toolBlock.className = 'tool-block';
-      toolBlock.id = 'tool-' + msg.id;
-      const inputStr = typeof msg.input === 'string' ? msg.input : JSON.stringify(msg.input, null, 2);
-      const summary = toolSummary(msg.name, msg.input);
-      const summaryHtml = summary ? `<div class="tool-summary">${summary}</div>` : '';
-      toolBlock.innerHTML = `<div class="tool-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> ${toolIcon(msg.name)} ${escHtml(toolLabel(msg.name))}<span class="tool-status">&#9203;</span></div>${summaryHtml}<div class="tool-body"><b>Input:</b><pre>${escHtml(inputStr)}</pre><div class="tool-result-area"></div></div>`;
-      group.querySelector('.tool-group-body').appendChild(toolBlock);
-      _updateWorkGroupHeader(group);
+      const ctx = _getCtx(msg);
+      if (!ctx) break;
+      currentStreamId = ctx.id;
+      currentSpeaker = ctx.speaker;
+      _ensureCtxBubble(ctx);
+      currentBubble = ctx.bubble;
+      if (!ctx.toolsStart) ctx.toolsStart = Date.now();
+      ctx.toolCalls.push({
+        id: msg.id || ('tool-' + Date.now()),
+        name: msg.name || 'Tool',
+        input: msg.input,
+        summary: toolSummary(msg.name, msg.input),
+        status: 'running',
+        startTime: Date.now(),
+        endTime: null,
+        result: null,
+      });
+      _updateToolPillProgress(ctx);
       markStreamActivity('tool-use');
       scrollBottom();
       break;
     }
 
     case 'tool_result': {
-      const tb2 = document.getElementById('tool-' + msg.tool_use_id);
-      if (tb2) {
-        const area = tb2.querySelector('.tool-result-area');
-        const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-        area.innerHTML = `<b>Result:</b><pre>${escHtml(content.substring(0, 2000))}</pre>`;
-        const icon = tb2.querySelector('.tool-status');
-        icon.textContent = msg.is_error ? '\u2717' : '\u2713';
-        icon.style.color = msg.is_error ? 'var(--red)' : 'var(--green)';
-        // Update summary with result info
-        const summaryEl = tb2.querySelector('.tool-summary');
-        const toolName = tb2.querySelector('.tool-header')?.textContent?.trim();
-        const origName = Object.keys(TOOL_META).find(k => toolLabel(k) === toolName?.replace(/[^a-zA-Z ]/g, '').trim()) || '';
-        const resultNote = toolResultSummary(origName, content);
-        if (resultNote && summaryEl) {
-          summaryEl.innerHTML += ` — ${escHtml(resultNote)}`;
-        }
+      const ctx = _getCtx(msg);
+      if (!ctx) break;
+      currentStreamId = ctx.id;
+      currentSpeaker = ctx.speaker;
+      currentBubble = ctx.bubble;
+      const toolId = msg.tool_use_id || msg.id || '';
+      let toolCall = ctx.toolCalls.find(t => t.id === toolId) || null;
+      if (!toolCall) {
+        toolCall = ctx.toolCalls.find(t => t.status === 'running') || null;
       }
+      if (toolCall) {
+        toolCall.status = msg.is_error ? 'error' : 'completed';
+        toolCall.endTime = Date.now();
+        toolCall.result = {
+          content: msg.content,
+          is_error: Boolean(msg.is_error),
+        };
+      }
+      _updateToolPillProgress(ctx);
       markStreamActivity('tool-result');
       scrollBottom();
       break;
     }
 
-    case 'result':
-      if (currentBubble) {
-        // Collapse work groups (which now contain both thinking + tools)
-        currentBubble.querySelectorAll('.tool-group.open').forEach(tg => {
-          tg.classList.remove('open');
-          _updateWorkGroupHeader(tg);
-          // Also collapse inner thinking blocks
-          tg.querySelectorAll('.thinking-block.open').forEach(tb => {
-            tb.classList.remove('open');
-            const hdr = tb.querySelector('.thinking-header');
-            if (hdr) hdr.innerHTML = hdr.innerHTML.replace('Thinking...', 'Thinking');
+    case 'result': {
+      const ctx = _getCtx(msg);
+      if (!ctx) break;
+      currentStreamId = ctx.id;
+      currentSpeaker = ctx.speaker;
+      currentBubble = ctx.bubble;
+      if (ctx.bubble) {
+        if (ctx.thinkingText) {
+          ctx.bubble.querySelectorAll('.thinking-block').forEach(tb => tb.remove());
+          ctx.bubble.querySelectorAll('.tool-group').forEach(group => {
+            if (!group.querySelector('.tool-block') && !group.querySelector('.thinking-block')) {
+              group.remove();
+            } else {
+              _updateWorkGroupHeader(group);
+            }
           });
-        });
-        // Collapse any standalone thinking blocks (shouldn't exist, but safety net)
-        currentBubble.querySelectorAll('.thinking-block.open').forEach(tb => {
-          tb.classList.remove('open');
-          const hdr = tb.querySelector('.thinking-header');
-          if (hdr) hdr.innerHTML = hdr.innerHTML.replace('Thinking...', 'Thinking');
-        });
+          _createThinkingPill(ctx, ctx.thinkingStart ? (Date.now() - ctx.thinkingStart) : 0);
+        }
+        if (ctx.toolCalls.length > 0) {
+          const totalTime = ctx.toolsStart ? (Date.now() - ctx.toolsStart) : 0;
+          _finalizeToolPill(ctx, totalTime);
+        }
         const costEl = document.createElement('div');
         costEl.className = 'cost';
         const cost = msg.cost_usd ? `$${msg.cost_usd.toFixed(4)}` : '';
         const tokens = msg.tokens_in || msg.tokens_out ? ` | ${msg.tokens_in}in/${msg.tokens_out}out` : '';
         costEl.textContent = cost + tokens;
-        currentBubble.appendChild(costEl);
-        currentBubble.classList.remove('streaming');
-        renderMarkdown(currentBubble.querySelector('.bubble'));
+        ctx.bubble.appendChild(costEl);
+        ctx.bubble.classList.remove('streaming');
+        renderMarkdown(ctx.bubble.querySelector('.bubble'));
       }
       markStreamActivity('result');
       // Update context bar from inline data or fallback to API
@@ -5511,38 +6058,64 @@ function handleEvent(msg) {
       startUsagePolling();
       refreshDebugState('result');
       break;
+    }
 
-    case 'stream_end':
-      streaming = false;
-      currentBubble = null;
-      currentSpeaker = null;
-      sessionStorage.removeItem('streamingChatId');
-      clearStreamWatchdog();
+    case 'stream_end': {
+      const sid = msg.stream_id || currentStreamId;
+      if (sid) delete _streamCtx[sid];
+      const remaining = Object.keys(_streamCtx);
+      streaming = _isAnyStreamActive();
+      if (!streaming) {
+        currentStreamId = '';
+        currentBubble = null;
+        currentSpeaker = null;
+        sessionStorage.removeItem('streamingChatId');
+        clearStreamWatchdog();
+      } else if (!currentStreamId || currentStreamId === sid) {
+        currentStreamId = remaining[remaining.length - 1] || '';
+        currentBubble = _getCurrentBubble();
+        currentSpeaker = currentStreamId ? _streamCtx[currentStreamId]?.speaker || null : null;
+      }
       updateSendBtn();
   
       refreshDebugState('stream-end');
       break;
+    }
 
-    case 'stream_reattached':
+    case 'stream_reattached': {
       // Server confirmed we re-attached to an active stream after replaying
       // the buffered events that were missed while the socket was down.
       dbg('stream re-attached for chat:', msg.chat_id);
+      const sid = msg.stream_id || currentStreamId || ('_s' + Date.now());
+      if (!_streamCtx[sid]) {
+        _streamCtx[sid] = _newStreamCtx(sid, null);
+      }
+      if (!_streamCtx[sid].speaker && msg.speaker_name) {
+        _streamCtx[sid].speaker = {name: msg.speaker_name, avatar: msg.speaker_avatar || '', id: msg.speaker_id || ''};
+      }
+      currentStreamId = sid;
       streaming = true;
+      currentBubble = _streamCtx[sid].bubble || null;
+      currentSpeaker = _streamCtx[sid].speaker || null;
       sessionStorage.setItem('streamingChatId', msg.chat_id || currentChat || '');
       markStreamActivity('stream-reattached');
       updateSendBtn();
   
       refreshDebugState('stream-reattached');
       break;
+    }
 
     case 'attach_ok':
       // Server confirmed no active stream — safe to reload from DB.
       // This fires when the client thought a stream might be running
       // (sessionStorage had streamingChatId) but it already finished.
       dbg('attach ok, no active stream for chat:', msg.chat_id);
+      Object.keys(_streamCtx).forEach(k => delete _streamCtx[k]);
       sessionStorage.removeItem('streamingChatId');
       streaming = false;
+      currentStreamId = '';
       currentBubble = null;
+      currentSpeaker = null;
       clearStreamWatchdog();
       updateSendBtn();
 
@@ -5630,9 +6203,10 @@ function addAssistantMsg() {
   const el = document.getElementById('messages');
   const div = document.createElement('div');
   div.className = 'msg assistant streaming';
+  const speaker = arguments.length ? arguments[0] : currentSpeaker;
   let inner = '';
-  if (currentSpeaker && currentSpeaker.name) {
-    inner += `<div class="speaker-header"><span class="speaker-avatar">${escHtml(currentSpeaker.avatar || '')}</span> <span class="speaker-name">${escHtml(currentSpeaker.name)}</span></div>`;
+  if (speaker && speaker.name) {
+    inner += `<div class="speaker-header"><span class="speaker-avatar">${escHtml(speaker.avatar || '')}</span> <span class="speaker-name">${escHtml(speaker.name)}</span></div>`;
   }
   inner += '<div class="bubble"></div>';
   div.innerHTML = inner;
@@ -6076,7 +6650,7 @@ function alertAction(action, alertId) {
 
 function escHtml(s) {
   const d = document.createElement('div');
-  d.textContent = s;
+  d.textContent = s == null ? '' : String(s);
   return d.innerHTML;
 }
 
@@ -6764,38 +7338,6 @@ async function selectChat(id, title, chatType, category) {
       const div = document.createElement('div');
       div.className = 'msg assistant';
       let inner = '';
-      // Build work group: thinking + tools combined
-      try {
-        const tools = JSON.parse(m.tool_events || '[]');
-        const hasThinking = m.thinking && m.thinking.trim();
-        const hasTools = tools.length > 0;
-        if (hasThinking || hasTools) {
-          let groupBody = '';
-          // Thinking first
-          if (hasThinking) {
-            groupBody += `<div class="thinking-block"><div class="thinking-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> &#129504; Thinking</div><div class="thinking-body">${escHtml(m.thinking)}</div></div>`;
-          }
-          // Then tools
-          tools.forEach(t => {
-            const inputStr = typeof t.input === 'string' ? t.input : JSON.stringify(t.input, null, 2);
-            const resultStr = t.result ? (typeof t.result.content === 'string' ? t.result.content : JSON.stringify(t.result.content)) : '';
-            const icon = t.result && t.result.is_error ? '\u2717' : '\u2713';
-            const color = t.result && t.result.is_error ? 'var(--red)' : 'var(--green)';
-            const summary = toolSummary(t.name, t.input);
-            const resultNote = toolResultSummary(t.name, resultStr);
-            const summaryParts = [summary, resultNote ? escHtml(resultNote) : null].filter(Boolean).join(' — ');
-            const summaryHtml = summaryParts ? `<div class="tool-summary">${summaryParts}</div>` : '';
-            groupBody += `<div class="tool-block"><div class="tool-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> ${toolIcon(t.name)} ${escHtml(toolLabel(t.name))}<span class="tool-status" style="color:${color}">${icon}</span></div>${summaryHtml}<div class="tool-body"><b>Input:</b><pre>${escHtml(inputStr)}</pre><b>Result:</b><pre>${escHtml(resultStr.substring(0, 2000))}</pre></div></div>`;
-          });
-          // Group header label
-          let groupLabel = '&#129504; Reasoning';
-          if (hasTools) {
-            groupLabel = '&#128295; ' + tools.length + (tools.length === 1 ? ' tool call' : ' tool calls');
-            if (hasThinking) groupLabel += ' + reasoning';
-          }
-          inner += `<div class="tool-group"><div class="tool-group-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> ${groupLabel}<span class="tool-group-count"></span></div><div class="tool-group-body">${groupBody}</div></div>`;
-        }
-      } catch(e) {}
       // Speaker identity header for group messages
       if (m.speaker_name) {
         inner += `<div class="speaker-header"><span class="speaker-avatar">${escHtml(m.speaker_avatar || '')}</span> <span class="speaker-name">${escHtml(m.speaker_name)}</span></div>`;
@@ -6809,6 +7351,33 @@ async function selectChat(id, title, chatType, category) {
       div.innerHTML = inner;
       const bubble = div.querySelector('.bubble');
       bubble.textContent = m.content;
+      const historyCtx = {
+        bubble: div,
+        speaker: m.speaker_name ? {name: m.speaker_name, avatar: m.speaker_avatar || '', id: m.speaker_id || ''} : null,
+        toolPill: null,
+        thinkingPill: null,
+        toolCalls: [],
+        thinkingText: '',
+        thinkingStart: null,
+        toolsStart: null,
+        completedToolCount: 0,
+      };
+      try {
+        historyCtx.toolCalls = _normalizeToolEvents(JSON.parse(m.tool_events || '[]'));
+      } catch (e) {
+        historyCtx.toolCalls = [];
+      }
+      if (historyCtx.toolCalls.length > 0) {
+        const totalTime = historyCtx.toolCalls.reduce((sum, tool) => {
+          const duration = tool.startTime && tool.endTime ? (tool.endTime - tool.startTime) : 0;
+          return sum + Math.max(0, duration);
+        }, 0);
+        _finalizeToolPill(historyCtx, totalTime);
+      }
+      if (m.thinking && m.thinking.trim()) {
+        historyCtx.thinkingText = m.thinking;
+        _createThinkingPill(historyCtx, 0);
+      }
       div.querySelectorAll('.bubble').forEach(renderMarkdown);
       el.appendChild(div);
     }
