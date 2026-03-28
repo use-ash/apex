@@ -16,4 +16,10 @@ if [ -f "$HOME/.openclaw/.env" ]; then
     set +a
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Backup DB before launch (prevents data loss from schema migrations)
+bash "$SCRIPT_DIR/backup_db.sh"
+
+cd "$SCRIPT_DIR/.."
 exec bash server/launch_apex.sh
