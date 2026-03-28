@@ -35,10 +35,14 @@ export APEX_SSL_CA="$SSL_DIR/ca.crt"
 export APEX_ROOT="$APEX_ROOT"
 
 # Source credentials (.env has XAI_API_KEY, APEX_ALERT_TOKEN, etc.)
-if [ -f "$HOME/.openclaw/.env" ]; then
-    set -a
-    source "$HOME/.openclaw/.env"
-    set +a
+ENV_FILE="${APEX_ENV_FILE:-}"
+if [ -z "$ENV_FILE" ]; then
+    for candidate in "$HOME/.apex/.env" "$HOME/.config/apex/.env" "$HOME/.openclaw/.env"; do
+        [ -f "$candidate" ] && ENV_FILE="$candidate" && break
+    done
+fi
+if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then
+    set -a; source "$ENV_FILE"; set +a
 fi
 
 # First-run detection — run setup wizard if no CA cert exists

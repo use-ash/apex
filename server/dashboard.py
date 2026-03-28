@@ -1238,7 +1238,7 @@ async def api_tls_sans():
 
 def _parse_ext_cnf_sans(ext_cnf: Path) -> list[str]:
     """Parse the [alt_names] section from ext.cnf into a list like
-    ['IP:10.8.0.2', 'DNS:localhost']."""
+    ['IP:127.0.0.1', 'DNS:localhost']."""
     sans: list[str] = []
     in_alt = False
     for line in ext_cnf.read_text().splitlines():
@@ -1250,7 +1250,7 @@ def _parse_ext_cnf_sans(ext_cnf: Path) -> list[str]:
             if stripped.startswith("[") and stripped.endswith("]"):
                 break  # next section
             if "=" in stripped:
-                # e.g. "IP.1 = 10.8.0.2" or "DNS.1 = localhost"
+                # e.g. "IP.1 = 127.0.0.1" or "DNS.1 = localhost"
                 key, _, val = stripped.partition("=")
                 key = key.strip()
                 val = val.strip()
@@ -1443,7 +1443,7 @@ async def api_tls_ca_generate(request: Request):
 # Phase 3 — Models, Credentials, Alerts
 # ===========================================================================
 
-ENV_PATH = Path.home() / ".openclaw" / ".env"
+ENV_PATH = Path(os.environ.get("APEX_ENV_FILE", str(Path.home() / ".apex" / ".env")))
 
 _PROVIDER_KEY_MAP: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
@@ -1845,7 +1845,7 @@ _CREDENTIAL_RATE_LIMIT = 5.0  # seconds between updates per provider
 
 @dashboard_app.put("/api/credentials/{provider}")
 async def api_credentials_update(provider: str, request: Request):
-    """Set an API key/token in ~/.openclaw/.env (atomic write).
+    """Set an API key/token in the .env file (atomic write).
 
     Providers: anthropic, xai, telegram_bot, telegram_chat.
     Body: {"key": "sk-..."}

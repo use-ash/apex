@@ -1,6 +1,6 @@
 #!/bin/bash
 # Dev instance launcher — runs on port 8301 with separate DB
-# Usage: tmux new-session -d -s apex-dev "cd /Users/dana/.openclaw/apex && bash server/launch_dev.sh"
+# Usage: tmux new-session -d -s apex-dev "cd /path/to/apex && bash server/launch_dev.sh"
 #
 # This is a development/testing instance that runs alongside production.
 # Production: port 8300 (launch_dana.sh) — stable, main branch
@@ -19,10 +19,15 @@ export APEX_PORT=8301
 export APEX_DB_NAME="apex_dev.db"
 
 # Load API keys from .env
-if [ -f "$HOME/.openclaw/.env" ]; then
-    set -a
-    source "$HOME/.openclaw/.env"
-    set +a
+# Load API keys from .env (check standard locations)
+ENV_FILE="${APEX_ENV_FILE:-}"
+if [ -z "$ENV_FILE" ]; then
+    for candidate in "$HOME/.apex/.env" "$HOME/.config/apex/.env" "$HOME/.openclaw/.env"; do
+        [ -f "$candidate" ] && ENV_FILE="$candidate" && break
+    done
+fi
+if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then
+    set -a; source "$ENV_FILE"; set +a
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

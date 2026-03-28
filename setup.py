@@ -42,7 +42,7 @@ DB_PATH = STATE_DIR / "apex.db"
 
 # Credential directory: ~/.apex on macOS, ~/.config/apex on Linux
 if platform.system() == "Darwin":
-    ENV_DIR = Path.home() / ".openclaw"
+    ENV_DIR = Path(os.environ.get("APEX_ENV_DIR", str(Path.home() / ".apex")))
 else:
     ENV_DIR = Path.home() / ".config" / "apex"
 

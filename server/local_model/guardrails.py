@@ -8,7 +8,8 @@ import sys
 import os
 from pathlib import Path
 
-_GUARDRAILS_DIR = str(Path.home() / ".openclaw" / "workspace" / "scripts" / "guardrails")
+_WORKSPACE = os.environ.get("APEX_WORKSPACE", os.getcwd())
+_GUARDRAILS_DIR = str(Path(_WORKSPACE) / "scripts" / "guardrails")
 
 try:
     if _GUARDRAILS_DIR not in sys.path:
@@ -19,7 +20,7 @@ try:
 except ImportError as e:
     _AVAILABLE = False
     try:
-        with open(str(Path.home() / ".openclaw" / "workspace" / "logs" / "agent_audit_errors.log"), "a") as f:
+        with open(str(Path(_WORKSPACE) / "logs" / "agent_audit_errors.log"), "a") as f:
             f.write(f"guardrails import failed: {e}\n")
     except Exception:
         pass
