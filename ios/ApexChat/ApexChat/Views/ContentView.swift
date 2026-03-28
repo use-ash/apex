@@ -43,16 +43,8 @@ struct ContentView: View {
                     .zIndex(1)
                 }
 
-                if !isShowingChannels {
-                    HStack(spacing: 0) {
-                        Color.clear
-                            .frame(width: drawerEdgeActivationWidth)
-                            .contentShape(Rectangle())
-                            .highPriorityGesture(channelOpenGesture)
-                        Spacer(minLength: 0)
-                    }
-                }
             }
+            .gesture(channelOpenGesture)
             .animation(.spring(response: 0.24, dampingFraction: 0.88), value: isShowingSearch)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

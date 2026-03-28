@@ -42,6 +42,7 @@ import urllib.request
 
 import base64
 import contextlib
+import contextvars
 import tempfile
 
 try:
@@ -83,17 +84,17 @@ from dashboard import dashboard_app, init_dashboard
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-HOST = os.environ.get("APEX_HOST", os.environ.get("LOCALCHAT_HOST", "0.0.0.0"))
-PORT = int(os.environ.get("APEX_PORT", os.environ.get("LOCALCHAT_PORT", "8300")))
-SSL_CERT = os.environ.get("APEX_SSL_CERT", os.environ.get("LOCALCHAT_SSL_CERT", ""))
-SSL_KEY = os.environ.get("APEX_SSL_KEY", os.environ.get("LOCALCHAT_SSL_KEY", ""))
-SSL_CA = os.environ.get("APEX_SSL_CA", os.environ.get("LOCALCHAT_SSL_CA", ""))
-APEX_ROOT = Path(os.environ.get("APEX_ROOT", os.environ.get("LOCALCHAT_ROOT", Path(__file__).resolve().parent.parent)))
-WORKSPACE = Path(os.environ.get("APEX_WORKSPACE", os.environ.get("LOCALCHAT_WORKSPACE", os.getcwd())))
-MODEL = os.environ.get("APEX_MODEL", os.environ.get("LOCALCHAT_MODEL", "claude-sonnet-4-6"))
-PERMISSION_MODE = os.environ.get("APEX_PERMISSION_MODE", os.environ.get("LOCALCHAT_PERMISSION_MODE", "acceptEdits"))
-DEBUG = os.environ.get("APEX_DEBUG", os.environ.get("LOCALCHAT_DEBUG", "")).lower() in {"1", "true", "yes"}
-ALERT_TOKEN = os.environ.get("APEX_ALERT_TOKEN", os.environ.get("LOCALCHAT_ALERT_TOKEN", ""))
+HOST = os.environ.get("APEX_HOST", "0.0.0.0")
+PORT = int(os.environ.get("APEX_PORT", "8300"))
+SSL_CERT = os.environ.get("APEX_SSL_CERT", "")
+SSL_KEY = os.environ.get("APEX_SSL_KEY", "")
+SSL_CA = os.environ.get("APEX_SSL_CA", "")
+APEX_ROOT = Path(os.environ.get("APEX_ROOT", Path(__file__).resolve().parent.parent))
+WORKSPACE = Path(os.environ.get("APEX_WORKSPACE", os.getcwd()))
+MODEL = os.environ.get("APEX_MODEL", "claude-sonnet-4-6")
+PERMISSION_MODE = os.environ.get("APEX_PERMISSION_MODE", "acceptEdits")
+DEBUG = os.environ.get("APEX_DEBUG", "").lower() in {"1", "true", "yes"}
+ALERT_TOKEN = os.environ.get("APEX_ALERT_TOKEN", "")
 XAI_API_KEY = os.environ.get("XAI_API_KEY", "")
 XAI_MANAGEMENT_KEY = os.environ.get("XAI_MANAGEMENT_KEY", "")
 XAI_TEAM_ID = os.environ.get("XAI_TEAM_ID", "3b0d4936-ce44-4571-a053-1e296bc9f6cd")
@@ -121,10 +122,10 @@ TEXT_TYPES = {"txt", "py", "json", "csv", "md", "yaml", "yml", "toml", "cfg", "i
 MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB
 MAX_TEXT_SIZE = 1 * 1024 * 1024    # 1MB
 MAX_AUDIO_SIZE = 10 * 1024 * 1024  # 10MB
-WHISPER_BIN = os.environ.get("APEX_WHISPER_BIN", os.environ.get("LOCALCHAT_WHISPER_BIN", shutil.which("whisper") or "whisper"))
+WHISPER_BIN = os.environ.get("APEX_WHISPER_BIN", shutil.which("whisper") or "whisper")
 SDK_QUERY_TIMEOUT = int(os.environ.get("APEX_SDK_QUERY_TIMEOUT", "30"))
 SDK_STREAM_TIMEOUT = int(os.environ.get("APEX_SDK_STREAM_TIMEOUT", "300"))
-ENABLE_SUBCONSCIOUS_WHISPER = os.environ.get("APEX_ENABLE_WHISPER", os.environ.get("LOCALCHAT_ENABLE_WHISPER", "")).lower() in {"1", "true", "yes"}
+ENABLE_SUBCONSCIOUS_WHISPER = os.environ.get("APEX_ENABLE_WHISPER", "").lower() in {"1", "true", "yes"}
 ENABLE_SKILL_DISPATCH = os.environ.get("APEX_ENABLE_SKILL_DISPATCH", "true").lower() in {"1", "true", "yes"}
 
 # Model context window sizes (input tokens)
@@ -458,6 +459,52 @@ def _get_profile_prompt_by_id(profile_id: str) -> str:
     if not row or not row[0]:
         return ""
     return f"<system-reminder>\n# Agent Profile: {row[1]}\n{row[0]}\n</system-reminder>\n\n"
+
+
+def _get_group_roster_prompt(chat_id: str) -> str:
+    """Inject group roster context so the active agent knows who else is in the room."""
+    chat = _get_chat(chat_id)
+    if not chat or chat.get("type") != "group":
+        return ""
+    members = _get_group_members(chat_id)
+    if not members:
+        return ""
+
+    active_profile_id = _current_group_profile_id.get("")
+    lines = [
+        "You are responding inside a multi-agent group channel.",
+        "Channel roster:",
+    ]
+    for member in members:
+        tags: list[str] = []
+        if member.get("profile_id") == active_profile_id:
+            tags.append("you")
+        if member.get("is_primary"):
+            tags.append("primary")
+        tag_text = f" ({', '.join(tags)})" if tags else ""
+        avatar = f" {member.get('avatar', '')}" if member.get("avatar") else ""
+        lines.append(f"- {member.get('name', member.get('profile_id', 'agent'))} [{member.get('profile_id', '')}]{avatar}{tag_text}")
+    lines.append("Only speak as yourself. Other agents may read the shared chat history, but they do not receive your private hidden thinking.")
+    lines.append("If the user addresses another agent, do not impersonate them.")
+
+    # Inject recent group history so agents have context on restart/compaction
+    try:
+        recent = _get_messages(chat_id)
+        # Take last 20 messages, truncate content
+        recent = recent[-20:]
+        if recent:
+            lines.append("")
+            lines.append("## Recent Group History (last {} messages)".format(len(recent)))
+            for m in recent:
+                speaker = m.get("speaker_name") or m.get("role", "user")
+                content = (m.get("content") or "")[:300]
+                if len(m.get("content", "")) > 300:
+                    content += "..."
+                lines.append(f"[{speaker}]: {content}")
+    except Exception:
+        pass  # Don't break roster injection on history read failure
+
+    return "<system-reminder>\n# Group Channel Roster\n" + "\n".join(lines) + "\n</system-reminder>\n\n"
 
 
 import re as _re
@@ -979,15 +1026,19 @@ async def _watch_bg_skill(proc, response_file: str, chat_id: str, skill_name: st
     except Exception as e:
         label = f"⚠️ {skill_name.capitalize()} watcher error: {e}"
 
-    # Push result into the chat as a new assistant message
-    _save_message(chat_id, "assistant", label, cost_usd=0, tokens_in=0, tokens_out=0)
-    await _send_stream_event(chat_id, {"type": "stream_start", "chat_id": chat_id})
-    await _send_stream_event(chat_id, {"type": "text", "text": label})
-    await _send_stream_event(chat_id, {
-        "type": "result", "cost_usd": 0, "tokens_in": 0, "tokens_out": 0, "session_id": None,
-    })
-    await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id})
-    log(f"BG skill complete: /{skill_name} chat={chat_id} len={len(label)}")
+    stream_token = _current_stream_id.set(_make_stream_id())
+    try:
+        # Push result into the chat as a new assistant message
+        _save_message(chat_id, "assistant", label, cost_usd=0, tokens_in=0, tokens_out=0)
+        await _send_stream_event(chat_id, {"type": "stream_start", "chat_id": chat_id})
+        await _send_stream_event(chat_id, {"type": "text", "text": label})
+        await _send_stream_event(chat_id, {
+            "type": "result", "cost_usd": 0, "tokens_in": 0, "tokens_out": 0, "session_id": None,
+        })
+        await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id})
+        log(f"BG skill complete: /{skill_name} chat={chat_id} len={len(label)}")
+    finally:
+        _current_stream_id.reset(stream_token)
 
 
 async def _handle_skill(websocket, chat_id: str, skill: str, args: str, display_prompt: str) -> bool:
@@ -1012,47 +1063,51 @@ async def _handle_skill(websocket, chat_id: str, skill: str, args: str, display_
 
     log(f"Skill dispatch: /{skill} (direct) args={args[:80]!r} chat={chat_id}")
 
-    # Save the user's message
-    _save_message(chat_id, "user", display_prompt)
-
-    # Send stream start
-    _attach_ws(websocket, chat_id)
-    _reset_stream_buffer(chat_id)
-    await _send_stream_event(chat_id, {"type": "stream_start", "chat_id": chat_id})
-
-    # Run the skill
-    bg_info = None
+    stream_token = _current_stream_id.set(_make_stream_id())
     try:
-        result = await asyncio.to_thread(handler, args, chat_id)
-        # Handlers can return a dict with bg process info for async completion
-        if isinstance(result, dict) and "bg_proc" in result:
-            bg_info = result
-            result_text = result["status"]
-        else:
-            result_text = result
-    except Exception as e:
-        result_text = f"Skill error: {e}"
+        # Save the user's message
+        _save_message(chat_id, "user", display_prompt)
 
-    # Stream the result as text
-    await _send_stream_event(chat_id, {"type": "text", "text": result_text})
+        # Send stream start
+        _attach_ws(websocket, chat_id)
+        _reset_stream_buffer(chat_id)
+        await _send_stream_event(chat_id, {"type": "stream_start", "chat_id": chat_id})
 
-    # Save assistant message
-    _save_message(chat_id, "assistant", result_text, cost_usd=0, tokens_in=0, tokens_out=0)
+        # Run the skill
+        bg_info = None
+        try:
+            result = await asyncio.to_thread(handler, args, chat_id)
+            # Handlers can return a dict with bg process info for async completion
+            if isinstance(result, dict) and "bg_proc" in result:
+                bg_info = result
+                result_text = result["status"]
+            else:
+                result_text = result
+        except Exception as e:
+            result_text = f"Skill error: {e}"
 
-    # Send result + stream end
-    await _send_stream_event(chat_id, {
-        "type": "result", "cost_usd": 0, "tokens_in": 0, "tokens_out": 0, "session_id": None,
-    })
-    await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id})
+        # Stream the result as text
+        await _send_stream_event(chat_id, {"type": "text", "text": result_text})
 
-    # Spawn background watcher if the handler returned a process to monitor
-    if bg_info and "bg_proc" in bg_info:
-        asyncio.create_task(_watch_bg_skill(
-            bg_info["bg_proc"], bg_info["bg_response_file"],
-            chat_id, skill
-        ))
+        # Save assistant message
+        _save_message(chat_id, "assistant", result_text, cost_usd=0, tokens_in=0, tokens_out=0)
 
-    return True
+        # Send result + stream end
+        await _send_stream_event(chat_id, {
+            "type": "result", "cost_usd": 0, "tokens_in": 0, "tokens_out": 0, "session_id": None,
+        })
+        await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id})
+
+        # Spawn background watcher if the handler returned a process to monitor
+        if bg_info and "bg_proc" in bg_info:
+            asyncio.create_task(_watch_bg_skill(
+                bg_info["bg_proc"], bg_info["bg_response_file"],
+                chat_id, skill
+            ))
+
+        return True
+    finally:
+        _current_stream_id.reset(stream_token)
 
 
 WHISPER_INTERVAL = 300  # seconds between whisper injections (5 min)
@@ -1552,9 +1607,10 @@ def _build_turn_payload(chat_id: str, prompt: str, attachments: list[dict]) -> t
         if item["type"] == "image"
     ]
     profile_prompt = _get_profile_prompt(chat_id)
+    group_roster_prompt = _get_group_roster_prompt(chat_id)
     workspace_ctx = _get_workspace_context(chat_id)
     whisper = _get_whisper_text(chat_id, current_prompt=query_prompt) if ENABLE_SUBCONSCIOUS_WHISPER else ""
-    prefix = f"{profile_prompt}{workspace_ctx}{whisper}".strip()
+    prefix = f"{profile_prompt}{group_roster_prompt}{workspace_ctx}{whisper}".strip()
     final_prompt = query_prompt or ("What do you see?" if image_blocks else "")
     if prefix:
         final_prompt = f"{prefix}\n\n{final_prompt}".strip() if final_prompt else prefix
@@ -1904,7 +1960,13 @@ _clients: dict[str, ClaudeSDKClient] = {}
 _chat_locks: dict[str, asyncio.Lock] = {}
 _chat_ws: dict[str, set[WebSocket]] = {}  # chat_id -> ALL connected WebSockets (multi-viewer)
 _ws_chat: dict[WebSocket, str] = {}  # reverse: ws -> current chat_id (for detach on re-attach)
-_active_send_tasks: dict[str, asyncio.Task] = {}  # chat_id -> running send task (for stop/cancel)
+_active_send_tasks: dict[str, dict[str, object]] = {}  # chat_id -> {task, stream_id}
+_current_stream_id: contextvars.ContextVar[str] = contextvars.ContextVar("apex_stream_id", default="")
+_current_group_profile_id: contextvars.ContextVar[str] = contextvars.ContextVar("apex_group_profile_id", default="")
+
+
+def _make_stream_id() -> str:
+    return uuid.uuid4().hex[:12]
 
 
 def _attach_ws(ws: WebSocket, chat_id: str) -> None:
@@ -2020,25 +2082,32 @@ def _client_is_alive(client: ClaudeSDKClient) -> bool:
         return False
 
 
-async def _get_or_create_client(chat_id: str, model: str | None = None) -> ClaudeSDKClient:
-    """Get existing persistent client or create a new one."""
-    if chat_id in _clients:
-        client = _clients[chat_id]
+async def _get_or_create_client(client_key: str, model: str | None = None) -> ClaudeSDKClient:
+    """Get existing persistent client or create a new one.
+
+    client_key is chat_id for solo chats, or chat_id:profile_id for group agents.
+    """
+    if client_key in _clients:
+        client = _clients[client_key]
         if _client_is_alive(client):
             return client
-        # Stale client — clean up before creating a new one
-        log(f"stale SDK client detected: chat={chat_id}, evicting")
-        await _disconnect_client(chat_id)
+        log(f"stale SDK client detected: key={client_key}, evicting")
+        await _disconnect_client(client_key)
 
-    chat = _get_chat(chat_id)
-    session_id = chat.get("claude_session_id") if chat else None
+    # Extract real chat_id for DB lookup (strip :profile_id suffix if present)
+    real_chat_id = client_key.split(":")[0]
+    is_group_agent = ":" in client_key
+
+    chat = _get_chat(real_chat_id)
+    # Group agents start fresh sessions (no session resume — they share the chat row)
+    session_id = None if is_group_agent else (chat.get("claude_session_id") if chat else None)
     options = _make_options(model=model, session_id=session_id)
 
     effective_model = model or MODEL
-    log(f"creating SDK client: chat={chat_id} model={effective_model} resume={session_id or 'new'}")
+    log(f"creating SDK client: key={client_key} model={effective_model} resume={session_id or 'new'}")
     client = ClaudeSDKClient(options)
     await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
-    _clients[chat_id] = client
+    _clients[client_key] = client
     return client
 
 
@@ -2072,6 +2141,10 @@ def _buffer_stream_event(chat_id: str, payload: dict) -> None:
 
 
 async def _send_stream_event(chat_id: str, payload: dict) -> None:
+    payload = dict(payload)
+    stream_id = _current_stream_id.get("")
+    if stream_id and not payload.get("stream_id"):
+        payload["stream_id"] = stream_id
     _buffer_stream_event(chat_id, payload)
     send_lock = _get_chat_send_lock(chat_id)
     async with send_lock:
@@ -2153,6 +2226,15 @@ async def _run_query_turn(client: ClaudeSDKClient, make_query_input,
     if result.get("stream_failed"):
         if DEBUG: log(f"DBG query_turn: chat={chat_id} STREAM FAILED: {result.get('error')}")
         raise RuntimeError(result.get("error") or "SDK stream failed")
+    # SDK cold-start workaround: first query on a fresh session returns "Not logged in"
+    # but the session IS valid — retry once on the same client
+    resp_text = result.get("text", "")
+    if resp_text.strip() == "Not logged in \u00b7 Please run /login" and result.get("tokens_in", 0) == 0:
+        log(f"SDK cold-start: chat={chat_id} got login prompt on fresh session, retrying...")
+        await asyncio.wait_for(client.query(make_query_input()), timeout=SDK_QUERY_TIMEOUT)
+        result = await asyncio.wait_for(_stream_response(client, chat_id), timeout=SDK_STREAM_TIMEOUT)
+        if result.get("stream_failed"):
+            raise RuntimeError(result.get("error") or "SDK stream failed (retry)")
     if DEBUG: log(f"DBG query_turn: chat={chat_id} done. text={len(result.get('text',''))}chars tools={result.get('tool_events','[]').count('tool_use_id')} session={result.get('session_id','?')[:8] if result.get('session_id') else 'none'}")
     return result
 
@@ -2548,10 +2630,11 @@ async def api_update_chat(chat_id: str, request: Request):
         _update_chat(chat_id, claude_session_id=None)
         _session_context_sent.discard(chat_id)
         if not had_sdk_client:
-            send_task = _active_send_tasks.pop(chat_id, None)
-            if send_task and not send_task.done():
+            entry = _active_send_tasks.pop(chat_id, None) or {}
+            send_task = entry.get("task")
+            if isinstance(send_task, asyncio.Task) and not send_task.done():
                 send_task.cancel()
-                await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id})
+                await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id, "stream_id": entry.get("stream_id", "")})
 
         # P0: Broadcast profile change to all connected clients
         updated_chat = _get_chat(chat_id)
@@ -3104,18 +3187,28 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
 
     # Inject profile + workspace context into the prompt
     profile_prompt = _get_profile_prompt(chat_id)
+    group_roster_prompt = _get_group_roster_prompt(chat_id)
     workspace_ctx = _get_workspace_context(chat_id)
-    ctx_prefix = f"{profile_prompt}{workspace_ctx}"
+    ctx_prefix = f"{profile_prompt}{group_roster_prompt}{workspace_ctx}"
     full_prompt = f"{ctx_prefix}{prompt}" if ctx_prefix else prompt
 
     # Build conversation history from recent messages
     recent = _get_messages(chat_id, days=1)
+    current_pid = _current_group_profile_id.get("")
     history_lines: list[str] = []
     for m in recent[-20:]:
         content = m["content"]
         if "<system-reminder>" in content:
             continue
-        history_lines.append(f"[{m['role']}] {content[:1000]}")
+        role = m["role"]
+        speaker_id = m.get("speaker_id", "")
+        # Group isolation: label other agents' messages distinctly
+        if role == "assistant" and current_pid and speaker_id and speaker_id != current_pid:
+            speaker_name = m.get("speaker_name", speaker_id)
+            label = f"assistant ({speaker_name})"
+        else:
+            label = role
+        history_lines.append(f"[{label}] {content[:1000]}")
     if history_lines:
         history_block = "\n".join(history_lines)
         full_prompt = f"<conversation-history>\n{history_block}\n</conversation-history>\n\n{full_prompt}"
@@ -3244,11 +3337,13 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
 
     # Inject profile + workspace context (CLAUDE.md, MEMORY.md, recovery briefings) for richer context
     profile_prompt = _get_profile_prompt(chat_id)
+    group_roster_prompt = _get_group_roster_prompt(chat_id)
     workspace_ctx = _get_workspace_context(chat_id)
-    if profile_prompt or workspace_ctx:
-        sys_prompt = f"{sys_prompt}\n\n{profile_prompt}{workspace_ctx}"
+    if profile_prompt or group_roster_prompt or workspace_ctx:
+        sys_prompt = f"{sys_prompt}\n\n{profile_prompt}{group_roster_prompt}{workspace_ctx}"
 
     messages = [{"role": "system", "content": sys_prompt}]
+    current_pid = _current_group_profile_id.get("")
     for m in recent[-50:]:
         content = m["content"]
         if "<system-reminder>" in content:
@@ -3258,6 +3353,11 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
         # (OpenAI requires tool_call_id on tool messages which we don't store)
         if role not in ("user", "assistant"):
             continue
+        speaker_id = m.get("speaker_id", "")
+        # Group isolation: tag other agents' messages so the model knows they're not its own
+        if role == "assistant" and current_pid and speaker_id and speaker_id != current_pid:
+            speaker_name = m.get("speaker_name", speaker_id)
+            content = f"[{speaker_name}]: {content}"
         messages.append({"role": role, "content": content})
 
     # Build user message — inject images in Ollama format if present
@@ -3825,7 +3925,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 # cleaned up already by the _send() closure).
                 attach_id = data.get("chat_id", "")
                 if attach_id:
+                    # Check for lock under chat_id (solo) or chat_id:* (group agent)
                     lock = _chat_locks.get(attach_id)
+                    if lock is None:
+                        # Group agents lock under chat_id:profile_id — find any locked key for this chat
+                        for k, v in _chat_locks.items():
+                            if k.startswith(attach_id + ":") and v.locked():
+                                lock = v
+                                break
                     stream_running = lock is not None and lock.locked()
                     if stream_running:
                         send_lock = _get_chat_send_lock(attach_id)
@@ -3838,9 +3945,10 @@ async def websocket_endpoint(websocket: WebSocket):
                                     break
                             if replay_ok:
                                 _attach_ws(websocket, attach_id)
+                                entry = _active_send_tasks.get(attach_id) or {}
                                 replay_ok = await _safe_ws_send_json(
                                     websocket,
-                                    {"type": "stream_reattached", "chat_id": attach_id},
+                                    {"type": "stream_reattached", "chat_id": attach_id, "stream_id": entry.get("stream_id", "")},
                                     chat_id=attach_id,
                                 )
                             if not replay_ok:
@@ -3913,29 +4021,37 @@ async def websocket_endpoint(websocket: WebSocket):
 
             if action == "send":
                 send_chat_id = data.get("chat_id", "")
-                task = asyncio.create_task(_handle_send_action(websocket, data))
+                stream_id = str(data.get("stream_id") or _make_stream_id())
+                send_data = dict(data)
+                send_data["stream_id"] = stream_id
+                task = asyncio.create_task(_handle_send_action(websocket, send_data))
                 if send_chat_id:
-                    _active_send_tasks[send_chat_id] = task
-                    task.add_done_callback(
-                        lambda t, cid=send_chat_id: _active_send_tasks.pop(cid, None)
-                        if _active_send_tasks.get(cid) is t else None
-                    )
+                    _active_send_tasks[send_chat_id] = {"task": task, "stream_id": stream_id}
+                    def _cleanup_send_task(t: asyncio.Task, cid=send_chat_id):
+                        entry = _active_send_tasks.get(cid)
+                        if entry and entry.get("task") is t:
+                            _active_send_tasks.pop(cid, None)
+                    task.add_done_callback(_cleanup_send_task)
                 _track_task(task)
             elif action == "stop":
                 chat_id = data.get("chat_id", "")
+                requested_stream_id = str(data.get("stream_id") or "")
                 if chat_id:
-                    if chat_id in _clients:
-                        # Claude SDK — interrupt triggers graceful stream end
-                        try:
-                            await _clients[chat_id].interrupt()
-                        except Exception:
-                            pass
-                    else:
-                        # Local/xAI model — cancel the send task directly
-                        send_task = _active_send_tasks.pop(chat_id, None)
-                        if send_task and not send_task.done():
-                            send_task.cancel()
-                            await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id})
+                    entry = _active_send_tasks.get(chat_id) or {}
+                    active_stream_id = str(entry.get("stream_id") or "")
+                    if requested_stream_id and active_stream_id and requested_stream_id != active_stream_id:
+                        continue
+                    # Interrupt all Claude SDK clients for this chat (solo + group agent keys)
+                    for ck in list(_clients):
+                        if ck == chat_id or ck.startswith(chat_id + ":"):
+                            try:
+                                await _clients[ck].interrupt()
+                            except Exception:
+                                pass
+                    send_task = entry.get("task")
+                    if isinstance(send_task, asyncio.Task) and not send_task.done():
+                        send_task.cancel()
+                        await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id})
 
     except WebSocketDisconnect as wd:
         log(f"websocket disconnected ws={ws_id} code={wd.code if hasattr(wd, 'code') else '?'}")
@@ -3951,6 +4067,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
     chat_id = data.get("chat_id", "")
     prompt = str(data.get("prompt", "")).strip()
     attachments = data.get("attachments", [])
+    stream_id = str(data.get("stream_id") or _make_stream_id())
     if not (prompt or attachments) or not chat_id:
         return
 
@@ -3969,9 +4086,17 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                     _save_message(chat_id, "user", prompt)
                     _save_message(chat_id, "assistant", reply)
                     _attach_ws(websocket, chat_id)
-                    await _safe_ws_send_json(websocket, {"type": "stream_start", "chat_id": chat_id}, chat_id=chat_id)
-                    await _safe_ws_send_json(websocket, {"type": "stream_delta", "chat_id": chat_id, "delta": reply}, chat_id=chat_id)
-                    await _safe_ws_send_json(websocket, {"type": "stream_end", "chat_id": chat_id}, chat_id=chat_id)
+                    _reset_stream_buffer(chat_id)
+                    gate_stream_token = _current_stream_id.set(_make_stream_id())
+                    try:
+                        await _send_stream_event(chat_id, {"type": "stream_start", "chat_id": chat_id})
+                        await _send_stream_event(chat_id, {"type": "text", "text": reply})
+                        await _send_stream_event(chat_id, {
+                            "type": "result", "cost_usd": 0, "tokens_in": 0, "tokens_out": 0, "session_id": None,
+                        })
+                        await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id})
+                    finally:
+                        _current_stream_id.reset(gate_stream_token)
                     _log_skill_invocation("gate", success=True, context=f"{decision}:{result.get('skill','?')}", source="apex")
                     return
 
@@ -4043,13 +4168,29 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         prompt = group_agent["clean_prompt"]
         log(f"group routing: chat={chat_id[:8]} agent={group_agent['name']} model={chat_model} backend={backend}")
 
-    chat_lock = _get_chat_lock(chat_id)
+    # Client key: for group channels, each agent gets its own SDK session
+    client_key = f"{chat_id}:{group_agent['profile_id']}" if group_agent else chat_id
+
+    stream_token = _current_stream_id.set(stream_id)
+    group_profile_token = _current_group_profile_id.set(group_agent["profile_id"] if group_agent else "")
+    # Lock per-agent in group channels, per-chat in solo channels
+    lock_key = client_key if group_agent else chat_id
+    chat_lock = _get_chat_lock(lock_key)
     try:
         await asyncio.wait_for(chat_lock.acquire(), timeout=0.05)
     except asyncio.TimeoutError:
+        if group_agent:
+            busy_name = group_agent["name"]
+            # Suggest other available agents
+            members = _get_group_members(chat_id)
+            others = [m["name"] for m in members if m["profile_id"] != group_agent["profile_id"]]
+            hint = f" Try @{others[0]}." if others else ""
+            err_msg = f"{busy_name} is still responding.{hint}"
+        else:
+            err_msg = "This chat is already processing a message"
         await _safe_ws_send_json(
             websocket,
-            {"type": "error", "message": "This chat is already processing a message"},
+            {"type": "error", "message": err_msg},
             chat_id=chat_id,
         )
         return
@@ -4168,11 +4309,11 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 log(f"pre-flight compaction error: chat={chat_id} {compact_err}")
 
             try:
-                client = await _get_or_create_client(chat_id, model=chat_model)
+                client = await _get_or_create_client(client_key, model=chat_model)
                 result = await _run_query_turn(client, make_query_input, chat_id)
             except Exception as first_error:
-                if DEBUG: log(f"DBG RECOVERY: chat={chat_id} first error: {type(first_error).__name__}: {first_error}")
-                await _disconnect_client(chat_id)
+                if DEBUG: log(f"DBG RECOVERY: chat={chat_id} client_key={client_key} first error: {type(first_error).__name__}: {first_error}")
+                await _disconnect_client(client_key)
 
                 # Retry input — on recovery tiers, inject a conciseness hint to limit context growth
                 def _make_retry_input():
@@ -4189,25 +4330,25 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                     options = _make_options(model=chat_model, session_id=existing_session)
                     client = ClaudeSDKClient(options)
                     await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
-                    _clients[chat_id] = client
+                    _clients[client_key] = client
                     result = await _run_query_turn(client, _make_retry_input, chat_id)
-                    if DEBUG: log(f"DBG RECOVERY: resume OK chat={chat_id} session={existing_session or 'new'}")
+                    if DEBUG: log(f"DBG RECOVERY: resume OK client_key={client_key} session={existing_session or 'new'}")
                 except Exception as resume_error:
                     if DEBUG: log(f"DBG RECOVERY: resume FAILED: {type(resume_error).__name__}: {resume_error}")
-                    await _disconnect_client(chat_id)
+                    await _disconnect_client(client_key)
                     _update_chat(chat_id, claude_session_id=None)
-                    _session_context_sent.discard(chat_id)  # re-inject workspace context on fresh session
+                    _session_context_sent.discard(client_key)  # re-inject workspace context on fresh session
                     if DEBUG: log(f"DBG RECOVERY: session_id NUKED, trying fresh...")
                     try:
                         options = _make_options(model=chat_model, session_id=None)
                         client = ClaudeSDKClient(options)
                         await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
-                        _clients[chat_id] = client
+                        _clients[client_key] = client
                         result = await _run_query_turn(client, _make_retry_input, chat_id)
-                        if DEBUG: log(f"DBG RECOVERY: fresh session OK chat={chat_id}")
+                        if DEBUG: log(f"DBG RECOVERY: fresh session OK client_key={client_key}")
                     except Exception as fresh_error:
                         if DEBUG: log(f"DBG RECOVERY: fresh ALSO FAILED: {type(fresh_error).__name__}: {fresh_error}")
-                        await _disconnect_client(chat_id)
+                        await _disconnect_client(client_key)
                         for ws in list(_chat_ws.get(chat_id, {websocket})):
                             await _safe_ws_send_json(
                                 ws,
@@ -4255,24 +4396,24 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             for ows in other_viewers:
                 await _safe_ws_send_json(
                     ows,
-                    {"type": "stream_complete_reload", "chat_id": chat_id},
+                    {"type": "stream_complete_reload", "chat_id": chat_id, "stream_id": stream_id},
                     chat_id=chat_id,
                 )
     finally:
-        chat_lock.release()
-        # Send stream_end to ALL connected viewers — also add to buffer for replay
-        end_event = {"type": "stream_end", "chat_id": chat_id}
-        buf = _stream_buffers.get(chat_id)
-        if buf is not None:
-            seq = _stream_seq.get(chat_id, 0) + 1
-            end_event["seq"] = seq
-            buf.append(end_event)
-        ws_set = _chat_ws.get(chat_id, set())
-        for ws in list(ws_set):
-            await _safe_ws_send_json(ws, end_event, chat_id=chat_id)
-        log(f"stream_end sent: chat={chat_id} viewers={len(ws_set)}")
-        _stream_buffers.pop(chat_id, None)
-        _stream_seq.pop(chat_id, None)
+        if chat_lock.locked():
+            chat_lock.release()
+        try:
+            await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id})
+            log(f"stream_end sent: chat={chat_id} viewers={len(_chat_ws.get(chat_id, set()))}")
+        finally:
+            _stream_buffers.pop(chat_id, None)
+            _stream_seq.pop(chat_id, None)
+            entry = _active_send_tasks.get(chat_id)
+            current_task = asyncio.current_task()
+            if entry and entry.get("task") is current_task:
+                _active_send_tasks.pop(chat_id, None)
+            _current_group_profile_id.reset(group_profile_token)
+            _current_stream_id.reset(stream_token)
 
 
 # --- Main page ---
