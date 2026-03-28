@@ -246,6 +246,30 @@ final class AppState {
         }
     }
 
+    func createThread() async {
+        do {
+            let chatId = try await apiClient.createChat(type: "thread")
+            await loadChats()
+            if let chat = chats.first(where: { $0.id == chatId }) {
+                switchToChat(chat)
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    func createGroup(title: String, members: [[String: String]]) async {
+        do {
+            let chatId = try await apiClient.createGroup(title: title, members: members)
+            await loadChats()
+            if let chat = chats.first(where: { $0.id == chatId }) {
+                switchToChat(chat)
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
     func loadProfiles() async {
         do {
             profiles = try await apiClient.fetchProfiles()
@@ -435,7 +459,7 @@ final class AppState {
         let now = DateParsing.iso8601.string(from: Date())
         return Chat(
             id: id,
-            title: "New Chat",
+            title: "New Channel",
             model: nil,
             type: nil,
             category: nil,
@@ -452,7 +476,7 @@ final class AppState {
         switch message {
         case .pong:
             break
-        case .streamStart:
+        case .streamStart(_, _, _, _):
             streamingResponsePreview = ""
         case .text(let text):
             streamingResponsePreview += text

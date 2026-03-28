@@ -13,6 +13,8 @@ struct ChatView: View {
     @State private var streamingText: String = ""
     @State private var streamingThinking: String = ""
     @State private var streamingToolEvents: [StreamingToolEvent] = []
+    @State private var streamingSpeakerName: String?
+    @State private var streamingSpeakerAvatar: String?
     @State private var showingStreamDetail: Bool = false
     @State private var streamingTimeoutToken: UUID?
     @State private var reactions: [String: String] = [:]
@@ -173,6 +175,19 @@ struct ChatView: View {
     private var streamingBubble: some View {
         HStack {
             VStack(alignment: .leading, spacing: 6) {
+                // Speaker header for group chats
+                if let name = streamingSpeakerName, !name.isEmpty {
+                    HStack(spacing: 4) {
+                        if let avatar = streamingSpeakerAvatar, !avatar.isEmpty {
+                            Text(avatar).font(.caption)
+                        }
+                        Text(name)
+                            .font(.caption2)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.blue)
+                    }
+                }
+
                 if !streamingThinking.isEmpty && streamingText.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 6) {
@@ -306,19 +321,23 @@ struct ChatView: View {
         streamingText = ""
         streamingThinking = ""
         streamingToolEvents = []
+        streamingSpeakerName = nil
+        streamingSpeakerAvatar = nil
     }
 
     // MARK: - Message Handler
 
     private func handleStreamMessage(_ message: ServerMessage) {
         switch message {
-        case .streamStart(let streamChatId):
+        case .streamStart(let streamChatId, let speakerName, let speakerAvatar, _):
             guard streamChatId == chatId else { break }
             streamingForChatId = chatId
             isStreaming = true
             streamingText = ""
             streamingThinking = ""
             streamingToolEvents = []
+            streamingSpeakerName = speakerName
+            streamingSpeakerAvatar = speakerAvatar
         case .text(let text):
             guard streamingForChatId == chatId else { break }
             streamingText += text

@@ -20,20 +20,22 @@ struct ChannelListView: View {
     var body: some View {
         NavigationStack {
             List {
-                ForEach(appState.chats) { chat in
-                    if renamingChatId == chat.id {
-                        HStack {
-                            TextField("Chat name", text: $renameText)
-                                .textFieldStyle(.roundedBorder)
-                                .onSubmit { commitRename(chat) }
-                            Button("Save") { commitRename(chat) }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.small)
-                            Button("Cancel") { renamingChatId = nil }
-                                .controlSize(.small)
+                let channels = appState.chats.filter { ($0.type ?? "chat") != "thread" }
+                let threads = Array(appState.chats.filter { $0.type == "thread" }.prefix(10))
+
+                if !channels.isEmpty {
+                    Section("Channels") {
+                        ForEach(channels) { chat in
+                            chatRowOrRename(chat)
                         }
-                    } else {
-                        chatRow(chat)
+                    }
+                }
+
+                if !threads.isEmpty {
+                    Section("Threads") {
+                        ForEach(threads) { chat in
+                            chatRowOrRename(chat)
+                        }
                     }
                 }
             }
@@ -103,6 +105,24 @@ struct ChannelListView: View {
     }
 
     @ViewBuilder
+    private func chatRowOrRename(_ chat: Chat) -> some View {
+        if renamingChatId == chat.id {
+            HStack {
+                TextField("Chat name", text: $renameText)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { commitRename(chat) }
+                Button("Save") { commitRename(chat) }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                Button("Cancel") { renamingChatId = nil }
+                    .controlSize(.small)
+            }
+        } else {
+            chatRow(chat)
+        }
+    }
+
+    @ViewBuilder
     private func chatRow(_ chat: Chat) -> some View {
         Button {
             appState.switchToChat(chat)
@@ -145,6 +165,16 @@ struct ChannelListView: View {
                 .font(.body)
                 .foregroundStyle(.orange)
                 .frame(width: 28, alignment: .center)
+        } else if chat.type == "thread" {
+            Image(systemName: "bolt.fill")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .frame(width: 28, alignment: .center)
+        } else if chat.isGroup {
+            Image(systemName: "person.3.fill")
+                .font(.body)
+                .foregroundStyle(.purple)
+                .frame(width: 28, alignment: .center)
         } else {
             Image(systemName: "bubble.left.fill")
                 .font(.body)
@@ -162,6 +192,12 @@ struct ChannelListView: View {
                 Text(alertChannelSubtitle(chat))
                     .font(.caption)
                     .foregroundStyle(.orange)
+            } else if chat.isGroup {
+                let count = chat.memberCount ?? 0
+                let primary = chat.primaryProfileName ?? ""
+                Text(primary.isEmpty ? "\(count) members" : "\(primary) + \(max(count - 1, 0))")
+                    .font(.caption)
+                    .foregroundStyle(.purple)
             } else if let profileName = chat.profileName, !profileName.isEmpty {
                 Text(profileName)
                     .font(.caption)

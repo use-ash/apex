@@ -100,6 +100,19 @@ struct MessageBubble: View {
                 }
             }
 
+            // Speaker identity for group messages
+            if message.hasSpeaker {
+                HStack(spacing: 4) {
+                    if let avatar = message.speakerAvatar, !avatar.isEmpty {
+                        Text(avatar)
+                            .font(.caption)
+                    }
+                    Text(message.speakerName ?? "")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.blue)
+                }
+            }
+
             messageText
 
             if message.costUsd > 0 {

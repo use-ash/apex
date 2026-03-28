@@ -14,5 +14,7 @@
 	</array>
 	<key>CFBundleGetInfoString</key>
 	<string></string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Apex needs access to your photo library to send images in chat.</string>
 </dict>
 </plist>

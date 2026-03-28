@@ -172,7 +172,12 @@ final class ConnectionManager {
             resetPongTimer()
             return .pong
         case "stream_start":
-            return .streamStart(chatId: json["chat_id"] as? String ?? "")
+            return .streamStart(
+                chatId: json["chat_id"] as? String ?? "",
+                speakerName: json["speaker_name"] as? String,
+                speakerAvatar: json["speaker_avatar"] as? String,
+                speakerId: json["speaker_id"] as? String
+            )
         case "text":
             return .text(text: json["text"] as? String ?? "")
         case "thinking":
@@ -309,7 +314,7 @@ final class ConnectionManager {
 
 enum ServerMessage {
     case pong
-    case streamStart(chatId: String)
+    case streamStart(chatId: String, speakerName: String?, speakerAvatar: String?, speakerId: String?)
     case text(text: String)
     case thinking(text: String)
     case toolUse(id: String, name: String, input: Any)

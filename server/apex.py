@@ -99,6 +99,7 @@ XAI_MANAGEMENT_KEY = os.environ.get("XAI_MANAGEMENT_KEY", "")
 XAI_TEAM_ID = os.environ.get("XAI_TEAM_ID", "3b0d4936-ce44-4571-a053-1e296bc9f6cd")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 CODEX_CLI = os.environ.get("CODEX_CLI_PATH", "/opt/homebrew/bin/codex")
+GROUPS_ENABLED = os.environ.get("APEX_GROUPS_ENABLED", "").lower() in {"1", "true", "yes"}
 DB_PATH = APEX_ROOT / "state" / "apex.db"
 LOG_PATH = APEX_ROOT / "state" / "apex.log"
 
@@ -423,8 +424,16 @@ def _get_recent_exchange_context(chat_id: str, pairs: int = 2) -> str:
     )
 
 
+# Group routing: temporary profile override for @mention dispatch
+_group_profile_override: dict[str, str] = {}  # chat_id -> profile_id
+
+
 def _get_profile_prompt(chat_id: str) -> str:
-    """Get the agent profile system prompt for this chat, if any."""
+    """Get the agent profile system prompt for this chat, if any.
+    For group chats with @mention routing, checks _group_profile_override first."""
+    override_pid = _group_profile_override.pop(chat_id, None)
+    if override_pid:
+        return _get_profile_prompt_by_id(override_pid)
     with _db_lock:
         conn = _get_db()
         row = conn.execute(
@@ -436,6 +445,86 @@ def _get_profile_prompt(chat_id: str) -> str:
     if not row or not row[0]:
         return ""
     return f"<system-reminder>\n# Agent Profile: {row[1]}\n{row[0]}\n</system-reminder>\n\n"
+
+
+def _get_profile_prompt_by_id(profile_id: str) -> str:
+    """Get the agent profile system prompt by profile_id directly (for group routing)."""
+    with _db_lock:
+        conn = _get_db()
+        row = conn.execute(
+            "SELECT system_prompt, name FROM agent_profiles WHERE id = ?", (profile_id,)
+        ).fetchone()
+        conn.close()
+    if not row or not row[0]:
+        return ""
+    return f"<system-reminder>\n# Agent Profile: {row[1]}\n{row[0]}\n</system-reminder>\n\n"
+
+
+import re as _re
+
+_MENTION_RE = _re.compile(r"@(\w+)")
+
+
+def _resolve_group_agent(chat_id: str, chat: dict, prompt: str) -> dict | None:
+    """For group chats, parse @mentions and resolve the target agent.
+
+    Returns dict with keys: profile_id, name, avatar, model, backend, clean_prompt
+    or None if this is not a group chat.
+    """
+    if chat.get("type") != "group":
+        return None
+
+    members = _get_group_members(chat_id)
+    if not members:
+        return None
+
+    # Parse @mentions from prompt
+    mentions = _MENTION_RE.findall(prompt)
+
+    target = None
+    if mentions:
+        # Match mention to a group member (case-insensitive on name or profile_id)
+        for mention in mentions:
+            mention_lower = mention.lower()
+            for m in members:
+                if m["name"].lower() == mention_lower or m["profile_id"].lower() == mention_lower:
+                    target = m
+                    break
+            if target:
+                break
+
+    # Fall back to primary agent
+    if not target:
+        for m in members:
+            if m["is_primary"]:
+                target = m
+                break
+        # If no primary, use first member
+        if not target and members:
+            target = members[0]
+
+    if not target:
+        return None
+
+    # Strip the @mention from the prompt sent to the model
+    clean_prompt = prompt
+    if mentions and target:
+        # Remove the matched @Name from the prompt
+        clean_prompt = _re.sub(
+            rf"@{_re.escape(target['name'])}|@{_re.escape(target['profile_id'])}",
+            "", prompt, count=1, flags=_re.IGNORECASE
+        ).strip()
+        if not clean_prompt:
+            clean_prompt = prompt  # Don't send empty prompt
+
+    return {
+        "profile_id": target["profile_id"],
+        "name": target["name"],
+        "avatar": target["avatar"],
+        "model": target["model"],
+        "backend": target["backend"],
+        "clean_prompt": clean_prompt,
+    }
 
 
 def _get_workspace_context(chat_id: str) -> str:
@@ -1132,6 +1221,23 @@ def _init_db() -> None:
     # Migration: add profile_id column to chats (for agent profiles)
     with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("ALTER TABLE chats ADD COLUMN profile_id TEXT DEFAULT ''")
+    # Migration: channel_agent_memberships table (groups foundation)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS channel_agent_memberships (
+            id TEXT PRIMARY KEY,
+            channel_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+            agent_profile_id TEXT NOT NULL REFERENCES agent_profiles(id),
+            routing_mode TEXT NOT NULL DEFAULT 'mentioned',
+            is_primary INTEGER NOT NULL DEFAULT 0,
+            display_order INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            UNIQUE(channel_id, agent_profile_id)
+        )
+    """)
+    # Migration: speaker identity columns on messages (groups)
+    for col in ["speaker_id", "speaker_name", "speaker_avatar", "visibility", "group_turn_id"]:
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute(f"ALTER TABLE messages ADD COLUMN {col} TEXT DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -1286,6 +1392,36 @@ def _seed_default_profiles():
                     "anything outside the spec the Architect gave you\n\n"
                     "When you receive a task from the Architect, verify you have: goal, scope, "
                     "constraints, definition of done, and verification steps. If any are missing, ask."
+                ),
+            },
+            {
+                "id": "designer",
+                "name": "Designer",
+                "slug": "designer",
+                "avatar": "\U0001f3a8",
+                "role_description": "Head of Design \u2014 UX, beauty, customer experience",
+                "backend": "claude",
+                "model": "claude-opus-4-6",
+                "is_default": 0,
+                "system_prompt": (
+                    "You are Designer, Dana's Head of Design for Apex.\n\n"
+                    "You take the human perspective \u2014 as if a real user is behind a phone or keyboard. "
+                    "Every opinion you give is grounded in what the user sees, expects, and feels.\n\n"
+                    "Core principles:\n"
+                    "- Beauty is not decoration. It communicates quality and trust.\n"
+                    "- Every tap, swipe, and transition should feel intentional.\n"
+                    "- If a feature needs explanation, the design failed.\n"
+                    "- Accessibility is not optional. Mobile-first.\n"
+                    "- Less UI, more clarity. Reduce until there's nothing left to remove.\n\n"
+                    "When reviewing any feature, ask: What does the user see first? What do they expect? "
+                    "What actually happens? How does it feel? What would make it delightful?\n\n"
+                    "Communication style: Visual, concrete, opinionated. Show before/after. "
+                    "Use words like \"feels\", \"friction\", \"delight\", \"confused\", \"obvious\". "
+                    "Sketch flows in ASCII when helpful. Be direct about bad UX.\n\n"
+                    "Scope: UX flows, visual design, interaction design, design system, customer journey, "
+                    "onboarding, accessibility, design critique.\n"
+                    "NOT your scope: code implementation (\u2192 Codex/Architect), marketing copy (\u2192 Marketing), "
+                    "budgets (\u2192 Operations), trading (\u2192 Trader)."
                 ),
             },
         ]
@@ -1462,7 +1598,7 @@ def _websocket_origin_allowed(websocket: WebSocket) -> bool:
 # Chat DB operations
 # ---------------------------------------------------------------------------
 
-def _create_chat(title: str = "New Chat", model: str | None = None, chat_type: str = "chat",
+def _create_chat(title: str = "New Channel", model: str | None = None, chat_type: str = "chat",
                   category: str | None = None, profile_id: str = "") -> str:
     cid = str(uuid.uuid4())[:8]
     now = _now()
@@ -1486,10 +1622,41 @@ def _get_chats() -> list[dict]:
             "FROM chats c LEFT JOIN agent_profiles ap ON c.profile_id = ap.id "
             "ORDER BY c.updated_at DESC"
         ).fetchall()
+        # Batch-fetch member counts + primary agent for groups
+        group_ids = [r[0] for r in rows if (r[6] or "chat") == "group"]
+        group_meta: dict[str, dict] = {}
+        if group_ids:
+            ph = ",".join("?" * len(group_ids))
+            for gid in group_ids:
+                members = conn.execute(
+                    "SELECT m.agent_profile_id, m.is_primary, ap2.name, ap2.avatar "
+                    "FROM channel_agent_memberships m "
+                    "JOIN agent_profiles ap2 ON m.agent_profile_id = ap2.id "
+                    "WHERE m.channel_id = ?", (gid,)
+                ).fetchall()
+                primary = next((m for m in members if m[1]), None)
+                group_meta[gid] = {
+                    "member_count": len(members),
+                    "primary_name": primary[2] if primary else "",
+                    "primary_avatar": primary[3] if primary else "",
+                }
         conn.close()
-    return [{"id": r[0], "title": r[1], "claude_session_id": r[2],
+    result = []
+    for r in rows:
+        d = {"id": r[0], "title": r[1], "claude_session_id": r[2],
              "created_at": r[3], "updated_at": r[4], "model": r[5], "type": r[6], "category": r[7] or None,
-             "profile_id": r[8] or "", "profile_name": r[9] or "", "profile_avatar": r[10] or ""} for r in rows]
+             "profile_id": r[8] or "", "profile_name": r[9] or "", "profile_avatar": r[10] or ""}
+        gm = group_meta.get(r[0])
+        if gm:
+            d["member_count"] = gm["member_count"]
+            d["primary_profile_name"] = gm["primary_name"]
+            d["primary_profile_avatar"] = gm["primary_avatar"]
+            # Override profile display for groups with primary agent info
+            if not d["profile_name"] and gm["primary_name"]:
+                d["profile_name"] = gm["primary_name"]
+                d["profile_avatar"] = gm["primary_avatar"]
+        result.append(d)
+    return result
 
 
 def _get_chat(chat_id: str) -> dict | None:
@@ -1530,35 +1697,92 @@ def _delete_chat(chat_id: str) -> bool:
         return False
 
 
-def _save_message(chat_id: str, role: str, content: str, tool_events: str = "[]",
-                  thinking: str = "", cost_usd: float = 0, tokens_in: int = 0,
-                  tokens_out: int = 0) -> str:
+def _get_group_members(channel_id: str) -> list[dict]:
+    with _db_lock:
+        conn = _get_db()
+        rows = conn.execute(
+            "SELECT m.id, m.agent_profile_id, m.routing_mode, m.is_primary, m.display_order, "
+            "ap.name, ap.avatar, ap.model, ap.backend "
+            "FROM channel_agent_memberships m "
+            "JOIN agent_profiles ap ON m.agent_profile_id = ap.id "
+            "WHERE m.channel_id = ? ORDER BY m.is_primary DESC, m.display_order",
+            (channel_id,),
+        ).fetchall()
+        conn.close()
+    return [
+        {"id": r[0], "profile_id": r[1], "routing_mode": r[2], "is_primary": bool(r[3]),
+         "display_order": r[4], "name": r[5], "avatar": r[6], "model": r[7], "backend": r[8]}
+        for r in rows
+    ]
+
+
+def _add_group_member(channel_id: str, profile_id: str, routing_mode: str = "mentioned",
+                      is_primary: bool = False, display_order: int = 0) -> str:
     mid = str(uuid.uuid4())[:12]
     with _db_lock:
         conn = _get_db()
         conn.execute(
-            "INSERT INTO messages (id, chat_id, role, content, tool_events, thinking, cost_usd, tokens_in, tokens_out, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (mid, chat_id, role, content, tool_events, thinking, cost_usd, tokens_in, tokens_out, _now()))
+            "INSERT INTO channel_agent_memberships (id, channel_id, agent_profile_id, routing_mode, is_primary, display_order, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (mid, channel_id, profile_id, routing_mode, int(is_primary), display_order, _now()),
+        )
         conn.commit()
         conn.close()
     return mid
 
 
-def _get_messages(chat_id: str, days: int | None = None) -> list[dict]:
+def _remove_group_member(channel_id: str, profile_id: str) -> bool:
     with _db_lock:
         conn = _get_db()
+        cur = conn.execute(
+            "DELETE FROM channel_agent_memberships WHERE channel_id = ? AND agent_profile_id = ?",
+            (channel_id, profile_id),
+        )
+        conn.commit()
+        conn.close()
+    return cur.rowcount > 0
+
+
+def _save_message(chat_id: str, role: str, content: str, tool_events: str = "[]",
+                  thinking: str = "", cost_usd: float = 0, tokens_in: int = 0,
+                  tokens_out: int = 0, speaker_id: str = "", speaker_name: str = "",
+                  speaker_avatar: str = "", visibility: str = "public",
+                  group_turn_id: str = "") -> str:
+    mid = str(uuid.uuid4())[:12]
+    with _db_lock:
+        conn = _get_db()
+        conn.execute(
+            "INSERT INTO messages (id, chat_id, role, content, tool_events, thinking, cost_usd, "
+            "tokens_in, tokens_out, speaker_id, speaker_name, speaker_avatar, visibility, "
+            "group_turn_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (mid, chat_id, role, content, tool_events, thinking, cost_usd, tokens_in, tokens_out,
+             speaker_id, speaker_name, speaker_avatar, visibility, group_turn_id, _now()))
+        conn.commit()
+        conn.close()
+    return mid
+
+
+def _get_messages(chat_id: str, days: int | None = None, include_internal: bool = False) -> list[dict]:
+    vis_clause = "" if include_internal else " AND (visibility = 'public' OR visibility = '' OR visibility IS NULL)"
+    with _db_lock:
+        conn = _get_db()
+        cols = ("id, role, content, tool_events, thinking, cost_usd, tokens_in, tokens_out, "
+                "created_at, speaker_id, speaker_name, speaker_avatar, visibility, group_turn_id")
         if days and days > 0:
             rows = conn.execute(
-                "SELECT id, role, content, tool_events, thinking, cost_usd, tokens_in, tokens_out, created_at FROM messages WHERE chat_id = ? AND created_at >= datetime('now', ?) ORDER BY created_at",
+                f"SELECT {cols} FROM messages WHERE chat_id = ? AND created_at >= datetime('now', ?){vis_clause} ORDER BY created_at",
                 (chat_id, f"-{days} days")).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, role, content, tool_events, thinking, cost_usd, tokens_in, tokens_out, created_at FROM messages WHERE chat_id = ? ORDER BY created_at",
+                f"SELECT {cols} FROM messages WHERE chat_id = ?{vis_clause} ORDER BY created_at",
                 (chat_id,)).fetchall()
         conn.close()
     return [{"id": r[0], "role": r[1], "content": r[2], "tool_events": r[3],
              "thinking": r[4], "cost_usd": r[5], "tokens_in": r[6],
-             "tokens_out": r[7], "created_at": r[8]} for r in rows]
+             "tokens_out": r[7], "created_at": r[8],
+             "speaker_id": r[9] or "", "speaker_name": r[10] or "",
+             "speaker_avatar": r[11] or "", "visibility": r[12] or "public",
+             "group_turn_id": r[13] or ""} for r in rows]
 
 
 def _create_alert(source: str, severity: str, title: str, body: str, metadata: dict | None = None) -> dict:
@@ -2187,6 +2411,11 @@ async def verify_client_cert(request: Request, call_next):
 
 # --- API routes ---
 
+@app.get("/api/features")
+async def api_features(request: Request):
+    return JSONResponse({"groups_enabled": GROUPS_ENABLED})
+
+
 @app.get("/api/chats")
 async def api_chats(request: Request):
     return JSONResponse(_get_chats())
@@ -2203,8 +2432,15 @@ async def api_new_chat(request: Request):
     chat_type = data.get("type", "chat")
     category = data.get("category") if chat_type == "alerts" else None
     profile_id = str(data.get("profile_id", "")).strip()
-    if profile_id and chat_type != "chat":
-        return JSONResponse({"error": "Profiles are only supported for regular chats"}, status_code=400)
+    # Groups require premium gate
+    members = data.get("members", [])
+    if chat_type == "group":
+        if not GROUPS_ENABLED:
+            return JSONResponse({"error": "Groups are not enabled. Set APEX_GROUPS_ENABLED=true"}, status_code=403)
+        if not members:
+            return JSONResponse({"error": "Groups require at least one member"}, status_code=400)
+    if profile_id and chat_type not in ("chat", "thread"):
+        return JSONResponse({"error": "Profiles are only supported for channels and threads"}, status_code=400)
     # If a profile is specified, validate and inherit model
     if profile_id:
         with _db_lock:
@@ -2220,11 +2456,35 @@ async def api_new_chat(request: Request):
     CATEGORY_TITLES = {"trading": "Trading Alerts", "system": "System Alerts", "test": "Test Alerts"}
     if chat_type == "alerts":
         title = CATEGORY_TITLES.get(category, "All Alerts")
+    elif chat_type == "thread":
+        title = "Quick thread"
+    elif chat_type == "group":
+        title = data.get("title", "New Group")
     else:
-        title = "New Chat"
+        title = "New Channel"
     cid = _create_chat(title=title, model=model, chat_type=chat_type, category=category, profile_id=profile_id)
     resp = {"id": cid, "model": model, "type": chat_type, "category": category, "profile_id": profile_id,
             "profile_name": "", "profile_avatar": ""}
+    # Seed group members
+    if chat_type == "group" and members:
+        for i, mem in enumerate(members):
+            pid = mem.get("profile_id", "")
+            mode = mem.get("routing_mode", "mentioned")
+            is_pri = mode == "primary"
+            try:
+                _add_group_member(cid, pid, routing_mode=mode, is_primary=is_pri, display_order=i)
+            except Exception:
+                pass  # skip invalid profile_ids silently
+        # Set group model to primary agent's model
+        group_members = _get_group_members(cid)
+        primary = next((m for m in group_members if m["is_primary"]), None)
+        if primary and primary["model"]:
+            model = primary["model"]
+            _update_chat(cid, model=model)
+        resp["members"] = group_members
+        if primary:
+            resp["profile_name"] = primary["name"]
+            resp["profile_avatar"] = primary["avatar"]
     if profile_id:
         with _db_lock:
             conn = _get_db()
@@ -2323,6 +2583,97 @@ async def api_delete_chat(chat_id: str):
         for ws in list(ws_set):
             await _safe_ws_send_json(ws, payload, chat_id=cid)
     return JSONResponse({"ok": True})
+
+
+@app.get("/api/chats/{chat_id}/members")
+async def api_get_members(chat_id: str):
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    if chat["type"] != "group":
+        return JSONResponse({"error": "Not a group channel"}, status_code=400)
+    return JSONResponse({"members": _get_group_members(chat_id)})
+
+
+@app.post("/api/chats/{chat_id}/members")
+async def api_add_member(chat_id: str, request: Request):
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    if chat["type"] != "group":
+        return JSONResponse({"error": "Not a group channel"}, status_code=400)
+    data = await request.json()
+    profile_id = data.get("profile_id", "")
+    routing_mode = data.get("routing_mode", "mentioned")
+    is_primary = routing_mode == "primary"
+    try:
+        mid = _add_group_member(chat_id, profile_id, routing_mode=routing_mode, is_primary=is_primary)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    return JSONResponse({"ok": True, "membership_id": mid})
+
+
+@app.delete("/api/chats/{chat_id}/members/{profile_id}")
+async def api_remove_member(chat_id: str, profile_id: str):
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    if chat["type"] != "group":
+        return JSONResponse({"error": "Not a group channel"}, status_code=400)
+    if not _remove_group_member(chat_id, profile_id):
+        return JSONResponse({"error": "Member not found"}, status_code=404)
+    return JSONResponse({"ok": True})
+
+
+@app.patch("/api/chats/{chat_id}/members/{profile_id}")
+async def api_update_member(chat_id: str, profile_id: str, request: Request):
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    if chat["type"] != "group":
+        return JSONResponse({"error": "Not a group channel"}, status_code=400)
+    data = await request.json()
+    routing_mode = data.get("routing_mode")
+    if routing_mode:
+        is_primary = routing_mode == "primary"
+        with _db_lock:
+            conn = _get_db()
+            conn.execute(
+                "UPDATE channel_agent_memberships SET routing_mode = ?, is_primary = ? "
+                "WHERE channel_id = ? AND agent_profile_id = ?",
+                (routing_mode, int(is_primary), chat_id, profile_id),
+            )
+            conn.commit()
+            conn.close()
+    return JSONResponse({"ok": True, "members": _get_group_members(chat_id)})
+
+
+@app.delete("/api/threads/stale")
+async def api_delete_stale_threads(request: Request, older_than_days: int = 7):
+    """Delete threads older than N days (default 7). Returns count of deleted threads."""
+    import datetime as _dt
+    cutoff = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=older_than_days)).isoformat()
+    with _db_lock:
+        conn = _get_db()
+        stale = conn.execute(
+            "SELECT id FROM chats WHERE type = 'thread' AND updated_at < ?", (cutoff,)
+        ).fetchall()
+        if stale:
+            ids = [r[0] for r in stale]
+            placeholders = ",".join("?" * len(ids))
+            conn.execute(f"DELETE FROM messages WHERE chat_id IN ({placeholders})", ids)
+            conn.execute(f"DELETE FROM chats WHERE id IN ({placeholders})", ids)
+            conn.commit()
+        conn.close()
+    deleted = len(stale) if stale else 0
+    if deleted:
+        # Broadcast so clients refresh
+        for cid_del in [r[0] for r in stale]:
+            payload = {"type": "chat_deleted", "chat_id": cid_del}
+            for cid, ws_set in list(_chat_ws.items()):
+                for ws in list(ws_set):
+                    await _safe_ws_send_json(ws, payload, chat_id=cid)
+    return JSONResponse({"ok": True, "deleted": deleted})
 
 
 @app.get("/api/chats/{chat_id}/messages")
@@ -3684,6 +4035,14 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
     chat_model = chat.get("model") or MODEL
     backend = _get_model_backend(chat_model)
 
+    # --- Group @mention routing ---
+    group_agent = _resolve_group_agent(chat_id, chat, prompt)
+    if group_agent:
+        chat_model = group_agent["model"]
+        backend = _get_model_backend(chat_model)
+        prompt = group_agent["clean_prompt"]
+        log(f"group routing: chat={chat_id[:8]} agent={group_agent['name']} model={chat_model} backend={backend}")
+
     chat_lock = _get_chat_lock(chat_id)
     try:
         await asyncio.wait_for(chat_lock.acquire(), timeout=0.05)
@@ -3728,6 +4087,10 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             if whisper:
                 prompt = f"{whisper}{prompt}"
 
+        # Set group profile override BEFORE model dispatch (consumed by _get_profile_prompt)
+        if group_agent:
+            _group_profile_override[chat_id] = group_agent["profile_id"]
+
         display_prompt = prompt
         make_query_input = None
         if backend in ("ollama", "xai", "mlx", "codex"):
@@ -3761,7 +4124,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                     chat_id=chat_id,
                 )
 
-        if chat["title"] == "New Chat":
+        if chat["title"] in ("New Chat", "New Channel", "Quick thread"):
             title_source = prompt or display_prompt
             title = title_source[:50] + ("..." if len(title_source) > 50 else "")
             _update_chat(chat_id, title=title)
@@ -3773,7 +4136,14 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         original_ws = websocket
         _attach_ws(websocket, chat_id)
         _reset_stream_buffer(chat_id)
-        await _send_stream_event(chat_id, {"type": "stream_start", "chat_id": chat_id})
+
+        # Include speaker info in stream_start so webapp can render header during streaming
+        stream_start_event = {"type": "stream_start", "chat_id": chat_id}
+        if group_agent:
+            stream_start_event["speaker_name"] = group_agent["name"]
+            stream_start_event["speaker_avatar"] = group_agent["avatar"]
+            stream_start_event["speaker_id"] = group_agent["profile_id"]
+        await _send_stream_event(chat_id, stream_start_event)
 
         result: dict | None = None
 
@@ -3865,6 +4235,9 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 cost_usd=result.get("cost_usd", 0),
                 tokens_in=result.get("tokens_in", 0),
                 tokens_out=result.get("tokens_out", 0),
+                speaker_id=group_agent["profile_id"] if group_agent else "",
+                speaker_name=group_agent["name"] if group_agent else "",
+                speaker_avatar=group_agent["avatar"] if group_agent else "",
             )
 
         # Auto-compaction check — rotate session if token usage too high (Claude only)
@@ -3971,6 +4344,9 @@ CHAT_HTML = """<!DOCTYPE html>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:#0F172A;--surface:#1E293B;--card:#334155;--text:#F1F5F9;--dim:#94A3B8;
 --accent:#0EA5E9;--green:#10B981;--red:#EF4444;--yellow:#F59E0B;
+--nav-bg:#141C2B;--nav-card:rgba(255,255,255,0.04);--nav-card-active:rgba(14,165,233,0.08);
+--nav-card-hover:rgba(255,255,255,0.06);--nav-divider:rgba(255,255,255,0.04);
+--nav-accent-glow:0 0 20px rgba(14,165,233,0.15);
 --panel-bg:#1A1A2E;--panel-border:#333;--panel-text:#E5E7EB;--panel-muted:#888;
 --panel-input-bg:#111827;--debug-bg:#111827;--debug-border:#233047;--debug-state:#93C5FD;--debug-log:#A7F3D0;
 --sat:env(safe-area-inset-top);--sab:env(safe-area-inset-bottom);--sidebar-width:min(300px,80vw);
@@ -3979,6 +4355,9 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,system-ui,
 height:100dvh;display:flex;flex-direction:column;overflow:hidden}
 body.theme-light{--bg:#F8FAFC;--surface:#FFFFFF;--card:#D8E1EB;--text:#0F172A;--dim:#64748B;
 --accent:#0284C7;--green:#059669;--red:#DC2626;--yellow:#D97706;
+--nav-bg:#F1F4F9;--nav-card:rgba(0,0,0,0.03);--nav-card-active:rgba(2,132,199,0.07);
+--nav-card-hover:rgba(0,0,0,0.05);--nav-divider:rgba(0,0,0,0.04);
+--nav-accent-glow:0 0 20px rgba(2,132,199,0.1);
 --panel-bg:#FFFFFF;--panel-border:#CBD5E1;--panel-text:#0F172A;--panel-muted:#64748B;
 --panel-input-bg:#F8FAFC;--debug-bg:#E2E8F0;--debug-border:#CBD5E1;--debug-state:#1D4ED8;--debug-log:#047857}
 
@@ -4092,29 +4471,81 @@ display:flex;align-items:center;justify-content:center}
 gap:4px;font-size:12px;color:var(--dim);flex-shrink:0;max-width:150px}
 .attach-item img{width:32px;height:32px;object-fit:cover;border-radius:4px}
 .attach-item .remove{cursor:pointer;color:var(--red);font-size:14px;margin-left:4px}
+/* Drag-and-drop overlay */
+.drop-overlay{display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.55);
+align-items:center;justify-content:center;pointer-events:none}
+.drop-overlay.visible{display:flex}
+.drop-overlay-inner{border:3px dashed var(--accent);border-radius:16px;padding:40px 60px;
+background:var(--surface);color:var(--accent);font-size:18px;font-weight:600;
+text-align:center;pointer-events:none}
 .transcribing{color:var(--yellow);font-size:12px;padding:4px 12px;transition:margin-left .2s ease}
 
 /* History sidebar */
-.sidebar{position:fixed;top:0;left:0;width:var(--sidebar-width);height:100dvh;background:var(--surface);
-z-index:100;transform:translateX(-100%);transition:transform 0.2s;padding-top:var(--sat);overflow-y:auto}
-.sidebar.open{transform:translateX(0)}
+.sidebar{position:fixed;top:0;left:0;width:var(--sidebar-width);height:100dvh;background:var(--nav-bg);
+z-index:100;transform:translateX(-100%);transition:transform 0.2s ease;padding-top:var(--sat);overflow:hidden;
+display:flex;flex-direction:column;border-right:1px solid rgba(255,255,255,0.06)}
+.sidebar.open{transform:translateX(0);transition:transform 0.25s cubic-bezier(0.4,0,0.2,1)}
+body.theme-light .sidebar{border-right-color:rgba(0,0,0,0.04)}
 .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99;display:none}
 .sidebar-overlay.open{display:block}
-.sidebar-header{display:flex;align-items:center;justify-content:space-between;padding:16px;border-bottom:1px solid var(--card)}
-.sidebar h2{font-size:16px}
+.sidebar-header{display:flex;align-items:center;justify-content:space-between;padding:18px 16px 14px}
+.sidebar h2{font-size:15px;font-weight:700;letter-spacing:0.3px}
+.sidebar-body{flex:1;overflow-y:auto;padding:0 8px 12px}
 .sidebar-pin{background:transparent;border:none;color:var(--dim);font-size:18px;cursor:pointer;
-width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center}
-.sidebar-pin:hover,.sidebar-pin.active{background:var(--card);color:var(--accent)}
-.sidebar .chat-item{padding:12px 16px;border-bottom:1px solid var(--bg);cursor:pointer;
-font-size:14px;color:var(--dim);min-height:44px;display:flex;align-items:center}
-.sidebar .chat-item:active{background:var(--card)}
-.sidebar .chat-item.active{color:var(--accent);font-weight:600}
-.chat-item-actions{margin-left:auto;display:none;flex-shrink:0}
-.chat-item:hover .chat-item-actions{display:flex;gap:2px}
+width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center}
+.sidebar-pin:hover,.sidebar-pin.active{background:var(--nav-card-hover);color:var(--accent)}
+.sidebar .new-btn{padding:10px 16px;color:var(--accent);cursor:pointer;font-size:13px;font-weight:600;
+border:1px dashed rgba(14,165,233,0.35);border-radius:10px;text-align:center;justify-content:center;
+background:transparent;min-height:40px;display:flex;align-items:center;margin-bottom:12px;
+transition:background 0.15s ease,border-color 0.15s ease,border-style 0.15s ease}
+.sidebar .new-btn:hover{border-style:solid;background:var(--nav-card-hover)}
+body.theme-light .sidebar .new-btn{border-color:rgba(2,132,199,0.35)}
+.sidebar .chat-item{background:var(--nav-card);border-radius:10px;padding:12px 14px;margin-bottom:6px;
+border:1px solid transparent;cursor:pointer;font-size:14px;color:var(--text);min-height:44px;display:block;
+transition:background 0.15s ease,border-color 0.15s ease,box-shadow 0.15s ease,padding 0.15s ease}
+.sidebar .chat-item:hover{background:var(--nav-card-hover);border-color:rgba(255,255,255,0.06)}
+body.theme-light .sidebar .chat-item:hover{border-color:rgba(0,0,0,0.06)}
+.sidebar .chat-item:active{background:var(--nav-card-hover)}
+.sidebar .chat-item.active{background:var(--nav-card-active);border-left:3px solid var(--accent);
+box-shadow:var(--nav-accent-glow);padding-left:11px}
+.chat-item-top{display:flex;align-items:center;gap:8px;min-width:0}
+.chat-item .ci-avatar{font-size:22px;width:28px;text-align:center;flex-shrink:0;margin-right:0}
+.chat-item-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;
+color:var(--text);font-weight:500}
+.sidebar .chat-item.active .chat-item-title{color:var(--accent);font-weight:600}
+.chat-item-subtitle{font-size:11px;font-weight:500;color:var(--dim);margin-top:3px;padding-left:36px}
+.chat-item-subtitle .model{opacity:0.7}
+.chat-item-actions{margin-left:auto;display:flex;gap:2px;flex-shrink:0;opacity:0;pointer-events:none;
+transition:opacity 0.15s ease}
+.chat-item:hover .chat-item-actions,.chat-item:focus-within .chat-item-actions{opacity:1;pointer-events:auto}
 .chat-action-btn{background:none;border:none;cursor:pointer;font-size:12px;padding:2px 4px;opacity:0.5;line-height:1}
 .chat-action-btn:hover{opacity:1}
-.sidebar .new-btn{padding:12px 16px;color:var(--accent);cursor:pointer;font-size:14px;
-font-weight:600;border-bottom:1px solid var(--bg);min-height:44px;display:flex;align-items:center}
+.sidebar-section-header{display:flex;align-items:center;justify-content:center;gap:10px;padding:0 4px 8px;
+color:var(--dim);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;margin-top:16px}
+.thread-section-header::before,.thread-section-header::after{content:'';flex:1;height:1px;background:var(--nav-divider)}
+.thread-section-header .section-label{opacity:0.6;white-space:nowrap}
+.section-toggle{background:none;border:none;color:var(--dim);cursor:pointer;font-size:11px;padding:0;opacity:0.5;line-height:1}
+.section-toggle:hover{opacity:0.8}
+.sidebar .chat-item.thread-item{padding:8px 14px;min-height:0;opacity:0.85;font-size:13px}
+.sidebar .chat-item.thread-item:hover{opacity:1}
+.sidebar .chat-item.thread-item .ci-avatar{font-size:18px;width:24px}
+.sidebar .chat-item.thread-item .chat-item-title{font-size:13px}
+.speaker-header{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;
+color:var(--accent);margin-bottom:2px;padding-left:2px}
+.speaker-avatar{font-size:14px}
+.speaker-name{opacity:0.9}
+
+/* @mention autocomplete */
+.mention-popup{position:absolute;bottom:100%;left:0;right:0;background:var(--surface);
+border:1px solid var(--card);border-radius:8px;margin-bottom:4px;max-height:200px;
+overflow-y:auto;display:none;z-index:100;box-shadow:0 -4px 12px rgba(0,0,0,0.3)}
+.mention-popup.visible{display:block}
+.mention-item{display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;
+font-size:14px;transition:background 0.1s}
+.mention-item:hover,.mention-item.selected{background:var(--card)}
+.mention-item .mi-avatar{font-size:18px;width:24px;text-align:center}
+.mention-item .mi-name{font-weight:600;color:var(--text)}
+.mention-item .mi-role{font-size:12px;color:var(--dim);margin-left:auto}
 
 /* Usage bar */
 .usage-bar{background:var(--surface);padding:4px 16px 6px;border-bottom:1px solid var(--card);
@@ -4246,7 +4677,7 @@ font-family:ui-monospace,monospace;word-break:break-all}
 .alert-detail-card .ad-actions{display:flex;gap:8px;padding:16px 20px}
 .alert-detail-card .ad-actions button{flex:1;padding:8px;border-radius:8px;border:none;
 font-weight:600;font-size:13px;cursor:pointer}
-body.sidebar-pinned .sidebar{transform:translateX(0);box-shadow:8px 0 24px rgba(0,0,0,0.18)}
+body.sidebar-pinned .sidebar{transform:translateX(0);box-shadow:1px 0 0 rgba(255,255,255,0.06),6px 0 16px rgba(0,0,0,0.12)}
 body.sidebar-pinned .sidebar-overlay{display:none!important}
 body.sidebar-pinned .topbar,
 body.sidebar-pinned .usage-bar,
@@ -4295,7 +4726,7 @@ cursor:pointer;padding:2px 8px;border-radius:6px;margin-right:4px;flex-shrink:0}
 text-overflow:ellipsis;white-space:nowrap}
 
 /* Profile badge in sidebar chat items */
-.chat-item .ci-avatar{font-size:16px;flex-shrink:0;margin-right:4px}
+.chat-item .ci-avatar{font-size:22px;width:28px;text-align:center;flex-shrink:0;margin-right:0}
 
 /* Profile change dropdown */
 .profile-dropdown{position:fixed;background:var(--surface);border:1px solid var(--card);
@@ -4419,11 +4850,18 @@ cursor:pointer;font-size:13px;color:var(--text);border-bottom:1px solid var(--bg
 
 <div class="sidebar" id="sidebar">
   <div class="sidebar-header">
-    <h2>Chats</h2>
+    <h2>Channels</h2>
     <button class="sidebar-pin" id="pinSidebarBtn" title="Pin sidebar" aria-pressed="false">&#128204;</button>
   </div>
-  <div class="new-btn" id="newChatBtn">+ New Chat</div>
-  <div id="chatList"></div>
+  <div class="sidebar-body">
+    <div class="new-btn" id="newChatBtn">+ New Channel</div>
+    <div id="chatList"></div>
+    <div class="sidebar-section-header thread-section-header" id="threadSectionHeader" style="display:none">
+      <span class="section-label">Threads</span>
+      <button class="section-toggle" id="threadToggle" title="Toggle threads">▾</button>
+    </div>
+    <div id="threadList"></div>
+  </div>
 </div>
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
 
@@ -4442,7 +4880,9 @@ cursor:pointer;font-size:13px;color:var(--text);border-bottom:1px solid var(--bg
     <div class="context-fill green" id="contextFill" style="width:0%"></div>
   </div>
 </div>
-<div class="composer" id="composerBar">
+<div class="drop-overlay" id="dropOverlay"><div class="drop-overlay-inner">&#128206; Drop files to attach</div></div>
+<div class="composer" id="composerBar" style="position:relative">
+  <div class="mention-popup" id="mentionPopup"></div>
   <label class="btn-compose" id="attachBtn" title="Attach file" style="cursor:pointer">
     &#128206;
     <input type="file" id="fileInput" style="position:absolute;width:0;height:0;overflow:hidden;opacity:0" multiple accept="image/*,.txt,.py,.json,.csv,.md,.yaml,.yml,.toml,.sh,.js,.ts,.html,.css">
@@ -4463,6 +4903,9 @@ let ws = null;
 let currentChat = sessionStorage.getItem('currentChatId') || null;
 let streaming = false;
 let currentBubble = null;
+let currentSpeaker = null; // {name, avatar, id} for group @mention routing
+let currentGroupMembers = []; // [{profile_id, name, avatar, role_description}] for @mention autocomplete
+let mentionSelectedIdx = 0;
 let initStarted = false;
 let initDone = false;
 let initPromise = null;
@@ -4812,10 +5255,11 @@ function handleEvent(msg) {
     case 'stream_start':
       streaming = true;
       currentBubble = null;
+      currentSpeaker = msg.speaker_name ? {name: msg.speaker_name, avatar: msg.speaker_avatar || '', id: msg.speaker_id || ''} : null;
       sessionStorage.setItem('streamingChatId', msg.chat_id || currentChat || '');
       markStreamActivity('stream-start');
       updateSendBtn();
-  
+
       refreshDebugState('stream-start');
       break;
 
@@ -4930,6 +5374,7 @@ function handleEvent(msg) {
     case 'stream_end':
       streaming = false;
       currentBubble = null;
+      currentSpeaker = null;
       sessionStorage.removeItem('streamingChatId');
       clearStreamWatchdog();
       updateSendBtn();
@@ -5044,7 +5489,12 @@ function addAssistantMsg() {
   const el = document.getElementById('messages');
   const div = document.createElement('div');
   div.className = 'msg assistant streaming';
-  div.innerHTML = '<div class="bubble"></div>';
+  let inner = '';
+  if (currentSpeaker && currentSpeaker.name) {
+    inner += `<div class="speaker-header"><span class="speaker-avatar">${escHtml(currentSpeaker.avatar || '')}</span> <span class="speaker-name">${escHtml(currentSpeaker.name)}</span></div>`;
+  }
+  inner += '<div class="bubble"></div>';
+  div.innerHTML = inner;
   el.appendChild(div);
   scrollBottom();
   return div;
@@ -5865,23 +6315,44 @@ async function loadChats() {
   const chats = await r.json();
   knownChatCount = chats.length;
   dbg(' chats:', chats.length, chats.map(c => c.id));
-  const list = document.getElementById('chatList');
-  list.innerHTML = '';
-  chats.forEach(c => {
+
+  // Partition into channels (chat + alerts) and threads
+  const channels = chats.filter(c => (c.type || 'chat') !== 'thread');
+  const threads = chats.filter(c => c.type === 'thread').slice(0, 10);
+
+  function buildChatItem(c, isThread) {
     const d = document.createElement('div');
-    d.className = 'chat-item' + (c.id === currentChat ? ' active' : '');
-    // Profile avatar prefix
-    if (c.profile_avatar) {
+    d.className = 'chat-item' + (c.id === currentChat ? ' active' : '') + (isThread ? ' thread-item' : '');
+    const top = document.createElement('div');
+    top.className = 'chat-item-top';
+    // Icon prefix
+    if (isThread) {
+      const icon = document.createElement('span');
+      icon.className = 'ci-avatar';
+      icon.textContent = '\u26A1';
+      top.appendChild(icon);
+    } else if (c.type === 'group') {
+      const icon = document.createElement('span');
+      icon.className = 'ci-avatar';
+      icon.textContent = c.profile_avatar || '👥';
+      top.appendChild(icon);
+    } else if (c.profile_avatar) {
       const avatarSpan = document.createElement('span');
       avatarSpan.className = 'ci-avatar';
       avatarSpan.textContent = c.profile_avatar;
-      d.appendChild(avatarSpan);
+      top.appendChild(avatarSpan);
+    } else {
+      const avatarSpan = document.createElement('span');
+      avatarSpan.className = 'ci-avatar';
+      avatarSpan.textContent = c.type === 'alerts' ? '🚨' : '💬';
+      top.appendChild(avatarSpan);
     }
     const titleSpan = document.createElement('span');
     titleSpan.className = 'chat-item-title';
-    titleSpan.textContent = c.title || 'Untitled';
-    titleSpan.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0';
-    d.appendChild(titleSpan);
+    let displayTitle = c.title || 'Untitled';
+    if (c.type === 'group' && c.member_count) displayTitle += ' (' + c.member_count + ')';
+    titleSpan.textContent = displayTitle;
+    top.appendChild(titleSpan);
     d.dataset.id = c.id;
     d.dataset.title = c.title || 'Untitled';
     d.dataset.type = c.type || 'chat';
@@ -5893,12 +6364,10 @@ async function loadChats() {
     d.onclick = () => selectChat(c.id, c.title, c.type, c.category).catch(err => reportError('selectChat click', err));
     d.ondblclick = (e) => { e.stopPropagation(); startRenameChat(d, c.id, c.title || 'Untitled'); };
     d.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteChat(c.id, c.title || 'Untitled'); };
-
-    // Action buttons (rename + delete)
     const actions = document.createElement('span');
     actions.className = 'chat-item-actions';
     actions.innerHTML =
-      '<button class="chat-action-btn" title="Rename" data-action="rename">✏️</button>' +
+      '<button class="chat-action-btn" title="Rename" data-action="rename">\u270F\uFE0F</button>' +
       '<button class="chat-action-btn" title="Delete" data-action="delete">🗑️</button>';
     actions.querySelector('[data-action="rename"]').onclick = (e) => {
       e.stopPropagation(); startRenameChat(d, c.id, c.title || 'Untitled');
@@ -5906,9 +6375,51 @@ async function loadChats() {
     actions.querySelector('[data-action="delete"]').onclick = (e) => {
       e.stopPropagation(); confirmDeleteChat(c.id, c.title || 'Untitled');
     };
-    d.appendChild(actions);
-    list.appendChild(d);
-  });
+    top.appendChild(actions);
+    d.appendChild(top);
+    if (!isThread) {
+      const sub = document.createElement('div');
+      sub.className = 'chat-item-subtitle';
+      const agentName = c.profile_name || '';
+      const modelName = c.model || '';
+      if (c.type === 'alerts') {
+        sub.textContent = 'Alerts · Trading + System';
+      } else if (c.type === 'group') {
+        sub.textContent = 'Group · ' + (c.member_count || 0) + ' members';
+      } else if (agentName && modelName) {
+        sub.appendChild(document.createTextNode(agentName + ' · '));
+        const model = document.createElement('span');
+        model.className = 'model';
+        model.textContent = modelName;
+        sub.appendChild(model);
+      } else if (modelName) {
+        sub.textContent = modelName;
+      }
+      if (sub.textContent || sub.children.length) {
+        d.appendChild(sub);
+      }
+    }
+    return d;
+  }
+
+  // Render channels
+  const list = document.getElementById('chatList');
+  list.innerHTML = '';
+  channels.forEach(c => list.appendChild(buildChatItem(c, false)));
+
+  // Render threads section
+  const threadHeader = document.getElementById('threadSectionHeader');
+  const threadList = document.getElementById('threadList');
+  threadList.innerHTML = '';
+  if (threads.length > 0) {
+    threadHeader.style.display = 'flex';
+    const collapsed = threadList.dataset.collapsed === 'true';
+    threadList.style.display = collapsed ? 'none' : '';
+    threads.forEach(c => threadList.appendChild(buildChatItem(c, true)));
+  } else {
+    threadHeader.style.display = 'none';
+  }
+
   setActiveChatUI();
   updateUsageBarVisibility();
   refreshDebugState('loadChats');
@@ -5984,6 +6495,7 @@ let _lastSelectChatId = null;
 let _lastSelectChatTime = 0;
 
 let currentChatType = 'chat';
+let _groupMembers = []; // cached members for current group chat
 let sidebarPinned = localStorage.getItem('sidebarPinned') === '1';
 let themeMode = localStorage.getItem('themeMode')
   || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
@@ -6075,6 +6587,22 @@ async function selectChat(id, title, chatType, category) {
   // Show input bar for regular chats
   document.getElementById('composerBar').style.display = '';
 
+  // Load group members for @mention autocomplete
+  currentGroupMembers = [];
+  if (currentChatType === 'group') {
+    try {
+      const mr = await fetch(`/api/chats/${id}/members`, {credentials: 'same-origin'});
+      if (mr.ok) {
+        const md = await mr.json();
+        currentGroupMembers = md.members || [];
+        dbg('group members loaded:', currentGroupMembers.length);
+      }
+    } catch(e) { dbg('group members fetch error:', e); }
+  }
+  // Update placeholder for groups
+  const inp = document.getElementById('input');
+  inp.placeholder = currentGroupMembers.length ? 'Message... (type @ to mention)' : 'Message...';
+
   // Load messages
   const r = await fetch(`/api/chats/${id}/messages`, {credentials: 'same-origin'});
   if (!r.ok) {
@@ -6127,6 +6655,10 @@ async function selectChat(id, title, chatType, category) {
           inner += `<div class="tool-group"><div class="tool-group-header" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="arrow">&#9656;</span> ${groupLabel}<span class="tool-group-count"></span></div><div class="tool-group-body">${groupBody}</div></div>`;
         }
       } catch(e) {}
+      // Speaker identity header for group messages
+      if (m.speaker_name) {
+        inner += `<div class="speaker-header"><span class="speaker-avatar">${escHtml(m.speaker_avatar || '')}</span> <span class="speaker-name">${escHtml(m.speaker_name)}</span></div>`;
+      }
       inner += `<div class="bubble"></div>`;
       if (m.cost_usd || m.tokens_in || m.tokens_out) {
         const cost = m.cost_usd ? `$${m.cost_usd.toFixed(4)}` : '';
@@ -6156,7 +6688,7 @@ async function newChat() {
   dbg(' created chat:', data.id);
   const chats = await loadChats();
   const chat = chats.find(c => c.id === data.id);
-  await selectChat(data.id, chat?.title || 'New Chat');
+  await selectChat(data.id, chat?.title || 'New Channel');
   refreshDebugState('newChat');
   return data.id;
 }
@@ -6336,6 +6868,14 @@ document.getElementById('fontScaleResetBtn').onclick = () => setChatFontScale(1)
 document.getElementById('newChatBtn').onclick = () => {
   loadProfiles().then(() => showNewChatProfilePicker()).catch(err => reportError('profile picker', err));
 };
+document.getElementById('threadToggle').onclick = () => {
+  const tl = document.getElementById('threadList');
+  const btn = document.getElementById('threadToggle');
+  const collapsed = tl.dataset.collapsed !== 'true';
+  tl.dataset.collapsed = collapsed;
+  tl.style.display = collapsed ? 'none' : '';
+  btn.textContent = collapsed ? '\u25B8' : '\u25BE';
+};
 document.getElementById('sendBtn').onclick = () => {
   if (streaming) {
     ws.send(JSON.stringify({action: 'stop', chat_id: currentChat}));
@@ -6347,6 +6887,35 @@ document.getElementById('fileInput').onchange = (e) => {
   if (e.target.files.length) handleFiles(e.target.files);
   e.target.value = '';
 };
+
+// --- Drag-and-drop file attachment ---
+let _dragCounter = 0;
+const _dropOverlay = document.getElementById('dropOverlay');
+document.addEventListener('dragenter', (e) => {
+  if (!e.dataTransfer?.types?.includes('Files')) return;
+  e.preventDefault();
+  _dragCounter++;
+  _dropOverlay.classList.add('visible');
+});
+document.addEventListener('dragleave', (e) => {
+  _dragCounter--;
+  if (_dragCounter <= 0) { _dragCounter = 0; _dropOverlay.classList.remove('visible'); }
+});
+document.addEventListener('dragover', (e) => {
+  if (!e.dataTransfer?.types?.includes('Files')) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+});
+document.addEventListener('drop', (e) => {
+  e.preventDefault();
+  _dragCounter = 0;
+  _dropOverlay.classList.remove('visible');
+  if (e.dataTransfer?.files?.length) {
+    handleFiles(e.dataTransfer.files);
+    document.getElementById('input').focus();
+  }
+});
+
 const input = document.getElementById('input');
 // Restore draft from previous page load
 const savedDraft = sessionStorage.getItem('draftText');
@@ -6359,13 +6928,69 @@ input.addEventListener('input', () => {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 120) + 'px';
   sessionStorage.setItem('draftText', input.value);
+  // @mention autocomplete
+  _checkMentionPopup();
 });
 input.addEventListener('keydown', (e) => {
+  const popup = document.getElementById('mentionPopup');
+  if (popup && popup.classList.contains('visible')) {
+    const items = popup.querySelectorAll('.mention-item');
+    if (e.key === 'ArrowDown') { e.preventDefault(); mentionSelectedIdx = Math.min(mentionSelectedIdx + 1, items.length - 1); _highlightMentionItem(items); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); mentionSelectedIdx = Math.max(mentionSelectedIdx - 1, 0); _highlightMentionItem(items); return; }
+    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); const sel = items[mentionSelectedIdx]; if (sel) _insertMention(sel.dataset.name); return; }
+    if (e.key === 'Escape') { e.preventDefault(); _hideMentionPopup(); return; }
+  }
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     send().catch(err => reportError('send keydown', err));
   }
 });
+
+function _checkMentionPopup() {
+  if (!currentGroupMembers.length) { _hideMentionPopup(); return; }
+  const val = input.value;
+  const pos = input.selectionStart;
+  // Find the @word being typed: look backwards from cursor for @
+  const before = val.substring(0, pos);
+  const match = before.match(/@([\\w]*)$/);
+  if (!match) { _hideMentionPopup(); return; }
+  const query = match[1].toLowerCase();
+  const filtered = currentGroupMembers.filter(m =>
+    m.name.toLowerCase().startsWith(query) || m.profile_id.toLowerCase().startsWith(query)
+  );
+  if (!filtered.length) { _hideMentionPopup(); return; }
+  const popup = document.getElementById('mentionPopup');
+  popup.innerHTML = filtered.map((m, i) =>
+    `<div class="mention-item${i === 0 ? ' selected' : ''}" data-name="${escHtml(m.name)}" onclick="_insertMention('${escHtml(m.name)}')"><span class="mi-avatar">${escHtml(m.avatar || '')}</span><span class="mi-name">${escHtml(m.name)}</span></div>`
+  ).join('');
+  mentionSelectedIdx = 0;
+  popup.classList.add('visible');
+}
+
+function _highlightMentionItem(items) {
+  items.forEach((it, i) => it.classList.toggle('selected', i === mentionSelectedIdx));
+}
+
+function _insertMention(name) {
+  const val = input.value;
+  const pos = input.selectionStart;
+  const before = val.substring(0, pos);
+  const after = val.substring(pos);
+  const atIdx = before.lastIndexOf('@');
+  if (atIdx < 0) return;
+  const newVal = before.substring(0, atIdx) + '@' + name + ' ' + after;
+  input.value = newVal;
+  const newPos = atIdx + name.length + 2;
+  input.setSelectionRange(newPos, newPos);
+  input.focus();
+  _hideMentionPopup();
+  sessionStorage.setItem('draftText', input.value);
+}
+
+function _hideMentionPopup() {
+  const popup = document.getElementById('mentionPopup');
+  if (popup) popup.classList.remove('visible');
+}
 
 async function initApp() {
   dbg(' initApp starting via', initTrigger);
@@ -6735,6 +7360,31 @@ function showNewChatProfilePicker() {
   header.appendChild(closeBtn);
   modal.appendChild(header);
 
+  // Quick Thread button at top
+  const threadBtn = document.createElement('div');
+  threadBtn.style.cssText = 'padding:12px 16px;border-bottom:1px solid var(--bg);cursor:pointer;display:flex;align-items:center;gap:10px';
+  threadBtn.innerHTML = '<span style="font-size:18px">\u26A1</span><div><div style="font-weight:600;font-size:14px">Quick Thread</div><div style="font-size:12px;color:var(--dim)">Lightweight one-off interaction</div></div>';
+  threadBtn.onmouseenter = () => { threadBtn.style.background = 'var(--card)'; };
+  threadBtn.onmouseleave = () => { threadBtn.style.background = ''; };
+  threadBtn.onclick = async () => {
+    overlay.remove();
+    if (!sidebarPinned) closeSidebar();
+    await newThread().catch(err => reportError('newThread', err));
+  };
+  modal.appendChild(threadBtn);
+
+  // New Group button (premium-gated)
+  fetch('/api/features', {credentials: 'same-origin'}).then(r => r.json()).then(f => {
+    if (!f.groups_enabled) return;
+    const groupBtn = document.createElement('div');
+    groupBtn.style.cssText = 'padding:12px 16px;border-bottom:1px solid var(--bg);cursor:pointer;display:flex;align-items:center;gap:10px';
+    groupBtn.innerHTML = '<span style="font-size:18px">👥</span><div><div style="font-weight:600;font-size:14px">New Group</div><div style="font-size:12px;color:var(--dim)">Multi-agent collaboration</div></div>';
+    groupBtn.onmouseenter = () => { groupBtn.style.background = 'var(--card)'; };
+    groupBtn.onmouseleave = () => { groupBtn.style.background = ''; };
+    groupBtn.onclick = () => { overlay.remove(); showNewGroupPicker(); };
+    threadBtn.after(groupBtn);
+  }).catch(() => {});
+
   const body = document.createElement('div');
   body.className = 'profile-modal-body';
 
@@ -6746,7 +7396,7 @@ function showNewChatProfilePicker() {
     _profilesCache.forEach(p => {
       const card = document.createElement('div');
       card.className = 'profile-card' + (selectedProfileId === p.id ? ' selected' : '');
-      card.innerHTML = `<div class="profile-avatar">${p.avatar || '\\uD83D\\uDCAC'}</div>
+      card.innerHTML = `<div class="profile-avatar">${p.avatar || '💬'}</div>
         <div class="profile-info">
           <div class="profile-name">${escHtml(p.name)}</div>
           <div class="profile-role">${escHtml(p.role_description || '')}</div>
@@ -6805,8 +7455,137 @@ async function newChatWithProfile(profileId) {
   dbg(' created chat:', data.id, 'profile:', data.profile_name || '(none)');
   const chats = await loadChats();
   const chat = chats.find(c => c.id === data.id);
-  await selectChat(data.id, chat?.title || 'New Chat');
+  await selectChat(data.id, chat?.title || 'New Channel');
   refreshDebugState('newChatWithProfile');
+  return data.id;
+}
+
+async function newThread() {
+  dbg(' creating new thread...');
+  const r = await fetch('/api/chats', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({type: 'thread'})
+  });
+  if (!r.ok) {
+    dbg('ERROR: newThread failed:', r.status);
+    throw new Error('newThread failed: ' + r.status);
+  }
+  const data = await r.json();
+  dbg(' created thread:', data.id);
+  const chats = await loadChats();
+  const chat = chats.find(c => c.id === data.id);
+  await selectChat(data.id, chat?.title || 'Quick thread', 'thread');
+  refreshDebugState('newThread');
+  return data.id;
+}
+
+function showNewGroupPicker() {
+  document.querySelector('.profile-modal-overlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.className = 'profile-modal-overlay';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  const modal = document.createElement('div');
+  modal.className = 'profile-modal';
+  const header = document.createElement('div');
+  header.className = 'profile-modal-header';
+  header.innerHTML = '<h3>New Group</h3>';
+  const closeBtn = document.createElement('button');
+  closeBtn.innerHTML = '&times;';
+  closeBtn.onclick = () => overlay.remove();
+  header.appendChild(closeBtn);
+  modal.appendChild(header);
+
+  const titleInput = document.createElement('input');
+  titleInput.type = 'text';
+  titleInput.placeholder = 'Group name...';
+  titleInput.value = '';
+  titleInput.style.cssText = 'width:100%;padding:10px 16px;border:none;border-bottom:1px solid var(--bg);background:var(--surface);color:var(--fg);font-size:14px;box-sizing:border-box';
+  modal.appendChild(titleInput);
+
+  const body = document.createElement('div');
+  body.className = 'profile-modal-body';
+  body.style.maxHeight = '300px';
+  const selectedMembers = new Map();
+
+  function render() {
+    body.innerHTML = '';
+    if (_profilesCache.length === 0) {
+      body.innerHTML = '<div style="padding:12px;color:var(--dim);font-size:13px">No agent profiles to add.</div>';
+      return;
+    }
+    _profilesCache.forEach(p => {
+      const card = document.createElement('div');
+      card.className = 'profile-card' + (selectedMembers.has(p.id) ? ' selected' : '');
+      const mode = selectedMembers.get(p.id) || '';
+      const badge = mode === 'primary' ? ' 👑' : (mode ? ' ✓' : '');
+      card.innerHTML = `<div class="profile-avatar">${p.avatar || '💬'}</div>
+        <div class="profile-info"><div class="profile-name">${escHtml(p.name)}${badge}</div>
+        <div class="profile-role">${escHtml(p.role_description || '')}</div></div>`;
+      card.onclick = () => {
+        if (!selectedMembers.has(p.id)) {
+          selectedMembers.set(p.id, 'mentioned');
+        } else if (selectedMembers.get(p.id) === 'mentioned') {
+          selectedMembers.set(p.id, 'primary');
+          // Only one primary
+          selectedMembers.forEach((v, k) => { if (k !== p.id && v === 'primary') selectedMembers.set(k, 'mentioned'); });
+        } else {
+          selectedMembers.delete(p.id);
+        }
+        render();
+      };
+      body.appendChild(card);
+    });
+  }
+  render();
+  modal.appendChild(body);
+
+  const hint = document.createElement('div');
+  hint.style.cssText = 'padding:8px 16px;font-size:11px;color:var(--dim)';
+  hint.textContent = 'Click once = member, twice = primary (crown), third = remove';
+  modal.appendChild(hint);
+
+  const actions = document.createElement('div');
+  actions.className = 'profile-modal-actions';
+  const createBtn = document.createElement('button');
+  createBtn.className = 'btn-create';
+  createBtn.textContent = 'Create Group';
+  createBtn.onclick = async () => {
+    if (selectedMembers.size === 0) return;
+    const members = [];
+    selectedMembers.forEach((mode, pid) => members.push({profile_id: pid, routing_mode: mode}));
+    if (!members.some(m => m.routing_mode === 'primary') && members.length > 0) {
+      members[0].routing_mode = 'primary';
+    }
+    overlay.remove();
+    if (!sidebarPinned) closeSidebar();
+    await newGroup(titleInput.value.trim() || 'New Group', members).catch(err => reportError('newGroup', err));
+  };
+  actions.appendChild(createBtn);
+  modal.appendChild(actions);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+}
+
+async function newGroup(title, members) {
+  dbg(' creating new group:', title, members);
+  const r = await fetch('/api/chats', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({type: 'group', title: title, members: members})
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    dbg('ERROR: newGroup failed:', r.status, err);
+    throw new Error('newGroup failed: ' + r.status + ' ' + (err.error || ''));
+  }
+  const data = await r.json();
+  dbg(' created group:', data.id);
+  const chats = await loadChats();
+  await selectChat(data.id, title, 'group');
+  refreshDebugState('newGroup');
   return data.id;
 }
 
@@ -6818,10 +7597,10 @@ function updateTopbarProfile(profileName, profileAvatar) {
   _currentChatProfileName = profileName || '';
   _currentChatProfileAvatar = profileAvatar || '';
   if (profileName) {
-    avatarEl.textContent = profileAvatar || '\uD83D\uDCAC';
+    avatarEl.textContent = profileAvatar || '💬';
     nameEl.textContent = profileName;
   } else {
-    avatarEl.textContent = '\uD83D\uDCAC';
+    avatarEl.textContent = '💬';
     nameEl.textContent = 'No Profile';
   }
   el.style.display = currentChatType === 'chat' ? '' : 'none';
@@ -6845,16 +7624,16 @@ function showProfileDropdown(event) {
   // "None" option
   const noneItem = document.createElement('div');
   noneItem.className = 'pd-item';
-  noneItem.innerHTML = '<span class="pd-avatar">\uD83D\uDCAC</span><span class="pd-name">No Profile</span>' +
-    (!_currentChatProfileId ? '<span class="pd-check">\u2713</span>' : '');
+  noneItem.innerHTML = '<span class="pd-avatar">💬</span><span class="pd-name">No Profile</span>' +
+    (!_currentChatProfileId ? '<span class="pd-check">✓</span>' : '');
   noneItem.onclick = () => { dd.remove(); changeChatProfile(''); };
   dd.appendChild(noneItem);
 
   _profilesCache.forEach(p => {
     const item = document.createElement('div');
     item.className = 'pd-item';
-    item.innerHTML = `<span class="pd-avatar">${p.avatar || '\uD83D\uDCAC'}</span><span class="pd-name">${escHtml(p.name)}</span>` +
-      (_currentChatProfileId === p.id ? '<span class="pd-check">\u2713</span>' : '');
+    item.innerHTML = `<span class="pd-avatar">${p.avatar || '💬'}</span><span class="pd-name">${escHtml(p.name)}</span>` +
+      (_currentChatProfileId === p.id ? '<span class="pd-check">✓</span>' : '');
     item.onclick = () => { dd.remove(); changeChatProfile(p.id); };
     dd.appendChild(item);
   });

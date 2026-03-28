@@ -6,10 +6,59 @@ struct NewChannelView: View {
 
     @State private var selectedProfile: AgentProfile?
     @State private var isLoadingProfiles = true
+    @State private var groupsEnabled = false
+    @State private var showingNewGroup = false
 
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    Button {
+                        Task {
+                            await appState.createThread()
+                            dismiss()
+                        }
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "bolt.fill")
+                                .font(.title2)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 36, alignment: .center)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Quick Thread")
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                Text("Lightweight one-off interaction")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+
+                if groupsEnabled {
+                    Section {
+                        Button {
+                            showingNewGroup = true
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "person.3.fill")
+                                    .font(.title2)
+                                    .foregroundStyle(.purple)
+                                    .frame(width: 36, alignment: .center)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("New Group")
+                                        .font(.body.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                    Text("Multi-agent collaboration")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if !appState.profiles.isEmpty {
                     Section("Agent Profiles") {
                         ForEach(appState.profiles) { profile in
@@ -107,6 +156,12 @@ struct NewChannelView: View {
             .task {
                 await appState.loadProfiles()
                 isLoadingProfiles = false
+                if let features = try? await appState.apiClient.fetchFeatures() {
+                    groupsEnabled = features["groups_enabled"] ?? false
+                }
+            }
+            .sheet(isPresented: $showingNewGroup) {
+                NewGroupView(appState: appState)
             }
         }
     }
@@ -120,7 +175,7 @@ struct NewChannelView: View {
 
     private func createAndDismiss(model: String) {
         Task {
-            await appState.createChannel(name: "New Chat", model: model)
+            await appState.createChannel(name: "New Channel", model: model)
             dismiss()
         }
     }

@@ -42,6 +42,18 @@ final class APIClient {
         return try JSONDecoder().decode(CreateChatResponse.self, from: data).id
     }
 
+    func createGroup(title: String, members: [[String: String]]) async throws -> String {
+        let dict: [String: Any] = ["type": "group", "title": title, "members": members]
+        let body = try JSONSerialization.data(withJSONObject: dict)
+        let data = try await request("POST", path: "/api/chats", body: body)
+        return try JSONDecoder().decode(CreateChatResponse.self, from: data).id
+    }
+
+    func fetchFeatures() async throws -> [String: Bool] {
+        let data = try await request("GET", path: "/api/features")
+        return try JSONDecoder().decode([String: Bool].self, from: data)
+    }
+
     func fetchProfiles() async throws -> [AgentProfile] {
         let data = try await request("GET", path: "/api/profiles")
         return try JSONDecoder().decode(ProfilesResponse.self, from: data).profiles
