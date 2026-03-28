@@ -150,7 +150,7 @@ examples:
   - /my-skill analyze this code
   - /my-skill --verbose check deployment
 metadata:
-  {"openclaw":{"tags":["analysis"],"risk_tier":1}}
+  {"apex":{"tags":["analysis"],"risk_tier":1}}
 ---
 
 # My Skill — Title

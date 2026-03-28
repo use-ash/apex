@@ -35,3 +35,18 @@ ios/*/build/
 # Environment
 .env
 .env.*
+
+# Dana's personal launcher (use server/launch.sh instead)
+server/launch_dana.sh
+
+# Runtime artifacts
+nohup.out
+
+# Generated state (created by setup.py and server runtime)
+state/*.db
+state/*.log
+state/ssl/
+state/backups/
+state/embeddings/
+state/uploads/
+state/config.json

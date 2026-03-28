@@ -10,8 +10,8 @@ Apex (`server/apex.py`) serves over HTTPS with mTLS client certificate auth. Ful
 - Password auth fully stripped. No cookies, no sessions, no tokens.
 - `ssl_cert_reqs=ssl.CERT_OPTIONAL` — browsers don't send client certs for WebSocket upgrades, so CERT_REQUIRED breaks WebSocket. VPN is the security boundary.
 - Client cert: `state/ssl/client.p12` (AirDrop to phone, password: `apex`)
-- CA: `state/ssl/ca.crt` (OpenClaw Local CA)
-- Server cert SANs: 10.8.0.2 (VPN), 192.168.86.214 (LAN), 127.0.0.1
+- CA: `state/ssl/ca.crt` (Apex Local CA)
+- Server cert SANs: your-vpn-ip (VPN), your-lan-ip (LAN), 127.0.0.1
 
 **SDK quirks (must-know):**
 - `query()` accepts `str | AsyncIterable[dict]` — plain lists break it
@@ -22,6 +22,6 @@ Apex (`server/apex.py`) serves over HTTPS with mTLS client certificate auth. Ful
 
 **Launch:** `./server/launch_apex.sh` (generates client cert on first run)
 
-**Why:** Dana wants mobile Claude access over WireGuard VPN. Also a reference impl for ASH customer service chat.
+**Why:** Mobile AI chat access over WireGuard VPN with full mTLS security.
 
 **How to apply:** Read `docs/TROUBLESHOOTING.md` before touching auth or SDK code. 10 issues documented with root causes and fixes.

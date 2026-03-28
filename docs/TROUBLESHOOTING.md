@@ -84,9 +84,9 @@ async def _make_stream(blocks):
 ### TLS certificate chain
 ```
 state/ssl/
-├── ca.crt + ca.key          — OpenClaw Local CA (root, 5yr)
-├── apex.crt + .key          — Server cert (SANs: 10.8.0.2, 192.168.86.214, 127.0.0.1)
-├── client.crt + .key        — Client cert (CN=dana-localchat, clientAuth EKU)
+├── ca.crt + ca.key          — Apex Local CA (root, 5yr)
+├── apex.crt + .key          — Server cert (SANs: your-vpn-ip, your-lan-ip, 127.0.0.1)
+├── client.crt + .key        — Client cert (CN=apex-client, clientAuth EKU)
 ├── client.p12               — PKCS#12 bundle for iOS (password: apex)
 └── ext.cnf                  — Extension config for cert generation
 ```
