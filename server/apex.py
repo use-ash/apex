@@ -5092,7 +5092,8 @@ gap:10px;flex-shrink:0;min-width:380px}
 color:var(--dim);font-size:14px;cursor:pointer;display:flex;align-items:center;
 justify-content:center;transition:all 0.15s;flex-shrink:0}
 .sp-close:hover{background:var(--bg);color:var(--text)}
-.sp-body{flex:1;overflow-y:auto;padding:8px 12px 24px;min-width:380px}
+.sp-body{flex:1;overflow-y:auto;padding:8px 12px 24px;min-width:380px;
+overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
 .sp-step{display:flex;align-items:center;gap:10px;padding:10px;border-radius:10px;transition:background 0.15s}
 .sp-step:hover{background:var(--bg)}
 .sp-step+.sp-step{border-top:1px solid rgba(51,65,85,0.4)}
@@ -6201,11 +6202,20 @@ function openToolPanel(pillEl) {
   const titleEl = document.getElementById('spTitle');
   const bodyEl = document.getElementById('spBody');
 
-  function rebuild() {
+  let _lastToolFingerprint = '';
+  function rebuild(force) {
     const prevExpanded = _captureExpandedState();
     const prevScroll = bodyEl.scrollTop;
     const toolData = Array.isArray(pillEl._toolData) ? pillEl._toolData : [];
     const completed = toolData.filter(t => t.status && t.status !== 'running').length;
+    // Skip DOM rebuild if nothing changed (prevents scroll yank on 800ms timer)
+    const fingerprint = toolData.map(t => `${t.name}:${t.status}:${t.result ? 1 : 0}`).join('|');
+    if (!force && fingerprint === _lastToolFingerprint && bodyEl.children.length > 0) {
+      // Just update the title counter
+      titleEl.innerHTML = `${toolData.length === 1 ? '1 tool call' : `${toolData.length} tool calls`}<span class="sp-dim">${pillEl._totalTime ? ` · ${_formatDuration(pillEl._totalTime)}` : ` · ${completed}/${toolData.length || 0} complete`}</span>`;
+      return;
+    }
+    _lastToolFingerprint = fingerprint;
     titleEl.innerHTML = `${toolData.length === 1 ? '1 tool call' : `${toolData.length} tool calls`}<span class="sp-dim">${pillEl._totalTime ? ` · ${_formatDuration(pillEl._totalTime)}` : ` · ${completed}/${toolData.length || 0} complete`}</span>`;
     bodyEl.innerHTML = '';
     if (!toolData.length) {
@@ -6262,7 +6272,7 @@ function openToolPanel(pillEl) {
     document.body.classList.add('panel-open');
     document.querySelectorAll('.tool-pill.active-pill,.thinking-pill.active-pill').forEach(el => el.classList.remove('active-pill'));
     pillEl.classList.add('active-pill');
-    rebuild();
+    rebuild(true);
     if (pillEl.classList.contains('streaming') || pillEl._ctx) {
       _sidePanelRefreshTimer = setInterval(rebuild, 800);
     }
