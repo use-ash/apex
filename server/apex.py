@@ -9147,7 +9147,9 @@ if __name__ == "__main__":
         print("    python3 setup.py --fast\n", file=sys.stderr)
         sys.exit(1)
 
-    print(f"\n  Apex v1.0")
+    _version_file = APEX_ROOT / "VERSION"
+    _version = _version_file.read_text().strip() if _version_file.exists() else "dev"
+    print(f"\n  Apex v{_version}")
     print(f"  https://{HOST}:{PORT}")
     print(f"  Model: {MODEL}")
     print(f"  Auth: mTLS (client certificate)")
