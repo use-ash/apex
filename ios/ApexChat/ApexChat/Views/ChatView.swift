@@ -17,6 +17,7 @@ struct ChatView: View {
     @State private var streamingSpeakerAvatar: String?
     @State private var showingStreamDetail: Bool = false
     @State private var streamingTimeoutToken: UUID?
+    @State private var activeStreams: [ActiveStreamEntry] = []
     @State private var reactions: [String: String] = [:]
     @State private var replyingToMessage: Message?
     @State private var showClearAlerts: Bool = false
@@ -124,6 +125,7 @@ struct ChatView: View {
                     appState: appState,
                     replyingToMessage: $replyingToMessage,
                     isStreaming: $isStreaming,
+                    activeStreams: $activeStreams,
                     streamingText: $streamingText,
                     streamingThinking: $streamingThinking,
                     streamingToolEvents: $streamingToolEvents,
@@ -318,6 +320,7 @@ struct ChatView: View {
         streamingTimeoutToken = nil
         streamingForChatId = nil
         isStreaming = false
+        activeStreams = []
         streamingText = ""
         streamingThinking = ""
         streamingToolEvents = []
@@ -395,10 +398,23 @@ struct ChatView: View {
             guard streamChatId == chatId else { break }
             resetStreamingState()
         case .error(let msg):
-            resetStreamingState()
+            // Only reset streaming state if nothing is actively streaming.
+            // A "busy agent" error should NOT kill the in-progress stream UI.
+            if !isStreaming {
+                resetStreamingState()
+            }
             appState.error = msg
             Task {
                 await appState.loadMessages(chatId)
+            }
+        case .activeStreams(let streamChatId, let streams):
+            guard streamChatId == chatId else { break }
+            activeStreams = streams
+            // Update isStreaming based on whether any streams are active
+            if streams.isEmpty && isStreaming {
+                isStreaming = false
+            } else if !streams.isEmpty && !isStreaming {
+                isStreaming = true
             }
         default:
             break
@@ -443,6 +459,7 @@ private struct ChatComposeBar: View {
     let appState: AppState
     @Binding var replyingToMessage: Message?
     @Binding var isStreaming: Bool
+    @Binding var activeStreams: [ActiveStreamEntry]
     @Binding var streamingText: String
     @Binding var streamingThinking: String
     @Binding var streamingToolEvents: [StreamingToolEvent]
@@ -456,6 +473,9 @@ private struct ChatComposeBar: View {
     @State private var isShowingFileImporter: Bool = false
     @State private var isUploadingAttachments: Bool = false
     @State private var stopButtonScale: CGFloat = 1.0
+    @State private var groupMembers: [GroupMember] = []
+    @State private var mentionQuery: String = ""
+    @State private var showMentionPopup: Bool = false
     @FocusState private var isInputFocused: Bool
 
     var body: some View {
@@ -471,6 +491,15 @@ private struct ChatComposeBar: View {
 
             if !pendingAttachments.isEmpty {
                 attachmentPreview
+            }
+
+            if showMentionPopup {
+                mentionPopupView
+            }
+
+            // Active Agent Bar — shows which agents are working with per-agent stop
+            if !activeStreams.isEmpty {
+                activeAgentBar
             }
 
             HStack(spacing: 8) {
@@ -494,9 +523,9 @@ private struct ChatComposeBar: View {
                         .background(Color(.secondarySystemBackground))
                         .clipShape(Circle())
                 }
-                .disabled(isStreaming || isUploadingAttachments)
+                .disabled(isUploadingAttachments)
 
-                TextField("Message", text: $inputText, axis: .vertical)
+                TextField(isGroupChat ? "Message... (type @ to mention)" : "Message", text: $inputText, axis: .vertical)
                     .focused($isInputFocused)
                     .lineLimit(1...5)
                     .textFieldStyle(.plain)
@@ -505,13 +534,22 @@ private struct ChatComposeBar: View {
                     .background(Color(.secondarySystemBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 20))
                     .submitLabel(.send)
+                    .onChange(of: inputText) { _, newValue in
+                        checkMentionPopup(newValue)
+                    }
                     .onSubmit {
                         Task {
                             await sendMessage()
                         }
                     }
 
-                if isStreaming {
+                if isUploadingAttachments {
+                    ProgressView()
+                        .frame(width: 32, height: 32)
+                        .background(Color.gray.opacity(0.2))
+                        .clipShape(Circle())
+                } else if isStreaming && !canSendMessage {
+                    // Show stop button only when streaming AND user has no draft
                     Button {
                         appState.connectionManager.send(.stop(chatId: chatId))
                     } label: {
@@ -532,12 +570,8 @@ private struct ChatComposeBar: View {
                     .onDisappear {
                         stopButtonScale = 1.0
                     }
-                } else if isUploadingAttachments {
-                    ProgressView()
-                        .frame(width: 32, height: 32)
-                        .background(Color.gray.opacity(0.2))
-                        .clipShape(Circle())
                 } else {
+                    // Send button — always available when user has typed something
                     Button {
                         Task {
                             await sendMessage()
@@ -590,6 +624,165 @@ private struct ChatComposeBar: View {
             isInputFocused = true
             onScrollToBottom()
         }
+        .task(id: chatId) {
+            await loadGroupMembers()
+        }
+    }
+
+    // MARK: - Active Agent Bar
+
+    private var activeAgentBar: some View {
+        VStack(spacing: 0) {
+            ForEach(activeStreams) { stream in
+                HStack(spacing: 8) {
+                    // Agent avatar + name
+                    if !stream.avatar.isEmpty {
+                        Text(stream.avatar)
+                            .font(.caption)
+                    }
+                    Text(stream.name.isEmpty ? "Agent" : stream.name)
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
+
+                    // Pulsing activity indicator
+                    ProgressView()
+                        .controlSize(.mini)
+
+                    Text("working…")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    // Per-agent stop button
+                    Button {
+                        appState.connectionManager.send(.stop(chatId: chatId, streamId: stream.streamId))
+                    } label: {
+                        Image(systemName: "stop.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.white)
+                            .frame(width: 22, height: 22)
+                            .background(.red)
+                            .clipShape(Circle())
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+        }
+        .background(Color(.secondarySystemBackground).opacity(0.8))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, 4)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+        .animation(.easeInOut(duration: 0.2), value: activeStreams.count)
+    }
+
+    // MARK: - Group & Mention
+
+    private var isGroupChat: Bool {
+        appState.currentChat?.isGroup == true
+    }
+
+    private var filteredMembers: [GroupMember] {
+        let query = mentionQuery.lowercased()
+        if query.isEmpty { return groupMembers }
+        return groupMembers.filter {
+            $0.name.lowercased().hasPrefix(query) || $0.profileId.lowercased().hasPrefix(query)
+        }
+    }
+
+    private var mentionPopupView: some View {
+        VStack(spacing: 0) {
+            ForEach(filteredMembers) { member in
+                Button {
+                    insertMention(member)
+                } label: {
+                    HStack(spacing: 10) {
+                        Text(member.avatar)
+                            .font(.title3)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(member.name)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                            Text(member.routingMode)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if member.isPrimary {
+                            Text("👑")
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                }
+                Divider().padding(.leading, 44)
+            }
+        }
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .shadow(color: .black.opacity(0.15), radius: 8, y: 2)
+        .padding(.horizontal, 4)
+    }
+
+    private func loadGroupMembers() async {
+        guard isGroupChat else { return }
+        do {
+            groupMembers = try await appState.apiClient.fetchGroupMembers(chatId: chatId)
+        } catch {
+            groupMembers = []
+        }
+    }
+
+    private func checkMentionPopup(_ text: String) {
+        guard isGroupChat else {
+            showMentionPopup = false
+            return
+        }
+        // Lazy-load group members if they haven't been fetched yet
+        if groupMembers.isEmpty {
+            Task { await loadGroupMembers() }
+        }
+        guard !groupMembers.isEmpty else {
+            showMentionPopup = false
+            return
+        }
+        // Find @query at the end of text
+        if let range = text.range(of: "@\\w*$", options: .regularExpression) {
+            let match = String(text[range])
+            mentionQuery = String(match.dropFirst()) // drop the @
+            showMentionPopup = !filteredMembers.isEmpty
+        } else {
+            showMentionPopup = false
+        }
+    }
+
+    private func insertMention(_ member: GroupMember) {
+        // Replace @query with @Name
+        if let range = inputText.range(of: "@\\w*$", options: .regularExpression) {
+            inputText.replaceSubrange(range, with: "@\(member.name) ")
+        } else {
+            inputText += "@\(member.name) "
+        }
+        showMentionPopup = false
+    }
+
+    private func resolveTargetAgent(from prompt: String) -> String? {
+        guard isGroupChat, !groupMembers.isEmpty else { return nil }
+        // Match @Name in the prompt against known group members
+        let pattern = try? NSRegularExpression(pattern: "@(\\w+)", options: .caseInsensitive)
+        let nsPrompt = prompt as NSString
+        let matches = pattern?.matches(in: prompt, range: NSRange(location: 0, length: nsPrompt.length)) ?? []
+        for match in matches {
+            let name = nsPrompt.substring(with: match.range(at: 1)).lowercased()
+            if let member = groupMembers.first(where: {
+                $0.name.lowercased() == name || $0.profileId.lowercased() == name
+            }) {
+                return member.profileId
+            }
+        }
+        return nil
     }
 
     private func replyPreview(for message: Message) -> some View {
@@ -725,8 +918,11 @@ private struct ChatComposeBar: View {
             streamingToolEvents = []
             onArmStreamingTimeout()
 
+            // Resolve @mention to target_agent profile_id
+            let targetAgent = resolveTargetAgent(from: composedPrompt)
+
             appState.connectionManager.send(
-                .send(chatId: chatId, prompt: composedPrompt, attachments: uploadedAttachments.isEmpty ? nil : uploadedAttachments)
+                .send(chatId: chatId, prompt: composedPrompt, attachments: uploadedAttachments.isEmpty ? nil : uploadedAttachments, targetAgent: targetAgent)
             )
         } catch {
             appState.error = error.localizedDescription

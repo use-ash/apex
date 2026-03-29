@@ -260,11 +260,20 @@ def _generate_recovery_context(transcript: str) -> str:
         "## Last Action: [what was happening right before this point]\n"
         "## Pending: [any unanswered questions, unresolved decisions, or next steps — 'none' if clear]\n"
         "## Key Decisions: [important choices made during the conversation]\n\n"
+        "## Guidance\n"
+        "Extract actionable directives from the conversation using these tags:\n"
+        "- [enforce] things that MUST be done a specific way (e.g., 'enforce: use dev branch for all Apex changes')\n"
+        "- [avoid] things that failed or were rejected (e.g., 'avoid: nohup for server launch — use tmux')\n"
+        "- [correction] user corrections to assistant mistakes (e.g., 'correction: price data must come from Tradier, not Alpaca')\n"
+        "- [decision] choices made that should persist (e.g., 'decision: using Grok 4 Fast for compaction model')\n"
+        "- [pending] unresolved items requiring follow-up\n"
+        "List each as a bullet with the tag. If none exist for a category, omit it.\n\n"
         "Rules:\n"
         "- Be concise — this gets injected into a fresh AI session\n"
         "- If the conversation was idle/casual, just say Status: idle\n"
         "- If a task was mid-execution (code being written, build in progress), say Status: in-progress\n"
-        "- Focus on what the assistant needs to CONTINUE, not rehash"
+        "- Focus on what the assistant needs to CONTINUE, not rehash\n"
+        "- Guidance items must be model-agnostic — no reasoning-style prose, just directives"
     )
 
     # Prefer xAI (Grok) if API key is available — faster + cheaper than local Ollama
@@ -4300,13 +4309,18 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         members = _get_group_members(chat_id)
         for m in members:
             if m["profile_id"] == target_profile_id:
+                # Strip @mention from prompt if present (iOS sends both target_agent and @Name in text)
+                clean = _re.sub(
+                    rf"@{_re.escape(m['name'])}|@{_re.escape(m['profile_id'])}",
+                    "", prompt, count=1, flags=_re.IGNORECASE
+                ).strip() or prompt
                 group_agent = {
                     "profile_id": m["profile_id"],
                     "name": m["name"],
                     "avatar": m["avatar"],
                     "model": m["model"],
                     "backend": _get_model_backend(m["model"]),
-                    "clean_prompt": prompt,
+                    "clean_prompt": clean,
                 }
                 break
         if not group_agent:
@@ -4318,6 +4332,8 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             return
     if group_agent is None:
         group_agent = _resolve_group_agent(chat_id, chat, prompt)
+    # Keep the original prompt (with @mention) for display in chat history
+    mention_prompt = prompt
     if group_agent:
         chat_model = group_agent["model"]
         backend = _get_model_backend(chat_model)
@@ -4408,6 +4424,10 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             except ValueError as e:
                 await _safe_ws_send_json(websocket, {"type": "error", "message": str(e)}, chat_id=chat_id)
                 return
+
+        # If user @mentioned an agent, preserve the original prompt with @ for chat history
+        if group_agent and mention_prompt != group_agent.get("clean_prompt", ""):
+            display_prompt = mention_prompt
 
         _save_message(chat_id, "user", display_prompt)
 

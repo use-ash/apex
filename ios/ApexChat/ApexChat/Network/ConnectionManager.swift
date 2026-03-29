@@ -243,6 +243,21 @@ final class ConnectionManager {
             )
         case "alert_acked":
             return .alertAcked(alertId: json["alert_id"] as? String ?? "")
+        case "active_streams":
+            let rawStreams = json["streams"] as? [[String: Any]] ?? []
+            let entries = rawStreams.compactMap { s -> ActiveStreamEntry? in
+                guard let sid = s["stream_id"] as? String, !sid.isEmpty else { return nil }
+                return ActiveStreamEntry(
+                    streamId: sid,
+                    name: s["name"] as? String ?? "",
+                    avatar: s["avatar"] as? String ?? "",
+                    profileId: s["profile_id"] as? String ?? ""
+                )
+            }
+            return .activeStreams(
+                chatId: json["chat_id"] as? String ?? "",
+                streams: entries
+            )
         default:
             return .error(message: "Unknown message type: \(type)")
         }
@@ -331,15 +346,25 @@ enum ServerMessage {
     case system(subtype: String, model: String?)
     case alert(id: String, source: String, severity: String, title: String, body: String, createdAt: String, metadata: [String: String]?)
     case alertAcked(alertId: String)
+    case activeStreams(chatId: String, streams: [ActiveStreamEntry])
+}
+
+struct ActiveStreamEntry: Identifiable {
+    let streamId: String
+    let name: String
+    let avatar: String
+    let profileId: String
+
+    var id: String { streamId }
 }
 
 enum ClientMessage: Encodable {
     case ping
     case attach(chatId: String)
-    case send(chatId: String, prompt: String, attachments: [[String: String]]? = nil)
+    case send(chatId: String, prompt: String, attachments: [[String: String]]? = nil, targetAgent: String? = nil)
     case setModel(model: String)
     case setChatModel(chatId: String, model: String)
-    case stop(chatId: String)
+    case stop(chatId: String, streamId: String? = nil)
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
@@ -349,12 +374,15 @@ enum ClientMessage: Encodable {
         case .attach(let chatId):
             try container.encode("attach", forKey: .action)
             try container.encode(chatId, forKey: .chatId)
-        case .send(let chatId, let prompt, let attachments):
+        case .send(let chatId, let prompt, let attachments, let targetAgent):
             try container.encode("send", forKey: .action)
             try container.encode(chatId, forKey: .chatId)
             try container.encode(prompt, forKey: .prompt)
             if let attachments {
                 try container.encode(attachments, forKey: .attachments)
+            }
+            if let targetAgent {
+                try container.encode(targetAgent, forKey: .targetAgent)
             }
         case .setModel(let model):
             try container.encode("set_model", forKey: .action)
@@ -363,9 +391,12 @@ enum ClientMessage: Encodable {
             try container.encode("set_chat_model", forKey: .action)
             try container.encode(chatId, forKey: .chatId)
             try container.encode(model, forKey: .model)
-        case .stop(let chatId):
+        case .stop(chatId: let chatId, streamId: let streamId):
             try container.encode("stop", forKey: .action)
             try container.encode(chatId, forKey: .chatId)
+            if let streamId {
+                try container.encode(streamId, forKey: .streamId)
+            }
         }
     }
 
@@ -375,5 +406,7 @@ enum ClientMessage: Encodable {
         case prompt
         case attachments
         case model
+        case targetAgent = "target_agent"
+        case streamId = "stream_id"
     }
 }

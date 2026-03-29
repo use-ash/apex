@@ -145,6 +145,11 @@ final class APIClient {
         _ = try await request("DELETE", path: "/api/alerts")
     }
 
+    func fetchGroupMembers(chatId: String) async throws -> [GroupMember] {
+        let data = try await request("GET", path: "/api/chats/\(chatId)/members")
+        return try JSONDecoder().decode(GroupMembersResponse.self, from: data).members
+    }
+
     func fetchLocalModels() async throws -> [LocalModel] {
         let data = try await request("GET", path: "/api/models/local")
         return try JSONDecoder().decode([LocalModel].self, from: data)
@@ -296,6 +301,29 @@ struct ContextData: Decodable, Equatable {
         case tokensIn = "tokens_in"
         case contextWindow = "context_window"
     }
+}
+
+// MARK: - Group Members
+
+struct GroupMember: Identifiable, Decodable {
+    let id: String
+    let profileId: String
+    let name: String
+    let avatar: String
+    let model: String
+    let routingMode: String
+    let isPrimary: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, avatar, model
+        case profileId = "profile_id"
+        case routingMode = "routing_mode"
+        case isPrimary = "is_primary"
+    }
+}
+
+private struct GroupMembersResponse: Decodable {
+    let members: [GroupMember]
 }
 
 private extension Data {
