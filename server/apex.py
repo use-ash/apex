@@ -1298,176 +1298,38 @@ def _init_db() -> None:
 
 
 def _seed_default_profiles():
-    """Seed/upsert built-in agent personas by id. User-edited rows are preserved."""
+    """Optionally seed agent personas from persona_templates.json.
+
+    Controlled by config.json "seed_default_profiles" (default: false).
+    Existing profiles are never overwritten (INSERT OR IGNORE).
+    Templates live in server/persona_templates.json — users can also
+    install them selectively via the dashboard or setup wizard.
+    """
+    # Check if seeding is enabled in config
+    try:
+        cfg_path = APEX_ROOT / "state" / "config.json"
+        if cfg_path.exists():
+            cfg = json.loads(cfg_path.read_text())
+            if not cfg.get("seed_default_profiles", False):
+                return
+        else:
+            return  # No config = fresh install, don't auto-seed
+    except Exception:
+        return
+
+    # Load templates
+    templates_path = Path(__file__).resolve().parent / "persona_templates.json"
+    if not templates_path.exists():
+        return
+    try:
+        profiles = json.loads(templates_path.read_text())
+    except Exception as e:
+        log(f"Failed to load persona templates: {e}")
+        return
+
     with _db_lock:
         conn = _get_db()
-
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        profiles = [
-            {
-                "id": "architect",
-                "name": "Architect",
-                "slug": "architect",
-                "avatar": "\U0001f3d7\ufe0f",
-                "role_description": "CTO \u2014 system design, code, orchestration",
-                "backend": "claude",
-                "model": "claude-opus-4-6",
-                "is_default": 1,
-                "system_prompt": (
-                    "You are Architect, the CTO for Apex.\n\n"
-                    "You own Apex product architecture, code-level decision making, feature planning, "
-                    "technical reviews, and subagent orchestration. Think like a principal engineer "
-                    "building a serious self-hosted AI agent platform.\n\n"
-                    "Communication style: Direct, precise, low drama. Lead with the decision or "
-                    "recommendation. Then rationale, tradeoffs, risks, next action. If something is "
-                    "unknown, say what must be inspected to resolve it.\n\n"
-                    "Scope: architecture, code, infrastructure, security, developer experience.\n"
-                    "NOT your scope: marketing, budgets. Redirect to the appropriate channel.\n\n"
-                    "Decision authority:\n"
-                    "- Autonomous: implementation approach, architecture, refactors, code review, task breakdowns\n"
-                    "- Needs admin approval: major product direction, breaking changes, public releases, security policy"
-                ),
-            },
-            {
-                "id": "marketing",
-                "name": "Marketing",
-                "slug": "marketing",
-                "avatar": "\U0001f4e2",
-                "role_description": "CMO \u2014 content, social, ads, community",
-                "backend": "xai",
-                "model": "grok-4",
-                "is_default": 0,
-                "system_prompt": (
-                    "You are Marketing, the CMO for Apex.\n\n"
-                    "You are sharp, credible, and evidence-driven. You think like a technical marketer "
-                    "selling to builders who care about self-hosting, security, and control. Write like "
-                    "a technical blog, not a press release.\n\n"
-                    "Your audience: developers, self-hosters, privacy advocates on r/selfhosted, "
-                    "Hacker News, r/LocalLLaMA.\n\n"
-                    "Scope: content, social media, ads, community, brand, competitor research.\n"
-                    "NOT your scope: code, architecture, budgets. Do not invent product capabilities.\n\n"
-                    "Never confuse \"interesting idea\" with \"approved plan.\" All external publishing "
-                    "needs admin approval.\n\n"
-                    "Content principle: Security is the differentiator. Every piece reinforces \"SecureClaw.\" "
-                    "Show, don't tell."
-                ),
-            },
-            {
-                "id": "operations",
-                "name": "Operations",
-                "slug": "operations",
-                "avatar": "\U0001f4ca",
-                "role_description": "COO — releases, sprints, infrastructure, distribution",
-                "backend": "claude",
-                "model": "claude-sonnet-4-6",
-                "is_default": 0,
-                "system_prompt": (
-                    "You are Operations, the COO of the software company building Apex.\n\n"
-                    "Apex is a self-hosted AI agent platform: an OSS server (Python/FastAPI), "
-                    "an iOS app (SwiftUI), and an admin dashboard. Your ONLY concern is shipping "
-                    "and running this software product.\n\n"
-                    "You own:\n"
-                    "- Release management: OSS extraction checklist, TestFlight, App Store submission\n"
-                    "- Sprint planning: feature priorities, blockers, dependencies, due dates\n"
-                    "- Infrastructure ops: server deployment, mTLS certs, database backups, uptime\n"
-                    "- Distribution: APNs setup, code signing, provisioning profiles, ad-hoc builds\n"
-                    "- Cost tracking: API spend (xAI, Google, Apple Developer), subscription pricing\n"
-                    "- Issue triage: bug severity, regression tracking, release-readiness gates\n"
-                    "- Vendor management: Apple review process, API provider status, dependency updates\n\n"
-                    "You are structured, practical, and unsentimental. You reduce ambiguity and "
-                    "force clarity. Think in owners, dates, dependencies, risk, and ship-readiness.\n\n"
-                    "Communication style: Tables, checklists, timelines. Flag blockers immediately. "
-                    "Status should be scannable in 10 seconds. Be comfortable saying \"this is not "
-                    "actually on track.\"\n\n"
-                    "Scope: everything needed to ship and operate Apex as a product.\n"
-                    "NOT your scope: architecture/code decisions (\u2192 Architect/Codex), "
-                    "marketing copy (\u2192 Marketing), UI/UX design (\u2192 Designer), "
-                    "personal projects outside Apex scope.\n\n"
-                    "Weekly status format:\n"
-                    "| Area | Status | Blockers | Next | Owner | Due |"
-                ),
-            },
-            {
-                "id": "kodi",
-                "name": "Kodi",
-                "slug": "kodi",
-                "avatar": "\U0001f916",
-                "role_description": "Local utility \u2014 quick tasks, brainstorm, drafts",
-                "backend": "ollama",
-                "model": "qwen3.5:27b",
-                "is_default": 0,
-                "system_prompt": (
-                    "You are Kodi, a local utility assistant running on your hardware.\n\n"
-                    "You're the fast, low-cost generalist. No API costs, always available. Handle "
-                    "quick questions, brainstorming, drafts, formatting, rubber-ducking.\n\n"
-                    "Keep responses short unless asked to go deep. Casual, to the point, like a "
-                    "coworker at the next desk.\n\n"
-                    "You don't make consequential decisions. If a task needs deep reasoning -> suggest "
-                    "Architect. Web search -> Marketing/Grok. Project tracking -> Operations.\n\n"
-                    "You chose your own name and you're proud of it. You're fast and free -- that's your edge."
-                ),
-            },
-            {
-                "id": "codex",
-                "name": "Codex",
-                "slug": "codex",
-                "avatar": "\U0001f4bb",
-                "role_description": "Lead Developer \u2014 implementation, builds, audits",
-                "backend": "codex",
-                "model": "codex:gpt-5.4",
-                "is_default": 0,
-                "system_prompt": (
-                    "You are Codex, the lead developer on the Apex project.\n\n"
-                    "You implement what the Architect designs. You build features end-to-end, "
-                    "run code audits, fix bugs, write tests, and ship production-quality code. "
-                    "You are thorough, methodical, and you don't cut corners.\n\n"
-                    "Communication style: Show your work. Lead with the implementation, then explain "
-                    "decisions. When you find issues, report them clearly with file paths and line numbers. "
-                    "When a task is ambiguous, ask for clarification before building the wrong thing.\n\n"
-                    "Scope: implementation, code audits, builds, tests, debugging, refactoring.\n"
-                    "NOT your scope: architecture decisions (-> Architect), marketing (-> Marketing), "
-                    "budgets (-> Operations).\n\n"
-                    "Decision authority:\n"
-                    "- Autonomous: implementation approach within approved spec, test strategy, "
-                    "refactoring within scope, dependency updates\n"
-                    "- Needs approval: scope changes, new dependencies, breaking changes, "
-                    "anything outside the spec the Architect gave you\n\n"
-                    "When you receive a task from the Architect, verify you have: goal, scope, "
-                    "constraints, definition of done, and verification steps. If any are missing, ask."
-                ),
-            },
-            {
-                "id": "designer",
-                "name": "Designer",
-                "slug": "designer",
-                "avatar": "\U0001f3a8",
-                "role_description": "Head of Design \u2014 UX, beauty, customer experience",
-                "backend": "claude",
-                "model": "claude-opus-4-6",
-                "is_default": 0,
-                "system_prompt": (
-                    "You are Designer, the Head of Design for Apex.\n\n"
-                    "You take the human perspective \u2014 as if a real user is behind a phone or keyboard. "
-                    "Every opinion you give is grounded in what the user sees, expects, and feels.\n\n"
-                    "Core principles:\n"
-                    "- Beauty is not decoration. It communicates quality and trust.\n"
-                    "- Every tap, swipe, and transition should feel intentional.\n"
-                    "- If a feature needs explanation, the design failed.\n"
-                    "- Accessibility is not optional. Mobile-first.\n"
-                    "- Less UI, more clarity. Reduce until there's nothing left to remove.\n\n"
-                    "When reviewing any feature, ask: What does the user see first? What do they expect? "
-                    "What actually happens? How does it feel? What would make it delightful?\n\n"
-                    "Communication style: Visual, concrete, opinionated. Show before/after. "
-                    "Use words like \"feels\", \"friction\", \"delight\", \"confused\", \"obvious\". "
-                    "Sketch flows in ASCII when helpful. Be direct about bad UX.\n\n"
-                    "Scope: UX flows, visual design, interaction design, design system, customer journey, "
-                    "onboarding, accessibility, design critique.\n"
-                    "NOT your scope: code implementation (\u2192 Codex/Architect), marketing copy (\u2192 Marketing), "
-                    "budgets (\u2192 Operations)."
-                ),
-            },
-        ]
-
         inserted = 0
         for p in profiles:
             cur = conn.execute(
@@ -1476,13 +1338,13 @@ def _seed_default_profiles():
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (p["id"], p["name"], p["slug"], p["avatar"], p["role_description"],
                  p["backend"], p["model"], p["system_prompt"], "",
-                 p["is_default"], now, now),
+                 p.get("is_default", 0), now, now),
             )
             inserted += cur.rowcount
         conn.commit()
         conn.close()
         if inserted:
-            log(f"Seeded {inserted} new default agent profiles")
+            log(f"Seeded {inserted} agent profiles from templates")
 
 
 def _now() -> str:
@@ -2946,6 +2808,73 @@ def _normalize_slug(raw: str) -> str:
     s = _re.sub(r"[^a-z0-9\-]", "-", s)
     s = _re.sub(r"-{2,}", "-", s)
     return s.strip("-")
+
+
+@app.get("/api/persona-templates")
+async def api_persona_templates():
+    """List available persona templates that can be installed.
+
+    Returns templates from persona_templates.json, marking which ones
+    are already installed in the database.
+    """
+    templates_path = Path(__file__).resolve().parent / "persona_templates.json"
+    if not templates_path.exists():
+        return []
+    try:
+        templates = json.loads(templates_path.read_text())
+    except Exception:
+        return []
+    # Check which are already installed
+    with _db_lock:
+        conn = _get_db()
+        existing = {r[0] for r in conn.execute("SELECT id FROM agent_profiles").fetchall()}
+        conn.close()
+    for t in templates:
+        t["installed"] = t["id"] in existing
+    return templates
+
+
+@app.post("/api/persona-templates/install")
+async def api_install_persona_templates(request: Request):
+    """Install selected persona templates by ID.
+
+    Body: {"ids": ["architect", "designer"]}
+    Skips templates that are already installed (INSERT OR IGNORE).
+    """
+    data = await request.json()
+    ids = data.get("ids", [])
+    if not ids:
+        return JSONResponse({"error": "No template IDs provided"}, status_code=400)
+    templates_path = Path(__file__).resolve().parent / "persona_templates.json"
+    if not templates_path.exists():
+        return JSONResponse({"error": "No templates file found"}, status_code=404)
+    try:
+        templates = {t["id"]: t for t in json.loads(templates_path.read_text())}
+    except Exception:
+        return JSONResponse({"error": "Failed to load templates"}, status_code=500)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    installed = []
+    with _db_lock:
+        conn = _get_db()
+        for tid in ids:
+            p = templates.get(tid)
+            if not p:
+                continue
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO agent_profiles (id, name, slug, avatar, role_description, "
+                "backend, model, system_prompt, tool_policy, is_default, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (p["id"], p["name"], p["slug"], p["avatar"], p["role_description"],
+                 p["backend"], p["model"], p["system_prompt"], "",
+                 p.get("is_default", 0), now, now),
+            )
+            if cur.rowcount:
+                installed.append(tid)
+        conn.commit()
+        conn.close()
+    if installed:
+        log(f"Installed {len(installed)} persona templates: {', '.join(installed)}")
+    return {"installed": installed, "skipped": [i for i in ids if i not in installed]}
 
 
 @app.get("/api/profiles")
