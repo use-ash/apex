@@ -260,11 +260,20 @@ def _generate_recovery_context(transcript: str) -> str:
         "## Last Action: [what was happening right before this point]\n"
         "## Pending: [any unanswered questions, unresolved decisions, or next steps — 'none' if clear]\n"
         "## Key Decisions: [important choices made during the conversation]\n\n"
+        "## Guidance\n"
+        "Extract actionable directives from the conversation using these tags:\n"
+        "- [enforce] things that MUST be done a specific way (e.g., 'enforce: use dev branch for all Apex changes')\n"
+        "- [avoid] things that failed or were rejected (e.g., 'avoid: nohup for server launch — use tmux')\n"
+        "- [correction] user corrections to assistant mistakes (e.g., 'correction: price data must come from Tradier, not Alpaca')\n"
+        "- [decision] choices made that should persist (e.g., 'decision: using Grok 4 Fast for compaction model')\n"
+        "- [pending] unresolved items requiring follow-up\n"
+        "List each as a bullet with the tag. If none exist for a category, omit it.\n\n"
         "Rules:\n"
         "- Be concise — this gets injected into a fresh AI session\n"
         "- If the conversation was idle/casual, just say Status: idle\n"
         "- If a task was mid-execution (code being written, build in progress), say Status: in-progress\n"
-        "- Focus on what the assistant needs to CONTINUE, not rehash"
+        "- Focus on what the assistant needs to CONTINUE, not rehash\n"
+        "- Guidance items must be model-agnostic — no reasoning-style prose, just directives"
     )
 
     # Prefer xAI (Grok) if API key is available — faster + cheaper than local Ollama
@@ -2469,23 +2478,26 @@ async def verify_client_cert(request: Request, call_next):
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
         return await call_next(request)
 
-    # Defense-in-depth: verify client cert at app layer (TLS layer enforces CERT_REQUIRED)
-    ssl_obj = request.scope.get("transport", {})
-    # Uvicorn stores SSL info in the transport; also check for peer cert via ssl_object
-    if hasattr(ssl_obj, "get_extra_info"):
-        peer_cert = ssl_obj.get_extra_info("peercert")
-    else:
-        # Fallback: try scope extensions
-        peer_cert = (request.scope.get("extensions", {}) or {}).get("tls", {}).get("peercert")
-    # If TLS is configured and we can't find a peer cert, reject
-    if SSL_CERT and SSL_CA and peer_cert is None:
-        # Check via the raw transport object on the ASGI scope
-        transport = request.scope.get("transport")
-        if transport and hasattr(transport, "get_extra_info"):
-            peer_cert = transport.get_extra_info("peercert")
-    # Note: with ssl_cert_reqs=CERT_REQUIRED, uvicorn rejects at TLS handshake level.
-    # This middleware is defense-in-depth — if somehow a connection gets through without
-    # a cert (e.g., misconfigured proxy), this catches it.
+    # Defense-in-depth: verify client cert at app layer.
+    # With ssl_cert_reqs=CERT_REQUIRED, uvicorn rejects cert-less connections
+    # at the TLS handshake before any HTTP request reaches this point.
+    # This check catches proxy/misconfiguration scenarios where TLS is
+    # terminated upstream and the ASGI server sees a plain connection.
+    if SSL_CERT and SSL_CA:
+        # Try to read peer cert from ASGI extensions (uvicorn 0.30+)
+        peer_cert = None
+        tls_ext = (request.scope.get("extensions") or {}).get("tls")
+        if tls_ext:
+            peer_cert = tls_ext.get("peercert") or tls_ext.get("peer_cert")
+        # Fallback: try transport.get_extra_info (older uvicorn / raw asyncio)
+        if peer_cert is None:
+            transport = request.scope.get("transport")
+            if transport and hasattr(transport, "get_extra_info"):
+                peer_cert = transport.get_extra_info("peercert")
+        # If we CAN introspect and there's no cert, reject.
+        # If we CANNOT introspect (uvicorn doesn't expose it), trust the TLS layer.
+        if tls_ext is not None and peer_cert is None:
+            return JSONResponse({"error": "Client certificate required"}, status_code=401)
 
     return await call_next(request)
 
@@ -3988,12 +4000,18 @@ async def api_transcribe(request: Request, file: UploadFile = File(...)):
 async def websocket_endpoint(websocket: WebSocket):
     # S-04: Verify client cert on WebSocket connections (defense-in-depth)
     if SSL_CERT and SSL_CA:
-        transport = websocket.scope.get("transport")
         peer_cert = None
-        if transport and hasattr(transport, "get_extra_info"):
-            peer_cert = transport.get_extra_info("peercert")
-        # With CERT_REQUIRED, TLS layer blocks cert-less connections.
-        # This is defense-in-depth for proxy/misconfiguration scenarios.
+        tls_ext = (websocket.scope.get("extensions") or {}).get("tls")
+        if tls_ext:
+            peer_cert = tls_ext.get("peercert") or tls_ext.get("peer_cert")
+        if peer_cert is None:
+            transport = websocket.scope.get("transport")
+            if transport and hasattr(transport, "get_extra_info"):
+                peer_cert = transport.get_extra_info("peercert")
+        # Reject only if we CAN introspect and cert is missing
+        if tls_ext is not None and peer_cert is None:
+            await websocket.close(code=1008)
+            return
 
     if not _websocket_origin_allowed(websocket):
         log(f"websocket origin rejected: {websocket.headers.get('origin')}")
@@ -4300,13 +4318,18 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         members = _get_group_members(chat_id)
         for m in members:
             if m["profile_id"] == target_profile_id:
+                # Strip @mention from prompt if present (iOS sends both target_agent and @Name in text)
+                clean = _re.sub(
+                    rf"@{_re.escape(m['name'])}|@{_re.escape(m['profile_id'])}",
+                    "", prompt, count=1, flags=_re.IGNORECASE
+                ).strip() or prompt
                 group_agent = {
                     "profile_id": m["profile_id"],
                     "name": m["name"],
                     "avatar": m["avatar"],
                     "model": m["model"],
                     "backend": _get_model_backend(m["model"]),
-                    "clean_prompt": prompt,
+                    "clean_prompt": clean,
                 }
                 break
         if not group_agent:
@@ -4318,6 +4341,8 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             return
     if group_agent is None:
         group_agent = _resolve_group_agent(chat_id, chat, prompt)
+    # Keep the original prompt (with @mention) for display in chat history
+    mention_prompt = prompt
     if group_agent:
         chat_model = group_agent["model"]
         backend = _get_model_backend(chat_model)
@@ -4408,6 +4433,10 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             except ValueError as e:
                 await _safe_ws_send_json(websocket, {"type": "error", "message": str(e)}, chat_id=chat_id)
                 return
+
+        # If user @mentioned an agent, preserve the original prompt with @ for chat history
+        if group_agent and mention_prompt != group_agent.get("clean_prompt", ""):
+            display_prompt = mention_prompt
 
         _save_message(chat_id, "user", display_prompt)
 
@@ -5490,7 +5519,7 @@ function renderAgentChips() {
     const btn = document.createElement('button');
     btn.className = 'ask-next-chip';
     btn.type = 'button';
-    btn.innerHTML = `<span class="chip-emoji">${member.avatar || ''}</span> ${member.name}`;
+    btn.innerHTML = `<span class="chip-emoji">${escHtml(member.avatar || '')}</span> ${escHtml(member.name)}`;
     btn.onclick = () => askAgent(member.profile_id);
     bar.appendChild(btn);
   });
@@ -5525,7 +5554,7 @@ function renderStopMenu() {
   Array.from(activeStreams.values()).forEach(stream => {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.innerHTML = `<span class="stop-dot"></span>${stream.avatar || ''} Stop ${stream.name || 'agent'}<span class="agent-time">${_elapsedLabel(stream.startedAt)}</span>`;
+    btn.innerHTML = `<span class="stop-dot"></span>${escHtml(stream.avatar || '')} Stop ${escHtml(stream.name || 'agent')}<span class="agent-time">${_elapsedLabel(stream.startedAt)}</span>`;
     btn.onclick = () => stopStream(stream.stream_id);
     menu.appendChild(btn);
   });
@@ -8793,7 +8822,7 @@ function showNewChatProfilePicker() {
     _profilesCache.forEach(p => {
       const card = document.createElement('div');
       card.className = 'profile-card' + (selectedProfileId === p.id ? ' selected' : '');
-      card.innerHTML = `<div class="profile-avatar">${p.avatar || '💬'}</div>
+      card.innerHTML = `<div class="profile-avatar">${escHtml(p.avatar || '💬')}</div>
         <div class="profile-info">
           <div class="profile-name">${escHtml(p.name)}</div>
           <div class="profile-role">${escHtml(p.role_description || '')}</div>
@@ -8917,7 +8946,7 @@ function showNewGroupPicker() {
       card.className = 'profile-card' + (selectedMembers.has(p.id) ? ' selected' : '');
       const mode = selectedMembers.get(p.id) || '';
       const badge = mode === 'primary' ? ' 👑' : (mode ? ' ✓' : '');
-      card.innerHTML = `<div class="profile-avatar">${p.avatar || '💬'}</div>
+      card.innerHTML = `<div class="profile-avatar">${escHtml(p.avatar || '💬')}</div>
         <div class="profile-info"><div class="profile-name">${escHtml(p.name)}${badge}</div>
         <div class="profile-role">${escHtml(p.role_description || '')}</div></div>`;
       card.onclick = () => {
@@ -9029,7 +9058,7 @@ function showProfileDropdown(event) {
   _profilesCache.forEach(p => {
     const item = document.createElement('div');
     item.className = 'pd-item';
-    item.innerHTML = `<span class="pd-avatar">${p.avatar || '💬'}</span><span class="pd-name">${escHtml(p.name)}</span>` +
+    item.innerHTML = `<span class="pd-avatar">${escHtml(p.avatar || '💬')}</span><span class="pd-name">${escHtml(p.name)}</span>` +
       (_currentChatProfileId === p.id ? '<span class="pd-check">✓</span>' : '');
     item.onclick = () => { dd.remove(); changeChatProfile(p.id); };
     dd.appendChild(item);
