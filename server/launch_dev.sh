@@ -9,6 +9,7 @@
 set -euo pipefail
 
 export APEX_WORKSPACE="${APEX_WORKSPACE:-$(pwd)}"
+export APEX_HOST="0.0.0.0"
 export APEX_MODEL="claude-opus-4-6"
 export APEX_PERMISSION_MODE="bypassPermissions"
 export APEX_DEBUG=1
