@@ -36,8 +36,9 @@ ios/*/build/
 .env
 .env.*
 
-# Dana's personal launcher (use server/launch.sh instead)
+# Personal / internal docs (not for OSS distribution)
 server/launch_dana.sh
+docs/OSS_PLAN.md
 
 # Runtime artifacts
 nohup.out

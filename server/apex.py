@@ -4535,7 +4535,8 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    html = CHAT_HTML.replace("{{MODE_CLASS}}", "mtls").replace("{{MODE_LABEL}}", "mTLS")
+    title_suffix = " (Dev)" if PORT != 8300 else ""
+    html = CHAT_HTML.replace("{{TITLE_SUFFIX}}", title_suffix).replace("{{MODE_CLASS}}", "mtls").replace("{{MODE_LABEL}}", "mTLS")
     # Sanitize: replace any lone surrogates with replacement char (prevents UnicodeEncodeError)
     html = html.encode("utf-8", errors="replace").decode("utf-8")
     return HTMLResponse(html, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
@@ -4595,7 +4596,7 @@ CHAT_HTML = """<!DOCTYPE html>
 <meta name="theme-color" content="#0F172A">
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/icon.svg">
-<title>ApexChat</title>
+<title>ApexChat{{TITLE_SUFFIX}}</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:#0F172A;--surface:#1E293B;--card:#334155;--text:#F1F5F9;--dim:#94A3B8;
