@@ -4745,6 +4745,12 @@ animation:dotPulse 1.2s ease-in-out infinite;flex-shrink:0}
 .stop-menu hr{border:none;border-top:1px solid var(--card);margin:4px 0}
 .stop-menu .stop-all{color:var(--red);font-weight:500}
 @keyframes dotPulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.7)}}
+.thinking-indicator{display:flex;gap:5px;padding:12px 16px;align-items:center}
+.thinking-indicator .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);
+animation:dotPulse 1.4s ease-in-out infinite}
+.thinking-indicator .dot:nth-child(2){animation-delay:0.2s}
+.thinking-indicator .dot:nth-child(3){animation-delay:0.4s}
+.thinking-indicator .ti-label{font-size:12px;color:var(--dim);margin-left:4px}
 .btn-compose{min-width:44px;min-height:44px;border-radius:50%;border:none;
 background:var(--card);color:var(--dim);font-size:18px;cursor:pointer;flex-shrink:0;
 display:flex;align-items:center;justify-content:center}
@@ -4988,13 +4994,13 @@ body.sidebar-pinned .composer{margin-left:var(--sidebar-width)}
 .profile-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;
 display:flex;align-items:center;justify-content:center;padding:20px}
 .profile-modal{background:var(--surface);border-radius:16px;max-width:480px;width:100%;
-max-height:80vh;overflow-y:auto;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+max-height:80vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.5)}
 .profile-modal-header{display:flex;align-items:center;justify-content:space-between;
 padding:16px 20px;border-bottom:1px solid var(--card)}
 .profile-modal-header h3{font-size:16px;font-weight:600}
 .profile-modal-header button{background:none;border:none;color:var(--dim);
 font-size:20px;cursor:pointer;padding:4px 8px}
-.profile-modal-body{padding:12px 16px}
+.profile-modal-body{padding:12px 16px;overflow-y:auto;flex:1;min-height:0}
 .profile-card{display:flex;align-items:center;gap:12px;padding:12px 14px;
 border-radius:12px;cursor:pointer;border:2px solid transparent;
 transition:all .15s ease;margin-bottom:8px;background:var(--bg)}
@@ -6197,6 +6203,7 @@ function openToolPanel(pillEl) {
 
   function rebuild() {
     const prevExpanded = _captureExpandedState();
+    const prevScroll = bodyEl.scrollTop;
     const toolData = Array.isArray(pillEl._toolData) ? pillEl._toolData : [];
     const completed = toolData.filter(t => t.status && t.status !== 'running').length;
     titleEl.innerHTML = `${toolData.length === 1 ? '1 tool call' : `${toolData.length} tool calls`}<span class="sp-dim">${pillEl._totalTime ? ` · ${_formatDuration(pillEl._totalTime)}` : ` · ${completed}/${toolData.length || 0} complete`}</span>`;
@@ -6242,6 +6249,7 @@ function openToolPanel(pillEl) {
       bodyEl.appendChild(step);
       bodyEl.appendChild(detail);
     });
+    requestAnimationFrame(() => { bodyEl.scrollTop = prevScroll; });
   }
 
   _anchoredPanelToggle(pillEl, () => {
@@ -6337,6 +6345,7 @@ function handleEvent(msg) {
     }
 
     case 'text': {
+      _removeThinkingIndicator();
       const ctx = _getCtx(msg);
       if (!ctx) break;
       currentStreamId = ctx.id;
@@ -6350,6 +6359,7 @@ function handleEvent(msg) {
     }
 
     case 'thinking': {
+      _removeThinkingIndicator();
       const ctx = _getCtx(msg);
       if (!ctx) break;
       currentStreamId = ctx.id;
@@ -6382,6 +6392,7 @@ function handleEvent(msg) {
     }
 
     case 'tool_use': {
+      _removeThinkingIndicator();
       const ctx = _getCtx(msg);
       if (!ctx) break;
       currentStreamId = ctx.id;
@@ -6406,6 +6417,7 @@ function handleEvent(msg) {
     }
 
     case 'tool_result': {
+      _removeThinkingIndicator();
       const ctx = _getCtx(msg);
       if (!ctx) break;
       currentStreamId = ctx.id;
@@ -6431,6 +6443,7 @@ function handleEvent(msg) {
     }
 
     case 'result': {
+      _removeThinkingIndicator();
       const ctx = _getCtx(msg);
       if (!ctx) break;
       currentStreamId = ctx.id;
@@ -6477,6 +6490,7 @@ function handleEvent(msg) {
     }
 
     case 'stream_end': {
+      _removeThinkingIndicator();
       const sid = msg.stream_id || currentStreamId;
       // Track which agent just finished so chips exclude them
       if (sid) {
@@ -6546,6 +6560,7 @@ function handleEvent(msg) {
     }
 
     case 'attach_ok':
+      _removeThinkingIndicator();
       // Server confirmed no active stream — safe to reload from DB.
       // This fires when the client thought a stream might be running
       // (sessionStorage had streamingChatId) but it already finished.
@@ -6571,6 +6586,7 @@ function handleEvent(msg) {
       break;
 
     case 'stream_complete_reload':
+      _removeThinkingIndicator();
       // Stream finished while we were disconnected. Reload from DB.
       dbg('stream completed while disconnected, reloading chat:', msg.chat_id);
       streaming = false;
@@ -6631,6 +6647,7 @@ function handleEvent(msg) {
       break;
 
     case 'error':
+      _removeThinkingIndicator();
       addSystemMsg(msg.message || 'Unknown error');
       streaming = false;
       activeStreams.clear();
@@ -6668,6 +6685,21 @@ function addUserMsg(text) {
   div.textContent = text;
   el.appendChild(div);
   scrollBottomForce();
+}
+
+function _showThinkingIndicator() {
+  _removeThinkingIndicator();
+  const el = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = 'msg assistant';
+  div.id = '_thinkingIndicator';
+  div.innerHTML = '<div class="thinking-indicator"><div class="dot"></div><div class="dot"></div><div class="dot"></div><span class="ti-label">Thinking\u2026</span></div>';
+  el.appendChild(div);
+  scrollBottomForce();
+}
+function _removeThinkingIndicator() {
+  const existing = document.getElementById('_thinkingIndicator');
+  if (existing) existing.remove();
 }
 
 function addSystemMsg(text) {
@@ -7561,6 +7593,7 @@ async function send(options = {}) {
   hideAgentChips();
   hideStopMenu();
   ws.send(JSON.stringify(msg));
+  _showThinkingIndicator();
   input.value = '';
   sessionStorage.removeItem('draftText');
   input.style.height = 'auto';
@@ -8238,17 +8271,33 @@ function _checkMentionPopup() {
   const pos = input.selectionStart;
   // Find the @word being typed: look backwards from cursor for @
   const before = val.substring(0, pos);
-  const match = before.match(/@([\\w]*)$/);
+  const match = before.match(/@[\\w]*$/);
   if (!match) { _hideMentionPopup(); return; }
-  const query = match[1].toLowerCase();
+  const query = match[0].slice(1).toLowerCase();
   const filtered = currentGroupMembers.filter(m =>
     m.name.toLowerCase().startsWith(query) || m.profile_id.toLowerCase().startsWith(query)
   );
   if (!filtered.length) { _hideMentionPopup(); return; }
   const popup = document.getElementById('mentionPopup');
-  popup.innerHTML = filtered.map((m, i) =>
-    `<div class="mention-item${i === 0 ? ' selected' : ''}" data-name="${escHtml(m.name)}" onclick="_insertMention('${escHtml(m.name)}')"><span class="mi-avatar">${escHtml(m.avatar || '')}</span><span class="mi-name">${escHtml(m.name)}</span></div>`
-  ).join('');
+  popup.innerHTML = '';
+  filtered.forEach((m, i) => {
+    const item = document.createElement('div');
+    item.className = 'mention-item' + (i === 0 ? ' selected' : '');
+    item.dataset.name = m.name || '';
+
+    const avatar = document.createElement('span');
+    avatar.className = 'mi-avatar';
+    avatar.textContent = m.avatar || '';
+
+    const name = document.createElement('span');
+    name.className = 'mi-name';
+    name.textContent = m.name || '';
+
+    item.appendChild(avatar);
+    item.appendChild(name);
+    item.addEventListener('click', () => _insertMention(item.dataset.name || ''));
+    popup.appendChild(item);
+  });
   mentionSelectedIdx = 0;
   popup.classList.add('visible');
 }
@@ -8824,13 +8873,13 @@ function showNewGroupPicker() {
       body.appendChild(card);
     });
   }
-  render();
-  modal.appendChild(body);
-
   const hint = document.createElement('div');
-  hint.style.cssText = 'padding:8px 16px;font-size:11px;color:var(--dim)';
+  hint.style.cssText = 'padding:8px 16px;font-size:11px;color:var(--dim);border-bottom:1px solid var(--bg)';
   hint.textContent = 'Click once = member, twice = primary (crown), third = remove';
   modal.appendChild(hint);
+
+  render();
+  modal.appendChild(body);
 
   const actions = document.createElement('div');
   actions.className = 'profile-modal-actions';
