@@ -410,4 +410,4 @@ Yes. Drop a directory with a `SKILL.md` into `skills/` and restart. See the [Ski
 
 ## License
 
-MIT
+Elastic License 2.0 (ELv2) — see [LICENSE](LICENSE). Free to use, modify, and self-host. Cannot be offered as a hosted/managed service.
