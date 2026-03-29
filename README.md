@@ -32,6 +32,8 @@ But Apex isn't just a privacy wrapper. It's a platform:
 
 Apex doesn't require separate API billing for most models. You connect your existing subscriptions.
 
+> **Important:** Using existing subscriptions (Claude Pro/Max, ChatGPT Plus/Pro) through Apex is for **personal, non-commercial use only**. These subscription terms allow personal tooling but not commercial resale or productized services. If you're building a commercial product on top of Apex, use the providers' API plans with appropriate commercial licenses.
+
 ### Claude (Anthropic)
 
 Uses your existing Claude subscription (Pro / Max / Code) through the Agent SDK. No separate API key needed. Full tool ecosystem — Claude can read files, write code, run commands, search your codebase. Persistent sessions survive across messages. Up to 1M context with Opus 4.6.
