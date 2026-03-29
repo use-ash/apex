@@ -190,7 +190,31 @@ struct ChatView: View {
                     }
                 }
 
-                if !streamingThinking.isEmpty && streamingText.isEmpty {
+                if streamingText.isEmpty && streamingToolEvents.isEmpty {
+                    // Show thinking indicator immediately when streaming starts,
+                    // even before any thinking text arrives from the server
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "brain")
+                            ThinkingActivityLabel()
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+
+                        if !streamingThinking.isEmpty {
+                            let preview = String(streamingThinking.suffix(120))
+                                .replacingOccurrences(of: "\n", with: " ")
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !preview.isEmpty {
+                                Text(preview)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(2)
+                            }
+                        }
+                    }
+                } else if !streamingThinking.isEmpty && streamingText.isEmpty {
+                    // Still thinking but tools are running — show thinking preview
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 6) {
                             Image(systemName: "brain")
@@ -793,7 +817,7 @@ private struct ChatComposeBar: View {
                 .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Replying to \(message.isUser ? "you" : "assistant")")
+                Text("Replying to \(message.isUser ? "you" : (message.speakerName ?? "assistant"))")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Text(replyPreviewText(for: message))
@@ -918,8 +942,12 @@ private struct ChatComposeBar: View {
             streamingToolEvents = []
             onArmStreamingTimeout()
 
-            // Resolve @mention to target_agent profile_id
-            let targetAgent = resolveTargetAgent(from: composedPrompt)
+            // Resolve target agent: explicit @mention takes priority,
+            // then fall back to the speaker of the message being replied to
+            var targetAgent = resolveTargetAgent(from: composedPrompt)
+            if targetAgent == nil, let replySpeaker = replyTarget?.speakerId, !replySpeaker.isEmpty {
+                targetAgent = replySpeaker
+            }
 
             appState.connectionManager.send(
                 .send(chatId: chatId, prompt: composedPrompt, attachments: uploadedAttachments.isEmpty ? nil : uploadedAttachments, targetAgent: targetAgent)
