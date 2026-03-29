@@ -51,3 +51,6 @@ state/backups/
 state/embeddings/
 state/uploads/
 state/config.json
+
+# Screenshots (keep local, not for OSS)
+screenshots/
