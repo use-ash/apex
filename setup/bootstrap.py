@@ -524,12 +524,13 @@ def create_initial_config(
     apex_root: Path,
     workspace: Path,
     permission_mode: str,
+    host: str = "127.0.0.1",
 ) -> None:
     """Write state/config.json with sensible defaults.
 
     Uses atomic write (temp + rename) to prevent corruption.
     """
-    print_step(6, "Writing configuration")
+    print_step(7, "Writing configuration")
 
     state_dir = apex_root / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -537,7 +538,7 @@ def create_initial_config(
 
     config = {
         "server": {
-            "host": "0.0.0.0",
+            "host": host,
             "port": 8300,
             "debug": False,
         },
@@ -699,8 +700,39 @@ def run_bootstrap(apex_root: Path) -> dict:
     permission_mode = permission_modes[mode_idx]
     print()
 
-    # 7. Write config
-    create_initial_config(apex_root, workspace, permission_mode)
+    # 7. Network access
+    print_step(7, "Network access")
+    print_info(
+        "By default, Apex only accepts connections from this computer (localhost).\n"
+        "If you want to access Apex from other devices — like your phone, tablet,\n"
+        "or another computer on your Wi-Fi network — you need to enable network access."
+    )
+    print()
+    net_idx = prompt_choice(
+        "Who should be able to connect to this server?",
+        [
+            "This computer only (localhost) — most secure, recommended for testing",
+            "Any device on my network (Wi-Fi, VPN) — required for phone/tablet access",
+        ],
+        default=1,
+    )
+    if net_idx == 1:  # network access
+        host = "0.0.0.0"
+        print()
+        print_info(
+            "IMPORTANT: Network access means any device that can reach this computer\n"
+            "can attempt to connect. Apex uses mTLS (client certificates) to block\n"
+            "unauthorized connections — only devices with your client certificate\n"
+            "can access the server. But you should still only run this on a trusted\n"
+            "network (your home Wi-Fi or VPN). Do NOT expose Apex to the public internet."
+        )
+        print()
+    else:
+        host = "127.0.0.1"
+    print()
+
+    # 8. Write config
+    create_initial_config(apex_root, workspace, permission_mode, host=host)
     print()
 
     # Mark phase complete
@@ -722,6 +754,7 @@ def run_bootstrap(apex_root: Path) -> dict:
         [
             ["Workspace", str(workspace)],
             ["Permission mode", permission_mode],
+            ["Network access", "All interfaces (0.0.0.0)" if host == "0.0.0.0" else "Localhost only (127.0.0.1)"],
             ["Server cert SANs", ", ".join(all_ips + dns_names)],
             ["Config", str(state_dir / "config.json")],
             ["SSL directory", str(state_dir / "ssl")],

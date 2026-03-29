@@ -190,7 +190,7 @@ Workspace directory [/Users/you/apex]:
 
 > **Tip:** You can always change this later from the Apex dashboard.
 
-#### Step 6 of 6: Choose permission mode
+#### Step 6 of 7: Choose permission mode
 
 This controls how much freedom the AI has to make changes on your computer:
 
@@ -202,6 +202,23 @@ Permission mode:
 ```
 
 Type **1** and press Enter. This is the recommended setting. The AI can read your files and make edits, but it asks before doing anything risky. (You can change this later from the dashboard.)
+
+#### Step 7 of 7: Network access
+
+The wizard asks who should be able to connect to your server:
+
+```
+Who should be able to connect to this server?
+  [1] This computer only (localhost) — most secure, recommended for testing
+  [2] Any device on my network (Wi-Fi, VPN) — required for phone/tablet access
+```
+
+- **Choose 1** if you only want to use Apex from this computer's browser. This is the safest option.
+- **Choose 2** if you want to connect from your phone, tablet, or another computer on the same Wi-Fi network.
+
+> **If you choose network access:** Apex uses client certificates (mTLS) to block unauthorized connections — only devices with your certificate can get in. But you should still only run Apex on a trusted network like your home Wi-Fi or a VPN. **Never expose Apex directly to the public internet.** If someone on your network doesn't have your client certificate, they cannot connect.
+
+You can change this later by editing `APEX_HOST` in your launch script or config.
 
 ![Bootstrap phase complete](images/setup_bootstrap_complete.png)
 
