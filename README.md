@@ -68,9 +68,9 @@ Each conversation targets a specific model. Run Claude for deep coding tasks, Gr
 
 This is what makes Apex different from a chat wrapper. The AI maintains context across sessions, across models, across restarts.
 
-### Project Instructions (CLAUDE.md)
+### Project Instructions (APEX.md)
 
-Drop a `CLAUDE.md` file in your workspace with project rules, coding conventions, architecture notes — whatever context the AI should always have. It's automatically injected into every session for every model. Define your rules once; every model follows them.
+Drop an `APEX.md` file in your workspace with project rules, coding conventions, architecture notes — whatever context the AI should always have. It's automatically injected into every session for every model. Define your rules once; every model follows them.
 
 ### Persistent Memory (MEMORY.md)
 
@@ -206,7 +206,7 @@ Full web-based management portal at `/admin`. 61 REST API endpoints — usable b
 - Certificate revocation
 
 **Workspace**
-- Edit project instructions (CLAUDE.md) from the browser
+- Edit project instructions (APEX.md) from the browser
 - Manage memory files
 - Enable/disable skills
 
@@ -259,7 +259,7 @@ apex.py (single file)
 │   ├── MLX (local — Apple Silicon optimized)
 │   └── Ollama (local — any compatible model)
 ├── Memory system
-│   ├── CLAUDE.md + MEMORY.md injection
+│   ├── APEX.md + MEMORY.md injection
 │   ├── Embedding index (semantic search)
 │   ├── Whisper injection (automatic context recall)
 │   └── Session recovery (compaction briefings)
