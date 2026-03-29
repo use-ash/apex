@@ -1,0 +1,9 @@
+state/
+*.db
+*.log
+server/launch_dana.sh
+nohup.out
+.git
+ios/
+screenshots/
+docs/OSS_PLAN.md
