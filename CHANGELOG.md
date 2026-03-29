@@ -4,6 +4,28 @@ All notable changes to Apex are documented here. Format follows [Keep a Changelo
 
 ---
 
+## [0.1.1] — 2026-03-28
+
+Security hardening pass (Codex audit V2) + iOS group UX.
+
+### Security
+- **HTTP middleware fails closed** — returns 401 when mTLS is configured but no peer cert is found (V2-01)
+- **WebSocket fails closed** — closes with 1008 before accept() when no peer cert (V2-02)
+- **DOM XSS cleanup** — all innerHTML user-data (avatar, name) escaped via `escHtml()` across 5 locations (V2-03)
+- **Backups exclude private keys** — `.key`, `.p12`, `.pfx`, `.pem` files excluded from standard backups; restore warns about missing key material (V2-04)
+
+### Added
+- **iOS: Quote-reply routing** — quoting an agent message auto-routes to that agent with @mention
+- **iOS: Active agent bar** — shows current responding agent with avatar during streaming
+- **iOS: Always-on send button** — send available during concurrent agent responses
+- **iOS: @mention picker** — tap @ to select agent from group roster
+- **Codex security audit docs** — V1 + V2 audit reports tracked in repo
+
+### Changed
+- Startup banner now reads version from `VERSION` file (`Apex v0.1.1`)
+
+---
+
 ## [0.1.0] — 2026-03-28
 
 First OSS-ready release.
