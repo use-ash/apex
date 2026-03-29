@@ -3061,6 +3061,9 @@ async def api_uploads_cleanup(days: int = 7):
 
 _BACKUP_FILES = ["apex.db", "config.json", "guardrail_whitelist.json"]
 
+# Exclude private key material from standard backups (security: V2-04)
+_BACKUP_SSL_EXCLUDE = {".key", ".p12", ".pfx", ".pem"}
+
 
 @dashboard_app.post("/api/backup")
 async def api_backup_create():
@@ -3091,7 +3094,7 @@ async def api_backup_create():
                 ssl_dir = _state_dir / "ssl"
                 if ssl_dir.exists() and ssl_dir.is_dir():
                     for item in ssl_dir.rglob("*"):
-                        if item.is_file():
+                        if item.is_file() and item.suffix.lower() not in _BACKUP_SSL_EXCLUDE:
                             arcname = f"ssl/{item.relative_to(ssl_dir)}"
                             tar.add(str(item), arcname=arcname)
 
@@ -3241,6 +3244,7 @@ async def api_backup_restore(request: Request):
                 restored.append(name)
 
         ssl_src = tmp_dir / "ssl"
+        ssl_keys_missing = False
         if ssl_src.exists() and ssl_src.is_dir():
             ssl_dest = _state_dir / "ssl"
             ssl_dest.mkdir(parents=True, exist_ok=True)
@@ -3251,12 +3255,33 @@ async def api_backup_restore(request: Request):
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(str(item), str(dest_file))
                     restored.append(f"ssl/{rel}")
+        # Check if the target ssl dir has key files that weren't in the backup
+        ssl_dest_check = _state_dir / "ssl"
+        if ssl_dest_check.exists() and ssl_dest_check.is_dir():
+            for item in ssl_dest_check.rglob("*"):
+                if item.is_file() and item.suffix.lower() in _BACKUP_SSL_EXCLUDE:
+                    ssl_keys_missing = True
+                    break
+        if ssl_keys_missing:
+            _log.warning(
+                "SSL private key files (.key/.p12/.pfx/.pem) are excluded from "
+                "backups for security (V2-04). Re-generate or copy keys manually "
+                "after restore."
+            )
+
+        detail = "Backup restored. Server restart required for changes to take effect."
+        if ssl_keys_missing:
+            detail += (
+                " Note: SSL private key files were excluded from this backup for "
+                "security. Re-generate or copy keys manually."
+            )
 
         return JSONResponse({
             "status": "ok",
             "restored_files": restored,
             "restart_required": True,
-            "detail": "Backup restored. Server restart required for changes to take effect.",
+            "ssl_keys_excluded": ssl_keys_missing,
+            "detail": detail,
         })
 
     except (tarfile.TarError, OSError) as e:
