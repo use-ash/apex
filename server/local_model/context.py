@@ -1,6 +1,6 @@
 """Build condensed system context for local models.
 
-Reads CLAUDE.md and MEMORY.md from the workspace to produce a compact
+Reads APEX.md and MEMORY.md from the workspace to produce a compact
 system prompt that gives local models essential workspace knowledge
 without overwhelming the context window. Target: ~2K tokens.
 """
@@ -39,7 +39,7 @@ def build_system_prompt(model: str) -> str:
     parts.append(f"- Python: {python_exe}")
     parts.append("")
 
-    # Inject CLAUDE.md / APEX.md summary if available
+    # Inject APEX.md (or CLAUDE.md fallback) summary if available
     apex_md = WORKSPACE / "APEX.md"
     claude_md = WORKSPACE / "CLAUDE.md"
     project_md = apex_md if apex_md.exists() else claude_md

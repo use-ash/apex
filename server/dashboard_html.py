@@ -1623,25 +1623,25 @@ select {
                 </div>
             </div>
 
-            <!-- CLAUDE.md Editor -->
+            <!-- Project Instructions (APEX.md) Editor -->
             <div class="config-section" style="margin-bottom:20px;">
                 <div class="config-section-header">
-                    <span class="config-section-title">CLAUDE.md</span>
+                    <span class="config-section-title">Project Instructions (APEX.md)</span>
                 </div>
-                <textarea class="ws-textarea" id="ws-claudemd-editor" placeholder="Loading CLAUDE.md..." spellcheck="false"></textarea>
+                <textarea class="ws-textarea" id="ws-projectmd-editor" placeholder="Loading project instructions..." spellcheck="false"></textarea>
                 <div class="ws-meta">
-                    <span id="ws-claudemd-modified"></span>
-                    <span id="ws-claudemd-status"></span>
+                    <span id="ws-projectmd-modified"></span>
+                    <span id="ws-projectmd-status"></span>
                 </div>
                 <div class="ws-actions">
-                    <button class="btn btn-ghost" onclick="loadClaudeMd()" id="btn-claudemd-load">
+                    <button class="btn btn-ghost" onclick="loadProjectMd()" id="btn-projectmd-load">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
                             <polyline points="23 4 23 10 17 10"/>
                             <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
                         </svg>
                         Reload
                     </button>
-                    <button class="btn btn-primary" onclick="saveClaudeMd()" id="btn-claudemd-save">
+                    <button class="btn btn-primary" onclick="saveProjectMd()" id="btn-projectmd-save">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
                             <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>
                             <polyline points="17 21 17 13 7 13 7 21"/>
@@ -3370,8 +3370,8 @@ async function loadWorkspace() {
                 renderError("Could not load sessions");
         }
 
-        /* Load CLAUDE.md and memory separately */
-        loadClaudeMd();
+        /* Load project instructions and memory separately */
+        loadProjectMd();
         loadMemoryFiles();
     } catch (err) {
         showToast("Failed to load workspace: " + err.message, "error");
@@ -3393,7 +3393,7 @@ function renderWsSummary(result) {
 
     var d = result.value;
     var path = d.workspace || d.path || d.workspace_path || "Unknown";
-    var claudeMdExists = d.claude_md_exists !== false;
+    var projectMdExists = d.claude_md_exists !== false;
     var memoryCount = d.memory_file_count != null ? d.memory_file_count : "—";
     var skillsCount = d.skills_count != null ? d.skills_count : "—";
 
@@ -3405,10 +3405,10 @@ function renderWsSummary(result) {
             '</div>' +
             '<div class="ws-summary-item">' +
                 '<div class="ws-summary-value">' +
-                    '<span class="status-dot ' + (claudeMdExists ? "green" : "red") + '"></span>' +
-                    (claudeMdExists ? "Present" : "Missing") +
+                    '<span class="status-dot ' + (projectMdExists ? "green" : "red") + '"></span>' +
+                    (projectMdExists ? "Present" : "Missing") +
                 '</div>' +
-                '<div class="ws-summary-label">CLAUDE.md</div>' +
+                '<div class="ws-summary-label">APEX.md</div>' +
             '</div>' +
             '<div class="ws-summary-item">' +
                 '<div class="ws-summary-value">' + esc(memoryCount) + '</div>' +
@@ -3421,18 +3421,18 @@ function renderWsSummary(result) {
         '</div>';
 }
 
-/* -- CLAUDE.md Editor ---------------------------------------------- */
+/* -- Project Instructions (APEX.md) Editor ------------------------- */
 
-async function loadClaudeMd() {
-    var editor = document.getElementById("ws-claudemd-editor");
-    var statusEl = document.getElementById("ws-claudemd-status");
-    var modifiedEl = document.getElementById("ws-claudemd-modified");
+async function loadProjectMd() {
+    var editor = document.getElementById("ws-projectmd-editor");
+    var statusEl = document.getElementById("ws-projectmd-status");
+    var modifiedEl = document.getElementById("ws-projectmd-modified");
 
     statusEl.textContent = "Loading...";
     editor.disabled = true;
 
     try {
-        var result = await apiFetch("/workspace/claude-md");
+        var result = await apiFetch("/workspace/project-md");
         editor.value = result.content || result.text || "";
         var modified = result.modified || result.last_modified || null;
         if (modified) {
@@ -3449,28 +3449,28 @@ async function loadClaudeMd() {
         editor.disabled = false;
     }
 }
-window.loadClaudeMd = loadClaudeMd;
+window.loadProjectMd = loadProjectMd;
 
-async function saveClaudeMd() {
-    if (!confirm("This will backup and overwrite CLAUDE.md. Continue?")) return;
+async function saveProjectMd() {
+    if (!confirm("This will backup and overwrite APEX.md. Continue?")) return;
 
-    var editor = document.getElementById("ws-claudemd-editor");
-    var btn = document.getElementById("btn-claudemd-save");
-    var statusEl = document.getElementById("ws-claudemd-status");
+    var editor = document.getElementById("ws-projectmd-editor");
+    var btn = document.getElementById("btn-projectmd-save");
+    var statusEl = document.getElementById("ws-projectmd-status");
     btn.disabled = true;
 
     try {
-        await apiFetch("/workspace/claude-md", {
+        await apiFetch("/workspace/project-md", {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ content: editor.value }),
         });
-        showToast("CLAUDE.md saved with backup", "success");
+        showToast("APEX.md saved with backup", "success");
         statusEl.textContent = "Saved";
         statusEl.style.color = "var(--green)";
         setTimeout(function() { statusEl.textContent = ""; }, 3000);
         /* Refresh modified timestamp */
-        var modifiedEl = document.getElementById("ws-claudemd-modified");
+        var modifiedEl = document.getElementById("ws-projectmd-modified");
         modifiedEl.textContent = "Last modified: " + new Date().toLocaleString();
     } catch (err) {
         showToast("Save failed: " + err.message, "error");
@@ -3478,7 +3478,7 @@ async function saveClaudeMd() {
         btn.disabled = false;
     }
 }
-window.saveClaudeMd = saveClaudeMd;
+window.saveProjectMd = saveProjectMd;
 
 /* -- Memory Files -------------------------------------------------- */
 

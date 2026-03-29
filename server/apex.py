@@ -368,7 +368,7 @@ async def _maybe_compact_chat(chat_id: str) -> bool:
     # Clear session_id so next message creates a fresh session
     _update_chat(chat_id, claude_session_id=None)
 
-    # Clear the workspace context sent flag so CLAUDE.md gets re-injected
+    # Clear the workspace context sent flag so APEX.md gets re-injected
     _session_context_sent.discard(chat_id)
 
     # Notify connected WebSocket viewers
@@ -383,7 +383,7 @@ async def _maybe_compact_chat(chat_id: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Workspace context injection — CLAUDE.md + MEMORY.md on first message
+# Workspace context injection — APEX.md + MEMORY.md on first message
 # ---------------------------------------------------------------------------
 _session_context_sent: set[str] = set()  # chat_ids that already got context
 
@@ -575,7 +575,7 @@ def _resolve_group_agent(chat_id: str, chat: dict, prompt: str) -> dict | None:
 
 
 def _get_workspace_context(chat_id: str) -> str:
-    """Load CLAUDE.md + MEMORY.md + skills catalog once per session for Claude Code parity.
+    """Load APEX.md + MEMORY.md + skills catalog once per session for Claude Code parity.
     Also injects compaction summary if the session was just auto-compacted."""
     if chat_id in _session_context_sent:
         # Even after context was sent, check for compaction summary (one-shot injection)
@@ -649,7 +649,7 @@ def _get_workspace_context(chat_id: str) -> str:
             parts.append(recent)
     if parts:
         _session_context_sent.add(chat_id)
-        ctx_parts = "CLAUDE.md + MEMORY.md + skills"
+        ctx_parts = "APEX.md + MEMORY.md + skills"
         if not has_existing_session:
             ctx_parts += " + recent exchanges"
         log(f"Workspace context injected for chat={chat_id} ({ctx_parts})")
@@ -3390,7 +3390,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
     else:
         sys_prompt = f"You are {effective_model}, a local AI model running via Ollama. Be helpful and concise."
 
-    # Inject profile + workspace context (CLAUDE.md, MEMORY.md, recovery briefings) for richer context
+    # Inject profile + workspace context (APEX.md, MEMORY.md, recovery briefings) for richer context
     profile_prompt = _get_profile_prompt(chat_id)
     group_roster_prompt = _get_group_roster_prompt(chat_id)
     workspace_ctx = _get_workspace_context(chat_id)

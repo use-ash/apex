@@ -46,8 +46,8 @@ Endpoints:
 
     Phase 4 — Workspace, Skills, Guardrails, Sessions:
     GET    /api/workspace                          — Workspace summary
-    GET    /api/workspace/claude-md                 — Read CLAUDE.md content
-    PUT    /api/workspace/claude-md                 — Update CLAUDE.md (backup first)
+    GET    /api/workspace/project-md                — Read APEX.md content
+    PUT    /api/workspace/project-md                — Update APEX.md (backup first)
     GET    /api/workspace/memory                    — List memory files
     GET    /api/workspace/memory/{name}              — Read memory file content
     PUT    /api/workspace/memory/{name}              — Update memory file (backup first)
@@ -2192,11 +2192,11 @@ async def api_workspace():
 
 
 # ---------------------------------------------------------------------------
-# GET /api/workspace/claude-md — Read CLAUDE.md
+# GET /api/workspace/project-md — Read APEX.md (or CLAUDE.md fallback)
 # ---------------------------------------------------------------------------
 
-@dashboard_app.get("/api/workspace/claude-md")
-async def api_workspace_claude_md_get():
+@dashboard_app.get("/api/workspace/project-md")
+async def api_workspace_project_md_get():
     """Return the contents of APEX.md (or CLAUDE.md fallback)."""
     # Prefer APEX.md (model-agnostic), fall back to CLAUDE.md for backward compat
     apex_md = WORKSPACE / "APEX.md"
@@ -2217,11 +2217,11 @@ async def api_workspace_claude_md_get():
 
 
 # ---------------------------------------------------------------------------
-# PUT /api/workspace/claude-md — Update CLAUDE.md (backup first)
+# PUT /api/workspace/project-md — Update APEX.md (backup first)
 # ---------------------------------------------------------------------------
 
-@dashboard_app.put("/api/workspace/claude-md")
-async def api_workspace_claude_md_put(request: Request):
+@dashboard_app.put("/api/workspace/project-md")
+async def api_workspace_project_md_put(request: Request):
     """Write APEX.md (or CLAUDE.md fallback) after backing up."""
     body = await request.json()
     content = body.get("content")
