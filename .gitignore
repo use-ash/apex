@@ -32,6 +32,11 @@ ios/
 # License signing keys — NEVER commit private keys
 keys/
 
+# Premium module plaintext — only .enc blobs ship in the repo
+server/routes_chat_premium.py
+server/context_premium.py
+server/ws_handler_premium.py
+
 # Environment
 .env
 .env.*
@@ -64,7 +69,7 @@ screenshots/
 # MkDocs build output
 site/
 
-# Custom — Dana's personal scripts, configs, local overrides.
+# Custom — local scripts, configs, overrides.
 # Promote to main dirs when ready to ship.
 custom/
 

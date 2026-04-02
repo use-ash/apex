@@ -23,12 +23,12 @@ Generic OSS-ready persona templates + profile editor.
 - **Persona templates rewritten for OSS** — replaced 7 Apex-specific personas with 6 generic, product-agnostic templates suitable for any self-hosted user: Architect, Writer, Planner, Assistant, Developer, Designer. New IDs (`writer`, `planner`, `assistant`, `developer`) so existing installs keep their customized profiles untouched via `INSERT OR IGNORE`. Local `Assistant` persona defaults to `ollama/llama3.1:8b` for zero-cost quick tasks.
 
 ### Removed
-- **Dana-specific personas** — Marketing (Apex CMO), Operations (Apex COO), Kodi (hardcoded qwen3.5:27b), Codex (codex:gpt-5.4), QA (Apex test engineer) removed from templates. Existing database entries are unaffected.
+- **Project-specific personas** — Marketing (Apex CMO), Operations (Apex COO), Kodi (hardcoded qwen3.5:27b), Codex (codex:gpt-5.4), QA (Apex test engineer) removed from templates. Existing database entries are unaffected.
 
 ### Docs
 - **GETTING_STARTED.md** — Step 6 rewritten for new generic personas + profile editor UI instructions.
 - **PERSONAS.md** — Full rewrite: generic persona reference with API examples, model selection guide, and customization instructions.
-- **docs/personas/** — Replaced 5 Dana-specific persona files (marketing, operations, kodi, codex, architect) with 6 generic ones (architect, writer, planner, developer, designer, assistant).
+- **docs/personas/** — Replaced 5 Project-specific persona files (marketing, operations, kodi, codex, architect) with 6 generic ones (architect, writer, planner, developer, designer, assistant).
 - **Remaining CLAUDE.md references** — Fixed in OSS_PLAN.md, README_OSS.md, FREE_TIER_OVERVIEW.md to say APEX.md. Dashboard API key renamed from `claude_md_exists` to `project_md_exists`.
 
 ---
@@ -156,6 +156,6 @@ First OSS-ready release.
 ### Removed
 - Trader persona from default seeds (trading-specific, users can create their own)
 - Trading alert categories from code defaults (configurable via `config.json`)
-- Hardcoded Dana-specific paths, secrets, IPs, persona references
+- Hardcoded Project-specific paths, secrets, IPs, persona references
 - `/opt/homebrew` paths — all use `sys.executable` / `shutil.which`
 - Screenshots directory from git history (67MB purged via `git filter-repo`)
