@@ -2523,8 +2523,15 @@ function handleEvent(msg) {
       _activateStream(ctx);
       if (ctx.awaitingAck && !ctx.thinkingText) {
         _teardownThinking(ctx);
-      } else if (ctx.thinkingText && ctx.liveThinkingPill) {
-        // Convert live thinking pill to static so it persists alongside text
+      } else if (ctx.thinkingText && !ctx.thinkingPill) {
+        // Ensure a static thinking pill exists whenever we have thinking text —
+        // handles both live→static conversion and recreation after teardown
+        _teardownThinking(ctx);
+        _thinkingPill(ctx, {
+          durationMs: ctx.thinkingStart ? (Date.now() - ctx.thinkingStart) : 0,
+        });
+      } else if (ctx.liveThinkingPill) {
+        // Still have a live pill — convert to static
         _teardownThinking(ctx);
         _thinkingPill(ctx, {
           durationMs: ctx.thinkingStart ? (Date.now() - ctx.thinkingStart) : 0,
@@ -2573,8 +2580,14 @@ function handleEvent(msg) {
       _activateStream(ctx);
       if (ctx.awaitingAck && !ctx.thinkingText) {
         _teardownThinking(ctx);
-      } else if (ctx.thinkingText && ctx.liveThinkingPill) {
-        // Convert live thinking pill to static immediately so it persists during tool execution
+      } else if (ctx.thinkingText && !ctx.thinkingPill) {
+        // Ensure a static thinking pill exists whenever we have thinking text
+        _teardownThinking(ctx);
+        _thinkingPill(ctx, {
+          durationMs: ctx.thinkingStart ? (Date.now() - ctx.thinkingStart) : 0,
+        });
+      } else if (ctx.liveThinkingPill) {
+        // Still have a live pill — convert to static
         _teardownThinking(ctx);
         _thinkingPill(ctx, {
           durationMs: ctx.thinkingStart ? (Date.now() - ctx.thinkingStart) : 0,
