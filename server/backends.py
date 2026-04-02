@@ -163,6 +163,7 @@ _BACKEND_LABELS = {
     "xai": "xAI",
     "mlx": "MLX",
 }
+_CODEX_RESPONSES_API_MODELS = {"o3", "o4-mini"}
 
 
 def validate_backend_attachments(backend: str, attachments: list[dict] | None) -> str | None:
@@ -621,16 +622,28 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
             )
         elif backend == "codex":
             codex_model = effective_model[6:]
-            result = await run_tool_loop(
-                ollama_url=OLLAMA_BASE_URL,
-                model=codex_model,
-                messages=messages,
-                emit_event=emit,
-                workspace=WORKSPACE_PATHS,
-                api_key="chatgpt-oauth",
-                api_url="chatgpt",
-                max_iterations=MAX_TOOL_ITERATIONS,
-            )
+            if codex_model in _CODEX_RESPONSES_API_MODELS and OPENAI_API_KEY:
+                result = await run_tool_loop(
+                    ollama_url=OLLAMA_BASE_URL,
+                    model=codex_model,
+                    messages=messages,
+                    emit_event=emit,
+                    workspace=WORKSPACE_PATHS,
+                    api_key=OPENAI_API_KEY,
+                    api_url="https://api.openai.com/v1",
+                    max_iterations=MAX_TOOL_ITERATIONS,
+                )
+            else:
+                result = await run_tool_loop(
+                    ollama_url=OLLAMA_BASE_URL,
+                    model=codex_model,
+                    messages=messages,
+                    emit_event=emit,
+                    workspace=WORKSPACE_PATHS,
+                    api_key="chatgpt-oauth",
+                    api_url="chatgpt",
+                    max_iterations=MAX_TOOL_ITERATIONS,
+                )
         elif ALLOW_LOCAL_TOOLS and backend == "mlx":
             mlx_model = effective_model[4:]
             result = await run_tool_loop(

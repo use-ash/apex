@@ -310,6 +310,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         if journal_events:
                             partial_parts = []
                             tool_chain_parts = []
+                            tool_id_to_name = {}
                             for _, evt in journal_events:
                                 evt_type = evt.get("type", "")
                                 if evt_type == "text" and evt.get("text"):
@@ -318,9 +319,23 @@ async def websocket_endpoint(websocket: WebSocket):
                                     name = evt.get("name", "tool")
                                     inp = str(evt.get("input", ""))[:200]
                                     tool_chain_parts.append(f"- {name}: {inp}")
+                                    tid = evt.get("id", "")
+                                    if tid:
+                                        tool_id_to_name[tid] = name
                                 elif evt_type == "tool_result":
-                                    content = str(evt.get("content", ""))[:300]
-                                    tool_chain_parts.append(f"  result: {content}")
+                                    content = str(evt.get("content", "")).strip()[:300]
+                                    tid = evt.get("tool_use_id") or evt.get("id", "")
+                                    tool_name = tool_id_to_name.get(tid, "")
+                                    label = f"result ({tool_name})" if tool_name else "result"
+                                    if content:
+                                        tool_chain_parts.append(f"  {label}: {content}")
+                                    else:
+                                        tool_chain_parts.append(f"  {label}: (completed)")
+                                elif evt_type == "result":
+                                    # Backend terminal event — extract thinking if present
+                                    thinking = str(evt.get("thinking", "")).strip()
+                                    if thinking and not partial_parts:
+                                        partial_parts.append(thinking[:500])
                             partial_text = "".join(partial_parts).strip()
 
                             if partial_text or tool_chain_parts:
@@ -832,7 +847,10 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         # --- Codex CLI path ---
         if backend == "codex":
             try:
-                result = await _run_codex_chat(chat_id, prompt, model=chat_model, attachments=attachments)
+                if chat_model in {"codex:o3", "codex:o4-mini"} and env.OPENAI_API_KEY:
+                    result = await _run_ollama_chat(chat_id, prompt, model=chat_model, attachments=attachments)
+                else:
+                    result = await _run_codex_chat(chat_id, prompt, model=chat_model, attachments=attachments)
             except Exception as codex_err:
                 log(f"codex chat error: {codex_err}")
                 message = _public_backend_error_message("codex", codex_err)

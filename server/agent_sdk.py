@@ -836,6 +836,7 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
                     "session_id": msg.session_id,
                     "context_tokens_in": _ctx_in,
                     "context_window": _ctx_window,
+                    "thinking": thinking_text,
                 })
                 elapsed = time.monotonic() - _stream_start
                 if DEBUG: log(f"DBG stream COMPLETE: chat={chat_id} events={_stream_event_count} time={elapsed:.0f}s session={msg.session_id[:8] if msg.session_id else '?'} cost=${result_info['cost_usd']:.4f}")

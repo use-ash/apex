@@ -94,6 +94,15 @@ border:1px solid var(--card);background:var(--bg);color:var(--text);text-decorat
 font-family:'SF Mono','Fira Code',monospace;font-size:11px;line-height:1.4}
 .msg.user .msg-file-pill{border-color:rgba(255,255,255,0.22);background:rgba(15,23,42,0.22);color:white}
 .msg-file-pill .msg-file-size{opacity:.72}
+.image-viewer-overlay{position:fixed;inset:0;z-index:400;background:rgba(2,6,23,.92);
+display:flex;align-items:center;justify-content:center;padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left))}
+.image-viewer-content{position:relative;display:flex;align-items:center;justify-content:center;
+width:100%;height:100%;max-width:min(100vw - 32px, 1100px);max-height:100vh}
+.image-viewer-image{display:block;max-width:100%;max-height:100%;width:auto;height:auto;
+border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.45);cursor:zoom-out}
+.image-viewer-close{position:absolute;top:max(12px,env(safe-area-inset-top));right:max(12px,env(safe-area-inset-right));
+display:flex;align-items:center;justify-content:center;width:44px;height:44px;border:none;border-radius:999px;
+background:rgba(15,23,42,.82);color:white;font-size:28px;line-height:1;cursor:pointer;box-shadow:0 10px 24px rgba(0,0,0,.35)}
 @keyframes attShimmer{100%{transform:translateX(100%)}}
 
 /* Thinking blocks */
@@ -2902,6 +2911,58 @@ function buildMessageFilePill(att) {
   return link;
 }
 
+function openImageViewer(imageUrl, altText = 'Attachment') {
+  if (!imageUrl) return;
+  document.querySelector('.image-viewer-overlay')?.remove();
+  const previousOverflow = document.body.style.overflow;
+  const overlay = document.createElement('div');
+  overlay.className = 'image-viewer-overlay';
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+
+  const content = document.createElement('div');
+  content.className = 'image-viewer-content';
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'image-viewer-close';
+  closeBtn.type = 'button';
+  closeBtn.setAttribute('aria-label', 'Close image');
+  closeBtn.innerHTML = '&times;';
+
+  const img = document.createElement('img');
+  img.className = 'image-viewer-image';
+  img.src = imageUrl;
+  img.alt = altText;
+
+  const closeViewer = () => {
+    document.body.style.overflow = previousOverflow;
+    document.removeEventListener('keydown', onKeyDown);
+    overlay.remove();
+  };
+  const onKeyDown = (e) => {
+    if (e.key === 'Escape') closeViewer();
+  };
+
+  img.onclick = (e) => {
+    e.stopPropagation();
+    closeViewer();
+  };
+  closeBtn.onclick = (e) => {
+    e.stopPropagation();
+    closeViewer();
+  };
+  overlay.onclick = (e) => {
+    if (e.target === overlay) closeViewer();
+  };
+
+  content.appendChild(closeBtn);
+  content.appendChild(img);
+  overlay.appendChild(content);
+  document.body.style.overflow = 'hidden';
+  document.body.appendChild(overlay);
+  document.addEventListener('keydown', onKeyDown);
+}
+
 function buildMessageAttachment(att) {
   const item = document.createElement('div');
   const imageUrl = att.url || ((att.base64 && att.mimeType) ? `data:${att.mimeType};base64,${att.base64}` : '');
@@ -2911,7 +2972,7 @@ function buildMessageAttachment(att) {
     img.src = imageUrl;
     img.alt = att.name || 'Attachment';
     img.loading = 'lazy';
-    img.onclick = () => window.open(imageUrl, '_blank', 'noopener');
+    img.onclick = () => openImageViewer(imageUrl, att.name || 'Attachment');
     img.onload = () => item.classList.add('is-loaded');
     img.onerror = () => {
       item.className = 'msg-attachment is-file';
