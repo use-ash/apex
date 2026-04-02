@@ -85,8 +85,18 @@ To fully remove the Apex directory after uninstall:
 rm -rf ~/.apex
 ```
 
+## Premium Module Encryption
+
+Premium features (groups, orchestration, agent profiles) are encrypted at rest. The server ships `.enc` blobs that are decrypted at startup with a feature key delivered during license activation.
+
+- **Activation:** `POST /api/license/activate` with `{"license": {...}, "feature_key": "base64-fernet-key"}` — stores both the license and the decryption key.
+- **Refresh:** Weekly check-in delivers an updated feature key. During key rotation, both `feature_key` (current) and `feature_key_previous` (grace period) are accepted.
+- **Deactivation:** Removes the license and the feature key. Premium modules become inert blobs again.
+- **Instance binding:** The feature key is stored in an instance-bound keystore (PBKDF2-derived from the installation's unique ID). Copying the keystore to another machine fails.
+- **Dev mode:** When running on a non-production port, plaintext `.py` files are loaded directly for IDE and debugging support.
+
 ## Notes
 
-- The code is open source. Licensing gates premium features as a fair exchange for ongoing development — not as DRM.
+- The code is source-available. Licensing gates premium features as a fair exchange for ongoing development — not as DRM.
 - Licenses are cryptographically signed and validated locally. No telemetry, no tracking.
 - Offline-first: the server works without internet. Only subscription refresh needs periodic connectivity.

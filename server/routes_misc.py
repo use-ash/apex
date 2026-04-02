@@ -242,14 +242,27 @@ async def api_license_status():
 
 @misc_router.post("/api/license/activate")
 async def api_license_activate(request: Request):
-    """Activate a signed license. Body: raw license JSON."""
+    """Activate a signed license. Body: raw license JSON or {"license": ..., "feature_key": ...}."""
     try:
         body = await request.body()
         if not body:
             return JSONResponse({"success": False, "error": "Empty body"}, status_code=400)
-        result = _license_mgr.activate(body.decode("utf-8"))
+        raw = body.decode("utf-8")
+
+        # Accept either raw license JSON or a wrapper with feature_key
+        feature_key = ""
+        try:
+            wrapper = __import__("json").loads(raw)
+            if isinstance(wrapper, dict) and "license" in wrapper:
+                license_data = wrapper["license"]
+                feature_key = wrapper.get("feature_key", "")
+                raw = __import__("json").dumps(license_data) if isinstance(license_data, dict) else str(license_data)
+        except Exception:
+            pass  # not a wrapper — treat raw as license JSON
+
+        result = _license_mgr.activate(raw, feature_key=feature_key)
         if result["success"]:
-            log(f"License activated: tier={result['tier']} expires={result.get('expires')}")
+            log(f"License activated: tier={result['tier']} expires={result.get('expires')} feature_key={'yes' if feature_key else 'no'}")
         else:
             log(f"License activation failed: {result['error']}")
         status_code = 200 if result["success"] else 400

@@ -218,6 +218,7 @@ class LicenseManager:
         self._public_key = public_key_b64 or _PUBLIC_KEY_B64
         self._license_path = self._state_dir / LICENSE_FILENAME
         self._lock = threading.Lock()
+        self._premium_loader = None  # set by apex.py after PremiumLoader init
 
         # Cached state
         self._cached_status: dict[str, Any] | None = None
@@ -269,11 +270,12 @@ class LicenseManager:
             self._cached_status = None
             self._cache_time = 0
 
-    def activate(self, license_json: str) -> dict[str, Any]:
-        """Write a license file and validate it.
+    def activate(self, license_json: str, feature_key: str = "") -> dict[str, Any]:
+        """Write a license file and validate it. Optionally store a feature key.
 
         Args:
             license_json: Raw JSON string of the license.
+            feature_key: Base64 Fernet key for decrypting premium modules.
 
         Returns:
             {"success": True, "tier": "pro", ...} on success
@@ -306,6 +308,10 @@ class LicenseManager:
         except OSError as exc:
             return {"success": False, "error": f"Failed to write license: {exc}"}
 
+        # Store feature key if provided (for premium module decryption)
+        if feature_key:
+            self.store_feature_key(feature_key)
+
         self.invalidate_cache()
         status = self.status()
         return {
@@ -316,14 +322,27 @@ class LicenseManager:
         }
 
     def deactivate(self) -> dict[str, Any]:
-        """Remove the license file. Reverts to trial or free tier."""
+        """Remove the license file and feature key. Reverts to trial or free tier."""
         try:
             if self._license_path.exists():
                 self._license_path.unlink()
+            self.clear_feature_key()
             self.invalidate_cache()
             return {"success": True, "tier": self.status()["tier"]}
         except OSError as exc:
             return {"success": False, "error": str(exc)}
+
+    # -- feature key management ------------------------------------------------
+
+    def store_feature_key(self, key_b64: str) -> None:
+        """Store the feature key via PremiumLoader (instance-bound keystore)."""
+        if self._premium_loader and key_b64:
+            self._premium_loader.store_feature_key(key_b64)
+
+    def clear_feature_key(self) -> None:
+        """Remove the feature key on deactivation/revocation."""
+        if self._premium_loader:
+            self._premium_loader.clear_feature_key()
 
     # -- internal -----------------------------------------------------------
 
@@ -480,9 +499,17 @@ class LicenseManager:
                 log.warning("check_in: server returned no license")
                 return False
 
-            result = self.activate(json.dumps(license_json) if isinstance(license_json, dict) else license_json)
+            # Extract feature key (current + previous for rotation grace period)
+            fk = data.get("feature_key", "")
+            fk_prev = data.get("feature_key_previous", "")
+
+            result = self.activate(
+                json.dumps(license_json) if isinstance(license_json, dict) else license_json,
+                feature_key=fk,
+            )
             if result.get("success"):
-                log.info("check_in: license refreshed, expires %s", result.get("expires"))
+                log.info("check_in: license refreshed, expires %s (feature_key=%s)",
+                         result.get("expires"), "delivered" if fk else "none")
                 return True
             else:
                 log.warning("check_in: activate failed: %s", result.get("error"))
@@ -516,17 +543,28 @@ class LicenseManager:
         """Background asyncio loop — checks in with license server every 7 days.
 
         Call from FastAPI lifespan or a background task. Runs indefinitely.
-        First check-in is deferred by the full interval so startup isn't blocked.
+        First check-in runs eagerly (after 10s) for trials so the feature key
+        arrives promptly. Subsequent check-ins use the normal 7-day interval.
         """
         import asyncio
         log.debug("License check-in loop started (interval=%ds)", CHECK_IN_INTERVAL_SECONDS)
-        await asyncio.sleep(CHECK_IN_INTERVAL_SECONDS)
+
+        # Eager first check-in — delivers the feature key for trials
+        await asyncio.sleep(10)
+        try:
+            status = self.status()
+            if status.get("trial_active") or status.get("license_valid"):
+                result = await self.check_in()
+                log.info("Eager check-in: %s", "success" if result else "no update")
+        except Exception as exc:
+            log.debug("Eager check-in failed (non-fatal): %s", exc)
+
         while True:
+            await asyncio.sleep(CHECK_IN_INTERVAL_SECONDS)
             try:
                 await self.check_in()
             except Exception as exc:
                 log.error("check_in loop error: %s", exc)
-            await asyncio.sleep(CHECK_IN_INTERVAL_SECONDS)
 
 
 def get_license_manager() -> LicenseManager:

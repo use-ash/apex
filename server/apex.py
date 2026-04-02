@@ -167,6 +167,9 @@ if _premium.get("context_premium"):
 if _premium.get("ws_handler_premium"):
     _ws_handler_mod._ws_premium = _premium["ws_handler_premium"]
 
+# Wire PremiumLoader into LicenseManager for feature key storage
+_license_mgr._premium_loader = _premium_loader
+
 
 # ---------------------------------------------------------------------------
 # FastAPI app

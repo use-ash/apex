@@ -156,15 +156,24 @@ class PremiumLoader:
             log.error("Failed to load %s.enc: %s", name, exc)
             return None
 
-    def load_premium_module(self, name: str) -> types.ModuleType | None:
-        """Load a single premium module. Uses dev mode or encrypted mode."""
+    def load_premium_module(self, name: str, fallback_key: str = "") -> types.ModuleType | None:
+        """Load a single premium module. Uses dev mode or encrypted mode.
+
+        In encrypted mode, tries the current feature key first. If decryption
+        fails and a fallback_key is provided (key rotation grace period), tries
+        that before giving up.
+        """
         if env.DEV_MODE:
             return self._load_plaintext(name)
         feature_key = self.load_feature_key()
         if not feature_key:
             log.debug("No feature key — premium module %s not loaded", name)
             return None
-        return self._load_encrypted(name, feature_key)
+        mod = self._load_encrypted(name, feature_key)
+        if mod is None and fallback_key and fallback_key != feature_key:
+            log.info("Trying fallback key for %s (key rotation)", name)
+            mod = self._load_encrypted(name, fallback_key)
+        return mod
 
     def load_all(self) -> dict[str, types.ModuleType | None]:
         """Load all premium modules. Returns {name: module_or_None}."""
