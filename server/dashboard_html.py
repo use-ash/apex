@@ -2054,16 +2054,40 @@ select {
                 <div id="ws-mcp-content">
                     <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
                 </div>
-                <!-- Add MCP Server Form (hidden by default) -->
-                <div id="mcp-add-form" style="display:none; padding:12px; border-top:1px solid var(--border);">
+                <!-- MCP Catalog Modal (hidden) -->
+                <div id="mcp-catalog-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:1000; align-items:center; justify-content:center;">
+                <div style="background:var(--bg); border:1px solid var(--card); border-radius:12px; width:580px; max-height:80vh; overflow:hidden; display:flex; flex-direction:column; box-shadow:0 20px 60px rgba(0,0,0,.4);">
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding:16px 20px; border-bottom:1px solid var(--card);">
+                        <div>
+                            <div style="font-size:15px; font-weight:600; color:var(--text);">Add MCP Server</div>
+                            <div style="font-size:12px; color:var(--dim); margin-top:2px;">Choose a server to extend your agents with new tools</div>
+                        </div>
+                        <button id="mcp-catalog-close" style="background:none; border:none; color:var(--dim); font-size:20px; cursor:pointer; padding:4px 8px;">&times;</button>
+                    </div>
+                    <div style="padding:12px 20px 8px;">
+                        <input id="mcp-catalog-search" type="text" placeholder="Search servers..." style="width:100%; padding:6px 10px; background:var(--surface); border:1px solid var(--card); border-radius:6px; color:var(--text); font-size:13px; outline:none;">
+                    </div>
+                    <div id="mcp-catalog-body" style="overflow-y:auto; padding:4px 20px 16px; flex:1;"></div>
+                    <div style="border-top:1px solid var(--card); padding:12px 20px; display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:12px; color:var(--dim);">Need something else?</span>
+                        <button id="mcp-catalog-custom" class="btn btn-ghost" style="padding:4px 12px; font-size:12px;">Custom Server...</button>
+                    </div>
+                </div>
+                </div>
+                <!-- MCP Add/Edit Form (hidden by default) -->
+                <div id="mcp-add-form" style="display:none; padding:12px; border-top:1px solid var(--card);">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                        <span style="font-size:12px; font-weight:600; color:var(--text);" id="mcp-form-title">Custom Server</span>
+                        <button class="btn btn-ghost" id="btn-mcp-back-catalog" style="padding:2px 8px; font-size:11px; display:none;">&#8592; Back to Catalog</button>
+                    </div>
                     <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px;">
                         <div>
-                            <label style="font-size:11px; color:var(--text-muted);">Name</label>
-                            <input id="mcp-name" type="text" placeholder="my-server" style="width:100%; padding:4px 8px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:4px; color:var(--text-primary); font-size:13px;">
+                            <label style="font-size:11px; color:var(--dim);">Name</label>
+                            <input id="mcp-name" type="text" placeholder="my-server" style="width:100%; padding:4px 8px; background:var(--surface); border:1px solid var(--card); border-radius:4px; color:var(--text); font-size:13px;">
                         </div>
                         <div>
-                            <label style="font-size:11px; color:var(--text-muted);">Type</label>
-                            <select id="mcp-type" style="width:100%; padding:4px 8px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:4px; color:var(--text-primary); font-size:13px;">
+                            <label style="font-size:11px; color:var(--dim);">Type</label>
+                            <select id="mcp-type" style="width:100%; padding:4px 8px; background:var(--surface); border:1px solid var(--card); border-radius:4px; color:var(--text); font-size:13px;">
                                 <option value="stdio">stdio</option>
                                 <option value="sse">sse</option>
                                 <option value="http">http</option>
@@ -2072,15 +2096,19 @@ select {
                     </div>
                     <div id="mcp-stdio-fields">
                         <div style="margin-bottom:8px;">
-                            <label style="font-size:11px; color:var(--text-muted);">Command</label>
-                            <input id="mcp-command" type="text" placeholder="npx -y @modelcontextprotocol/server-filesystem /tmp" style="width:100%; padding:4px 8px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:4px; color:var(--text-primary); font-size:13px;">
+                            <label style="font-size:11px; color:var(--dim);">Command</label>
+                            <input id="mcp-command" type="text" placeholder="npx -y @modelcontextprotocol/server-filesystem /tmp" style="width:100%; padding:4px 8px; background:var(--surface); border:1px solid var(--card); border-radius:4px; color:var(--text); font-size:13px;">
                         </div>
                     </div>
                     <div id="mcp-url-fields" style="display:none;">
                         <div style="margin-bottom:8px;">
-                            <label style="font-size:11px; color:var(--text-muted);">URL</label>
-                            <input id="mcp-url" type="text" placeholder="http://localhost:3000/sse" style="width:100%; padding:4px 8px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:4px; color:var(--text-primary); font-size:13px;">
+                            <label style="font-size:11px; color:var(--dim);">URL</label>
+                            <input id="mcp-url" type="text" placeholder="http://localhost:3000/sse" style="width:100%; padding:4px 8px; background:var(--surface); border:1px solid var(--card); border-radius:4px; color:var(--text); font-size:13px;">
                         </div>
+                    </div>
+                    <div id="mcp-env-fields" style="display:none; margin-bottom:8px;">
+                        <label style="font-size:11px; color:var(--dim);">Environment Variables</label>
+                        <div id="mcp-env-list"></div>
                     </div>
                     <div style="display:flex; gap:8px; justify-content:flex-end;">
                         <button class="btn btn-ghost" id="btn-mcp-cancel" style="padding:4px 12px; font-size:12px;">Cancel</button>
@@ -2283,7 +2311,7 @@ select {
                         <a href="https://use-ash.com" target="_blank" style="color:var(--accent)">use-ash.com</a>.
                     </p>
                     <textarea id="license-key-input" rows="6"
-                        style="width:100%;background:var(--bg-secondary);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:12px;font-family:'SF Mono','JetBrains Mono',monospace;font-size:11px;resize:vertical"
+                        style="width:100%;background:var(--surface);color:var(--text);border:1px solid var(--card);border-radius:8px;padding:12px;font-family:'SF Mono','JetBrains Mono',monospace;font-size:11px;resize:vertical"
                         placeholder='Paste your license JSON here...'></textarea>
                     <div style="display:flex;gap:8px;margin-top:10px">
                         <button class="btn btn-primary" id="btn-activate-license">Activate</button>
@@ -4681,12 +4709,12 @@ function renderMcpServers(data) {
     var names = Object.keys(servers);
 
     if (names.length === 0) {
-        el.innerHTML = '<div style="padding:12px; color:var(--text-muted); font-size:13px;">No MCP servers configured. Click + Add Server to get started.</div>';
+        el.innerHTML = '<div style="padding:12px; color:var(--dim); font-size:13px;">No MCP servers configured. Click + Add Server to get started.</div>';
         return;
     }
 
     var html = '<table style="width:100%; font-size:13px; border-collapse:collapse;">' +
-        '<tr style="border-bottom:1px solid var(--border); color:var(--text-muted); font-size:11px; text-transform:uppercase;">' +
+        '<tr style="border-bottom:1px solid var(--card); color:var(--dim); font-size:11px; text-transform:uppercase;">' +
         '<th style="text-align:left; padding:6px 8px;">Name</th>' +
         '<th style="text-align:left; padding:6px 8px;">Type</th>' +
         '<th style="text-align:left; padding:6px 8px;">Target</th>' +
@@ -4698,7 +4726,7 @@ function renderMcpServers(data) {
         var cfg = servers[name];
         var target = cfg.command ? esc(cfg.command + (cfg.args ? " " + cfg.args.join(" ") : "")) : esc(cfg.url || "");
         var checked = cfg.enabled !== false ? "checked" : "";
-        html += '<tr style="border-bottom:1px solid var(--border);">' +
+        html += '<tr style="border-bottom:1px solid var(--card);">' +
             '<td style="padding:6px 8px; font-family:monospace;">' + esc(name) + '</td>' +
             '<td style="padding:6px 8px;">' + esc(cfg.type || "stdio") + '</td>' +
             '<td style="padding:6px 8px; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + target + '">' + target + '</td>' +
@@ -4740,8 +4768,229 @@ async function deleteMcpServer(name) {
 }
 window.deleteMcpServer = deleteMcpServer;
 
+async function addMcpServer() {
+    var name = document.getElementById("mcp-name").value.trim();
+    var type = document.getElementById("mcp-type").value;
+    if (!name) { showToast("Name is required", "error"); return; }
+    var body = {name: name, type: type, enabled: true};
+    if (type === "stdio") {
+        var cmdRaw = document.getElementById("mcp-command").value.trim();
+        if (!cmdRaw) { showToast("Command is required", "error"); return; }
+        var parts = cmdRaw.split(/\\s+/);
+        body.command = parts[0];
+        if (parts.length > 1) body.args = parts.slice(1);
+    } else {
+        var url = document.getElementById("mcp-url").value.trim();
+        if (!url) { showToast("URL is required", "error"); return; }
+        body.url = url;
+    }
+    var envInputs = document.querySelectorAll(".mcp-env-input");
+    if (envInputs.length > 0) {
+        var envObj = {}, missing = [];
+        envInputs.forEach(function(inp) {
+            var k = inp.getAttribute("data-env-key"), v = inp.value.trim();
+            if (v) envObj[k] = v; else missing.push(k);
+        });
+        if (missing.length) { showToast("Required: " + missing.join(", "), "error"); return; }
+        if (Object.keys(envObj).length) body.env = envObj;
+    }
+    try {
+        await apiFetch("/mcp/servers", {
+            method: "POST",
+            headers: {"Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest"},
+            body: JSON.stringify(body),
+        });
+        showToast("MCP server added: " + name, "success");
+        document.getElementById("mcp-add-form").style.display = "none";
+        document.getElementById("mcp-name").value = "";
+        document.getElementById("mcp-command").value = "";
+        document.getElementById("mcp-url").value = "";
+        document.getElementById("mcp-env-fields").style.display = "none";
+        document.getElementById("mcp-env-list").innerHTML = "";
+        var cl = document.querySelector("#mcp-stdio-fields label");
+        if (cl) cl.textContent = "Command";
+        loadWorkspace();
+    } catch (err) {
+        showToast("Failed to add: " + err.message, "error");
+    }
+}
 
-
+/* -- MCP Catalog --------------------------------------------------- */
+var MCP_CATALOG = [
+    { category: "Web & Data", items: [
+        { name: "fetch", desc: "Fetch web pages and extract content as markdown", runners: [
+            { label: "Docker", command: "docker", args: ["run", "-i", "--rm", "mcp/fetch"] },
+            { label: "npx", command: "npx", args: ["-y", "@anthropic-ai/mcp-server-fetch"] },
+            { label: "uvx", command: "uvx", args: ["mcp-server-fetch"] },
+        ]},
+        { name: "brave-search", desc: "Web search via Brave Search API", runners: [
+            { label: "Docker", command: "docker", args: ["run", "-i", "--rm", "-e", "BRAVE_API_KEY", "mcp/brave-search"] },
+            { label: "npx", command: "npx", args: ["-y", "@anthropic-ai/mcp-server-brave-search"] },
+        ], env: [{ key: "BRAVE_API_KEY", hint: "From search.brave.com/api" }]},
+    ]},
+    { category: "Developer Tools", items: [
+        { name: "github", desc: "GitHub repos, issues, PRs, code search", runners: [
+            { label: "Docker", command: "docker", args: ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "mcp/github"] },
+            { label: "npx", command: "npx", args: ["-y", "@modelcontextprotocol/server-github"] },
+        ], env: [{ key: "GITHUB_PERSONAL_ACCESS_TOKEN", hint: "GitHub PAT with repo scope" }]},
+        { name: "git", desc: "Git operations: log, diff, blame, branch management", runners: [
+            { label: "Docker", command: "docker", args: ["run", "-i", "--rm", "mcp/git"] },
+            { label: "npx", command: "npx", args: ["-y", "@modelcontextprotocol/server-git"] },
+            { label: "uvx", command: "uvx", args: ["mcp-server-git"] },
+        ]},
+        { name: "playwright", desc: "Browser automation: navigate, click, screenshot, scrape", runners: [
+            { label: "Docker", command: "docker", args: ["run", "-i", "--rm", "mcp/playwright"] },
+            { label: "npx", command: "npx", args: ["-y", "@anthropic-ai/mcp-server-playwright"] },
+        ]},
+        { name: "filesystem", desc: "Read, write, and manage files in a directory", runners: [
+            { label: "npx", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"] },
+            { label: "Docker", command: "docker", args: ["run", "-i", "--rm", "-v", "/tmp:/tmp", "mcp/filesystem", "/tmp"] },
+        ]},
+    ]},
+    { category: "Productivity", items: [
+        { name: "slack", desc: "Read/send Slack messages, manage channels", runners: [
+            { label: "Docker", command: "docker", args: ["run", "-i", "--rm", "-e", "SLACK_BOT_TOKEN", "-e", "SLACK_TEAM_ID", "mcp/slack"] },
+            { label: "npx", command: "npx", args: ["-y", "@modelcontextprotocol/server-slack"] },
+        ], env: [
+            { key: "SLACK_BOT_TOKEN", hint: "xoxb-... from Slack app config" },
+            { key: "SLACK_TEAM_ID", hint: "Workspace ID (starts with T)" },
+        ]},
+        { name: "google-drive", desc: "Search and read Google Drive documents", runners: [
+            { label: "npx", command: "npx", args: ["-y", "@anthropic-ai/mcp-server-gdrive"] },
+        ], env: [{ key: "GDRIVE_CREDENTIALS_PATH", hint: "Path to OAuth credentials JSON" }]},
+        { name: "memory", desc: "Persistent key-value memory for agents", runners: [
+            { label: "Docker", command: "docker", args: ["run", "-i", "--rm", "mcp/memory"] },
+            { label: "npx", command: "npx", args: ["-y", "@modelcontextprotocol/server-memory"] },
+        ]},
+    ]},
+    { category: "Databases", items: [
+        { name: "postgres", desc: "Query PostgreSQL databases (read-only by default)", runners: [
+            { label: "Docker", command: "docker", args: ["run", "-i", "--rm", "-e", "POSTGRES_CONNECTION_STRING", "mcp/postgres"] },
+            { label: "npx", command: "npx", args: ["-y", "@modelcontextprotocol/server-postgres"] },
+        ], env: [{ key: "POSTGRES_CONNECTION_STRING", hint: "postgresql://user:pass@host/db" }]},
+        { name: "sqlite", desc: "Query and manage SQLite databases", runners: [
+            { label: "Docker", command: "docker", args: ["run", "-i", "--rm", "mcp/sqlite"] },
+            { label: "npx", command: "npx", args: ["-y", "@modelcontextprotocol/server-sqlite"] },
+            { label: "uvx", command: "uvx", args: ["mcp-server-sqlite"] },
+        ]},
+    ]},
+];
+function openMcpCatalog() {
+    document.getElementById("mcp-catalog-overlay").style.display = "flex";
+    document.getElementById("mcp-catalog-search").value = "";
+    renderCatalog("");
+}
+function closeMcpCatalog() { document.getElementById("mcp-catalog-overlay").style.display = "none"; }
+function renderCatalog(filter) {
+    var el = document.getElementById("mcp-catalog-body"), html = "", lf = filter.toLowerCase();
+    for (var c = 0; c < MCP_CATALOG.length; c++) {
+        var cat = MCP_CATALOG[c];
+        var items = cat.items.filter(function(it) { return !lf || it.name.indexOf(lf)>=0 || it.desc.toLowerCase().indexOf(lf)>=0; });
+        if (!items.length) continue;
+        html += '<div style="margin-top:12px;margin-bottom:6px;font-size:11px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;">' + esc(cat.category) + '</div>';
+        for (var i = 0; i < items.length; i++) {
+            var it = items[i], badges = "";
+            for (var r = 0; r < it.runners.length; r++) {
+                var bg = it.runners[r].label==="Docker"?"#0db7ed":it.runners[r].label==="npx"?"#cb3837":"#7c3aed";
+                badges += '<span style="display:inline-block;padding:1px 6px;font-size:10px;border-radius:3px;background:'+bg+';color:#fff;margin-left:4px;">'+esc(it.runners[r].label)+'</span>';
+            }
+            var envHint = (it.env&&it.env.length) ? '<div style="font-size:10px;color:var(--yellow);margin-top:2px;">Requires: '+it.env.map(function(e){return esc(e.key);}).join(", ")+'</div>' : "";
+            html += '<div data-mcp-preset="'+esc(it.name)+'" style="padding:10px 12px;border:1px solid var(--card);border-radius:8px;margin-bottom:6px;cursor:pointer;transition:border-color .15s;" onmouseenter="this.style.borderColor=\'var(--accent)\'" onmouseleave="this.style.borderColor=\'var(--card)\'">' +
+                '<div style="display:flex;justify-content:space-between;align-items:center;"><div style="font-size:13px;font-weight:500;color:var(--text);font-family:monospace;">'+esc(it.name)+'</div><div>'+badges+'</div></div>' +
+                '<div style="font-size:12px;color:var(--dim);margin-top:2px;">'+esc(it.desc)+'</div>'+envHint+'</div>';
+        }
+    }
+    if (!html) html = '<div style="padding:20px;text-align:center;color:var(--dim);font-size:13px;">No servers match your search.</div>';
+    el.innerHTML = html;
+}
+function selectMcpPreset(name) {
+    var preset = null;
+    for (var c = 0; c < MCP_CATALOG.length && !preset; c++)
+        for (var i = 0; i < MCP_CATALOG[c].items.length; i++)
+            if (MCP_CATALOG[c].items[i].name === name) { preset = MCP_CATALOG[c].items[i]; break; }
+    if (!preset) return;
+    closeMcpCatalog();
+    var runner = preset.runners[0];
+    document.getElementById("mcp-add-form").style.display = "block";
+    document.getElementById("mcp-form-title").textContent = preset.name;
+    document.getElementById("btn-mcp-back-catalog").style.display = "inline-block";
+    document.getElementById("mcp-name").value = preset.name;
+    document.getElementById("mcp-type").value = "stdio";
+    document.getElementById("mcp-stdio-fields").style.display = "block";
+    document.getElementById("mcp-url-fields").style.display = "none";
+    document.getElementById("mcp-command").value = runner.command + " " + runner.args.join(" ");
+    var cmdLabel = document.querySelector("#mcp-stdio-fields label");
+    if (preset.runners.length > 1) {
+        var picker = '<span style="float:right;">';
+        for (var r = 0; r < preset.runners.length; r++) {
+            var rn = preset.runners[r], sel = r===0?"background:var(--accent);color:#fff;":"background:var(--surface);color:var(--dim);";
+            picker += '<button type="button" class="mcp-runner-btn" data-runner-idx="'+r+'" style="padding:1px 8px;font-size:10px;border:1px solid var(--card);border-radius:3px;margin-left:3px;cursor:pointer;'+sel+'">'+esc(rn.label)+'</button>';
+        }
+        cmdLabel.innerHTML = "Command " + picker + "</span>";
+        setTimeout(function() {
+            document.querySelectorAll(".mcp-runner-btn").forEach(function(btn) {
+                btn.addEventListener("click", function() {
+                    var idx = parseInt(this.getAttribute("data-runner-idx")), rn = preset.runners[idx];
+                    document.getElementById("mcp-command").value = rn.command + " " + rn.args.join(" ");
+                    document.querySelectorAll(".mcp-runner-btn").forEach(function(b){b.style.background="var(--surface)";b.style.color="var(--dim)";});
+                    this.style.background="var(--accent)"; this.style.color="#fff";
+                    updateEnvFields(preset);
+                });
+            });
+        }, 0);
+    } else { cmdLabel.textContent = "Command"; }
+    updateEnvFields(preset);
+}
+function updateEnvFields(preset) {
+    var envDiv = document.getElementById("mcp-env-fields"), envList = document.getElementById("mcp-env-list");
+    var envVars = preset.env || [];
+    if (!envVars.length) { envDiv.style.display = "none"; envList.innerHTML = ""; return; }
+    envDiv.style.display = "block";
+    var html = "";
+    for (var i = 0; i < envVars.length; i++) {
+        var ev = envVars[i];
+        html += '<div style="display:flex;gap:6px;align-items:center;margin-top:4px;"><code style="font-size:11px;color:var(--dim);min-width:180px;white-space:nowrap;">'+esc(ev.key)+'</code>' +
+            '<input type="text" class="mcp-env-input" data-env-key="'+esc(ev.key)+'" placeholder="'+esc(ev.hint||"")+'" style="flex:1;padding:4px 8px;background:var(--surface);border:1px solid var(--card);border-radius:4px;color:var(--text);font-size:12px;"></div>';
+    }
+    envList.innerHTML = html;
+}
+/* MCP form + catalog wiring */
+(function() {
+    document.addEventListener("DOMContentLoaded", function() {
+        document.getElementById("btn-mcp-add").addEventListener("click", openMcpCatalog);
+        var ov = document.getElementById("mcp-catalog-overlay");
+        ov.addEventListener("click", function(e){if(e.target===ov)closeMcpCatalog();});
+        document.getElementById("mcp-catalog-close").addEventListener("click", closeMcpCatalog);
+        document.getElementById("mcp-catalog-search").addEventListener("input", function(){renderCatalog(this.value);});
+        document.getElementById("mcp-catalog-body").addEventListener("click", function(e){
+            var card = e.target.closest("[data-mcp-preset]");
+            if (card) selectMcpPreset(card.getAttribute("data-mcp-preset"));
+        });
+        document.getElementById("mcp-catalog-custom").addEventListener("click", function(){
+            closeMcpCatalog();
+            document.getElementById("mcp-add-form").style.display = "block";
+            document.getElementById("mcp-form-title").textContent = "Custom Server";
+            document.getElementById("btn-mcp-back-catalog").style.display = "inline-block";
+            document.getElementById("mcp-name").value = "";
+            document.getElementById("mcp-command").value = "";
+            document.getElementById("mcp-url").value = "";
+            document.getElementById("mcp-env-fields").style.display = "none";
+            document.querySelector("#mcp-stdio-fields label").textContent = "Command";
+        });
+        document.getElementById("btn-mcp-back-catalog").addEventListener("click", function(){
+            document.getElementById("mcp-add-form").style.display = "none"; openMcpCatalog();
+        });
+        document.getElementById("btn-mcp-cancel").addEventListener("click", function(){
+            document.getElementById("mcp-add-form").style.display = "none";
+        });
+        document.getElementById("btn-mcp-save").addEventListener("click", addMcpServer);
+        document.getElementById("mcp-type").addEventListener("change", function(){
+            var s = this.value==="stdio";
+            document.getElementById("mcp-stdio-fields").style.display = s?"block":"none";
+            document.getElementById("mcp-url-fields").style.display = s?"none":"block";
+        });
+    });
+})();
 /* -- Skills Catalog ------------------------------------------------ */
 
 function renderSkills() {
