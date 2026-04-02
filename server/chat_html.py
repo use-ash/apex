@@ -945,14 +945,18 @@ opacity:0;transition:opacity 0.3s ease;pointer-events:none}
   </div>
 </div>
 <div class="drop-overlay" id="dropOverlay"><div class="drop-overlay-inner">&#128206; Drop files to attach</div></div>
-<div class="premium-locked-bar" id="premiumLockedBar" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:10;background:var(--surface);padding:8px 0;padding-bottom:calc(8px + var(--sab))">
-  <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:10px;margin:0 12px">
-    <span style="font-size:18px">🔒</span>
-    <div style="flex:1">
+<div class="premium-locked-bar" id="premiumLockedBar" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:10;background:var(--surface);padding:10px 0;padding-bottom:calc(10px + var(--sab))">
+  <div style="padding:14px 16px;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:10px;margin:0 12px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <span style="font-size:16px">🔒</span>
       <div style="font-weight:600;font-size:13px;color:var(--yellow,#F59E0B)">Group channels require Apex Pro</div>
-      <div style="font-size:12px;color:var(--dim);margin-top:2px">Your message history is preserved. Upgrade to resume collaboration.</div>
+      <div style="font-size:11px;color:var(--dim);margin-left:auto">Message history preserved</div>
     </div>
-    <a href="https://buy.stripe.com/dRmcN40Ag8Qucptc2UcQU04" target="_blank" id="premiumUpgradeLink" style="font-size:12px;font-weight:600;color:var(--accent);text-decoration:none;white-space:nowrap;padding:6px 14px;background:var(--accent);color:#fff;border-radius:6px">Upgrade →</a>
+    <div style="display:flex;gap:8px;align-items:center">
+      <a href="https://buy.stripe.com/dRmcN40Ag8Qucptc2UcQU04" target="_blank" style="flex:1;text-align:center;padding:8px 12px;background:var(--card);border:1px solid var(--card);border-radius:6px;color:var(--text);text-decoration:none;font-size:12px;font-weight:600">$29.99<span style="font-weight:400;color:var(--dim)">/mo</span></a>
+      <a href="https://buy.stripe.com/9B6cN46YE3wa6153wocQU05" target="_blank" style="flex:1;text-align:center;padding:8px 12px;background:var(--accent);border:1px solid var(--accent);border-radius:6px;color:#fff;text-decoration:none;font-size:12px;font-weight:600">$249<span style="font-weight:400;opacity:.8">/yr</span> <span style="font-size:10px;opacity:.7">save 30%</span></a>
+      <a href="https://buy.stripe.com/6oUeVc96Mc2G7593wocQU06" target="_blank" style="flex:1;text-align:center;padding:8px 12px;background:linear-gradient(135deg,#F59E0B,#D97706);border:none;border-radius:6px;color:#fff;text-decoration:none;font-size:12px;font-weight:600">$499 <span style="font-weight:400;opacity:.8">lifetime</span> <span style="font-size:10px;opacity:.7">limited</span></a>
+    </div>
   </div>
 </div>
 <div class="composer" id="composerBar" style="position:relative">
