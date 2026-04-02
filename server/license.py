@@ -27,7 +27,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from compat import safe_chmod
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import load_der_public_key
 from cryptography.exceptions import InvalidSignature
@@ -564,6 +563,7 @@ class LicenseManager:
             import uuid as _uuid
             iid = str(_uuid.uuid4())
             id_file.write_text(iid)
+            from compat import safe_chmod
             safe_chmod(id_file, 0o600)
             return iid
         except OSError:
