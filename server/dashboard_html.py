@@ -1392,6 +1392,17 @@ select {
     background: #fff;
     padding: 8px;
 }
+.mcp-preset-card {
+    padding: 10px 12px;
+    border: 1px solid var(--card);
+    border-radius: 8px;
+    margin-bottom: 6px;
+    cursor: pointer;
+    transition: border-color .15s;
+}
+.mcp-preset-card:hover {
+    border-color: var(--accent);
+}
 </style>
 </head>
 <body>
@@ -4895,7 +4906,7 @@ function renderCatalog(filter) {
                 badges += '<span style="display:inline-block;padding:1px 6px;font-size:10px;border-radius:3px;background:'+bg+';color:#fff;margin-left:4px;">'+esc(it.runners[r].label)+'</span>';
             }
             var envHint = (it.env&&it.env.length) ? '<div style="font-size:10px;color:var(--yellow);margin-top:2px;">Requires: '+it.env.map(function(e){return esc(e.key);}).join(", ")+'</div>' : "";
-            html += '<div data-mcp-preset="'+esc(it.name)+'" style="padding:10px 12px;border:1px solid var(--card);border-radius:8px;margin-bottom:6px;cursor:pointer;transition:border-color .15s;" onmouseenter="this.style.borderColor=\'var(--accent)\'" onmouseleave="this.style.borderColor=\'var(--card)\'">' +
+            html += '<div data-mcp-preset="'+esc(it.name)+'" class="mcp-preset-card">' +
                 '<div style="display:flex;justify-content:space-between;align-items:center;"><div style="font-size:13px;font-weight:500;color:var(--text);font-family:monospace;">'+esc(it.name)+'</div><div>'+badges+'</div></div>' +
                 '<div style="font-size:12px;color:var(--dim);margin-top:2px;">'+esc(it.desc)+'</div>'+envHint+'</div>';
         }
