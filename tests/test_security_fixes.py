@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import uuid
+from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from fastapi.testclient import TestClient
@@ -37,8 +41,18 @@ import dashboard as dashboard_mod  # noqa: E402
 import db as db_mod  # noqa: E402
 import env  # noqa: E402
 import memory_extract  # noqa: E402
+import context as context_mod  # noqa: E402
+import streaming as streaming_mod  # noqa: E402
 import ws_handler  # noqa: E402
-from state import _current_group_profile_id  # noqa: E402
+from state import (  # noqa: E402
+    _current_group_profile_id,
+    _active_send_tasks,
+    _queued_turns,
+    _chat_ws,
+    _stream_buffers,
+    _chat_locks,
+    _chat_send_locks,
+)
 from local_model import tool_loop  # noqa: E402
 from local_model.tools import list_files, read_file, search_files, write_file  # noqa: E402
 from setup.progress import mark_phase_completed  # noqa: E402
@@ -60,6 +74,17 @@ class SecurityFixTests(unittest.TestCase):
         apex._seed_default_profiles()
         apex.LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         apex.LOG_PATH.write_text("", encoding="utf-8")
+        for state in (
+            _active_send_tasks,
+            _queued_turns,
+            _chat_ws,
+            _stream_buffers,
+            _chat_locks,
+            _chat_send_locks,
+        ):
+            state.clear()
+        context_mod._premium = None
+        ws_handler._ws_premium = None
 
     def _client(self) -> TestClient:
         return TestClient(apex.app)
@@ -143,6 +168,12 @@ class SecurityFixTests(unittest.TestCase):
             if predicate(msg):
                 return msg
         self.fail("Expected websocket event was not received")
+
+    def _group_agent(self, chat_id: str, profile_id: str) -> dict:
+        for member in db_mod._get_group_members(chat_id):
+            if member["profile_id"] == profile_id:
+                return {**member, "clean_prompt": f"Prompt for {member['name']}"}
+        self.fail(f"group agent {profile_id} not found in chat {chat_id}")
 
     def test_logs_search_treats_regex_as_literal_text(self) -> None:
         apex.LOG_PATH.write_text(
@@ -371,6 +402,43 @@ class SecurityFixTests(unittest.TestCase):
         self.assertEqual(msg["type"], "error")
         self.assertIn("not supported for Codex chats yet", msg["message"])
 
+    def test_websocket_send_routes_o3_to_responses_backend_when_api_key_present(self) -> None:
+        chat_id = self._create_direct_chat(model="codex:o3")
+        routed = {"ollama": 0}
+
+        async def fake_run_ollama_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            self.assertEqual(chat_id_arg, chat_id)
+            self.assertEqual(prompt, "show reasoning")
+            self.assertEqual(model, "codex:o3")
+            routed["ollama"] += 1
+            return {
+                "text": "done",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "step by step",
+                "tool_events": "[]",
+            }
+
+        with (
+            mock.patch.object(ws_handler.env, "OPENAI_API_KEY", "sk-test"),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=AssertionError("codex CLI path should not run")),
+            mock.patch.object(ws_handler, "_run_ollama_chat", side_effect=fake_run_ollama_chat),
+            self._client() as client,
+        ):
+            with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                ws.send_json({
+                    "action": "send",
+                    "chat_id": chat_id,
+                    "prompt": "show reasoning",
+                })
+                self._receive_until(ws, lambda msg: msg.get("type") == "stream_end")
+
+        self.assertEqual(routed["ollama"], 1)
+
     def test_websocket_send_rejects_text_attachments_for_ollama_before_dispatch(self) -> None:
         chat_id = self._create_direct_chat(model="qwen3:latest")
         attachment = self._create_uploaded_attachment("txt", b"notes")
@@ -464,6 +532,15 @@ class SecurityFixTests(unittest.TestCase):
     def test_busy_group_agent_turn_is_queued_while_other_agent_can_run(self) -> None:
         chat_id = self._create_test_group_chat()
         release_codeexpert = asyncio.Event()
+        premium = SimpleNamespace(
+            resolve_target_agent=lambda _chat_id, _prompt, target_profile_id: self._group_agent(chat_id, target_profile_id),
+            get_agent_relay_actions=lambda *_args, **_kwargs: {
+                "mentions_enabled": True,
+                "mentioned_names": [],
+                "current_chain": [],
+                "actions": [],
+            },
+        )
 
         async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
             active_profile = _current_group_profile_id.get("")
@@ -481,7 +558,10 @@ class SecurityFixTests(unittest.TestCase):
                 "tool_events": "[]",
             }
 
-        with mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat):
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", premium),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
+        ):
             with self._client() as client:
                 with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
                     ws.send_json({
@@ -525,6 +605,251 @@ class SecurityFixTests(unittest.TestCase):
                         lambda msg: msg.get("type") == "stream_start" and msg.get("speaker_id") == "queue-codeexpert",
                     )
                     self.assertEqual(dequeued["speaker_name"], "Queue CodeExpert")
+
+    def test_busy_group_agent_blocks_third_queued_turn_after_two(self) -> None:
+        chat_id = self._create_test_group_chat()
+        release_codeexpert = asyncio.Event()
+        premium = SimpleNamespace(
+            resolve_target_agent=lambda _chat_id, _prompt, target_profile_id: self._group_agent(chat_id, target_profile_id),
+            get_agent_relay_actions=lambda *_args, **_kwargs: {
+                "mentions_enabled": True,
+                "mentioned_names": [],
+                "current_chain": [],
+                "actions": [],
+            },
+        )
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            if _current_group_profile_id.get("") == "queue-codeexpert":
+                await release_codeexpert.wait()
+            return {
+                "text": f"reply:{prompt}",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", premium),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
+        ):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "First for CodeExpert",
+                        "target_agent": "queue-codeexpert",
+                    })
+                    self._receive_until(
+                        ws,
+                        lambda msg: msg.get("type") == "stream_start" and msg.get("speaker_id") == "queue-codeexpert",
+                    )
+
+                    for expected_position, prompt in ((1, "Second"), (2, "Third")):
+                        ws.send_json({
+                            "action": "send",
+                            "chat_id": chat_id,
+                            "prompt": f"{prompt} for CodeExpert",
+                            "target_agent": "queue-codeexpert",
+                        })
+                        queued = self._receive_until(
+                            ws,
+                            lambda msg: msg.get("type") == "stream_queued" and msg.get("speaker_id") == "queue-codeexpert",
+                        )
+                        self.assertEqual(queued["position"], expected_position)
+
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "Fourth for CodeExpert",
+                        "target_agent": "queue-codeexpert",
+                    })
+                    overflow = self._receive_until(
+                        ws,
+                        lambda msg: msg.get("type") == "error" and msg.get("stream_id"),
+                    )
+                    self.assertIn("already has 2 queued turns", overflow["message"])
+
+        release_codeexpert.set()
+
+    def test_group_roster_prompt_includes_cross_chat_agent_load(self) -> None:
+        chat_id_one = self._create_test_group_chat()
+        chat_id_two = self._create_test_group_chat()
+        premium = SimpleNamespace(
+            get_group_roster_prompt=lambda _chat_id, _user_message="": "<system-reminder>\n# Group Roster\n- base\n</system-reminder>\n\n",
+        )
+        loop = asyncio.new_event_loop()
+        blocker = asyncio.Event()
+        task = loop.create_task(blocker.wait())
+        started_at = time.monotonic() - 45
+        streaming_mod._set_active_send_task(
+            chat_id_one,
+            "stream-one",
+            task,
+            name="Queue CodeExpert",
+            avatar="💻",
+            profile_id="queue-codeexpert",
+        )
+        streaming_mod._update_active_send_task(
+            chat_id_one,
+            "stream-one",
+            started_at=started_at,
+        )
+        _queued_turns["other-chat:queue-codeexpert"] = deque([
+            {"profile_id": "queue-codeexpert"},
+            {"profile_id": "queue-codeexpert"},
+        ])
+
+        try:
+            with mock.patch.object(context_mod, "_premium", premium):
+                prompt = context_mod._get_group_roster_prompt(chat_id_two, user_message="@queue-codeexpert help")
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                loop.run_until_complete(task)
+            loop.close()
+
+        self.assertIn("# Group Roster", prompt)
+        self.assertIn("# Agent Load", prompt)
+        self.assertIn("Queue CodeExpert [queue-codeexpert] 💻", prompt)
+        self.assertIn("queue: 2/2", prompt)
+        self.assertIn("Queue Apex Assistant [queue-apex-assistant] ✨ — 🟢 idle", prompt)
+
+    def test_group_relay_self_mention_is_suppressed(self) -> None:
+        chat_id = self._create_test_group_chat()
+        agent = self._group_agent(chat_id, "queue-codeexpert")
+        relay_agent = dict(agent)
+        premium = SimpleNamespace(
+            resolve_target_agent=lambda _chat_id, _prompt, target_profile_id: dict(self._group_agent(chat_id, target_profile_id)),
+            get_agent_relay_actions=lambda _chat_id, _response_text, group_agent, _chain, mention_depth: {
+                "mentions_enabled": True,
+                "mentioned_names": [group_agent["name"]] if mention_depth == 0 else [],
+                "current_chain": [group_agent["profile_id"]],
+                "actions": (
+                    [{
+                        "type": "relay",
+                        "target": relay_agent,
+                        "prompt": "Self relay",
+                        "depth": mention_depth + 1,
+                    }]
+                    if mention_depth == 0
+                    else []
+                ),
+            },
+        )
+        created_send_tasks = 0
+        real_create_task = ws_handler.asyncio.create_task
+
+        def counting_create_task(coro, *args, **kwargs):
+            nonlocal created_send_tasks
+            code = getattr(coro, "cr_code", None)
+            if getattr(code, "co_name", "") == "_handle_send_action":
+                created_send_tasks += 1
+            return real_create_task(coro, *args, **kwargs)
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            return {
+                "text": "Reply with @Queue CodeExpert",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", premium),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
+            mock.patch.object(ws_handler.asyncio, "create_task", side_effect=counting_create_task),
+            mock.patch.object(ws_handler, "log") as log_mock,
+        ):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "Start relay",
+                        "target_agent": "queue-codeexpert",
+                    })
+                    self._receive_until(ws, lambda msg: msg.get("type") == "stream_end")
+
+        self.assertEqual(created_send_tasks, 1)
+        self.assertTrue(
+            any("relay blocked (self-mention)" in str(call.args[0]) for call in log_mock.call_args_list)
+        )
+
+    def test_user_multi_dispatch_skips_primary_agent(self) -> None:
+        chat_id = self._create_test_group_chat()
+        primary = self._group_agent(chat_id, "queue-codeexpert")
+        secondary = self._group_agent(chat_id, "queue-apex-assistant")
+        premium = SimpleNamespace(
+            resolve_target_agent=lambda _chat_id, _prompt, target_profile_id: dict(
+                primary if target_profile_id == primary["profile_id"] else secondary
+            ),
+            get_multi_dispatch_targets=lambda _chat_id, _prompt, _group_agent, _data: [primary, secondary],
+            get_agent_relay_actions=lambda *_args, **_kwargs: {
+                "mentions_enabled": True,
+                "mentioned_names": [],
+                "current_chain": [],
+                "actions": [],
+            },
+        )
+        created_send_tasks = 0
+        real_create_task = ws_handler.asyncio.create_task
+
+        def counting_create_task(coro, *args, **kwargs):
+            nonlocal created_send_tasks
+            code = getattr(coro, "cr_code", None)
+            if getattr(code, "co_name", "") == "_handle_send_action":
+                created_send_tasks += 1
+            return real_create_task(coro, *args, **kwargs)
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            return {
+                "text": f"reply:{prompt}",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", premium),
+            mock.patch.object(ws_handler, "_resolve_group_agent", return_value=dict(primary)),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
+            mock.patch.object(ws_handler.asyncio, "create_task", side_effect=counting_create_task),
+            mock.patch.object(ws_handler, "log") as log_mock,
+        ):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "@all weigh in",
+                    })
+                    stream_end_count = 0
+                    while stream_end_count < 2:
+                        msg = ws.receive_json()
+                        if msg.get("type") == "stream_end":
+                            stream_end_count += 1
+
+        self.assertEqual(created_send_tasks, 2)
+        self.assertTrue(
+            any("user multi-dispatch blocked (self-target)" in str(call.args[0]) for call in log_mock.call_args_list)
+        )
 
     def test_codex_public_error_message_hides_internal_chunk_details(self) -> None:
         msg = ws_handler._public_backend_error_message(

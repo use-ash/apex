@@ -29,11 +29,12 @@ from db import (
 import env
 from log import log
 from model_dispatch import _get_model_backend, OLLAMA_BASE_URL
+from streaming import _get_profile_active_stream_stats
 from state import (
     _compaction_summaries, _recovery_target, _recovery_skip_count,
     _last_compacted_at, _session_context_sent,
     _group_profile_override, _whisper_last,
-    _db_lock, _current_group_profile_id,
+    _db_lock, _current_group_profile_id, _queued_turns,
     _chat_ws, _clients,
 )
 
@@ -625,9 +626,60 @@ def _get_memory_prompt(chat_id: str, active_profile_id: str = "",
 _premium = None  # set to context_premium module by apex.py
 
 
+def _get_group_queue_cap() -> int:
+    try:
+        from ws_handler import MAX_QUEUED_TURNS_PER_KEY
+        return int(MAX_QUEUED_TURNS_PER_KEY)
+    except Exception:
+        return 2
+
+
+def _get_profile_queued_turn_count(profile_id: str) -> int:
+    if not profile_id:
+        return 0
+    total = 0
+    for queue in _queued_turns.values():
+        total += sum(1 for entry in queue if str(entry.get("profile_id") or "") == profile_id)
+    return total
+
+
+def _build_group_load_prompt(chat_id: str) -> str:
+    members = _get_group_members(chat_id)
+    if not members:
+        return ""
+
+    queue_cap = _get_group_queue_cap()
+    lines = [
+        "# Agent Load",
+        "Cross-chat activity for the current group roster:",
+    ]
+    for member in members:
+        profile_id = str(member.get("profile_id") or "")
+        active_count, active_age_s = _get_profile_active_stream_stats(profile_id)
+        queued_count = _get_profile_queued_turn_count(profile_id)
+        if active_count > 1 and active_age_s is not None:
+            status = f"\U0001f534 active x{active_count} ({active_age_s}s), queue: {queued_count}/{queue_cap}"
+        elif active_count == 1 and active_age_s is not None:
+            status = f"\U0001f534 active ({active_age_s}s), queue: {queued_count}/{queue_cap}"
+        elif queued_count > 0:
+            status = f"\U0001f7e1 queued, queue: {queued_count}/{queue_cap}"
+        else:
+            status = "\U0001f7e2 idle"
+        lines.append(
+            f"- {member.get('name', 'Unknown')} [{profile_id}] {member.get('avatar', '')} — {status}"
+        )
+    return "<system-reminder>\n" + "\n".join(lines) + "\n</system-reminder>\n\n"
+
+
 def _get_group_roster_prompt(chat_id: str, user_message: str = "") -> str:
-    """Delegate to premium module, or return empty string."""
-    return _premium.get_group_roster_prompt(chat_id, user_message) if _premium else ""
+    """Delegate to premium module, then append cross-chat load visibility."""
+    if not _premium:
+        return ""
+    roster_prompt = _premium.get_group_roster_prompt(chat_id, user_message)
+    if not roster_prompt:
+        return ""
+    load_prompt = _build_group_load_prompt(chat_id)
+    return f"{roster_prompt}{load_prompt}" if load_prompt else roster_prompt
 
 
 def _resolve_group_agent(chat_id: str, chat: dict, prompt: str) -> dict | None:

@@ -13,6 +13,7 @@ import hmac
 import json
 import os
 import re
+import time
 import uuid
 from collections import deque
 from pathlib import Path
@@ -87,7 +88,8 @@ except ImportError:
 # Router
 # ---------------------------------------------------------------------------
 ws_router = APIRouter()
-MAX_QUEUED_TURNS_PER_KEY = 5
+MAX_QUEUED_TURNS_PER_KEY = 2
+MAX_MENTION_DEPTH = 25
 
 # Premium module — injected by apex.py when loaded. Provides group routing
 # and agent relay functions. When None, all group routing is disabled.
@@ -608,6 +610,9 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         if group_agent and is_group_chat and _ws_premium:
             multi_targets = _ws_premium.get_multi_dispatch_targets(chat_id, prompt, group_agent, data)
             for t in multi_targets:
+                if str(t.get("profile_id") or "") == str(group_agent.get("profile_id") or ""):
+                    log(f"user multi-dispatch blocked (self-target): {group_agent['name']} chat={chat_id[:8]}")
+                    continue
                 # Pass attachment refs directly so secondary agents don't race
                 # with the primary's _save_message DB write (which hasn't happened
                 # yet at task-creation time).
@@ -731,6 +736,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         )
         return
 
+    result: dict | None = None
     try:
         ack_payload = {"type": "stream_ack", "chat_id": chat_id, "stream_id": stream_id}
         if group_agent:
@@ -832,6 +838,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 name=group_agent["name"],
                 avatar=group_agent["avatar"],
                 profile_id=group_agent["profile_id"],
+                started_at=time.monotonic(),
             )
             # Persist active speaker to DB so recovery routing survives a crash
             _update_chat_settings(chat_id, {"active_speaker_id": group_agent["profile_id"]})
@@ -841,8 +848,6 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         await _send_stream_event(chat_id, stream_start_event)
         if is_group_chat:
             await _send_active_streams(chat_id)
-
-        result: dict | None = None
 
         # --- Codex CLI path ---
         if backend == "codex":
@@ -997,10 +1002,14 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 f"found={relay['mentioned_names']} depth={mention_depth} "
                 f"response_tail={response_text[-300:] if response_text else 'EMPTY'!r}"
             )
+            sender_profile_id = str(group_agent.get("profile_id") or "")
             for action in relay["actions"]:
                 atype = action["type"]
                 if atype == "relay":
                     target = action["target"]
+                    if str(target.get("profile_id") or "") == sender_profile_id:
+                        log(f"relay blocked (self-mention): {group_agent['name']} chat={chat_id[:8]}")
+                        continue
                     log(f"agent-to-agent mention: {group_agent['name']} -> @{target['name']} in chat={chat_id[:8]}")
                     follow_up_data = {
                         "chat_id": chat_id,
@@ -1020,6 +1029,9 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                                           profile_id=target["profile_id"])
                 elif atype == "redirect":
                     target = action["target"]
+                    if str(target.get("profile_id") or "") == sender_profile_id:
+                        log(f"relay blocked (self-redirect): {group_agent['name']} chat={chat_id[:8]}")
+                        continue
                     log(f"relay redirect to ops: {action['reason']} chat={chat_id[:8]}")
                     await _safe_ws_send_json(
                         original_ws,
