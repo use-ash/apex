@@ -220,7 +220,8 @@ def _refresh_chatgpt_token() -> str:
     return new_tokens["access_token"]
 
 
-def _call_chatgpt_backend(model: str, messages: list, tools: list) -> dict:
+def _call_chatgpt_backend(model: str, messages: list, tools: list,
+                          _loop=None, _emit_fn=None) -> dict:
     """Call ChatGPT backend via Codex OAuth — uses subscription credits, not API billing.
 
     Wire protocol: OpenAI Responses API (SSE streaming) at chatgpt.com/backend-api/codex/responses.
@@ -347,7 +348,13 @@ def _call_chatgpt_backend(model: str, messages: list, tools: list) -> dict:
             if etype == "response.output_text.delta":
                 content += event.get("delta", "")
             elif etype == "response.reasoning_summary_text.delta":
-                reasoning_text += event.get("delta", "")
+                delta = event.get("delta", "")
+                reasoning_text += delta
+                # Emit delta in real-time via the outer async loop (we're in a thread)
+                if _loop is not None and _emit_fn is not None:
+                    asyncio.run_coroutine_threadsafe(
+                        _emit_fn({"type": "thinking", "text": delta}), _loop
+                    )
             elif etype == "response.output_item.done":
                 item = event.get("item", {})
                 if item.get("type") == "function_call":
@@ -368,6 +375,8 @@ def _call_chatgpt_backend(model: str, messages: list, tools: list) -> dict:
         result = {"message": msg}
         if reasoning_text:
             result["reasoning"] = reasoning_text
+            if _loop is not None and _emit_fn is not None:
+                result["reasoning_streamed"] = True  # caller should not re-emit
         return result
 
     try:
@@ -452,7 +461,8 @@ async def run_tool_loop(
         try:
             if _use_chatgpt_backend:
                 response = await asyncio.to_thread(
-                    _call_chatgpt_backend, model, messages, tool_schemas
+                    _call_chatgpt_backend, model, messages, tool_schemas,
+                    asyncio.get_event_loop(), emit_event
                 )
             elif _use_responses_api:
                 response = await asyncio.to_thread(
@@ -478,7 +488,9 @@ async def run_tool_loop(
         thinking = assistant_msg.get("thinking", "")  # Ollama (Qwen, etc.)
         if reasoning:
             thinking_text += reasoning + "\n"
-            await emit_event({"type": "thinking", "text": reasoning})
+            # Only emit the full block if deltas weren't already streamed in real-time
+            if not response.get("reasoning_streamed"):
+                await emit_event({"type": "thinking", "text": reasoning})
         elif thinking:
             thinking_text += thinking + "\n"
             await emit_event({"type": "thinking", "text": thinking})
