@@ -58,6 +58,7 @@ body.theme-light .banner-critical{color:#B91C1C}
 .msg{margin-bottom:12px;max-width:85%;-webkit-user-select:text;user-select:text}
 .msg.user{margin-left:auto;background:var(--accent);color:white;padding:10px 14px;
 border-radius:16px 16px 4px 16px;font-size:calc(15px * var(--chat-font-scale));line-height:1.4;word-break:break-word}
+.msg.user .msg-text{white-space:pre-wrap}
 .msg.assistant{margin-right:auto}
 .msg.assistant .bubble{background:var(--surface);padding:10px 14px;
 border-radius:16px 16px 16px 4px;font-size:calc(15px * var(--chat-font-scale));line-height:1.5;word-break:break-word}
@@ -73,6 +74,27 @@ margin:8px 0;font-size:calc(13px * var(--chat-font-scale));line-height:1.4}
 .msg.assistant .bubble ul + p,.msg.assistant .bubble ol + p,.msg.assistant .bubble pre + p{margin-top:8px}
 .msg.assistant .bubble ul,.msg.assistant .bubble ol{padding-left:20px;margin:8px 0}
 .msg.assistant .bubble li + li{margin-top:4px}
+.msg-attachments{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.msg-attachments:first-child{margin-top:0}
+.msg-attachment{position:relative;display:flex;align-items:center;justify-content:center;
+min-width:140px;min-height:120px;max-width:100%;border-radius:8px;overflow:hidden;
+background:rgba(148,163,184,0.12);border:1px solid rgba(148,163,184,0.2)}
+.msg.user .msg-attachment{background:rgba(255,255,255,0.14);border-color:rgba(255,255,255,0.2)}
+.msg-attachment::before{content:'';position:absolute;inset:0;
+background:linear-gradient(90deg,transparent,rgba(255,255,255,0.12),transparent);
+transform:translateX(-100%);animation:attShimmer 1.5s ease-in-out infinite}
+.msg-attachment.is-loaded::before,.msg-attachment.is-file::before{display:none}
+.msg-attachment.is-loaded{min-width:0;min-height:0}
+.msg-attachment img{display:block;max-width:min(280px,100%);max-height:240px;width:auto;height:auto;
+object-fit:cover;aspect-ratio:auto;border-radius:8px;cursor:pointer;opacity:0;transition:opacity .18s ease}
+.msg-attachment.is-loaded img{opacity:1}
+.msg-attachment.is-file{min-width:0;min-height:0;background:none;border:none;overflow:visible}
+.msg-file-pill{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:4px;
+border:1px solid var(--card);background:var(--bg);color:var(--text);text-decoration:none;
+font-family:'SF Mono','Fira Code',monospace;font-size:11px;line-height:1.4}
+.msg.user .msg-file-pill{border-color:rgba(255,255,255,0.22);background:rgba(15,23,42,0.22);color:white}
+.msg-file-pill .msg-file-size{opacity:.72}
+@keyframes attShimmer{100%{transform:translateX(100%)}}
 
 /* Thinking blocks */
 /* Thinking blocks — standalone or inside work group */
@@ -922,6 +944,16 @@ opacity:0;transition:opacity 0.3s ease;pointer-events:none}
   </div>
 </div>
 <div class="drop-overlay" id="dropOverlay"><div class="drop-overlay-inner">&#128206; Drop files to attach</div></div>
+<div class="premium-locked-bar" id="premiumLockedBar" style="display:none">
+  <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:10px;margin:0 12px 8px">
+    <span style="font-size:18px">🔒</span>
+    <div style="flex:1">
+      <div style="font-weight:600;font-size:13px;color:var(--yellow,#F59E0B)">Group channels require Apex Pro</div>
+      <div style="font-size:12px;color:var(--dim);margin-top:2px">Your message history is preserved. Upgrade to resume collaboration.</div>
+    </div>
+    <a href="https://useash.dev/activate" target="_blank" style="font-size:12px;font-weight:600;color:var(--accent);text-decoration:none;white-space:nowrap">Upgrade →</a>
+  </div>
+</div>
 <div class="composer" id="composerBar" style="position:relative">
   <div class="stale-bar banner-warn" id="staleBar" role="status" aria-live="polite">
     <span class="banner-dot"></span>
@@ -1113,6 +1145,17 @@ function _getCurrentBubble() {
   return ctx ? ctx.bubble : null;
 }
 let currentGroupMembers = []; // [{profile_id, name, avatar, role_description}] for @mention autocomplete
+let _premiumFeaturesCache = null; // cached /api/features response
+let _premiumCacheTime = 0;
+async function _checkPremiumFeatures() {
+  const now = Date.now();
+  if (_premiumFeaturesCache && now - _premiumCacheTime < 60000) return _premiumFeaturesCache;
+  try {
+    const r = await fetch('/api/features', {credentials: 'same-origin'});
+    if (r.ok) { _premiumFeaturesCache = await r.json(); _premiumCacheTime = now; }
+  } catch(e) {}
+  return _premiumFeaturesCache || {groups_enabled: true, features: {groups: true}};
+}
 let mentionSelectedIdx = 0;
 let initStarted = false;
 let initDone = false;
@@ -2663,8 +2706,8 @@ function handleEvent(msg) {
 
     case 'user_message_added':
       // Another client sent a message on this chat — show it
-      if (msg.chat_id === currentChat && msg.content) {
-        addUserMsg(msg.content);
+      if (msg.chat_id === currentChat && (msg.content || normalizeMessageAttachments(msg.attachments).length)) {
+        addUserMsg(msg.content || '', msg.attachments || []);
       }
       break;
 
@@ -2764,11 +2807,101 @@ function addAssistantMsg(speaker = currentSpeaker, streamId = '') {
   return div;
 }
 
-function addUserMsg(text) {
+function formatAttachmentSize(size) {
+  const bytes = Number(size || 0);
+  if (!bytes) return '';
+  if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1).replace(/\\.0$/, '') + 'MB';
+  if (bytes >= 1024) return Math.round(bytes / 1024) + 'KB';
+  return bytes + 'B';
+}
+
+function normalizeMessageAttachments(raw) {
+  if (Array.isArray(raw)) return raw.filter(att => att && typeof att === 'object');
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.filter(att => att && typeof att === 'object') : [];
+    } catch (_) {
+      return [];
+    }
+  }
+  return [];
+}
+
+function buildMessageFilePill(att) {
+  const link = document.createElement('a');
+  link.className = 'msg-file-pill';
+  link.href = att.url || '#';
+  link.target = '_blank';
+  link.rel = 'noopener';
+  if (!att.url) link.onclick = (e) => e.preventDefault();
+
+  const icon = document.createElement('span');
+  icon.textContent = '📎';
+  link.appendChild(icon);
+
+  const name = document.createElement('span');
+  name.textContent = att.name || 'attachment';
+  link.appendChild(name);
+
+  const sizeLabel = formatAttachmentSize(att.size);
+  if (sizeLabel) {
+    const size = document.createElement('span');
+    size.className = 'msg-file-size';
+    size.textContent = '· ' + sizeLabel;
+    link.appendChild(size);
+  }
+  return link;
+}
+
+function buildMessageAttachment(att) {
+  const item = document.createElement('div');
+  const imageUrl = att.url || ((att.base64 && att.mimeType) ? `data:${att.mimeType};base64,${att.base64}` : '');
+  if (att.type === 'image' && imageUrl) {
+    item.className = 'msg-attachment';
+    const img = document.createElement('img');
+    img.src = imageUrl;
+    img.alt = att.name || 'Attachment';
+    img.loading = 'lazy';
+    img.onclick = () => window.open(imageUrl, '_blank', 'noopener');
+    img.onload = () => item.classList.add('is-loaded');
+    img.onerror = () => {
+      item.className = 'msg-attachment is-file';
+      item.innerHTML = '';
+      item.appendChild(buildMessageFilePill(att));
+    };
+    item.appendChild(img);
+    if (img.complete) item.classList.add('is-loaded');
+    return item;
+  }
+
+  item.className = 'msg-attachment is-file';
+  item.appendChild(buildMessageFilePill(att));
+  return item;
+}
+
+function buildMessageAttachments(raw) {
+  const attachments = normalizeMessageAttachments(raw);
+  if (!attachments.length) return null;
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-attachments';
+  attachments.forEach(att => wrap.appendChild(buildMessageAttachment(att)));
+  return wrap;
+}
+
+function addUserMsg(text, attachments = []) {
   const el = document.getElementById('messages');
   const div = document.createElement('div');
   div.className = 'msg user';
-  div.textContent = text;
+  if (text) {
+    const msgText = document.createElement('div');
+    msgText.className = 'msg-text';
+    msgText.textContent = text;
+    div.appendChild(msgText);
+  }
+  const attachmentWrap = buildMessageAttachments(attachments);
+  if (attachmentWrap) div.appendChild(attachmentWrap);
+  if (!text && !attachmentWrap) div.textContent = '(attachment)';
   el.appendChild(div);
   scrollBottomForce();
 }
@@ -4061,7 +4194,6 @@ async function send(options = {}) {
   _userScrolledUp = false;
   _hideNewContentPill();
   const attachmentSnapshot = pendingAttachments.map(att => ({...att}));
-  const attachmentSummary = attachmentSnapshot.length ? `Attachments: ${attachmentSnapshot.map(att => att.name).join(', ')}` : '';
   const msg = {action: 'send', chat_id: currentChat, prompt: text};
   if (targetAgent) msg.target_agent = targetAgent;
   if (attachmentSnapshot.length > 0) {
@@ -4078,7 +4210,7 @@ async function send(options = {}) {
     }
     throw err;
   }
-  addUserMsg([text, attachmentSummary].filter(Boolean).join('\\n') || '(attachment)');
+  addUserMsg(text, attachmentSnapshot);
   _showThinkingIndicator();
   refreshDebugState('send');
 }
@@ -4381,16 +4513,29 @@ async function selectChat(id, title, chatType, category) {
     const alerts = await r.json();
     if (seq !== selectChatSeq || currentChat !== id) return;
     renderAlertsList(alerts);
-    // Hide input bar and context bar for alerts channels
+    // Hide input bar, locked bar, and context bar for alerts channels
     document.getElementById('composerBar').style.display = 'none';
+    document.getElementById('premiumLockedBar').style.display = 'none';
     document.getElementById('contextBar').classList.remove('visible');
     return;
   }
-  // Show input bar for regular chats
-  document.getElementById('composerBar').style.display = '';
+  // Premium gate: check if group channels are locked
+  const lockedBar = document.getElementById('premiumLockedBar');
+  let groupLocked = false;
+  if (currentChatType === 'group') {
+    const features = await _checkPremiumFeatures();
+    groupLocked = !features.groups_enabled && !features.features?.groups;
+  }
+  if (groupLocked) {
+    lockedBar.style.display = '';
+    document.getElementById('composerBar').style.display = 'none';
+  } else {
+    lockedBar.style.display = 'none';
+    document.getElementById('composerBar').style.display = '';
+  }
   // Load group members for @mention autocomplete
   currentGroupMembers = [];
-  if (currentChatType === 'group') {
+  if (currentChatType === 'group' && !groupLocked) {
     try {
       const mr = await fetch(`/api/chats/${id}/members`, {credentials: 'same-origin'});
       if (mr.ok) {
@@ -4421,7 +4566,7 @@ async function selectChat(id, title, chatType, category) {
   el.innerHTML = '';
   msgs.forEach(m => {
     if (m.role === 'user') {
-      addUserMsg(m.content);
+      addUserMsg(m.content || '', m.attachments || []);
     } else {
       const div = document.createElement('div');
       div.className = 'msg assistant';
