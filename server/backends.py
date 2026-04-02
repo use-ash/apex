@@ -27,6 +27,48 @@ from model_dispatch import (
 from state import _current_group_profile_id, _codex_threads, _codex_thread_turns
 
 _CODEX_MAX_THREAD_TURNS = int(os.environ.get("APEX_CODEX_MAX_TURNS", "8"))
+
+# Valid Codex sandbox modes (passed to -s flag)
+_VALID_CODEX_SANDBOX = {"read-only", "suggest", "full"}
+
+
+def _resolve_codex_profile_overrides(chat_id: str) -> tuple[str, str]:
+    """Resolve per-agent workspace and sandbox mode from tool_policy JSON.
+
+    tool_policy format: {"workspace": "/path/to/repo", "sandbox": "suggest"}
+    Returns (workspace_path, sandbox_mode) with safe defaults.
+    """
+    codex_workspace = str(WORKSPACE)
+    codex_sandbox = "read-only"
+    try:
+        from db import _get_db
+        from state import _db_lock
+        pid = _current_group_profile_id.get("")
+        with _db_lock:
+            conn = _get_db()
+            if pid:
+                row = conn.execute(
+                    "SELECT tool_policy FROM agent_profiles WHERE id = ?", (pid,)
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT ap.tool_policy FROM agent_profiles ap "
+                    "INNER JOIN chats c ON c.profile_id = ap.id WHERE c.id = ?",
+                    (chat_id,)
+                ).fetchone()
+            conn.close()
+        if row and row[0]:
+            policy = json.loads(row[0])
+            if isinstance(policy, dict):
+                ws = policy.get("workspace", "")
+                if ws and Path(ws).is_dir():
+                    codex_workspace = ws
+                sb = policy.get("sandbox", "")
+                if sb in _VALID_CODEX_SANDBOX:
+                    codex_sandbox = sb
+    except Exception as e:
+        log(f"codex profile overrides: {e}")
+    return codex_workspace, codex_sandbox
 from streaming import _send_stream_event, _load_recovery_journal, _cleanup_recovery_journal
 
 
@@ -174,6 +216,9 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
         is_rotation = True
         existing_thread = ""
 
+    # Per-agent workspace + sandbox from tool_policy
+    codex_workspace, codex_sandbox = _resolve_codex_profile_overrides(chat_id)
+
     if existing_thread:
         # Resume existing session — Codex already has full conversation history.
         # Skip context injection: the thread carries profile/roster/workspace from
@@ -313,7 +358,7 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
         cmd = [
             CODEX_CLI, "exec", "--json",
             "--skip-git-repo-check",
-            "-m", cli_model, "-s", "read-only", "-C", str(WORKSPACE), "-",
+            "-m", cli_model, "-s", codex_sandbox, "-C", codex_workspace, "-",
         ]
 
     # Spawn codex CLI

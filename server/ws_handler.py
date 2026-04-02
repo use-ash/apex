@@ -23,8 +23,8 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from log import log
 from db import (
-    _get_chat, _update_chat, _get_chat_settings, _update_chat_settings,
-    _get_group_members, _get_recent_messages_text,
+    _get_chat, _update_chat, _update_chat_settings,
+    _get_recent_messages_text,
     _save_message,
 )
 from model_dispatch import _get_model_backend, get_available_model_ids
@@ -51,7 +51,7 @@ from streaming import (
 )
 from context import (
     _generate_recovery_context, _store_recovery_context, _maybe_compact_chat,
-    _get_whisper_text, _MENTION_RE,
+    _get_whisper_text,
     _resolve_group_agent, _resolve_memory_profile_id,
     _clear_session_context, _has_session_context,
     ENABLE_SUBCONSCIOUS_WHISPER,
@@ -85,30 +85,11 @@ except ImportError:
 # Router
 # ---------------------------------------------------------------------------
 ws_router = APIRouter()
-MAX_MENTION_DEPTH = 25
-MAX_PAIR_BACK_AND_FORTH = 4  # same two agents can volley at most 4 times
 MAX_QUEUED_TURNS_PER_KEY = 5
-OPERATIONS_NAMES = {"operations", "ops"}  # lowercased names/profile_ids for auto-redirect
 
-
-def _count_pair_volleys(chain: list[str], agent_a: str, agent_b: str) -> int:
-    """Count consecutive back-and-forth hops between the same two agents at the tail of the chain."""
-    pair = {agent_a.lower(), agent_b.lower()}
-    count = 0
-    for i in range(len(chain) - 1, 0, -1):
-        if {chain[i].lower(), chain[i - 1].lower()} == pair:
-            count += 1
-        else:
-            break
-    return count
-
-
-def _find_operations_agent(members: list[dict]) -> dict | None:
-    """Find the Operations agent in the group member list."""
-    for m in members:
-        if m["name"].lower() in OPERATIONS_NAMES or m["profile_id"].lower() in OPERATIONS_NAMES:
-            return m
-    return None
+# Premium module — injected by apex.py when loaded. Provides group routing
+# and agent relay functions. When None, all group routing is disabled.
+_ws_premium = None
 
 
 def _public_backend_error_message(backend: str, err: Exception | str) -> str:
@@ -577,26 +558,11 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
     chat_model = chat.get("model") or MODEL
     backend = _get_model_backend(chat_model)
 
-    # --- Group @mention routing ---
+    # --- Group @mention routing (premium) ---
     group_agent = None
     target_profile_id = str(data.get("target_agent") or "").strip()
-    if target_profile_id and is_group_chat:
-        members = _get_group_members(chat_id)
-        for m in members:
-            if m["profile_id"] == target_profile_id:
-                clean = re.sub(
-                    rf"@{re.escape(m['name'])}|@{re.escape(m['profile_id'])}",
-                    "", prompt, count=1, flags=re.IGNORECASE
-                ).strip() or prompt
-                group_agent = {
-                    "profile_id": m["profile_id"],
-                    "name": m["name"],
-                    "avatar": m["avatar"],
-                    "model": m["model"],
-                    "backend": _get_model_backend(m["model"]),
-                    "clean_prompt": clean,
-                }
-                break
+    if target_profile_id and is_group_chat and _ws_premium:
+        group_agent = _ws_premium.resolve_target_agent(chat_id, prompt, target_profile_id)
         if not group_agent:
             await _safe_ws_send_json(
                 websocket,
@@ -606,41 +572,27 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             return
     if group_agent is None:
         group_agent = _resolve_group_agent(chat_id, chat, prompt)
-        # Multi-dispatch: if user @mentioned multiple agents, spawn parallel
-        # tasks for all targets beyond the first one
-        if group_agent and is_group_chat and not data.get("_source"):
-            mentions = _MENTION_RE.findall(prompt)
-            broadcast_keywords = {"all", "channel", "everyone"}
-            if any(m.lower() in broadcast_keywords for m in mentions):
-                members = _get_group_members(chat_id)
-                mentions = [m["name"] for m in members]
-            if len(mentions) > 1:
-                members = _get_group_members(chat_id)
-                member_map = {m["name"].lower(): m for m in members}
-                member_map.update({m["profile_id"].lower(): m for m in members})
-                seen = {group_agent["profile_id"]}
-                for mname in mentions:
-                    t = member_map.get(mname.lower())
-                    if not t or t["profile_id"] in seen:
-                        continue
-                    seen.add(t["profile_id"])
-                    extra_data = {
-                        "chat_id": chat_id,
-                        "prompt": prompt,
-                        "target_agent": t["profile_id"],
-                        "stream_id": _make_stream_id(),
-                        "_mention_depth": 0,
-                        "_mention_chain": [],
-                        "_source": "user_multi",
-                        "_suppress_user_message": True,
-                    }
-                    log(f"user multi-dispatch: @{t['name']} in chat={chat_id[:8]}")
-                    extra_task = asyncio.create_task(
-                        _handle_send_action(websocket, extra_data)
-                    )
-                    _set_active_send_task(chat_id, extra_data["stream_id"], extra_task,
-                                          name=t["name"], avatar=t["avatar"],
-                                          profile_id=t["profile_id"])
+        # Multi-dispatch: spawn parallel tasks for additional @mentioned agents
+        if group_agent and is_group_chat and _ws_premium:
+            multi_targets = _ws_premium.get_multi_dispatch_targets(chat_id, prompt, group_agent, data)
+            for t in multi_targets:
+                extra_data = {
+                    "chat_id": chat_id,
+                    "prompt": prompt,
+                    "target_agent": t["profile_id"],
+                    "stream_id": _make_stream_id(),
+                    "_mention_depth": 0,
+                    "_mention_chain": [],
+                    "_source": "user_multi",
+                    "_suppress_user_message": True,
+                }
+                log(f"user multi-dispatch: @{t['name']} in chat={chat_id[:8]}")
+                extra_task = asyncio.create_task(
+                    _handle_send_action(websocket, extra_data)
+                )
+                _set_active_send_task(chat_id, extra_data["stream_id"], extra_task,
+                                      name=t["name"], avatar=t["avatar"],
+                                      profile_id=t["profile_id"])
     mention_prompt = prompt
     mention_depth = int(data.get("_mention_depth", 0) or 0)
     mention_chain: list[str] = list(data.get("_mention_chain") or [])
@@ -958,127 +910,79 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         if group_agent:
             _update_chat_settings(chat_id, {"active_speaker_id": ""})
 
-        # Agent-to-agent @mention
-        if is_group_chat and group_agent and response_text:
-            # Record this agent in the relay chain
-            current_chain = mention_chain + [group_agent["profile_id"]]
-
-            settings = _get_chat_settings(chat_id)
-            mentions_enabled = settings.get("agent_mentions_enabled")
-            mentioned_names = _MENTION_RE.findall(response_text) if mentions_enabled else []
+        # Agent-to-agent @mention relay (premium)
+        if is_group_chat and group_agent and response_text and _ws_premium:
+            relay = _ws_premium.get_agent_relay_actions(
+                chat_id, response_text, group_agent, mention_chain, mention_depth,
+            )
             log(
                 f"mention check: chat={chat_id[:8]} agent={group_agent['name']} "
-                f"mentions_enabled={mentions_enabled} "
-                f"found={mentioned_names} depth={mention_depth} "
+                f"mentions_enabled={relay['mentions_enabled']} "
+                f"found={relay['mentioned_names']} depth={mention_depth} "
                 f"response_tail={response_text[-300:] if response_text else 'EMPTY'!r}"
             )
-            if mentions_enabled and mentioned_names:
-                    members = _get_group_members(chat_id)
-                    member_map = {m["name"].lower(): m for m in members}
-                    member_map.update({m["profile_id"].lower(): m for m in members})
-
-                    # --- Depth ceiling: check once, redirect once, skip loop ---
-                    if mention_depth >= MAX_MENTION_DEPTH:
-                        block_reason = f"Relay depth limit ({MAX_MENTION_DEPTH}) reached"
-                        ops_agent = _find_operations_agent(members)
-                        if ops_agent and ops_agent["profile_id"] != group_agent["profile_id"]:
-                            log(f"relay redirect to ops: {block_reason} chat={chat_id[:8]}")
-                            await _safe_ws_send_json(
-                                original_ws,
-                                {
-                                    "type": "system_message",
-                                    "chat_id": chat_id,
-                                    "text": f"{block_reason}. Redirecting to @{ops_agent['name']} for realignment.",
-                                },
-                                chat_id=chat_id,
-                            )
-                            follow_up_data = {
-                                "chat_id": chat_id,
-                                "prompt": (
-                                    f"[RELAY CONTROL] {block_reason}. "
-                                    f"The last exchange involved {group_agent['name']}. "
-                                    f"Review what the team was working on, realign on next steps, "
-                                    f"and decide who should act next."
-                                ),
-                                "target_agent": ops_agent["profile_id"],
-                                "stream_id": _make_stream_id(),
-                                "_mention_depth": mention_depth + 1,
-                                "_mention_chain": current_chain,
-                                "_source": "agent",
-                                "_suppress_user_message": True,
-                            }
-                            follow_task = asyncio.create_task(
-                                _handle_send_action(original_ws, follow_up_data)
-                            )
-                            _set_active_send_task(chat_id, follow_up_data["stream_id"], follow_task,
-                                                  name=ops_agent["name"], avatar=ops_agent["avatar"],
-                                                  profile_id=ops_agent["profile_id"])
-                        else:
-                            log(f"relay blocked (no ops redirect): {block_reason} chat={chat_id[:8]}")
-                            await _safe_ws_send_json(
-                                original_ws,
-                                {
-                                    "type": "system_message",
-                                    "chat_id": chat_id,
-                                    "text": f"{block_reason}. No further agents auto-invoked.",
-                                },
-                                chat_id=chat_id,
-                            )
-                    else:
-                        # --- Dispatch to ALL valid mentioned targets ---
-                        seen = set()
-                        for name in mentioned_names:
-                            target = member_map.get(name.lower())
-                            if not target or target["profile_id"] == group_agent["profile_id"]:
-                                continue
-                            if target["profile_id"] in seen:
-                                continue
-                            seen.add(target["profile_id"])
-
-                            # Per-pair back-and-forth limit
-                            pair_volleys = _count_pair_volleys(
-                                current_chain, group_agent["profile_id"], target["profile_id"]
-                            )
-                            if pair_volleys >= MAX_PAIR_BACK_AND_FORTH:
-                                log(
-                                    f"relay blocked (pair limit): "
-                                    f"{group_agent['name']} <-> {target['name']} "
-                                    f"({pair_volleys}/{MAX_PAIR_BACK_AND_FORTH}) "
-                                    f"chat={chat_id[:8]}"
-                                )
-                                await _safe_ws_send_json(
-                                    original_ws,
-                                    {
-                                        "type": "system_message",
-                                        "chat_id": chat_id,
-                                        "text": (
-                                            f"Back-and-forth limit ({MAX_PAIR_BACK_AND_FORTH}) reached "
-                                            f"between {group_agent['name']} and {target['name']}. "
-                                            f"@{target['name']} was not auto-invoked."
-                                        ),
-                                    },
-                                    chat_id=chat_id,
-                                )
-                                continue
-
-                            # Normal relay — dispatch this target
-                            log(f"agent-to-agent mention: {group_agent['name']} -> @{target['name']} in chat={chat_id[:8]}")
-                            follow_up_data = {
-                                "chat_id": chat_id,
-                                "prompt": response_text,
-                                "target_agent": target["profile_id"],
-                                "stream_id": _make_stream_id(),
-                                "_mention_depth": mention_depth + 1,
-                                "_mention_chain": current_chain,
-                                "_source": "agent",
-                                "_suppress_user_message": True,
-                            }
-                            follow_task = asyncio.create_task(
-                                _handle_send_action(original_ws, follow_up_data)
-                            )
-                            _set_active_send_task(chat_id, follow_up_data["stream_id"], follow_task,
-                                                  name=target["name"], avatar=target["avatar"],
-                                                  profile_id=target["profile_id"])
+            for action in relay["actions"]:
+                atype = action["type"]
+                if atype == "relay":
+                    target = action["target"]
+                    log(f"agent-to-agent mention: {group_agent['name']} -> @{target['name']} in chat={chat_id[:8]}")
+                    follow_up_data = {
+                        "chat_id": chat_id,
+                        "prompt": action["prompt"],
+                        "target_agent": target["profile_id"],
+                        "stream_id": _make_stream_id(),
+                        "_mention_depth": action["depth"],
+                        "_mention_chain": relay["current_chain"],
+                        "_source": "agent",
+                        "_suppress_user_message": True,
+                    }
+                    follow_task = asyncio.create_task(
+                        _handle_send_action(original_ws, follow_up_data)
+                    )
+                    _set_active_send_task(chat_id, follow_up_data["stream_id"], follow_task,
+                                          name=target["name"], avatar=target["avatar"],
+                                          profile_id=target["profile_id"])
+                elif atype == "redirect":
+                    target = action["target"]
+                    log(f"relay redirect to ops: {action['reason']} chat={chat_id[:8]}")
+                    await _safe_ws_send_json(
+                        original_ws,
+                        {"type": "system_message", "chat_id": chat_id,
+                         "text": f"{action['reason']}. Redirecting to @{target['name']} for realignment."},
+                        chat_id=chat_id,
+                    )
+                    follow_up_data = {
+                        "chat_id": chat_id,
+                        "prompt": action["prompt"],
+                        "target_agent": target["profile_id"],
+                        "stream_id": _make_stream_id(),
+                        "_mention_depth": action["depth"],
+                        "_mention_chain": relay["current_chain"],
+                        "_source": "agent",
+                        "_suppress_user_message": True,
+                    }
+                    follow_task = asyncio.create_task(
+                        _handle_send_action(original_ws, follow_up_data)
+                    )
+                    _set_active_send_task(chat_id, follow_up_data["stream_id"], follow_task,
+                                          name=target["name"], avatar=target["avatar"],
+                                          profile_id=target["profile_id"])
+                elif atype == "blocked":
+                    log(f"relay blocked (no ops redirect): {action['reason']} chat={chat_id[:8]}")
+                    await _safe_ws_send_json(
+                        original_ws,
+                        {"type": "system_message", "chat_id": chat_id,
+                         "text": f"{action['reason']}. No further agents auto-invoked."},
+                        chat_id=chat_id,
+                    )
+                elif atype == "pair_blocked":
+                    log(f"relay blocked (pair limit): {action['agent_name']} <-> {action['target_name']} chat={chat_id[:8]}")
+                    await _safe_ws_send_json(
+                        original_ws,
+                        {"type": "system_message", "chat_id": chat_id,
+                         "text": f"{action['reason']}. @{action['target_name']} was not auto-invoked."},
+                        chat_id=chat_id,
+                    )
 
         if backend == "claude":
             try:

@@ -72,8 +72,11 @@ from routes_setup import setup_router
 # Phase 3+4 extracted modules
 from streaming import _disconnect_client
 from context import _generate_recovery_context, _store_recovery_context
+import context as _context_mod
 from ws_handler import ws_router
+import ws_handler as _ws_handler_mod
 import env
+from premium_loader import PremiumLoader
 from mtls import has_verified_peer_cert, mtls_required
 
 # ---------------------------------------------------------------------------
@@ -147,6 +150,22 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 os.chmod(UPLOAD_DIR, 0o700)
 
 SDK_QUERY_TIMEOUT = env.SDK_QUERY_TIMEOUT
+
+# ---------------------------------------------------------------------------
+# Premium module loading — must happen before app.include_router() so
+# dynamically registered routes are picked up by FastAPI.
+# ---------------------------------------------------------------------------
+_premium_loader = PremiumLoader(
+    server_dir=APEX_ROOT / "server",
+    state_dir=APEX_ROOT / "state",
+)
+_premium = _premium_loader.load_all()
+if _premium.get("routes_chat_premium"):
+    _premium["routes_chat_premium"].register_premium_chat_routes(chat_router)
+if _premium.get("context_premium"):
+    _context_mod._premium = _premium["context_premium"]
+if _premium.get("ws_handler_premium"):
+    _ws_handler_mod._ws_premium = _premium["ws_handler_premium"]
 
 
 # ---------------------------------------------------------------------------

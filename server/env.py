@@ -88,6 +88,13 @@ ENABLE_SUBCONSCIOUS_WHISPER: bool = (
 GROUPS_ENABLED: bool = (
     os.environ.get("APEX_GROUPS_ENABLED", "").lower() in {"1", "true", "yes"}
 )
+
+# Dev mode — auto-True when running on a non-production port.
+# In dev mode, premium modules load from plaintext .py instead of encrypted .enc.
+DEV_MODE: bool = (
+    os.environ.get("APEX_DEV_MODE", "").lower() in {"1", "true", "yes"}
+    or PORT != 8300
+)
 ALLOW_LOCAL_TOOLS: bool = (
     os.environ.get("APEX_ALLOW_LOCAL_TOOLS", "").lower() in {"1", "true", "yes"}
 )
