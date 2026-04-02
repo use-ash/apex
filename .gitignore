@@ -45,6 +45,7 @@ server/ws_handler_premium.py
 server/launch_dana.sh
 server/launch_dev.sh
 docs/OSS_PLAN.md
+docs/wip/
 APEX.md
 deploy-phase3.sh
 claude-commands/

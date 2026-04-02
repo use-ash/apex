@@ -102,3 +102,13 @@ The default brevity bias ("simplest fix", "don't refactor beyond what was asked"
 - The change touches a security boundary (auth, token validation, rate limiting, path handling)
 
 In these cases: fix the root cause, note what you changed and why, and say so in the commit message.
+
+---
+
+## Rule 8 — WIP Design Documents
+
+All work-in-progress design documents, feature plans, and architecture proposals live in `docs/wip/`. This directory is gitignored — nothing in it ships to GitHub.
+
+Before starting any project or feature work, check `docs/wip/` for an existing design doc. If one exists, read it and use it as your reference for scope, decisions, and open questions. Do not duplicate or contradict decisions made in a WIP doc without flagging the conflict.
+
+When creating a new design doc, place it in `docs/wip/` with a descriptive name (e.g. `PERMISSION_LEVELS_PLAN.md`, `MCP_BRIDGE_DESIGN.md`). Reference it in your channel when handing off work.
