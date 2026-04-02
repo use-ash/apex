@@ -2523,6 +2523,12 @@ function handleEvent(msg) {
       _activateStream(ctx);
       if (ctx.awaitingAck && !ctx.thinkingText) {
         _teardownThinking(ctx);
+      } else if (ctx.thinkingText && ctx.liveThinkingPill) {
+        // Convert live thinking pill to static so it persists alongside text
+        _teardownThinking(ctx);
+        _thinkingPill(ctx, {
+          durationMs: ctx.thinkingStart ? (Date.now() - ctx.thinkingStart) : 0,
+        });
       }
       ctx.awaitingAck = false;
       if (!ctx.textContent) ctx.textContent = '';
@@ -2567,6 +2573,12 @@ function handleEvent(msg) {
       _activateStream(ctx);
       if (ctx.awaitingAck && !ctx.thinkingText) {
         _teardownThinking(ctx);
+      } else if (ctx.thinkingText && ctx.liveThinkingPill) {
+        // Convert live thinking pill to static immediately so it persists during tool execution
+        _teardownThinking(ctx);
+        _thinkingPill(ctx, {
+          durationMs: ctx.thinkingStart ? (Date.now() - ctx.thinkingStart) : 0,
+        });
       }
       ctx.awaitingAck = false;
       if (!ctx.toolsStart) ctx.toolsStart = Date.now();
