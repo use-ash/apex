@@ -599,7 +599,10 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 _parent_att_refs = [
                     {
                         "name": att.get("name", ""),
-                        "url": f"/api/uploads/{att['id']}.{att.get('ext', '')}",
+                        # Prefer the URL the client already computed from the upload
+                        # response. Fallback constructs it from id+ext in case an
+                        # older client omits the url field.
+                        "url": att.get("url") or f"/api/uploads/{att['id']}.{att.get('ext', '')}",
                     }
                     for att in attachments
                     if att.get("id")

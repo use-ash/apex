@@ -4202,7 +4202,7 @@ async function send(options = {}) {
   const msg = {action: 'send', chat_id: currentChat, prompt: text};
   if (targetAgent) msg.target_agent = targetAgent;
   if (attachmentSnapshot.length > 0) {
-    msg.attachments = attachmentSnapshot.map(a => ({id: a.id, type: a.type, name: a.name}));
+    msg.attachments = attachmentSnapshot.map(a => ({id: a.id, type: a.type, name: a.name, url: a.url, ext: a.ext}));
   }
   lastSubmittedPrompt = text;
   hideStopMenu();
