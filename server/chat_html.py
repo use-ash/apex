@@ -952,7 +952,7 @@ opacity:0;transition:opacity 0.3s ease;pointer-events:none}
       <div style="font-weight:600;font-size:13px;color:var(--yellow,#F59E0B)">Group channels require Apex Pro</div>
       <div style="font-size:12px;color:var(--dim);margin-top:2px">Your message history is preserved. Upgrade to resume collaboration.</div>
     </div>
-    <a href="https://buy.stripe.com/00w8wO6YE2s6gFJ4AscQU01" target="_blank" id="premiumUpgradeLink" style="font-size:12px;font-weight:600;color:var(--accent);text-decoration:none;white-space:nowrap;padding:6px 14px;background:var(--accent);color:#fff;border-radius:6px">Upgrade →</a>
+    <a href="https://buy.stripe.com/dRmcN40Ag8Qucptc2UcQU04" target="_blank" id="premiumUpgradeLink" style="font-size:12px;font-weight:600;color:var(--accent);text-decoration:none;white-space:nowrap;padding:6px 14px;background:var(--accent);color:#fff;border-radius:6px">Upgrade →</a>
   </div>
 </div>
 <div class="composer" id="composerBar" style="position:relative">
