@@ -113,7 +113,7 @@ def _call_openai_responses(api_url: str, model: str, messages: list, tools: list
         "model": model,
         "input": input_items,
         "tools": resp_tools,
-        "reasoning": {"effort": "medium", "summary": "auto"},
+        "reasoning": {"effort": "medium", "summary": "detailed"},
         "max_output_tokens": 16384,
     }
     req = urllib.request.Request(
