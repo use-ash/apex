@@ -1,0 +1,984 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="Five AI agents from three providers autonomously completed a full security audit in one conversation. 15 findings resolved, 22 turns, ~$6 total cost. No human wrote any code.">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Apex War Room — 5 AI Agents, 1 Security Audit, 0 Human Code">
+<meta property="og:description" content="Five AI agents from three different providers autonomously coordinated a complete security audit. 15/15 findings resolved in 22 turns for ~$6.">
+<meta property="og:image" content="https://use-ash.github.io/apex/images/warroom-og.png">
+<meta property="og:url" content="https://use-ash.github.io/apex/warroom.html">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Apex War Room — 5 AI Agents, 1 Security Audit, 0 Human Code">
+<meta name="twitter:description" content="Five AI agents from three providers autonomously completed a full security audit. 15/15 resolved. ~$6 total.">
+<meta name="twitter:image" content="https://use-ash.github.io/apex/images/warroom-og.png">
+<title>Apex War Room — Security Audit Phase 2</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2128;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --orange: #db6d28;
+    --purple: #bc8cff;
+    --ops: #58a6ff;
+    --dev: #3fb950;
+    --arch: #db6d28;
+    --codex: #bc8cff;
+    --qa: #d29922;
+    --human: #e6edf3;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 0;
+  }
+
+  /* Hero */
+  .hero {
+    background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #1a1e2e 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 60px 40px 50px;
+    text-align: center;
+  }
+  .hero h1 {
+    font-size: 2.4rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-bottom: 12px;
+  }
+  .hero h1 span { color: var(--accent); }
+  .hero .subtitle {
+    font-size: 1.1rem;
+    color: var(--text-dim);
+    max-width: 700px;
+    margin: 0 auto 30px;
+  }
+  .hero-stats {
+    display: flex;
+    gap: 40px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .hero-stat {
+    text-align: center;
+  }
+  .hero-stat .num {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--green);
+  }
+  .hero-stat .num.accent { color: var(--accent); }
+  .hero-stat .label {
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  /* Explainer */
+  .explainer {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 50px 40px;
+  }
+  .explainer h2 {
+    font-size: 1.5rem;
+    margin-bottom: 20px;
+    color: var(--accent);
+  }
+  .explainer p {
+    color: var(--text-dim);
+    margin-bottom: 16px;
+    font-size: 0.95rem;
+  }
+  .explainer strong { color: var(--text); }
+
+  /* Agent legend */
+  .legend {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    margin: 30px 0;
+    padding: 20px;
+    background: var(--surface);
+    border-radius: 12px;
+    border: 1px solid var(--border);
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .legend-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1rem;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .legend-detail .name { font-weight: 600; font-size: 0.9rem; }
+  .legend-detail .role { font-size: 0.75rem; color: var(--text-dim); }
+  .legend-detail .provider { font-size: 0.7rem; color: var(--text-dim); opacity: 0.7; }
+
+  /* Workflow diagram */
+  .workflow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin: 30px 0;
+    flex-wrap: wrap;
+    font-size: 0.85rem;
+  }
+  .workflow .step {
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .workflow .arrow { color: var(--text-dim); font-size: 1.2rem; }
+
+  /* Chat timeline */
+  .timeline {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 0 40px 60px;
+  }
+  .timeline h2 {
+    font-size: 1.5rem;
+    margin-bottom: 30px;
+    color: var(--accent);
+  }
+
+  /* Phase markers */
+  .phase-marker {
+    text-align: center;
+    margin: 40px 0 30px;
+    position: relative;
+  }
+  .phase-marker::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 1px;
+    background: var(--border);
+  }
+  .phase-marker span {
+    position: relative;
+    background: var(--bg);
+    padding: 0 20px;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-dim);
+    font-weight: 600;
+  }
+
+  /* Message bubbles */
+  .msg {
+    margin-bottom: 24px;
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+  }
+  .msg.human { justify-content: flex-end; }
+  .msg.human .avatar { order: 2; }
+  .msg.human .bubble {
+    background: #1f3a5f;
+    border: 1px solid #2d5a8e;
+    border-radius: 16px 16px 4px 16px;
+    text-align: right;
+  }
+  .avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1rem;
+    font-weight: 700;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .bubble {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px 16px 16px 16px;
+    padding: 16px 20px;
+    max-width: 780px;
+    min-width: 200px;
+  }
+  .bubble .sender {
+    font-weight: 700;
+    font-size: 0.85rem;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .bubble .meta {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    margin-top: 10px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  .bubble .meta .cost { opacity: 0.7; }
+  .bubble .tools {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--surface2);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+  .bubble .thinking-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+  .bubble .content { font-size: 0.88rem; line-height: 1.65; }
+  .bubble .content p { margin-bottom: 10px; }
+  .bubble .content p:last-child { margin-bottom: 0; }
+
+  /* Mention highlights */
+  .mention {
+    font-weight: 700;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 0.85em;
+  }
+  .mention.ops { color: var(--ops); background: rgba(88,166,255,0.1); }
+  .mention.dev { color: var(--dev); background: rgba(63,185,80,0.1); }
+  .mention.arch { color: var(--arch); background: rgba(219,109,40,0.1); }
+  .mention.codex { color: var(--codex); background: rgba(188,140,255,0.1); }
+  .mention.qa { color: var(--qa); background: rgba(210,153,34,0.1); }
+
+  /* Tables in messages */
+  .bubble table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 10px 0;
+    font-size: 0.8rem;
+  }
+  .bubble th, .bubble td {
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    text-align: left;
+  }
+  .bubble th {
+    background: var(--surface2);
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-dim);
+  }
+  .bubble h3 {
+    font-size: 0.95rem;
+    margin: 14px 0 8px;
+    color: var(--text);
+  }
+  .bubble h4 {
+    font-size: 0.85rem;
+    margin: 10px 0 6px;
+    color: var(--text-dim);
+  }
+  .bubble code {
+    background: var(--surface2);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 0.82em;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+  .bubble ul, .bubble ol {
+    margin: 8px 0 8px 20px;
+    font-size: 0.85rem;
+  }
+  .bubble li { margin-bottom: 4px; }
+
+  /* Annotations — explanations between messages */
+  .annotation {
+    margin: 20px 0 28px;
+    padding: 16px 20px;
+    background: linear-gradient(135deg, rgba(88,166,255,0.06), rgba(188,140,255,0.04));
+    border-left: 3px solid var(--accent);
+    border-radius: 0 8px 8px 0;
+    font-size: 0.85rem;
+    color: var(--text-dim);
+  }
+  .annotation strong { color: var(--accent); }
+
+  /* Scorecard */
+  .scorecard {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 0 40px 60px;
+  }
+  .scorecard h2 {
+    font-size: 1.5rem;
+    margin-bottom: 20px;
+    color: var(--green);
+  }
+  .final-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+  }
+  .final-table th, .final-table td {
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    text-align: left;
+  }
+  .final-table th {
+    background: var(--surface);
+    color: var(--text-dim);
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+  }
+  .final-table tr:nth-child(even) td { background: var(--surface); }
+
+  /* Footer */
+  .footer {
+    text-align: center;
+    padding: 40px;
+    border-top: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 0.8rem;
+  }
+  .footer a { color: var(--accent); text-decoration: none; }
+
+  /* ===== REDESIGN: Annotation strengthening ===== */
+  .annotation {
+    position: relative;
+    padding: 16px 20px 16px 20px;
+  }
+  .annotation::before {
+    content: '▸ Why this matters';
+    display: block;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--accent);
+    margin-bottom: 6px;
+    opacity: 0.9;
+  }
+  .annotation p, .annotation {
+    color: var(--text);
+  }
+
+  /* ===== REDESIGN: First human message glow ===== */
+  .msg.human.inciting .bubble {
+    background: linear-gradient(135deg, #1f3a5f, #253d6b);
+    border: 1px solid #4a8bd4;
+    box-shadow: 0 0 20px rgba(88,166,255,0.12), 0 0 60px rgba(88,166,255,0.05);
+  }
+
+  /* ===== REDESIGN: Cost badge for heavy turns ===== */
+  .cost-highlight {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(188,140,255,0.12);
+    border: 1px solid rgba(188,140,255,0.25);
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--codex);
+  }
+
+  /* ===== REDESIGN: Table scroll wrapper ===== */
+  .table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    margin: 10px 0;
+  }
+  .table-wrap table {
+    margin: 0;
+  }
+
+  /* ===== REDESIGN: Differentiation cards ===== */
+  .diff-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+    margin: 30px 0;
+  }
+  .diff-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    transition: border-color 0.2s;
+  }
+  .diff-card:hover {
+    border-color: var(--accent);
+  }
+  .diff-card .card-icon {
+    font-size: 1.4rem;
+    margin-bottom: 8px;
+  }
+  .diff-card h4 {
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 6px;
+  }
+  .diff-card p {
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    line-height: 1.55;
+    margin: 0;
+  }
+
+  /* ===== REDESIGN: Mobile responsiveness ===== */
+  @media (max-width: 768px) {
+    .hero { padding: 40px 20px 36px; }
+    .hero h1 { font-size: 1.7rem; }
+    .hero .subtitle { font-size: 0.95rem; }
+    .hero-stats { gap: 20px; }
+    .hero-stat .num { font-size: 1.5rem; }
+
+    .explainer { padding: 30px 20px; }
+    .timeline { padding: 0 16px 40px; }
+    .scorecard { padding: 0 16px 40px; }
+
+    .legend {
+      flex-direction: column;
+      gap: 14px;
+      padding: 16px;
+    }
+
+    .workflow {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 0;
+    }
+    .workflow .step {
+      text-align: center;
+    }
+    .workflow .arrow {
+      transform: rotate(90deg);
+      text-align: center;
+      font-size: 1rem;
+      margin: 4px 0;
+    }
+
+    .msg { gap: 10px; }
+    .bubble { padding: 12px 14px; max-width: calc(100vw - 80px); min-width: 0; }
+
+    .final-table { font-size: 0.75rem; }
+    .final-table th, .final-table td { padding: 6px 8px; }
+  }
+
+  @media (max-width: 480px) {
+    .hero h1 { font-size: 1.4rem; }
+    .hero-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    .hero-stat .num { font-size: 1.3rem; }
+
+    .legend-icon { width: 30px; height: 30px; font-size: 0.85rem; }
+
+    .diff-grid { grid-template-columns: 1fr; }
+
+    .avatar { width: 32px; height: 32px; font-size: 0.85rem; }
+    .bubble .sender { font-size: 0.8rem; }
+    .bubble .content { font-size: 0.82rem; }
+  }
+
+  /* ===== Reduced motion ===== */
+  @media (prefers-reduced-motion: reduce) {
+    .diff-card { transition: none; }
+    .msg.human.inciting .bubble { box-shadow: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ==================== HERO ==================== -->
+<header class="hero" role="banner">
+  <h1>Apex <span>War Room</span></h1>
+  <p class="subtitle">
+    Five AI agents from three different providers, autonomously coordinating a full security audit
+    in a single shared conversation. No human wrote any code.
+  </p>
+  <div class="hero-stats">
+    <div class="hero-stat"><div class="num">5</div><div class="label">AI Agents</div></div>
+    <div class="hero-stat"><div class="num accent">3</div><div class="label">AI Providers</div></div>
+    <div class="hero-stat"><div class="num">15/15</div><div class="label">Findings Resolved</div></div>
+    <div class="hero-stat"><div class="num">22</div><div class="label">Turns</div></div>
+    <div class="hero-stat"><div class="num">~$6</div><div class="label">Total Cost</div></div>
+  </div>
+</header>
+
+<main>
+<!-- ==================== EXPLAINER ==================== -->
+<div class="explainer">
+  <h2>What you're looking at</h2>
+  <p>
+    This is a real transcript from <strong>Apex</strong> &mdash; a self-hosted AI chat server where multiple
+    AI agents from different providers operate as peers in a shared conversation thread.
+  </p>
+  <p>
+    A human (Dana) typed one message: <strong>"yeah lets kick phase 2 off"</strong>. From that single prompt,
+    five AI agents autonomously coordinated a complete security audit of the Apex server codebase &mdash;
+    scoping 6 vulnerability findings, reading live source code, implementing a fix, writing tests,
+    running QA verification, committing to git, merging to production, and confirming deployment.
+  </p>
+  <p>
+    <strong>No human wrote code, ran tests, or made git commits.</strong> The agents decided who should
+    work next by <code>@mentioning</code> each other. The server routed each mention to the target agent.
+    There is no central orchestrator &mdash; the agents self-organize.
+  </p>
+
+  <!-- Agent Legend -->
+  <div class="legend" role="list" aria-label="AI agents participating in the audit">
+    <div class="legend-item" role="listitem">
+      <div class="legend-icon" style="background:rgba(88,166,255,0.15); color:var(--ops);">&#x1F4CA;</div>
+      <div class="legend-detail">
+        <div class="name" style="color:var(--ops);">Operations</div>
+        <div class="role">Coordinator &bull; Queue manager &bull; Merge gatekeeper</div>
+        <div class="provider">Claude (Anthropic)</div>
+      </div>
+    </div>
+    <div class="legend-item" role="listitem">
+      <div class="legend-icon" style="background:rgba(63,185,80,0.15); color:var(--dev);">&#x1F4BB;</div>
+      <div class="legend-detail">
+        <div class="name" style="color:var(--dev);">Developer</div>
+        <div class="role">Git ops &bull; Branch sync &bull; Commits &bull; Merges</div>
+        <div class="provider">Claude (Anthropic)</div>
+      </div>
+    </div>
+    <div class="legend-item" role="listitem">
+      <div class="legend-icon" style="background:rgba(219,109,40,0.15); color:var(--arch);">&#x1F3D7;</div>
+      <div class="legend-detail">
+        <div class="name" style="color:var(--arch);">Architect</div>
+        <div class="role">Vulnerability scoping &bull; Code analysis &bull; Fix design</div>
+        <div class="provider">Claude (Anthropic)</div>
+      </div>
+    </div>
+    <div class="legend-item" role="listitem">
+      <div class="legend-icon" style="background:rgba(188,140,255,0.15); color:var(--codex);">&#x1F527;</div>
+      <div class="legend-detail">
+        <div class="name" style="color:var(--codex);">Codex</div>
+        <div class="role">Implementation &bull; Code writing &bull; Test authoring</div>
+        <div class="provider">GPT-5 (OpenAI)</div>
+      </div>
+    </div>
+    <div class="legend-item" role="listitem">
+      <div class="legend-icon" style="background:rgba(210,153,34,0.15); color:var(--qa);">&#x1F9EA;</div>
+      <div class="legend-detail">
+        <div class="name" style="color:var(--qa);">QA</div>
+        <div class="role">Test execution &bull; Verification &bull; Sign-off</div>
+        <div class="provider">Claude (Anthropic)</div>
+      </div>
+    </div>
+  </div>
+
+  <h2>The workflow they invented</h2>
+  <p>Operations established this pipeline autonomously. No human told it what order to use:</p>
+  <div class="workflow">
+    <div class="step" style="border-color:var(--ops); color:var(--ops);">Ops queues finding</div>
+    <div class="arrow">&rarr;</div>
+    <div class="step" style="border-color:var(--arch); color:var(--arch);">Architect scopes</div>
+    <div class="arrow">&rarr;</div>
+    <div class="step" style="border-color:var(--codex); color:var(--codex);">Codex implements</div>
+    <div class="arrow">&rarr;</div>
+    <div class="step" style="border-color:var(--qa); color:var(--qa);">QA verifies</div>
+    <div class="arrow">&rarr;</div>
+    <div class="step" style="border-color:var(--dev); color:var(--dev);">Developer commits</div>
+    <div class="arrow">&rarr;</div>
+    <div class="step" style="border-color:var(--ops); color:var(--ops);">Ops closes</div>
+  </div>
+</div>
+
+<!-- ==================== CHAT TIMELINE ==================== -->
+<article class="timeline" aria-label="Security audit conversation transcript">
+  <h2>The conversation</h2>
+
+  <div class="phase-marker"><span>Session Start</span></div>
+
+  <!-- Human — the inciting action -->
+  <div class="msg human inciting">
+    <div class="avatar" style="background:rgba(230,237,243,0.15); color:var(--human);">D</div>
+    <div class="bubble">
+      <div class="sender" style="color:var(--human);">Dana</div>
+      <div class="content"><p>yeah lets kick phase 2 off</p></div>
+    </div>
+  </div>
+
+  <div class="annotation">
+    <strong>One message.</strong> That's all the human input until the very end. Everything below is agents
+    talking to each other, reading code, writing code, running tests, and committing to git &mdash;
+    autonomously.
+  </div>
+
+  <!-- Operations Turn 1 -->
+  <div class="msg">
+    <div class="avatar" style="background:rgba(88,166,255,0.15); color:var(--ops);">&#x1F4CA;</div>
+    <div class="bubble">
+      <div class="sender" style="color:var(--ops);">Operations</div>
+      <div class="thinking-badge">&#x1F9E0; Thinking</div>
+      <div class="content">
+        <p>&#x1F4CA; Operations. Phase 2 &mdash; initiating.</p>
+        <h3>Pre-Flight Check</h3>
+        <div class="table-wrap"><table>
+          <tr><th>Item</th><th>State</th><th>Action</th></tr>
+          <tr><td>Prod (:8300)</td><td>&#x2705; Running</td><td>&mdash;</td></tr>
+          <tr><td>Dev (:8301)</td><td>&#x2705; Running</td><td>&mdash;</td></tr>
+          <tr><td><code>dev</code> vs <code>main</code></td><td>&#x26A0;&#xFE0F; 4 behind</td><td>Sync needed</td></tr>
+          <tr><td>Dirty files</td><td>11 files</td><td>Hold</td></tr>
+        </table></div>
+        <h3>Step 1 &mdash; Sync Dev First</h3>
+        <p><span class="mention dev">@Developer</span> &mdash; merge <code>main</code> into <code>dev</code> now. Report the new <code>dev</code> HEAD when clean.</p>
+        <h3>Step 2 &mdash; Architect Scopes S-DA3</h3>
+        <p>Once Developer confirms, <span class="mention arch">@Architect</span> &mdash; scope S-DA3. Volley to <span class="mention codex">@Codex</span> when done.</p>
+        <h3>Phase 2 Queue</h3>
+        <div class="table-wrap"><table>
+          <tr><th>Finding</th><th>Priority</th><th>Status</th></tr>
+          <tr><td>S-DA3</td><td>High</td><td>&#x1F504; Up next</td></tr>
+          <tr><td>S-DA4</td><td>High</td><td>Queued</td></tr>
+          <tr><td>S-DA5</td><td>High</td><td>Queued</td></tr>
+          <tr><td>S-DA6</td><td>High</td><td>Queued</td></tr>
+          <tr><td>S-I2</td><td>High</td><td>Queued</td></tr>
+          <tr><td>S-W3</td><td>High</td><td>Queued</td></tr>
+        </table></div>
+        <p>Same chain: <strong>Architect scopes &rarr; Codex implements &rarr; QA verifies &rarr; Operations closes.</strong></p>
+      </div>
+      <div class="meta"><span class="cost">$0.07 &bull; 3in/925out</span></div>
+    </div>
+  </div>
+
+  <div class="annotation">
+    <strong>Operations self-organized immediately.</strong> It checked server status, noticed <code>dev</code> was
+    behind <code>main</code>, and issued a sequenced plan: sync first, then scope, then implement. Nobody told it to do this.
+  </div>
+
+  <!-- Developer Turn 1 -->
+  <div class="msg">
+    <div class="avatar" style="background:rgba(63,185,80,0.15); color:var(--dev);">&#x1F4BB;</div>
+    <div class="bubble">
+      <div class="sender" style="color:var(--dev);">Developer</div>
+      <div class="tools">&#x1F527; 3 tool calls</div>
+      <div class="content">
+        <p>Clean. <span class="mention ops">@Operations</span> &mdash; <code>dev</code> is synced.</p>
+        <div class="table-wrap"><table>
+          <tr><th>Branch</th><th>HEAD</th><th>State</th></tr>
+          <tr><td>origin/main</td><td><code>50d54d1</code></td><td>Unchanged</td></tr>
+          <tr><td>origin/dev</td><td><code>f4f8aeb</code></td><td>&#x2705; Current</td></tr>
+        </table></div>
+        <p>Phase 2 work has a clean base. <span class="mention arch">@Architect</span> &mdash; ready for S-DA3 scope.</p>
+      </div>
+      <div class="meta"><span class="cost">$0.08 &bull; 6in/766out</span></div>
+    </div>
+  </div>
+
+  <div class="annotation">
+    <strong>Developer ran git commands via tool calls</strong>, merged main into dev, verified 0 conflicts,
+    and reported back. Then proactively pinged Architect to start &mdash; without being told to.
+  </div>
+
+  <div class="phase-marker"><span>Architect Scopes All Findings</span></div>
+
+  <!-- Architect Turn 1 -->
+  <div class="msg">
+    <div class="avatar" style="background:rgba(219,109,40,0.15); color:var(--arch);">&#x1F3D7;</div>
+    <div class="bubble">
+      <div class="sender" style="color:var(--arch);">Architect</div>
+      <div class="tools">&#x1F527; 10 tool calls &mdash; read source code, audit docs, traced fix provenance</div>
+      <div class="content">
+        <p>&#x1F3D7;&#xFE0F; Architect. S-DA3 scope report &mdash; plus fast-forward on S-DA5 and S-DA6.</p>
+        <h3>S-DA3 &mdash; ReDoS in log search &rarr; Already Fixed &#x2705;</h3>
+        <p><code>re.escape()</code> is already applied. User input is a literal string, not a regex. No ReDoS possible.</p>
+        <h3>S-DA5 &mdash; Alert token stale reference &rarr; Already Fixed &#x2705;</h3>
+        <p><code>_set_live_alert_token()</code> updates three locations. Request-time reads pick up the rotated value immediately.</p>
+        <h3>S-DA6 &mdash; runpy.run_path arbitrary code exec &rarr; Already Fixed &#x2705;</h3>
+        <p>Replaced with <code>_load_python_assignments()</code> &mdash; pure AST parsing. No execution.</p>
+        <h3>S-DA4 &mdash; MCP command injection &rarr; Still Open &#x1F534;</h3>
+        <p>The only real work item. Fix boundary: command allowlist, args metachar rejection, env var blocklist.</p>
+        <p><span class="mention codex">@Codex</span> &mdash; S-DA4 is your implementation target. Keep it in the existing function. Volley to <span class="mention qa">@QA</span> when done.</p>
+      </div>
+      <div class="meta"><span class="cost">$0.53 &bull; 8in/3887out</span></div>
+    </div>
+  </div>
+
+  <div class="annotation">
+    <strong>Architect read the actual source code</strong> (10 tool calls), traced each vulnerability to the specific line,
+    and discovered that 3 of 4 findings were already fixed. It collapsed the work queue from 4 items to 1 &mdash;
+    saving the entire team from unnecessary implementation cycles.
+  </div>
+
+  <div class="phase-marker"><span>Codex Implements S-DA4</span></div>
+
+  <!-- Codex Turn 1 -->
+  <div class="msg">
+    <div class="avatar" style="background:rgba(188,140,255,0.15); color:var(--codex);">&#x1F527;</div>
+    <div class="bubble">
+      <div class="sender" style="color:var(--codex);">Codex <span style="font-weight:400; font-size:0.75rem; color:var(--text-dim);">(GPT-5 / OpenAI)</span></div>
+      <div class="tools">&#x1F527; 33 tool calls &mdash; read code, write patches, run compile checks, run tests, fix test harness</div>
+      <div class="content">
+        <p>Implemented S-DA4. The validator now:</p>
+        <ul>
+          <li>Resolves stdio commands with <code>shutil.which()</code></li>
+          <li>Rejects shell interpreters (sh, bash, zsh)</li>
+          <li>Allows only npx, uvx, node, python3, deno, or <code>mcp-</code>/<code>mcp_</code> binaries</li>
+          <li>Rejects shell metacharacters in args</li>
+          <li>Blocks dangerous env vars (LD_PRELOAD, DYLD_*, PYTHONPATH, NODE_OPTIONS, BASH_ENV)</li>
+        </ul>
+        <p>Also wrote 4 new MCP validation tests and patched test harness for setup redirect.</p>
+        <p><code>python3 -m py_compile server/dashboard.py</code> &#x2705;<br>
+        <code>python3 -m pytest tests/test_security_fixes.py</code> &rarr; 20 passed &#x2705;</p>
+        <p><span class="mention qa">@QA</span> &mdash; verify S-DA4 next.</p>
+      </div>
+      <div class="meta"><span class="cost-highlight">$5.38 &bull; 2,756 in / 29,288 out &bull; 33 tool calls</span></div>
+    </div>
+  </div>
+
+  <div class="annotation">
+    <strong>Codex (GPT-5, running on OpenAI) is a different AI provider than every other agent.</strong>
+    It read the codebase, wrote the security hardening patch, encountered a test harness regression
+    (setup redirect), diagnosed it as unrelated to S-DA4, fixed the harness, and got all 20 tests green &mdash;
+    33 tool calls total. It even attempted a git commit (blocked by sandbox) and reported the blocker transparently.
+  </div>
+
+  <div class="phase-marker"><span>QA Verification</span></div>
+
+  <!-- QA Turn 1 -->
+  <div class="msg">
+    <div class="avatar" style="background:rgba(210,153,34,0.15); color:var(--qa);">&#x1F9EA;</div>
+    <div class="bubble">
+      <div class="sender" style="color:var(--qa);">QA</div>
+      <div class="tools">&#x1F527; 9 tool calls &mdash; ran test suite, verified each validation path</div>
+      <div class="content">
+        <p>S-DA4 Verification Complete &#x2705;</p>
+        <div class="table-wrap"><table>
+          <tr><th>#</th><th>Test</th><th>Expected</th><th>Actual</th><th>Status</th></tr>
+          <tr><td>1</td><td>Full security suite (20 tests)</td><td>20 pass</td><td>20 pass</td><td>&#x2705;</td></tr>
+          <tr><td>2</td><td>Shell interpreter rejection</td><td>Reject</td><td>"Shell interpreters are not allowed"</td><td>&#x2705;</td></tr>
+          <tr><td>3</td><td>Shell metacharacters in args</td><td>Reject</td><td>"Shell metacharacters are not allowed"</td><td>&#x2705;</td></tr>
+          <tr><td>4</td><td>Blocked env vars</td><td>Reject</td><td>"Blocked environment variables..."</td><td>&#x2705;</td></tr>
+          <tr><td>5</td><td>Valid MCP config (npx)</td><td>Accept</td><td>No error</td><td>&#x2705;</td></tr>
+        </table></div>
+        <p>No regressions detected. Ready for commit.</p>
+        <p><span class="mention ops">@Operations</span> &mdash; Phase 2 merge gate cleared.</p>
+      </div>
+      <div class="meta"><span class="cost">$0.19 &bull; 82in/3720out</span></div>
+    </div>
+  </div>
+
+  <div class="annotation">
+    <strong>QA independently verified every validation path</strong> &mdash; not just running the test suite,
+    but testing each specific attack vector (shell injection, metacharacters, env vars) and confirming
+    the exact error messages. Then signed off to Operations.
+  </div>
+
+  <div class="phase-marker"><span>Commit &bull; Merge &bull; Deploy</span></div>
+
+  <!-- Operations calls commit -->
+  <div class="msg">
+    <div class="avatar" style="background:rgba(88,166,255,0.15); color:var(--ops);">&#x1F4CA;</div>
+    <div class="bubble">
+      <div class="sender" style="color:var(--ops);">Operations</div>
+      <div class="content">
+        <p>QA sign-off accepted. 20/20. Gate cleared.</p>
+        <p><span class="mention dev">@Developer</span> &mdash; commit the S-DA4 work to dev, then sync. Report both hashes.</p>
+      </div>
+      <div class="meta"><span class="cost">$0.47</span></div>
+    </div>
+  </div>
+
+  <!-- Developer commits -->
+  <div class="msg">
+    <div class="avatar" style="background:rgba(63,185,80,0.15); color:var(--dev);">&#x1F4BB;</div>
+    <div class="bubble">
+      <div class="sender" style="color:var(--dev);">Developer</div>
+      <div class="tools">&#x1F527; 4 tool calls &mdash; git add, commit, push, merge</div>
+      <div class="content">
+        <div class="table-wrap"><table>
+          <tr><th>Action</th><th>Hash</th><th>Details</th></tr>
+          <tr><td>S-DA4 commit</td><td><code>8e85585</code></td><td>security: S-DA4 MCP command validation hardening</td></tr>
+          <tr><td>main &rarr; dev sync</td><td><code>772261e</code></td><td>chore: sync main into dev</td></tr>
+        </table></div>
+      </div>
+      <div class="meta"><span class="cost">$0.23</span></div>
+    </div>
+  </div>
+
+  <div class="annotation">
+    <strong>This cycle repeated</strong> for the remaining findings (S-I2, S-W3). Architect scoped both,
+    found both already fixed, Codex updated the tracker, Developer committed, and the final
+    dev &rarr; main merge landed. The full cycle ran twice more with the same autonomous @mention handoffs.
+  </div>
+
+  <div class="phase-marker"><span>Final Merge &amp; Deployment</span></div>
+
+  <!-- Developer final merge -->
+  <div class="msg">
+    <div class="avatar" style="background:rgba(63,185,80,0.15); color:var(--dev);">&#x1F4BB;</div>
+    <div class="bubble">
+      <div class="sender" style="color:var(--dev);">Developer</div>
+      <div class="content">
+        <p><span class="mention ops">@Operations</span> &mdash; Phase 2 is on main.</p>
+        <div class="table-wrap"><table>
+          <tr><th>Action</th><th>Hash</th></tr>
+          <tr><td>dev &rarr; main merge</td><td><code>3ca30d9</code></td></tr>
+        </table></div>
+        <p>Full commit history preserved &mdash; no squash.</p>
+      </div>
+      <div class="meta"><span class="cost">$0.39</span></div>
+    </div>
+  </div>
+
+  <!-- Operations final -->
+  <div class="msg">
+    <div class="avatar" style="background:rgba(88,166,255,0.15); color:var(--ops);">&#x1F4CA;</div>
+    <div class="bubble">
+      <div class="sender" style="color:var(--ops);">Operations</div>
+      <div class="content">
+        <p>&#x1F389; <strong>Full Security Audit &mdash; Complete</strong></p>
+        <p>Dana &mdash; restart prod to deploy Phase 2. <code>3ca30d9</code> is on origin/main.</p>
+      </div>
+      <div class="meta"><span class="cost">$0.76</span></div>
+    </div>
+  </div>
+
+  <!-- Human -->
+  <div class="msg human">
+    <div class="avatar" style="background:rgba(230,237,243,0.15); color:var(--human);">D</div>
+    <div class="bubble">
+      <div class="sender" style="color:var(--human);">Dana</div>
+      <div class="content"><p>were back up</p></div>
+    </div>
+  </div>
+
+  <div class="annotation">
+    <strong>Second and final human message.</strong> Dana restarted the server and confirmed it was running.
+    The entire security audit &mdash; 15 findings across 2 phases &mdash; was resolved with 2 human messages.
+  </div>
+
+  <!-- Operations deployment confirmed -->
+  <div class="msg">
+    <div class="avatar" style="background:rgba(88,166,255,0.15); color:var(--ops);">&#x1F4CA;</div>
+    <div class="bubble">
+      <div class="sender" style="color:var(--ops);">Operations</div>
+      <div class="content">
+        <p>Prod confirmed up. Full security audit is live.</p>
+        <p><strong>15 / 15 findings resolved.</strong> Phase 1 Critical + Phase 2 High. Zero open.</p>
+        <h3>Next Up &mdash; Bug Queue</h3>
+        <div class="table-wrap"><table>
+          <tr><th>Bug</th><th>Description</th><th>Status</th></tr>
+          <tr><td>B-8</td><td>Group settings</td><td>Open</td></tr>
+          <tr><td>B-11</td><td>Agent trigger repro</td><td>Open</td></tr>
+          <tr><td>B-14</td><td>Attachments dropped</td><td>Open</td></tr>
+          <tr><td>B-15</td><td>Text box not cleared</td><td>Open</td></tr>
+        </table></div>
+        <p>Ready to kick the bug queue whenever you are.</p>
+      </div>
+      <div class="meta"><span class="cost">$0.76</span></div>
+    </div>
+  </div>
+</article>
+
+<!-- ==================== FINAL SCORECARD ==================== -->
+<div class="scorecard">
+  <h2>Complete Audit Scorecard &mdash; 15/15 Resolved</h2>
+
+  <h3 style="color:var(--text-dim); margin: 20px 0 10px; font-size:0.9rem;">Phase 1 &mdash; Critical (9 findings)</h3>
+  <div class="table-wrap"><table class="final-table">
+    <tr><th>Finding</th><th>Title</th><th>Status</th><th>Commit</th></tr>
+    <tr><td>S-A3 + S-A6</td><td>Dashboard + DB export GET auth</td><td>&#x2705; Fixed</td><td><code>ae96b08</code></td></tr>
+    <tr><td>S-A12</td><td>Alert client TLS fail-closed</td><td>&#x2705; Fixed</td><td><code>ae96b08</code></td></tr>
+    <tr><td>S-W4</td><td>Path traversal via chat_id</td><td>&#x2705; Fixed</td><td><code>30d15a6</code></td></tr>
+    <tr><td>S-A1 + S-A2</td><td>mTLS fail-closed (3 layers)</td><td>&#x2705; Fixed</td><td><code>30d15a6</code></td></tr>
+    <tr><td>S-I1</td><td>Local model tools opt-in</td><td>&#x2705; Fixed</td><td><code>fb20623</code></td></tr>
+    <tr><td>S-DA1 + S-DA2</td><td>OpenSSL CN + SAN injection</td><td>&#x2705; Fixed</td><td><code>2f41199</code></td></tr>
+  </table></div>
+
+  <h3 style="color:var(--text-dim); margin: 30px 0 10px; font-size:0.9rem;">Phase 2 &mdash; High (6 findings) &mdash; <em>this session</em></h3>
+  <div class="table-wrap"><table class="final-table">
+    <tr><th>Finding</th><th>Title</th><th>Status</th><th>Work</th><th>Commit</th></tr>
+    <tr><td>S-DA3</td><td>ReDoS in log search</td><td>&#x2705; Fixed</td><td>Pre-existing</td><td><code>8e85585</code> (tracker)</td></tr>
+    <tr><td>S-DA4</td><td>MCP command injection</td><td>&#x2705; Fixed</td><td><strong>Implemented by Codex</strong></td><td><code>8e85585</code></td></tr>
+    <tr><td>S-DA5</td><td>Alert token stale ref</td><td>&#x2705; Fixed</td><td>Pre-existing</td><td><code>8e85585</code> (tracker)</td></tr>
+    <tr><td>S-DA6</td><td>runpy code exec</td><td>&#x2705; Fixed</td><td>Pre-existing</td><td><code>8e85585</code> (tracker)</td></tr>
+    <tr><td>S-I2</td><td>File tool path traversal</td><td>&#x2705; Fixed</td><td>Pre-existing</td><td><code>bf57ee9</code> (tracker)</td></tr>
+    <tr><td>S-W3</td><td>set_model ungated change</td><td>&#x2705; Fixed</td><td>Pre-existing</td><td><code>bf57ee9</code> (tracker)</td></tr>
+  </table></div>
+</div>
+
+<!-- ==================== WHAT MAKES THIS DIFFERENT ==================== -->
+<div class="explainer">
+  <h2>What makes this different</h2>
+  <p>
+    After three rounds of deep research (via Grok's DeepSearch), <strong>no other product or open-source
+    project ships this exact architecture</strong> as of April 2026.
+  </p>
+  <div class="diff-grid">
+    <div class="diff-card">
+      <div class="card-icon">&#x1F4AC;</div>
+      <h4>Autonomous @mention routing</h4>
+      <p>Agents decide who works next by writing <code>@AgentName</code>. The server routes the message. No central orchestrator picks speakers.</p>
+    </div>
+    <div class="diff-card">
+      <div class="card-icon">&#x1F310;</div>
+      <h4>Multi-provider peers</h4>
+      <p>Claude, GPT-5, and Grok operate as distinct personas with provider-specific capabilities &mdash; not interchangeable LLM slots.</p>
+    </div>
+    <div class="diff-card">
+      <div class="card-icon">&#x1F6E1;&#xFE0F;</div>
+      <h4>Smart relay control</h4>
+      <p>If two agents start volleying, the system detects the pair and auto-redirects to an Operations coordinator.</p>
+    </div>
+    <div class="diff-card">
+      <div class="card-icon">&#x26A1;</div>
+      <h4>Real-time streaming</h4>
+      <p>Every agent's response streams token-by-token into the shared thread while all participants observe live.</p>
+    </div>
+    <div class="diff-card">
+      <div class="card-icon">&#x1F512;</div>
+      <h4>Self-hosted + mTLS</h4>
+      <p>Runs entirely on your hardware. No cloud dependency beyond API calls to the providers you choose.</p>
+    </div>
+  </div>
+</div>
+</main>
+
+<footer class="footer">
+  Apex &mdash; self-hosted multi-agent AI server<br>
+  Transcript from March 31, 2026 &bull; <a href="https://github.com/use-ash/apex">GitHub</a> &bull; <a href="https://use-ash.github.io/apex/">Docs</a>
+</footer>
+
+</body>
+</html>

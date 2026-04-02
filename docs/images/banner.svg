@@ -1,0 +1,36 @@
+<svg width="680" height="200" viewBox="0 0 680 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .title { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 52px; font-weight: 900; letter-spacing: 4px; fill: #e2e8f0; }
+    .sub { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 400; fill: #8b95a8; }
+  </style>
+  <rect width="680" height="200" fill="#0d1117" rx="12"/>
+  <ellipse cx="340" cy="80" rx="300" ry="120" fill="url(#bgGlow)" opacity="0.4"/>
+  <!-- Logo mark (Nexus hexagon) -->
+  <g transform="translate(300, 12) scale(0.6)">
+    <path d="M70 14 L118 38 L118 86 L70 126 L22 86 L22 38 Z" stroke="url(#bh-stroke)" stroke-width="2.5" fill="none" opacity="0.5"/>
+    <line x1="34" y1="92" x2="70" y2="42" stroke="url(#bl1)" stroke-width="2" opacity="0.6"/>
+    <line x1="70" y1="110" x2="70" y2="42" stroke="#38bdf8" stroke-width="2" opacity="0.6"/>
+    <line x1="106" y1="92" x2="70" y2="42" stroke="url(#bl3)" stroke-width="2" opacity="0.6"/>
+    <line x1="34" y1="92" x2="106" y2="92" stroke="url(#bcross)" stroke-width="1.5" opacity="0.3"/>
+    <circle cx="70" cy="42" r="12" fill="url(#bn-core)"/>
+    <circle cx="70" cy="42" r="5" fill="#0d1117"/>
+    <circle cx="70" cy="42" r="2.5" fill="#e2e8f0"/>
+    <circle cx="34" cy="92" r="4.5" fill="#2dd4bf" opacity="0.85"/>
+    <circle cx="70" cy="110" r="4.5" fill="#38bdf8" opacity="0.85"/>
+    <circle cx="106" cy="92" r="4.5" fill="#818cf8" opacity="0.85"/>
+  </g>
+  <text x="340" y="140" text-anchor="middle" class="title">APEX</text>
+  <text x="340" y="172" text-anchor="middle" class="sub">Your AI. Your server. Your rules.</text>
+  <defs>
+    <radialGradient id="bgGlow" cx="0.5" cy="0.4">
+      <stop stop-color="#38bdf8" stop-opacity="0.06"/>
+      <stop offset="0.7" stop-color="#818cf8" stop-opacity="0.02"/>
+      <stop offset="1" stop-color="#0d1117" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="bh-stroke"><stop stop-color="#38bdf8" stop-opacity="0.6"/><stop offset="1" stop-color="#818cf8" stop-opacity="0.6"/></linearGradient>
+    <linearGradient id="bl1" x1="0" y1="1" x2="1" y2="0"><stop stop-color="#2dd4bf"/><stop offset="1" stop-color="#38bdf8"/></linearGradient>
+    <linearGradient id="bl3" x1="1" y1="1" x2="0" y2="0"><stop stop-color="#818cf8"/><stop offset="1" stop-color="#38bdf8"/></linearGradient>
+    <linearGradient id="bcross"><stop stop-color="#2dd4bf"/><stop offset="0.5" stop-color="#38bdf8"/><stop offset="1" stop-color="#818cf8"/></linearGradient>
+    <radialGradient id="bn-core" cx="0.45" cy="0.4"><stop stop-color="#7dd3fc"/><stop offset="0.5" stop-color="#38bdf8"/><stop offset="1" stop-color="#818cf8"/></radialGradient>
+  </defs>
+</svg>

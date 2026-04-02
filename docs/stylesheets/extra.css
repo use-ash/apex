@@ -1,0 +1,46 @@
+/* Hero section — center CTA buttons and add breathing room */
+.md-content h1:first-child {
+  font-size: 2.4rem;
+  margin-bottom: 0;
+}
+
+/* Make the hero tagline stand out */
+.md-content h1:first-child + p {
+  font-size: 1.15rem;
+  color: var(--md-default-fg-color--light);
+  max-width: 640px;
+}
+
+/* Screenshot figures — subtle shadow and rounded corners */
+.md-content figure img {
+  border-radius: 8px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
+}
+
+[data-md-color-scheme="slate"] .md-content figure img {
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+}
+
+/* SVG illustrations don't need shadow */
+.md-content figure img[src$=".svg"] {
+  box-shadow: none;
+  border-radius: 12px;
+}
+
+/* Figcaptions — muted, smaller */
+.md-content figcaption {
+  font-size: 0.82rem;
+  color: var(--md-default-fg-color--lighter);
+  margin-top: 0.5rem;
+}
+
+/* CTA buttons — more spacing */
+.md-button {
+  margin-right: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+/* Feature grid cards — consistent height */
+.grid.cards > ul > li {
+  min-height: 140px;
+}

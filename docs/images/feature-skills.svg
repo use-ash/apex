@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="300" viewBox="0 0 420 300">
+  <style>
+    .font { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; }
+    .mono { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Consolas, monospace; }
+    .header { font-size: 11px; fill: #5a6577; font-weight: 700; letter-spacing: 1.5px; }
+    .cmd { font-size: 13px; fill: #38bdf8; font-weight: 600; }
+    .desc { font-size: 11px; fill: #8b95a8; }
+    .badge { font-size: 9px; font-weight: 700; }
+    .callout-text { font-size: 11px; fill: #38bdf8; }
+    .callout-dim { font-size: 10px; fill: #5a6577; }
+  </style>
+
+  <rect width="420" height="300" rx="12" fill="#0d1117"/>
+
+  <!-- Header -->
+  <text x="24" y="28" class="font header">SKILLS</text>
+
+  <!-- Skill 1: /codex -->
+  <g transform="translate(16, 40)">
+    <rect width="388" height="46" rx="8" fill="#111827" stroke="#1e293b" stroke-width="1"/>
+    <text x="14" y="20" class="mono cmd">/codex</text>
+    <text x="14" y="36" class="font desc">Delegate tasks to Codex background agent</text>
+    <!-- Badge -->
+    <rect x="320" y="10" width="52" height="18" rx="4" fill="#34d39920" stroke="#34d399" stroke-width="0.5"/>
+    <text x="346" y="23" text-anchor="middle" class="font badge" fill="#34d399">Tier 3</text>
+  </g>
+
+  <!-- Skill 2: /grok -->
+  <g transform="translate(16, 94)">
+    <rect width="388" height="46" rx="8" fill="#111827" stroke="#1e293b" stroke-width="1"/>
+    <text x="14" y="20" class="mono cmd">/grok</text>
+    <text x="14" y="36" class="font desc">Live web research via xAI</text>
+    <!-- Badge -->
+    <rect x="320" y="10" width="52" height="18" rx="4" fill="#fbbf2420" stroke="#fbbf24" stroke-width="0.5"/>
+    <text x="346" y="23" text-anchor="middle" class="font badge" fill="#fbbf24">Tier 2</text>
+  </g>
+
+  <!-- Skill 3: /recall -->
+  <g transform="translate(16, 148)">
+    <rect width="388" height="46" rx="8" fill="#111827" stroke="#1e293b" stroke-width="1"/>
+    <text x="14" y="20" class="mono cmd">/recall</text>
+    <text x="14" y="36" class="font desc">Search all conversation transcripts</text>
+    <!-- Badge -->
+    <rect x="320" y="10" width="52" height="18" rx="4" fill="#34d39920" stroke="#34d399" stroke-width="0.5"/>
+    <text x="346" y="23" text-anchor="middle" class="font badge" fill="#34d399">Tier 1</text>
+  </g>
+
+  <!-- Skill 4: /evaluate -->
+  <g transform="translate(16, 202)">
+    <rect width="388" height="46" rx="8" fill="#111827" stroke="#1e293b" stroke-width="1"/>
+    <text x="14" y="20" class="mono cmd">/evaluate</text>
+    <text x="14" y="36" class="font desc">Sandbox-assess any GitHub repo</text>
+    <!-- Badge -->
+    <rect x="320" y="10" width="52" height="18" rx="4" fill="#34d39920" stroke="#34d399" stroke-width="0.5"/>
+    <text x="346" y="23" text-anchor="middle" class="font badge" fill="#34d399">Tier 1</text>
+  </g>
+
+  <!-- Build your own callout -->
+  <g transform="translate(16, 258)">
+    <rect width="388" height="30" rx="6" fill="none" stroke="#38bdf8" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+    <text x="14" y="14" class="mono callout-text" font-size="11" font-weight="600">+ Build your own</text>
+    <text x="14" y="26" class="font callout-dim">Drop a SKILL.md in skills/ &#x2014; auto-discovered, tracked, self-improving</text>
+  </g>
+</svg>

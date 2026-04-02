@@ -1,0 +1,25 @@
+FROM python:3.14-slim
+
+# Simulate a fresh Linux user
+RUN useradd -m -s /bin/bash testuser
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssl git curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Clone from the repo as testuser would
+USER testuser
+WORKDIR /home/testuser
+
+# Copy the repo in (simulates git clone)
+COPY --chown=testuser:testuser . /home/testuser/apex
+
+WORKDIR /home/testuser/apex
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt 2>&1
+
+# Run the test script
+COPY --chown=testuser:testuser tests/docker/test_fresh_install.sh /home/testuser/test_fresh_install.sh
+RUN chmod +x /home/testuser/test_fresh_install.sh
+
+CMD ["/home/testuser/test_fresh_install.sh"]

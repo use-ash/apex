@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="320" viewBox="0 0 420 320">
+  <style>
+    .font { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; }
+    .mono { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Consolas, monospace; }
+    .header-title { font-size: 16px; fill: #e2e8f0; font-weight: 700; }
+    .header-sub { font-size: 11px; fill: #8b95a8; }
+    .card-title { font-size: 11px; fill: #e2e8f0; font-weight: 700; letter-spacing: 0.5px; }
+    .card-desc { font-size: 10px; fill: #5a6577; }
+    .check { fill: #34d399; font-size: 13px; font-weight: 700; }
+    .footer-text { font-size: 10.5px; fill: #8b95a8; }
+  </style>
+
+  <rect width="420" height="320" rx="12" fill="#0d1117"/>
+
+  <!-- Header -->
+  <g transform="translate(24, 20)">
+    <!-- Lock icon circle -->
+    <rect width="34" height="34" rx="8" fill="#1a2235" stroke="#34d399" stroke-width="1"/>
+    <text x="17" y="24" text-anchor="middle" font-size="16">&#x1F512;</text>
+    <!-- Title -->
+    <text x="44" y="15" class="font header-title">Zero-Trust Security</text>
+    <text x="44" y="31" class="font header-sub">mTLS + Certificate-based auth</text>
+  </g>
+
+  <!-- 2x2 Grid -->
+  <!-- Card 1: Client Cert -->
+  <g transform="translate(16, 66)">
+    <rect width="188" height="84" rx="8" fill="#111827" stroke="#1e293b" stroke-width="1"/>
+    <text x="14" y="24" class="font check">&#x2713;</text>
+    <text x="30" y="24" class="font card-title">CLIENT CERT</text>
+    <text x="14" y="42" class="font card-desc">Certificate-pinned connections.</text>
+    <text x="14" y="56" class="font card-desc">No passwords.</text>
+    <!-- Decorative bar -->
+    <rect x="14" y="68" width="40" height="3" rx="1.5" fill="#34d399" opacity="0.4"/>
+  </g>
+
+  <!-- Card 2: TLS Everywhere -->
+  <g transform="translate(216, 66)">
+    <rect width="188" height="84" rx="8" fill="#111827" stroke="#1e293b" stroke-width="1"/>
+    <text x="14" y="24" class="font check">&#x2713;</text>
+    <text x="30" y="24" class="font card-title">TLS EVERYWHERE</text>
+    <text x="14" y="42" class="font card-desc">HTTPS for all connections.</text>
+    <text x="14" y="56" class="font card-desc">Built-in cert gen.</text>
+    <rect x="14" y="68" width="40" height="3" rx="1.5" fill="#34d399" opacity="0.4"/>
+  </g>
+
+  <!-- Card 3: Atomic Writes -->
+  <g transform="translate(16, 162)">
+    <rect width="188" height="84" rx="8" fill="#111827" stroke="#1e293b" stroke-width="1"/>
+    <text x="14" y="24" class="font check">&#x2713;</text>
+    <text x="30" y="24" class="font card-title">ATOMIC WRITES</text>
+    <text x="14" y="42" class="font card-desc">No partial state on crash.</text>
+    <text x="14" y="56" class="font card-desc">Temp + rename.</text>
+    <rect x="14" y="68" width="40" height="3" rx="1.5" fill="#34d399" opacity="0.4"/>
+  </g>
+
+  <!-- Card 4: Secrets Isolation -->
+  <g transform="translate(216, 162)">
+    <rect width="188" height="84" rx="8" fill="#111827" stroke="#1e293b" stroke-width="1"/>
+    <text x="14" y="24" class="font check">&#x2713;</text>
+    <text x="30" y="24" class="font card-title">SECRETS ISOLATION</text>
+    <text x="14" y="42" class="font card-desc">Credentials in .env only.</text>
+    <text x="14" y="56" class="font card-desc">Never in DB.</text>
+    <rect x="14" y="68" width="40" height="3" rx="1.5" fill="#34d399" opacity="0.4"/>
+  </g>
+
+  <!-- Bottom bar -->
+  <g transform="translate(16, 262)">
+    <rect width="388" height="42" rx="8" fill="#111827" stroke="#1e293b" stroke-width="1"/>
+    <text x="16" y="26" font-size="14">&#x1F4F1;</text>
+    <text x="36" y="22" class="font footer-text" font-weight="600" fill="#e2e8f0">QR code onboarding</text>
+    <text x="36" y="35" class="font footer-text">Scan, install cert, connect in 60 seconds</text>
+  </g>
+</svg>

@@ -1,0 +1,47 @@
+<svg width="120" height="120" viewBox="0 0 140 140" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Hexagonal frame -->
+  <path d="M70 14 L118 38 L118 86 L70 126 L22 86 L22 38 Z" stroke="url(#hex-stroke)" stroke-width="2" fill="none" opacity="0.5"/>
+  <!-- Convergence lines from base to center node -->
+  <line x1="34" y1="92" x2="70" y2="42" stroke="url(#line1)" stroke-width="1.5" opacity="0.6"/>
+  <line x1="70" y1="110" x2="70" y2="42" stroke="url(#line2)" stroke-width="1.5" opacity="0.6"/>
+  <line x1="106" y1="92" x2="70" y2="42" stroke="url(#line3)" stroke-width="1.5" opacity="0.6"/>
+  <!-- Horizontal crossbar -->
+  <line x1="34" y1="92" x2="106" y2="92" stroke="url(#crossbar)" stroke-width="1" opacity="0.3"/>
+  <!-- Center node (bright) -->
+  <circle cx="70" cy="42" r="10" fill="url(#node-core)"/>
+  <circle cx="70" cy="42" r="10" stroke="#38bdf8" stroke-width="0.5" opacity="0.5"/>
+  <circle cx="70" cy="42" r="4" fill="#0a0e17"/>
+  <circle cx="70" cy="42" r="2" fill="#e2e8f0"/>
+  <!-- Base dots (model providers) -->
+  <circle cx="34" cy="92" r="4" fill="#2dd4bf" opacity="0.85"/>
+  <circle cx="70" cy="110" r="4" fill="#38bdf8" opacity="0.85"/>
+  <circle cx="106" cy="92" r="4" fill="#818cf8" opacity="0.85"/>
+  <defs>
+    <linearGradient id="hex-stroke" x1="22" y1="14" x2="118" y2="126">
+      <stop stop-color="#38bdf8" stop-opacity="0.6"/>
+      <stop offset="1" stop-color="#818cf8" stop-opacity="0.6"/>
+    </linearGradient>
+    <linearGradient id="line1" x1="34" y1="92" x2="70" y2="42">
+      <stop stop-color="#2dd4bf"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+    <linearGradient id="line2" x1="70" y1="110" x2="70" y2="42">
+      <stop stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+    <linearGradient id="line3" x1="106" y1="92" x2="70" y2="42">
+      <stop stop-color="#818cf8"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+    <linearGradient id="crossbar" x1="34" y1="92" x2="106" y2="92">
+      <stop stop-color="#2dd4bf"/>
+      <stop offset="0.5" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#818cf8"/>
+    </linearGradient>
+    <radialGradient id="node-core" cx="0.45" cy="0.4">
+      <stop stop-color="#7dd3fc"/>
+      <stop offset="0.5" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#818cf8"/>
+    </radialGradient>
+  </defs>
+</svg>

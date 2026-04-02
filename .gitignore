@@ -1,0 +1,81 @@
+# State — runtime data, never commit
+state/
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# SSL certs and keys — NEVER commit
+*.p12
+*.key
+*.crt
+*.csr
+*.srl
+*.cnf
+ssl/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# iOS app — premium, not for OSS distribution
+ios/
+
+# macOS
+.DS_Store
+*.swp
+*~
+
+# License signing keys — NEVER commit private keys
+keys/
+
+# Environment
+.env
+.env.*
+
+# Personal / internal docs (not for OSS distribution)
+server/launch_dana.sh
+server/launch_dev.sh
+docs/OSS_PLAN.md
+APEX.md
+deploy-phase3.sh
+claude-commands/
+mockups/
+mockup-dashboard-v2.html
+
+# Runtime artifacts
+nohup.out
+
+# Generated state (created by setup.py and server runtime)
+state/*.db
+state/*.log
+state/ssl/
+state/backups/
+state/embeddings/
+state/uploads/
+state/config.json
+
+# Screenshots (keep local, not for OSS)
+screenshots/
+
+# MkDocs build output
+site/
+
+# Custom — Dana's personal scripts, configs, local overrides.
+# Promote to main dirs when ready to ship.
+custom/
+
+# Working directory — operational scratch files, not for OSS distribution
+# These are local working artifacts: bug tracking, design mockups, research notes.
+# Nothing here ships in the OSS repo.
+bug_list.md
+mockups/
+mockup-dashboard-v2.html
+_stage/
+_work/
+claude-commands/
+deploy-phase3.sh
+APEX.md

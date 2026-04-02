@@ -1,0 +1,1278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Apex — README Preview</title>
+<style>
+  :root {
+    --bg-deep: #06080F;
+    --bg-primary: #0B1120;
+    --bg-card: #111827;
+    --bg-card-hover: #1a2332;
+    --bg-surface: #1E293B;
+    --text-primary: #F1F5F9;
+    --text-secondary: #94A3B8;
+    --text-muted: #64748B;
+    --accent-blue: #3B82F6;
+    --accent-cyan: #06B6D4;
+    --accent-purple: #8B5CF6;
+    --accent-green: #10B981;
+    --accent-amber: #F59E0B;
+    --accent-rose: #F43F5E;
+    --border: rgba(148,163,184,0.1);
+    --border-accent: rgba(59,130,246,0.3);
+    --glow-blue: rgba(59,130,246,0.15);
+    --glow-cyan: rgba(6,182,212,0.15);
+    --radius: 12px;
+    --radius-lg: 16px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---- LAYOUT ---- */
+  .container { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+  .section { padding: 80px 0; }
+  .section-divider {
+    border: none;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border-accent), transparent);
+    margin: 0;
+  }
+
+  /* ---- TYPOGRAPHY ---- */
+  h1 { font-size: 2.5rem; font-weight: 700; letter-spacing: -0.02em; }
+  h2 { font-size: 1.75rem; font-weight: 600; letter-spacing: -0.01em; color: var(--text-primary); margin-bottom: 12px; }
+  h3 { font-size: 1.25rem; font-weight: 600; color: var(--text-primary); margin-bottom: 8px; }
+  p { color: var(--text-secondary); }
+  .label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent-cyan);
+  }
+
+  /* ---- PART HEADER (Logo Options / Screenshot Checklist / README Preview) ---- */
+  .part-header {
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border);
+    padding: 48px 0 32px;
+    text-align: center;
+  }
+  .part-header h1 { color: var(--text-primary); margin-bottom: 8px; }
+  .part-header p { color: var(--text-secondary); font-size: 1.1rem; }
+  .part-number {
+    display: inline-block;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--accent-blue);
+    background: rgba(59,130,246,0.1);
+    border: 1px solid rgba(59,130,246,0.2);
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 16px;
+  }
+
+  /* ---- LOGO OPTIONS ---- */
+  .logo-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 32px;
+    margin-top: 40px;
+  }
+  .logo-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 40px 24px 32px;
+    text-align: center;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  .logo-card:hover {
+    border-color: var(--border-accent);
+    box-shadow: 0 0 40px var(--glow-blue);
+  }
+  .logo-card svg { display: block; margin: 0 auto 24px; }
+  .logo-card .logo-name {
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent-cyan);
+    margin-bottom: 8px;
+  }
+  .logo-card .logo-desc {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+  .logo-wordmark {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+  .logo-wordmark svg { margin-bottom: 0; }
+
+  /* ---- SCREENSHOT CHECKLIST ---- */
+  .checklist-group { margin-bottom: 36px; }
+  .checklist-group h3 {
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent-blue);
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .checklist-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(148,163,184,0.05);
+  }
+  .checklist-priority {
+    flex-shrink: 0;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+  }
+  .priority-hero { background: rgba(244,63,94,0.15); color: var(--accent-rose); }
+  .priority-strong { background: rgba(59,130,246,0.15); color: var(--accent-blue); }
+  .priority-nice { background: rgba(100,116,139,0.15); color: var(--text-muted); }
+  .checklist-text { font-size: 0.95rem; color: var(--text-secondary); }
+  .checklist-text strong { color: var(--text-primary); font-weight: 500; }
+  .checklist-note {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-style: italic;
+    margin-top: 2px;
+  }
+
+  /* ======================================================
+     PART 3: README PREVIEW — Everything below this line
+     simulates how the redesigned README will look/feel
+     ====================================================== */
+
+  .readme-preview {
+    background: var(--bg-primary);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border);
+    overflow: hidden;
+    margin-top: 40px;
+  }
+  .readme-inner { padding: 48px 56px; }
+
+  /* ---- HERO ---- */
+  .hero { text-align: center; padding: 64px 0 48px; }
+  .hero-logo { margin-bottom: 24px; }
+  .hero-tagline {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+    letter-spacing: -0.01em;
+  }
+  .hero-sub {
+    font-size: 1.05rem;
+    color: var(--text-secondary);
+    max-width: 560px;
+    margin: 0 auto 24px;
+    line-height: 1.6;
+  }
+
+  /* Badges */
+  .badge-row {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 40px;
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .badge-label {
+    padding: 4px 8px;
+    background: var(--bg-surface);
+    color: var(--text-muted);
+  }
+  .badge-value {
+    padding: 4px 8px;
+  }
+  .badge-blue .badge-value { background: var(--accent-blue); color: white; }
+  .badge-cyan .badge-value { background: var(--accent-cyan); color: white; }
+  .badge-green .badge-value { background: var(--accent-green); color: white; }
+  .badge-purple .badge-value { background: var(--accent-purple); color: white; }
+  .badge-amber .badge-value { background: var(--accent-amber); color: #1a1a1a; }
+
+  /* Hero screenshot placeholder */
+  .hero-screenshot {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    max-width: 780px;
+    margin: 0 auto;
+    aspect-ratio: 16/10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .hero-screenshot::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, var(--glow-blue), transparent 50%, var(--glow-cyan));
+    pointer-events: none;
+  }
+  .screenshot-placeholder {
+    text-align: center;
+    color: var(--text-muted);
+    z-index: 1;
+  }
+  .screenshot-placeholder .ph-icon { font-size: 2rem; margin-bottom: 8px; display: block; opacity: 0.4; }
+  .screenshot-placeholder .ph-label { font-size: 0.8rem; letter-spacing: 0.05em; }
+
+  /* ---- FEATURE GRID ---- */
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 20px;
+    margin: 48px 0;
+  }
+  .feature-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 28px 24px;
+    transition: border-color 0.2s, transform 0.15s;
+  }
+  .feature-card:hover {
+    border-color: var(--border-accent);
+    transform: translateY(-2px);
+  }
+  .feature-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 16px;
+    font-size: 1.2rem;
+  }
+  .icon-blue { background: rgba(59,130,246,0.12); }
+  .icon-cyan { background: rgba(6,182,212,0.12); }
+  .icon-purple { background: rgba(139,92,246,0.12); }
+  .icon-green { background: rgba(16,185,129,0.12); }
+  .feature-card h3 { font-size: 1rem; margin-bottom: 6px; }
+  .feature-card p { font-size: 0.88rem; color: var(--text-muted); line-height: 1.55; }
+
+  /* ---- SCREENSHOT STRIP ---- */
+  .screenshot-strip {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr 0.5fr;
+    gap: 16px;
+    margin: 48px 0;
+    align-items: end;
+  }
+  .ss-frame {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    position: relative;
+  }
+  .ss-frame::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(180deg, transparent 60%, rgba(11,17,32,0.8));
+    pointer-events: none;
+    z-index: 1;
+  }
+  .ss-desktop { aspect-ratio: 16/10; }
+  .ss-dashboard { aspect-ratio: 4/3; }
+  .ss-mobile { aspect-ratio: 9/16; max-height: 320px; }
+  .ss-label {
+    position: absolute;
+    bottom: 12px;
+    left: 14px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    z-index: 2;
+  }
+  .ss-inner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    letter-spacing: 0.05em;
+  }
+
+  /* ---- QUICK START ---- */
+  .quickstart {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 28px 28px 24px;
+    margin: 48px 0;
+  }
+  .quickstart-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .quickstart-header h3 { margin-bottom: 0; font-size: 1rem; }
+  .code-block {
+    background: var(--bg-deep);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.85rem;
+    line-height: 1.7;
+    color: var(--text-secondary);
+    overflow-x: auto;
+  }
+  .code-block .comment { color: var(--text-muted); }
+  .code-block .cmd { color: var(--accent-cyan); }
+  .code-block .url { color: var(--accent-blue); }
+  .quickstart-note {
+    margin-top: 12px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+
+  /* ---- AUDIENCE CARDS ---- */
+  .audience-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+    margin: 32px 0 48px;
+  }
+  .audience-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px 20px;
+  }
+  .audience-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 14px;
+    font-size: 1rem;
+  }
+  .audience-card h3 { font-size: 0.95rem; margin-bottom: 6px; }
+  .audience-card p { font-size: 0.82rem; color: var(--text-muted); line-height: 1.55; }
+
+  /* ---- MODEL PILLS ---- */
+  .model-row {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin: 32px 0;
+  }
+  .model-pill {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    flex: 1;
+    min-width: 180px;
+  }
+  .model-pill-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .model-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .dot-blue { background: var(--accent-blue); box-shadow: 0 0 6px var(--accent-blue); }
+  .dot-green { background: var(--accent-green); box-shadow: 0 0 6px var(--accent-green); }
+  .dot-purple { background: var(--accent-purple); box-shadow: 0 0 6px var(--accent-purple); }
+  .dot-amber { background: var(--accent-amber); box-shadow: 0 0 6px var(--accent-amber); }
+  .model-pill-name { font-size: 0.9rem; font-weight: 600; }
+  .model-pill-desc { font-size: 0.78rem; color: var(--text-muted); line-height: 1.5; }
+  .model-pill-tag {
+    display: inline-block;
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    padding: 2px 7px;
+    border-radius: 4px;
+    margin-top: 8px;
+    text-transform: uppercase;
+  }
+  .tag-subscription { background: rgba(59,130,246,0.12); color: var(--accent-blue); }
+  .tag-api { background: rgba(245,158,11,0.12); color: var(--accent-amber); }
+  .tag-free { background: rgba(16,185,129,0.12); color: var(--accent-green); }
+
+  /* ---- COLLAPSIBLE SECTIONS ---- */
+  .collapsible {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+  .collapsible summary {
+    padding: 18px 24px;
+    cursor: pointer;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    list-style: none;
+    transition: background 0.15s;
+  }
+  .collapsible summary:hover { background: var(--bg-card-hover); }
+  .collapsible summary::before {
+    content: '▸';
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    transition: transform 0.2s;
+  }
+  .collapsible[open] summary::before { transform: rotate(90deg); }
+  .collapsible-body {
+    padding: 0 24px 20px;
+    font-size: 0.88rem;
+    color: var(--text-secondary);
+    line-height: 1.65;
+  }
+  .collapsible-body p { margin-bottom: 12px; }
+  .collapsible-body ul { padding-left: 20px; margin-bottom: 12px; }
+  .collapsible-body li { margin-bottom: 6px; }
+  .collapsible-body code {
+    background: var(--bg-deep);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'SF Mono', monospace;
+    font-size: 0.82rem;
+  }
+
+  /* ---- ARCHITECTURE DIAGRAM ---- */
+  .arch-diagram {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 32px;
+    margin: 32px 0;
+    overflow-x: auto;
+  }
+
+  /* ---- FAQ ---- */
+  .faq-item {
+    padding: 20px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .faq-item:last-child { border-bottom: none; }
+  .faq-q { font-weight: 600; color: var(--text-primary); margin-bottom: 6px; font-size: 0.95rem; }
+  .faq-a { color: var(--text-secondary); font-size: 0.88rem; line-height: 1.6; }
+
+  /* ---- FOOTER ---- */
+  .readme-footer {
+    text-align: center;
+    padding: 40px 0 24px;
+    border-top: 1px solid var(--border);
+    margin-top: 48px;
+  }
+  .readme-footer p { font-size: 0.82rem; color: var(--text-muted); }
+  .readme-footer a { color: var(--accent-blue); text-decoration: none; }
+
+  /* ---- UTILITIES ---- */
+  .text-center { text-align: center; }
+  .mt-8 { margin-top: 8px; }
+  .mt-16 { margin-top: 16px; }
+  .mt-24 { margin-top: 24px; }
+  .mt-48 { margin-top: 48px; }
+  .mb-8 { margin-bottom: 8px; }
+  .mb-16 { margin-bottom: 16px; }
+  .mb-32 { margin-bottom: 32px; }
+  .text-sm { font-size: 0.85rem; }
+  .text-muted { color: var(--text-muted); }
+  .flex-center { display: flex; align-items: center; justify-content: center; }
+
+  /* ---- RESPONSIVE ---- */
+  @media (max-width: 768px) {
+    .logo-grid { grid-template-columns: 1fr; }
+    .feature-grid { grid-template-columns: 1fr; }
+    .audience-grid { grid-template-columns: 1fr; }
+    .screenshot-strip { grid-template-columns: 1fr; }
+    .model-row { flex-direction: column; }
+    .readme-inner { padding: 32px 24px; }
+    h1 { font-size: 1.8rem; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ============================================================
+     PART 1: LOGO OPTIONS
+     ============================================================ -->
+<div class="part-header">
+  <div class="container">
+    <div class="part-number">Part 1 of 3</div>
+    <h1>Logo Options</h1>
+    <p>Three directions. Pick one (or mix elements) and I'll refine it.</p>
+  </div>
+</div>
+
+<div class="section">
+  <div class="container">
+    <div class="logo-grid">
+
+      <!-- LOGO A: The Peak -->
+      <div class="logo-card">
+        <div class="logo-name">Option A — The Peak</div>
+        <svg width="120" height="120" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="peakGrad" x1="60" y1="16" x2="60" y2="100" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#3B82F6"/>
+              <stop offset="1" stop-color="#06B6D4"/>
+            </linearGradient>
+            <filter id="peakGlow">
+              <feGaussianBlur stdDeviation="4" result="blur"/>
+              <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+            </filter>
+          </defs>
+          <!-- Main peak shape — two strokes meeting at apex -->
+          <path d="M60 18 L26 98" stroke="url(#peakGrad)" stroke-width="6" stroke-linecap="round"/>
+          <path d="M60 18 L94 98" stroke="url(#peakGrad)" stroke-width="6" stroke-linecap="round"/>
+          <!-- Crossbar -->
+          <path d="M38 68 L82 68" stroke="url(#peakGrad)" stroke-width="4" stroke-linecap="round" opacity="0.6"/>
+          <!-- Apex glow dot -->
+          <circle cx="60" cy="18" r="6" fill="#06B6D4" filter="url(#peakGlow)" opacity="0.9"/>
+          <circle cx="60" cy="18" r="3" fill="white"/>
+        </svg>
+        <p class="logo-desc">Minimal. Sharp. The classic "A" abstracted into two converging lines. The bright point at the apex = your AI, elevated.</p>
+        <div class="logo-wordmark">
+          <svg width="140" height="32" viewBox="0 0 140 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <text x="0" y="24" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif" font-size="26" font-weight="700" letter-spacing="6" fill="#F1F5F9">APEX</text>
+          </svg>
+        </div>
+      </div>
+
+      <!-- LOGO B: The Signal -->
+      <div class="logo-card">
+        <div class="logo-name">Option B — The Signal</div>
+        <svg width="120" height="120" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="sigGrad" x1="20" y1="100" x2="100" y2="20" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#8B5CF6"/>
+              <stop offset="0.5" stop-color="#3B82F6"/>
+              <stop offset="1" stop-color="#06B6D4"/>
+            </linearGradient>
+            <filter id="sigGlow">
+              <feGaussianBlur stdDeviation="3" result="blur"/>
+              <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+            </filter>
+          </defs>
+          <!-- Three ascending bars -->
+          <rect x="24" y="68" width="16" height="32" rx="4" fill="url(#sigGrad)" opacity="0.5"/>
+          <rect x="52" y="44" width="16" height="56" rx="4" fill="url(#sigGrad)" opacity="0.7"/>
+          <rect x="80" y="24" width="16" height="76" rx="4" fill="url(#sigGrad)" opacity="0.9"/>
+          <!-- Apex dot on tallest bar -->
+          <circle cx="88" cy="22" r="6" fill="#06B6D4" filter="url(#sigGlow)" opacity="0.9"/>
+          <circle cx="88" cy="22" r="3" fill="white"/>
+          <!-- Connecting line across tops -->
+          <path d="M32 68 L60 44 L88 24" stroke="url(#sigGrad)" stroke-width="2" stroke-linecap="round" opacity="0.4" stroke-dasharray="4 4"/>
+        </svg>
+        <p class="logo-desc">Dynamic. Ascending. Three inputs converging upward — multi-model, rising intelligence. The peak signal stands tallest.</p>
+        <div class="logo-wordmark">
+          <svg width="140" height="32" viewBox="0 0 140 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <text x="0" y="24" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif" font-size="26" font-weight="600" letter-spacing="4" fill="url(#sigGrad)">APEX</text>
+          </svg>
+        </div>
+      </div>
+
+      <!-- LOGO C: The Nexus -->
+      <div class="logo-card">
+        <div class="logo-name">Option C — The Nexus</div>
+        <svg width="120" height="120" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="nexGrad" x1="30" y1="100" x2="90" y2="20" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#3B82F6"/>
+              <stop offset="1" stop-color="#06B6D4"/>
+            </linearGradient>
+            <radialGradient id="nexCenter" cx="60" cy="36" r="30" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="white" stop-opacity="0.3"/>
+              <stop offset="1" stop-color="white" stop-opacity="0"/>
+            </radialGradient>
+            <filter id="nexGlow">
+              <feGaussianBlur stdDeviation="5" result="blur"/>
+              <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+            </filter>
+          </defs>
+          <!-- Hexagonal outline with upward point -->
+          <polygon points="60,14 96,34 96,74 60,94 24,74 24,34"
+                   stroke="url(#nexGrad)" stroke-width="3" fill="none" opacity="0.5"/>
+          <!-- Inner structure — three lines converging -->
+          <line x1="30" y1="90" x2="60" y2="36" stroke="#3B82F6" stroke-width="2.5" stroke-linecap="round" opacity="0.7"/>
+          <line x1="60" y1="96" x2="60" y2="36" stroke="#06B6D4" stroke-width="2.5" stroke-linecap="round" opacity="0.7"/>
+          <line x1="90" y1="90" x2="60" y2="36" stroke="#8B5CF6" stroke-width="2.5" stroke-linecap="round" opacity="0.7"/>
+          <!-- Small dots at source points -->
+          <circle cx="30" cy="90" r="3" fill="#3B82F6" opacity="0.6"/>
+          <circle cx="60" cy="96" r="3" fill="#06B6D4" opacity="0.6"/>
+          <circle cx="90" cy="90" r="3" fill="#8B5CF6" opacity="0.6"/>
+          <!-- Central nexus point -->
+          <circle cx="60" cy="36" r="10" fill="url(#nexCenter)" filter="url(#nexGlow)"/>
+          <circle cx="60" cy="36" r="6" fill="#06B6D4" opacity="0.8"/>
+          <circle cx="60" cy="36" r="3" fill="white"/>
+        </svg>
+        <p class="logo-desc">Connected. Convergent. Multiple models feeding into one bright nexus. The hexagonal frame suggests structure and protection.</p>
+        <div class="logo-wordmark">
+          <svg width="160" height="32" viewBox="0 0 160 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <text x="0" y="24" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif" font-size="24" font-weight="500" letter-spacing="8" fill="#F1F5F9">A P E X</text>
+          </svg>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<hr class="section-divider">
+
+<!-- ============================================================
+     PART 2: SCREENSHOT CHECKLIST
+     ============================================================ -->
+<div class="part-header">
+  <div class="container">
+    <div class="part-number">Part 2 of 3</div>
+    <h1>Screenshot Checklist</h1>
+    <p>Ordered by visual impact. "Hero" shots go in the README. "Strong" shots go in docs. "Nice" are optional polish.</p>
+  </div>
+</div>
+
+<div class="section">
+  <div class="container">
+
+    <!-- Desktop Webapp -->
+    <div class="checklist-group">
+      <h3>Desktop — Web App</h3>
+
+      <div class="checklist-item">
+        <span class="checklist-priority priority-hero">Hero</span>
+        <div>
+          <div class="checklist-text"><strong>Chat interface — active conversation</strong></div>
+          <div class="checklist-note">Dark theme, mid-conversation with AI streaming a response. Show at least 2-3 message pairs. This is the hero image — it's the first thing anyone sees.</div>
+        </div>
+      </div>
+
+      <div class="checklist-item">
+        <span class="checklist-priority priority-hero">Hero</span>
+        <div>
+          <div class="checklist-text"><strong>Channel sidebar — multiple models visible</strong></div>
+          <div class="checklist-note">Show 4-5 channels: a Claude channel, a Grok channel, a local model, maybe an Alerts channel. This screenshot sells "multi-model" instantly. Can be combined with the chat screenshot if the sidebar is visible.</div>
+        </div>
+      </div>
+
+      <div class="checklist-item">
+        <span class="checklist-priority priority-strong">Strong</span>
+        <div>
+          <div class="checklist-text"><strong>Dashboard overview — health panel</strong></div>
+          <div class="checklist-note">Show the /admin page with model health dots (mix of green/gray), server stats, uptime. This sells "you're in control."</div>
+        </div>
+      </div>
+
+      <div class="checklist-item">
+        <span class="checklist-priority priority-strong">Strong</span>
+        <div>
+          <div class="checklist-text"><strong>Skills in action</strong></div>
+          <div class="checklist-note">A /recall or /grok command with results rendered inline. Shows the skill system isn't theoretical — it works and looks good.</div>
+        </div>
+      </div>
+
+      <div class="checklist-item">
+        <span class="checklist-priority priority-strong">Strong</span>
+        <div>
+          <div class="checklist-text"><strong>Dashboard — certificates page</strong></div>
+          <div class="checklist-note">The TLS cert management panel. QR code visible if possible. Sells the security story visually.</div>
+        </div>
+      </div>
+
+      <div class="checklist-item">
+        <span class="checklist-priority priority-nice">Nice</span>
+        <div>
+          <div class="checklist-text"><strong>Alert inbox</strong></div>
+          <div class="checklist-note">A few alerts of different severities. Shows the notification system is real.</div>
+        </div>
+      </div>
+
+      <div class="checklist-item">
+        <span class="checklist-priority priority-nice">Nice</span>
+        <div>
+          <div class="checklist-text"><strong>Setup wizard in terminal</strong></div>
+          <div class="checklist-note">The interactive setup flow with colored output and progress. Reassures non-technical users: "this guides you."</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- iOS App -->
+    <div class="checklist-group">
+      <h3>iOS App — Apex Pro</h3>
+
+      <div class="checklist-item">
+        <span class="checklist-priority priority-hero">Hero</span>
+        <div>
+          <div class="checklist-text"><strong>Chat view — native feel</strong></div>
+          <div class="checklist-note">Show an active conversation on iPhone. Native iOS chrome visible (status bar, notch/Dynamic Island). This proves "it's a real app, not a PWA."</div>
+        </div>
+      </div>
+
+      <div class="checklist-item">
+        <span class="checklist-priority priority-strong">Strong</span>
+        <div>
+          <div class="checklist-text"><strong>Channel list</strong></div>
+          <div class="checklist-note">The channel picker showing multiple model channels. Consistent with the desktop sidebar but native iOS styling.</div>
+        </div>
+      </div>
+
+      <div class="checklist-item">
+        <span class="checklist-priority priority-strong">Strong</span>
+        <div>
+          <div class="checklist-text"><strong>Push notification on lock screen</strong></div>
+          <div class="checklist-note">An Apex alert arriving as a push notification. Shows the alert system reaches you on mobile. Very compelling for the "stay connected" story.</div>
+        </div>
+      </div>
+
+      <div class="checklist-item">
+        <span class="checklist-priority priority-nice">Nice</span>
+        <div>
+          <div class="checklist-text"><strong>Connection profile / Settings</strong></div>
+          <div class="checklist-note">The server connection config screen. Shows mTLS setup is handled gracefully on mobile.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Android -->
+    <div class="checklist-group">
+      <h3>Android — Coming Soon</h3>
+
+      <div class="checklist-item">
+        <span class="checklist-priority priority-nice">Nice</span>
+        <div>
+          <div class="checklist-text"><strong>Placeholder or early preview</strong></div>
+          <div class="checklist-note">Even a "Coming Soon" badge with the Android robot icon is enough for now. Just acknowledging it signals platform ambition.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Combination / Lifestyle -->
+    <div class="checklist-group">
+      <h3>Combination Shots (Optional but High Impact)</h3>
+
+      <div class="checklist-item">
+        <span class="checklist-priority priority-strong">Strong</span>
+        <div>
+          <div class="checklist-text"><strong>Desktop + Mobile side by side</strong></div>
+          <div class="checklist-note">Composite image: desktop webapp on left, iPhone on right, same conversation visible on both. Sells cross-platform continuity.</div>
+        </div>
+      </div>
+
+      <div class="checklist-item">
+        <span class="checklist-priority priority-nice">Nice</span>
+        <div>
+          <div class="checklist-text"><strong>Terminal → Browser → Phone flow</strong></div>
+          <div class="checklist-note">Three frames: terminal (setup) → browser (chat) → phone (notification). Tells the whole user journey in one image.</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<hr class="section-divider">
+
+<!-- ============================================================
+     PART 3: README PREVIEW
+     ============================================================ -->
+<div class="part-header">
+  <div class="container">
+    <div class="part-number">Part 3 of 3</div>
+    <h1>README Preview</h1>
+    <p>This is how the redesigned README will feel. Placeholder boxes show where your screenshots go.</p>
+  </div>
+</div>
+
+<div class="section">
+  <div class="container">
+    <div class="readme-preview">
+      <div class="readme-inner">
+
+        <!-- ======== HERO ======== -->
+        <div class="hero">
+          <div class="hero-logo">
+            <!-- Using Logo A (The Peak) as default — swap after pick -->
+            <svg width="72" height="72" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <linearGradient id="heroGrad" x1="60" y1="16" x2="60" y2="100" gradientUnits="userSpaceOnUse">
+                  <stop offset="0" stop-color="#3B82F6"/>
+                  <stop offset="1" stop-color="#06B6D4"/>
+                </linearGradient>
+              </defs>
+              <path d="M60 18 L26 98" stroke="url(#heroGrad)" stroke-width="6" stroke-linecap="round"/>
+              <path d="M60 18 L94 98" stroke="url(#heroGrad)" stroke-width="6" stroke-linecap="round"/>
+              <path d="M38 68 L82 68" stroke="url(#heroGrad)" stroke-width="4" stroke-linecap="round" opacity="0.6"/>
+              <circle cx="60" cy="18" r="6" fill="#06B6D4" opacity="0.9"/>
+              <circle cx="60" cy="18" r="3" fill="white"/>
+            </svg>
+          </div>
+          <div class="hero-tagline">Your AI. Your machine. Your rules.</div>
+          <div class="hero-sub">
+            Self-hosted AI agent platform with multi-model chat, persistent memory, extensible skills, and an admin dashboard. One Python file. Zero data leakage.
+          </div>
+
+          <!-- Badges -->
+          <div class="badge-row">
+            <div class="badge badge-blue">
+              <span class="badge-label">version</span>
+              <span class="badge-value">0.1.1</span>
+            </div>
+            <div class="badge badge-cyan">
+              <span class="badge-label">python</span>
+              <span class="badge-value">3.10+</span>
+            </div>
+            <div class="badge badge-green">
+              <span class="badge-label">license</span>
+              <span class="badge-value">ELv2</span>
+            </div>
+            <div class="badge badge-purple">
+              <span class="badge-label">models</span>
+              <span class="badge-value">Claude &middot; Codex &middot; Grok &middot; Ollama</span>
+            </div>
+          </div>
+
+          <!-- Hero screenshot -->
+          <div class="hero-screenshot">
+            <div class="screenshot-placeholder">
+              <span class="ph-icon">&#9634;</span>
+              <span class="ph-label">HERO SCREENSHOT — Chat interface with active conversation</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ======== FEATURE GRID ======== -->
+        <div class="feature-grid">
+          <div class="feature-card">
+            <div class="feature-icon icon-blue">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#3B82F6" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m-7.07-2.93l2.83-2.83m8.48-8.48l2.83-2.83M2 12h4m12 0h4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83"/></svg>
+            </div>
+            <h3>Multi-Model</h3>
+            <p>Claude, Codex, Grok, and local models through one interface. Use your existing subscriptions. Route each conversation to the best model for the job.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon icon-cyan">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#06B6D4" stroke-width="2" stroke-linecap="round"><path d="M12 2C6.48 2 2 6 2 11s4.48 9 10 9c1.73 0 3.36-.44 4.78-1.21"/><circle cx="12" cy="11" r="3"/><path d="M19 15v6m-3-3h6"/></svg>
+            </div>
+            <h3>Persistent Memory</h3>
+            <p>The AI remembers your projects across sessions, models, and restarts. Semantic search finds relevant context automatically — you never repeat yourself.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon icon-purple">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" stroke-width="2" stroke-linecap="round"><path d="M4 17l6-6 4 4 6-6"/><path d="M17 7h4v4"/></svg>
+            </div>
+            <h3>Skills Engine</h3>
+            <p>Web research, code delegation, deep analysis — all via slash commands. Build your own skills by dropping in a file. They self-improve from usage.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon icon-green">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#10B981" stroke-width="2" stroke-linecap="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            </div>
+            <h3>Self-Hosted &amp; Secure</h3>
+            <p>Runs on your hardware. mTLS authentication, encrypted credentials, atomic writes. Your conversations and API keys never leave your machine.</p>
+          </div>
+        </div>
+
+        <!-- ======== SCREENSHOT STRIP ======== -->
+        <div class="screenshot-strip">
+          <div class="ss-frame ss-desktop">
+            <div class="ss-inner"><span class="screenshot-placeholder"><span class="ph-label">Chat + Channels</span></span></div>
+            <span class="ss-label">Web App</span>
+          </div>
+          <div class="ss-frame ss-dashboard">
+            <div class="ss-inner"><span class="screenshot-placeholder"><span class="ph-label">Dashboard</span></span></div>
+            <span class="ss-label">Admin</span>
+          </div>
+          <div class="ss-frame ss-mobile">
+            <div class="ss-inner"><span class="screenshot-placeholder"><span class="ph-label">iOS</span></span></div>
+            <span class="ss-label">Mobile</span>
+          </div>
+        </div>
+
+        <!-- ======== QUICK START ======== -->
+        <div class="quickstart">
+          <div class="quickstart-header">
+            <h3>Quick Start</h3>
+          </div>
+          <div class="code-block">
+            <span class="comment"># Install and run — that's it</span><br>
+            <span class="cmd">pip install</span> fastapi uvicorn python-multipart claude-agent-sdk<br>
+            <span class="cmd">python3</span> apex.py<br>
+            <br>
+            <span class="comment"># Open <span class="url">https://localhost:8300</span></span>
+          </div>
+          <div class="quickstart-note">
+            Uses your existing Claude subscription automatically. Add Ollama for free local models, an xAI key for Grok, or bring all of them.
+            <br>See the <a href="#" style="color: var(--accent-blue); text-decoration: none;">Getting Started Guide</a> for a full walkthrough with screenshots.
+          </div>
+        </div>
+
+        <!-- ======== BUILT FOR ======== -->
+        <div class="mt-48">
+          <h2 class="text-center">Built For</h2>
+          <p class="text-center text-muted text-sm">One platform, many use cases</p>
+        </div>
+        <div class="audience-grid">
+          <div class="audience-card">
+            <div class="audience-icon icon-blue">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3B82F6" stroke-width="2" stroke-linecap="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+            </div>
+            <h3>Developers</h3>
+            <p>Claude reads your codebase, writes code, runs tests. Codex audits in the background. Memory remembers your architecture decisions across sessions.</p>
+          </div>
+          <div class="audience-card">
+            <div class="audience-icon icon-cyan">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#06B6D4" stroke-width="2" stroke-linecap="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            </div>
+            <h3>Personal Use</h3>
+            <p>Research, writing, knowledge management. Grok searches the web. Claude synthesizes. Every conversation is indexed and searchable forever.</p>
+          </div>
+          <div class="audience-card">
+            <div class="audience-icon icon-green">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#10B981" stroke-width="2" stroke-linecap="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>
+            </div>
+            <h3>Teams &amp; Business</h3>
+            <p>Run an instance per person or per team. Sensitive data stays on your infrastructure. Skills and project context are sharable via git. Alerts integrate with your existing workflow.</p>
+          </div>
+        </div>
+
+        <!-- ======== MODELS ======== -->
+        <div class="mt-48">
+          <h2>Models</h2>
+          <p class="text-muted text-sm">Use your existing subscriptions. No separate API billing for most models.</p>
+        </div>
+        <div class="model-row">
+          <div class="model-pill">
+            <div class="model-pill-header">
+              <span class="model-dot dot-blue"></span>
+              <span class="model-pill-name">Claude</span>
+            </div>
+            <div class="model-pill-desc">Full Agent SDK with tool access — file read/write, code execution, search. Persistent sessions. Up to 1M context.</div>
+            <span class="model-pill-tag tag-subscription">Your subscription</span>
+          </div>
+          <div class="model-pill">
+            <div class="model-pill-header">
+              <span class="model-dot dot-green"></span>
+              <span class="model-pill-name">Codex</span>
+            </div>
+            <div class="model-pill-desc">Background agent for parallel coding tasks. Sandbox permissions. One-shot or multi-turn resume.</div>
+            <span class="model-pill-tag tag-subscription">Your subscription</span>
+          </div>
+          <div class="model-pill">
+            <div class="model-pill-header">
+              <span class="model-dot dot-purple"></span>
+              <span class="model-pill-name">Grok</span>
+            </div>
+            <div class="model-pill-desc">Native web + X/Twitter search. 2M context. Configurable thinking levels.</div>
+            <span class="model-pill-tag tag-api">API key</span>
+          </div>
+          <div class="model-pill">
+            <div class="model-pill-header">
+              <span class="model-dot dot-amber"></span>
+              <span class="model-pill-name">Local</span>
+            </div>
+            <div class="model-pill-desc">Ollama or MLX. Zero cost. No internet needed. Full tool-calling loop included.</div>
+            <span class="model-pill-tag tag-free">Free</span>
+          </div>
+        </div>
+
+        <!-- ======== DEEP FEATURES (Collapsible) ======== -->
+        <div class="mt-48 mb-16">
+          <h2>Under the Hood</h2>
+          <p class="text-muted text-sm mb-32">The details, when you're ready for them.</p>
+        </div>
+
+        <details class="collapsible">
+          <summary>Memory System</summary>
+          <div class="collapsible-body">
+            <p><strong>Project Instructions (APEX.md)</strong> — Drop a file with your project rules, architecture notes, coding conventions. Automatically injected into every session for every model.</p>
+            <p><strong>Persistent Memory (MEMORY.md)</strong> — Accumulated knowledge that persists across sessions. The AI reads and updates memory as it learns about your work.</p>
+            <p><strong>Semantic Search</strong> — All memory and conversation transcripts indexed with vector embeddings. Hybrid recall combines keyword matching with semantic similarity.</p>
+            <p><strong>Whisper Injection</strong> — On each message, the server silently searches for relevant memories and injects them into the prompt. The AI "remembers" previous sessions without you asking.</p>
+            <p><strong>Session Recovery</strong> — When sessions compact or the server restarts, a structured briefing is generated: what was discussed, what was decided, what's pending. Conversations survive crashes.</p>
+            <p><strong>Cross-Model Continuity</strong> — All backends receive the same project instructions, memories, and whisper injections. Switch models mid-project — the new model already knows what you were working on.</p>
+          </div>
+        </details>
+
+        <details class="collapsible">
+          <summary>Skills Engine</summary>
+          <div class="collapsible-body">
+            <p><strong>Built-in skills:</strong></p>
+            <ul>
+              <li><code>/recall</code> — Full-text search across all conversation transcripts</li>
+              <li><code>/embedding</code> — Semantic search across memory and transcripts</li>
+              <li><code>/codex</code> — Delegate a task to Codex as a parallel background agent</li>
+              <li><code>/grok</code> — Web research via xAI with live search</li>
+              <li><code>/first-principles</code> — 4-layer deep analysis framework</li>
+              <li><code>/stop-slop</code> — Score and rewrite AI-sounding text to sound human</li>
+              <li><code>/evaluate-repo</code> — Sandbox-assess any GitHub repo</li>
+            </ul>
+            <p><strong>Build your own:</strong> Skills are just directories with a <code>SKILL.md</code> file. Apex discovers them automatically — no registry, no configuration. Two types: executable (runs a script) and thinking (AI follows instructions). Usage metrics and feedback tracked automatically. The <code>/improve</code> meta-skill analyzes usage and proposes improvements.</p>
+          </div>
+        </details>
+
+        <details class="collapsible">
+          <summary>Admin Dashboard</summary>
+          <div class="collapsible-body">
+            <p>Full web-based management portal at <code>/admin</code>. 61 REST API endpoints — usable by humans (web UI) and AI agents (JSON API).</p>
+            <ul>
+              <li><strong>Health</strong> — Server status, per-provider model reachability, database stats, TLS status</li>
+              <li><strong>Configuration</strong> — Server settings, feature toggles, model defaults, timeouts</li>
+              <li><strong>Credentials</strong> — Set/update API keys with masked input, format validation, audit logging</li>
+              <li><strong>TLS Certificates</strong> — Generate CA/server/client certs, download .p12 bundles and QR codes</li>
+              <li><strong>Workspace</strong> — Edit project instructions and memory files from the browser</li>
+              <li><strong>Sessions</strong> — View active sessions, token usage, force compaction, live log streaming</li>
+            </ul>
+          </div>
+        </details>
+
+        <details class="collapsible">
+          <summary>Alert System</summary>
+          <div class="collapsible-body">
+            <p>Multi-channel notifications for when the AI or your systems need to reach you:</p>
+            <ul>
+              <li><strong>In-app</strong> — Real-time WebSocket delivery with badge counters</li>
+              <li><strong>Telegram</strong> — Bot delivery for mobile push notifications</li>
+              <li><strong>REST API</strong> — Any external script, cron job, or service can POST alerts</li>
+              <li><strong>Persistent inbox</strong> — All alerts stored with ack/unack tracking, searchable by category and severity</li>
+            </ul>
+            <p>Alerts support custom categories, severity levels (info/warning/critical), and structured metadata.</p>
+          </div>
+        </details>
+
+        <details class="collapsible">
+          <summary>Security</summary>
+          <div class="collapsible-body">
+            <ul>
+              <li><strong>mTLS</strong> — Client certificate authentication for all connections. No passwords to steal.</li>
+              <li><strong>Credential management</strong> — Masked input, format validation, rate limiting, audit logging</li>
+              <li><strong>Atomic writes</strong> — Config and credential updates use temp file + rename. No partial state.</li>
+              <li><strong>Input sanitization</strong> — Control character, null byte, and injection rejection on all inputs</li>
+              <li><strong>Secrets isolation</strong> — Credentials in <code>.env</code> only, never in the database</li>
+              <li><strong>TLS everywhere</strong> — HTTPS for all connections, with built-in cert generation tools</li>
+            </ul>
+          </div>
+        </details>
+
+        <details class="collapsible">
+          <summary>Architecture</summary>
+          <div class="collapsible-body">
+            <div class="arch-diagram">
+              <svg width="100%" viewBox="0 0 800 400" fill="none" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+                <!-- Background subtle grid -->
+                <defs>
+                  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+                    <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(148,163,184,0.04)" stroke-width="1"/>
+                  </pattern>
+                </defs>
+                <rect width="800" height="400" fill="url(#grid)"/>
+
+                <!-- Central: apex.py -->
+                <rect x="300" y="160" width="200" height="80" rx="12" fill="#111827" stroke="#3B82F6" stroke-width="1.5"/>
+                <text x="400" y="195" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="14" font-weight="600" fill="#F1F5F9">apex.py</text>
+                <text x="400" y="215" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="11" fill="#94A3B8">FastAPI + WebSocket + REST</text>
+                <text x="400" y="230" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="10" fill="#64748B">Single file &middot; No build step</text>
+
+                <!-- Left: Models -->
+                <rect x="40" y="40" width="160" height="44" rx="8" fill="#111827" stroke="#3B82F6" stroke-width="1" opacity="0.8"/>
+                <circle cx="60" cy="62" r="4" fill="#3B82F6"/>
+                <text x="72" y="67" font-family="-apple-system, sans-serif" font-size="12" fill="#F1F5F9">Claude (Agent SDK)</text>
+
+                <rect x="40" y="100" width="160" height="44" rx="8" fill="#111827" stroke="#10B981" stroke-width="1" opacity="0.8"/>
+                <circle cx="60" cy="122" r="4" fill="#10B981"/>
+                <text x="72" y="127" font-family="-apple-system, sans-serif" font-size="12" fill="#F1F5F9">Codex (CLI)</text>
+
+                <rect x="40" y="160" width="160" height="44" rx="8" fill="#111827" stroke="#8B5CF6" stroke-width="1" opacity="0.8"/>
+                <circle cx="60" cy="182" r="4" fill="#8B5CF6"/>
+                <text x="72" y="187" font-family="-apple-system, sans-serif" font-size="12" fill="#F1F5F9">Grok (xAI API)</text>
+
+                <rect x="40" y="220" width="160" height="44" rx="8" fill="#111827" stroke="#F59E0B" stroke-width="1" opacity="0.8"/>
+                <circle cx="60" cy="242" r="4" fill="#F59E0B"/>
+                <text x="72" y="247" font-family="-apple-system, sans-serif" font-size="12" fill="#F1F5F9">Ollama / MLX</text>
+
+                <!-- Model label -->
+                <text x="120" y="28" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="10" font-weight="600" fill="#64748B" letter-spacing="1">MODELS</text>
+
+                <!-- Connector lines: Models -> Center -->
+                <line x1="200" y1="62" x2="300" y2="190" stroke="#3B82F6" stroke-width="1" opacity="0.3"/>
+                <line x1="200" y1="122" x2="300" y2="195" stroke="#10B981" stroke-width="1" opacity="0.3"/>
+                <line x1="200" y1="182" x2="300" y2="200" stroke="#8B5CF6" stroke-width="1" opacity="0.3"/>
+                <line x1="200" y1="242" x2="300" y2="210" stroke="#F59E0B" stroke-width="1" opacity="0.3"/>
+
+                <!-- Right: Features -->
+                <rect x="600" y="40" width="160" height="44" rx="8" fill="#111827" stroke="#06B6D4" stroke-width="1" opacity="0.8"/>
+                <text x="680" y="60" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="11" font-weight="500" fill="#06B6D4">Memory</text>
+                <text x="680" y="74" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="9" fill="#64748B">APEX.md + Embeddings + Whisper</text>
+
+                <rect x="600" y="100" width="160" height="44" rx="8" fill="#111827" stroke="#8B5CF6" stroke-width="1" opacity="0.8"/>
+                <text x="680" y="120" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="11" font-weight="500" fill="#8B5CF6">Skills</text>
+                <text x="680" y="134" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="9" fill="#64748B">Dispatch + Metrics + Feedback</text>
+
+                <rect x="600" y="160" width="160" height="44" rx="8" fill="#111827" stroke="#F43F5E" stroke-width="1" opacity="0.8"/>
+                <text x="680" y="180" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="11" font-weight="500" fill="#F43F5E">Alerts</text>
+                <text x="680" y="194" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="9" fill="#64748B">WebSocket + Telegram + REST</text>
+
+                <rect x="600" y="220" width="160" height="44" rx="8" fill="#111827" stroke="#10B981" stroke-width="1" opacity="0.8"/>
+                <text x="680" y="240" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="11" font-weight="500" fill="#10B981">Security</text>
+                <text x="680" y="254" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="9" fill="#64748B">mTLS + Credentials + TLS</text>
+
+                <!-- Feature label -->
+                <text x="680" y="28" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="10" font-weight="600" fill="#64748B" letter-spacing="1">FEATURES</text>
+
+                <!-- Connector lines: Center -> Features -->
+                <line x1="500" y1="190" x2="600" y2="62" stroke="#06B6D4" stroke-width="1" opacity="0.3"/>
+                <line x1="500" y1="195" x2="600" y2="122" stroke="#8B5CF6" stroke-width="1" opacity="0.3"/>
+                <line x1="500" y1="200" x2="600" y2="182" stroke="#F43F5E" stroke-width="1" opacity="0.3"/>
+                <line x1="500" y1="210" x2="600" y2="242" stroke="#10B981" stroke-width="1" opacity="0.3"/>
+
+                <!-- Bottom: Clients -->
+                <rect x="220" y="310" width="120" height="44" rx="8" fill="#111827" stroke="rgba(148,163,184,0.2)" stroke-width="1"/>
+                <text x="280" y="330" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="11" font-weight="500" fill="#94A3B8">Web App</text>
+                <text x="280" y="344" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="9" fill="#64748B">Embedded PWA</text>
+
+                <rect x="360" y="310" width="120" height="44" rx="8" fill="#111827" stroke="rgba(148,163,184,0.2)" stroke-width="1"/>
+                <text x="420" y="330" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="11" font-weight="500" fill="#94A3B8">iOS App</text>
+                <text x="420" y="344" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="9" fill="#64748B">Native SwiftUI</text>
+
+                <rect x="500" y="310" width="120" height="44" rx="8" fill="#111827" stroke="rgba(148,163,184,0.2)" stroke-width="1"/>
+                <text x="560" y="330" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="11" font-weight="500" fill="#94A3B8">Dashboard</text>
+                <text x="560" y="344" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="9" fill="#64748B">Admin SPA</text>
+
+                <!-- Client label -->
+                <text x="400" y="300" text-anchor="middle" font-family="-apple-system, sans-serif" font-size="10" font-weight="600" fill="#64748B" letter-spacing="1">CLIENTS</text>
+
+                <!-- Connector lines: Center -> Clients -->
+                <line x1="370" y1="240" x2="280" y2="310" stroke="rgba(148,163,184,0.15)" stroke-width="1"/>
+                <line x1="400" y1="240" x2="420" y2="310" stroke="rgba(148,163,184,0.15)" stroke-width="1"/>
+                <line x1="430" y1="240" x2="560" y2="310" stroke="rgba(148,163,184,0.15)" stroke-width="1"/>
+
+                <!-- Bottom: Data -->
+                <rect x="300" y="370" width="200" height="24" rx="6" fill="rgba(148,163,184,0.05)" stroke="rgba(148,163,184,0.1)" stroke-width="1"/>
+                <text x="400" y="386" text-anchor="middle" font-family="'SF Mono', monospace" font-size="9" fill="#64748B">SQLite &middot; .env &middot; Embedding Index</text>
+              </svg>
+            </div>
+            <p style="text-align:center; margin-top:8px;">No frameworks. No npm. No build step. The entire frontend is embedded in the Python file. One file to deploy, audit, and understand.</p>
+          </div>
+        </details>
+
+        <!-- ======== PLATFORMS ======== -->
+        <div class="mt-48">
+          <h2>Platforms</h2>
+        </div>
+        <div class="model-row mt-16">
+          <div class="model-pill" style="flex:1.2">
+            <div class="model-pill-header">
+              <span class="model-dot dot-blue"></span>
+              <span class="model-pill-name">Web App</span>
+            </div>
+            <div class="model-pill-desc">Embedded PWA. Dark theme. Works in any browser. No install needed beyond the server itself.</div>
+            <span class="model-pill-tag tag-free">Included</span>
+          </div>
+          <div class="model-pill" style="flex:1.2">
+            <div class="model-pill-header">
+              <span class="model-dot dot-purple"></span>
+              <span class="model-pill-name">iOS — Apex Pro</span>
+            </div>
+            <div class="model-pill-desc">Native SwiftUI. mTLS pinned to your server. Push notifications, gesture navigation, background survival.</div>
+            <span class="model-pill-tag tag-subscription">Subscription</span>
+          </div>
+          <div class="model-pill" style="flex:1.2">
+            <div class="model-pill-header">
+              <span class="model-dot dot-green"></span>
+              <span class="model-pill-name">Android</span>
+            </div>
+            <div class="model-pill-desc">Native Android app in active development. Same server, same security model.</div>
+            <span class="model-pill-tag" style="background:rgba(100,116,139,0.12);color:var(--text-muted);">Coming soon</span>
+          </div>
+        </div>
+
+        <!-- ======== FAQ ======== -->
+        <div class="mt-48 mb-16">
+          <h2>FAQ</h2>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-q">Is this just an API wrapper?</div>
+          <div class="faq-a">No. Claude runs through the Agent SDK with full tool access (file read/write, bash, search). Codex runs with sandbox permissions. Local models get a custom tool-calling loop. It's closer to Claude Code than a chat interface.</div>
+        </div>
+        <div class="faq-item">
+          <div class="faq-q">How much does it cost to run?</div>
+          <div class="faq-a">If you already pay for Claude and/or ChatGPT, Apex adds zero cost for those models. Local models are free. Only Grok requires a separate API key. Hosting is your own hardware.</div>
+        </div>
+        <div class="faq-item">
+          <div class="faq-q">Can I use only local models?</div>
+          <div class="faq-a">Yes. Install Ollama, pull a model, start Apex. No API keys, no accounts, no internet needed for inference. You still get the full memory system, skills, and dashboard.</div>
+        </div>
+        <div class="faq-item">
+          <div class="faq-q">Can multiple people use one server?</div>
+          <div class="faq-a">The current architecture is single-user. Multi-user with RBAC is on the roadmap.</div>
+        </div>
+
+        <!-- ======== FOOTER ======== -->
+        <div class="readme-footer">
+          <p><strong style="color:var(--text-primary);">Elastic License 2.0 (ELv2)</strong> — Free to use, modify, and self-host.<br>
+          <a href="#">Getting Started</a> &middot; <a href="#">Contributing</a> &middot; <a href="#">Changelog</a> &middot; <a href="#">Security</a></p>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Spacer -->
+<div style="height: 120px;"></div>
+
+</body>
+</html>

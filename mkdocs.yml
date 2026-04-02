@@ -1,0 +1,86 @@
+site_name: Apex
+site_description: Self-hosted AI agent platform. Multiple models. Persistent memory. Your machine, your data.
+site_url: https://use-ash.github.io/apex
+repo_url: https://github.com/use-ash/apex
+repo_name: use-ash/apex
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: deep orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: deep orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font:
+    text: Inter
+    code: JetBrains Mono
+  logo: images/logo.svg
+  favicon: images/icon-192.png
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/use-ash/apex
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+plugins:
+  - search
+  - minify:
+      minify_html: true
+
+nav:
+  - Home: index.md
+  - Getting Started: GETTING_STARTED.md
+  - War Room: warroom.html
+  - Personas: PERSONAS.md
+  - Features:
+      - What You Get Free: FREE_TIER_OVERVIEW.md
+      - Licensing: LICENSING.md
+  - Infrastructure:
+      - Guardrails: infrastructure/guardrails.md
+      - Security: SECURITY_AUDIT_2026-03-31.md
+  - Reference:
+      - Upgrade Guide: UPGRADE_GUIDE.md
+      - Troubleshooting: TROUBLESHOOTING.md

@@ -1,0 +1,693 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+import uuid
+from pathlib import Path
+from unittest import mock
+
+from fastapi.testclient import TestClient
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SERVER_DIR = REPO_ROOT / "server"
+TEST_ROOT = Path(tempfile.mkdtemp(prefix="apex-security-tests-"))
+
+os.environ["APEX_ROOT"] = str(TEST_ROOT)
+os.environ["APEX_WORKSPACE"] = str(TEST_ROOT)
+os.environ["APEX_ALERT_TOKEN"] = "initial-alert-token"
+os.environ["APEX_ADMIN_TOKEN"] = "admin-secret"
+os.environ["APEX_SSL_CERT"] = ""
+os.environ["APEX_SSL_KEY"] = ""
+os.environ["APEX_SSL_CA"] = ""
+os.environ["APEX_DB_NAME"] = "test_apex.db"
+os.environ["APEX_LOG_NAME"] = "test_apex.log"
+
+if str(SERVER_DIR) not in sys.path:
+    sys.path.insert(0, str(SERVER_DIR))
+
+import apex  # noqa: E402
+import alert_client  # noqa: E402
+import backends  # noqa: E402
+import dashboard as dashboard_mod  # noqa: E402
+import db as db_mod  # noqa: E402
+import env  # noqa: E402
+import memory_extract  # noqa: E402
+import ws_handler  # noqa: E402
+from state import _current_group_profile_id  # noqa: E402
+from local_model import tool_loop  # noqa: E402
+from local_model.tools import list_files, read_file, search_files, write_file  # noqa: E402
+from setup.progress import mark_phase_completed  # noqa: E402
+
+
+class SecurityFixTests(unittest.TestCase):
+    def setUp(self) -> None:
+        dashboard_mod._set_live_alert_token("initial-alert-token")
+        apex.MODEL = env.MODEL
+        apex._init_db()
+        mark_phase_completed(TEST_ROOT / "state", "setup_complete")
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute("DELETE FROM alerts")
+            conn.execute("DELETE FROM messages")
+            conn.execute("DELETE FROM chats")
+            conn.commit()
+            conn.close()
+        apex._seed_default_profiles()
+        apex.LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        apex.LOG_PATH.write_text("", encoding="utf-8")
+
+    def _client(self) -> TestClient:
+        return TestClient(apex.app)
+
+    def _admin_headers(self) -> dict[str, str]:
+        return {
+            "Authorization": "Bearer admin-secret",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+
+    def _create_test_group_chat(self) -> str:
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO agent_profiles (
+                    id, name, slug, avatar, role_description, backend, model,
+                    system_prompt, tool_policy, is_default, is_system, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 0, 0, datetime('now'), datetime('now'))
+                """,
+                (
+                    "queue-codeexpert",
+                    "Queue CodeExpert",
+                    "queue-codeexpert",
+                    "💻",
+                    "Queue test agent",
+                    "codex",
+                    "codex:gpt-5.4",
+                    "Queue test agent",
+                ),
+            )
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO agent_profiles (
+                    id, name, slug, avatar, role_description, backend, model,
+                    system_prompt, tool_policy, is_default, is_system, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 0, 0, datetime('now'), datetime('now'))
+                """,
+                (
+                    "queue-apex-assistant",
+                    "Queue Apex Assistant",
+                    "queue-apex-assistant",
+                    "✨",
+                    "Queue test agent",
+                    "codex",
+                    "codex:gpt-5.4",
+                    "Queue test agent",
+                ),
+            )
+            conn.commit()
+            conn.close()
+        chat_id = db_mod._create_chat(title="Queue Test", model="codex:gpt-5.4", chat_type="group")
+        db_mod._add_group_member(chat_id, "queue-codeexpert", routing_mode="primary", is_primary=True, display_order=0)
+        db_mod._add_group_member(chat_id, "queue-apex-assistant", routing_mode="mentioned", display_order=1)
+        return chat_id
+
+    def _create_direct_chat(self, model: str = "qwen3:latest") -> str:
+        return db_mod._create_chat(title="Security Test", model=model)
+
+    def _create_uploaded_attachment(
+        self,
+        ext: str,
+        data: bytes,
+        *,
+        name: str | None = None,
+        kind: str | None = None,
+    ) -> dict[str, str]:
+        upload_dir = env.APEX_ROOT / "state" / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        file_id = uuid.uuid4().hex[:8]
+        (upload_dir / f"{file_id}.{ext}").write_bytes(data)
+        return {
+            "id": file_id,
+            "type": kind or ("image" if ext in {"jpg", "jpeg", "png", "gif", "webp"} else "text"),
+            "name": name or f"upload.{ext}",
+        }
+
+    def _receive_until(self, ws, predicate):
+        for _ in range(12):
+            msg = ws.receive_json()
+            if predicate(msg):
+                return msg
+        self.fail("Expected websocket event was not received")
+
+    def test_logs_search_treats_regex_as_literal_text(self) -> None:
+        apex.LOG_PATH.write_text(
+            "[2026-03-31 12:00:00] info literal a.+b\n"
+            "[2026-03-31 12:00:01] info expanded axxxb\n",
+            encoding="utf-8",
+        )
+        with self._client() as client:
+            resp = client.get(
+                "/admin/api/logs",
+                params={"search": "a.+b"},
+                headers=self._admin_headers(),
+            )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["total"], 1)
+        self.assertIn("literal a.+b", data["lines"][0]["message"])
+
+    def test_alert_token_rotation_takes_effect_immediately(self) -> None:
+        old_token = os.environ["APEX_ALERT_TOKEN"]
+        with self._client() as client:
+            rotate = client.post(
+                "/admin/api/credentials/alert-token/rotate",
+                headers=self._admin_headers(),
+            )
+            self.assertEqual(rotate.status_code, 200)
+            new_token = rotate.json()["alert_token"]
+
+            old_resp = client.post(
+                "/api/alerts",
+                json={"source": "test", "severity": "info", "title": "old"},
+                headers={"Authorization": f"Bearer {old_token}"},
+            )
+            self.assertEqual(old_resp.status_code, 401)
+
+            new_resp = client.post(
+                "/api/alerts",
+                json={"source": "test", "severity": "info", "title": "new"},
+                headers={"Authorization": f"Bearer {new_token}"},
+            )
+            self.assertEqual(new_resp.status_code, 201)
+
+    def test_dashboard_sensitive_get_requires_admin_token(self) -> None:
+        with self._client() as client:
+            denied = client.get("/admin/api/db/export")
+            self.assertEqual(denied.status_code, 401)
+            self.assertEqual(denied.json()["code"], "ADMIN_AUTH_REQUIRED")
+
+            allowed = client.get(
+                "/admin/api/db/export",
+                headers={"Authorization": "Bearer admin-secret"},
+            )
+            self.assertEqual(allowed.status_code, 200)
+            self.assertEqual(
+                allowed.headers["content-type"],
+                "application/octet-stream",
+            )
+
+    def test_dashboard_sensitive_get_accepts_admin_cookie(self) -> None:
+        with self._client() as client:
+            client.cookies.set("apex_admin_token", "admin-secret")
+            resp = client.get("/admin/api/backups")
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn("backups", resp.json())
+
+    def test_dashboard_shell_pages_remain_loadable_without_admin_token(self) -> None:
+        with self._client() as client:
+            index = client.get("/admin/")
+            security = client.get("/admin/security-config")
+        self.assertEqual(index.status_code, 200)
+        self.assertEqual(security.status_code, 200)
+
+    def test_alert_client_https_without_ca_fails_closed(self) -> None:
+        with (
+            mock.patch.object(alert_client.env, "ALERT_TOKEN", "alert-token"),
+            mock.patch.object(alert_client.env, "SERVER_URL", "https://localhost:8300"),
+            mock.patch.object(alert_client.env, "SSL_CA", ""),
+            mock.patch("alert_client.urllib.request.urlopen") as urlopen_mock,
+        ):
+            self.assertFalse(
+                alert_client.send_apex_alert("tester", "info", "hello")
+            )
+            urlopen_mock.assert_not_called()
+
+    def test_alert_client_uses_configured_ca_for_https(self) -> None:
+        ca_dir = Path(tempfile.mkdtemp(prefix="apex-alert-client-ca-"))
+        ca_path = ca_dir / "ca.crt"
+        ca_path.write_text("placeholder", encoding="utf-8")
+        ssl_context = object()
+
+        with (
+            mock.patch.object(alert_client.env, "ALERT_TOKEN", "alert-token"),
+            mock.patch.object(alert_client.env, "SERVER_URL", "https://localhost:8300"),
+            mock.patch.object(alert_client.env, "SSL_CA", str(ca_path)),
+            mock.patch(
+                "alert_client.ssl.create_default_context",
+                return_value=ssl_context,
+            ) as create_context_mock,
+            mock.patch("alert_client.urllib.request.urlopen") as urlopen_mock,
+        ):
+            self.assertTrue(
+                alert_client.send_apex_alert("tester", "info", "hello")
+            )
+            create_context_mock.assert_called_once_with(cafile=str(ca_path))
+            self.assertIs(urlopen_mock.call_args.kwargs["context"], ssl_context)
+
+    def test_server_url_defaults_to_current_port(self) -> None:
+        env_copy = os.environ.copy()
+        env_copy.pop("APEX_SERVER", None)
+        env_copy["APEX_PORT"] = "8301"
+        server_url = subprocess.check_output(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; "
+                    f"sys.path.insert(0, {str(SERVER_DIR)!r}); "
+                    "import env; "
+                    "print(env.SERVER_URL)"
+                ),
+            ],
+            text=True,
+            env=env_copy,
+        ).strip()
+        self.assertEqual(server_url, "https://localhost:8301")
+
+    def test_local_model_tools_default_off(self) -> None:
+        self.assertFalse(env.ALLOW_LOCAL_TOOLS)
+
+    def test_tool_loop_rejects_when_local_tools_disabled(self) -> None:
+        async def emit(_event: dict) -> None:
+            return None
+
+        with mock.patch.object(tool_loop, "ALLOW_LOCAL_TOOLS", False):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Local model tools are disabled",
+            ):
+                asyncio.run(
+                    tool_loop.run_tool_loop(
+                        ollama_url="http://localhost:11434",
+                        model="qwen3:latest",
+                        messages=[{"role": "user", "content": "hi"}],
+                        emit_event=emit,
+                    )
+                )
+
+    def test_backend_falls_back_to_plain_chat_when_local_tools_disabled(self) -> None:
+        chat_id = self._create_direct_chat()
+
+        class _FakeResponse:
+            def __iter__(self):
+                return iter([
+                    b'{"message":{"content":"hello "}}\n',
+                    b'{"message":{"content":"world"}}\n',
+                    b'{"done":true}\n',
+                ])
+
+        send_event = mock.AsyncMock()
+        run_tool_loop_mock = mock.AsyncMock(side_effect=AssertionError("run_tool_loop should not be called"))
+
+        with (
+            mock.patch.object(backends, "ALLOW_LOCAL_TOOLS", False),
+            mock.patch.object(backends, "_TOOL_LOOP_AVAILABLE", True),
+            mock.patch.object(backends, "run_tool_loop", run_tool_loop_mock),
+            mock.patch.object(backends, "_send_stream_event", send_event),
+            mock.patch.object(backends, "_estimate_tokens", return_value=0),
+            mock.patch.object(backends.urllib.request, "urlopen", return_value=_FakeResponse()),
+        ):
+            result = asyncio.run(
+                backends._run_ollama_chat(chat_id, "Say hello", model="qwen3:latest")
+            )
+
+        self.assertEqual(result["text"], "hello world")
+        self.assertFalse(result["is_error"])
+        self.assertEqual(result["tool_events"], "[]")
+        run_tool_loop_mock.assert_not_awaited()
+
+    def test_validate_backend_attachments_rejects_codex_attachments(self) -> None:
+        attachment = self._create_uploaded_attachment("txt", b"notes")
+        err = backends.validate_backend_attachments("codex", [attachment])
+        self.assertEqual(
+            err,
+            "Attachments are not supported for Codex chats yet. Switch this chat to Claude to send files.",
+        )
+
+    def test_validate_backend_attachments_rejects_text_for_ollama_family(self) -> None:
+        attachment = self._create_uploaded_attachment("txt", b"notes")
+        err = backends.validate_backend_attachments("ollama", [attachment])
+        self.assertEqual(
+            err,
+            "Text attachments are not supported for Ollama chats yet. Image attachments still work.",
+        )
+
+    def test_validate_backend_attachments_allows_images_for_ollama_family(self) -> None:
+        png = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+            b"\x90wS\xde"
+            b"\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x01\x01\x01\x00"
+            b"\x18\xdd\x8d\xb1"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        attachment = self._create_uploaded_attachment("png", png, kind="image")
+        err = backends.validate_backend_attachments("ollama", [attachment])
+        self.assertIsNone(err)
+
+    def test_websocket_send_rejects_codex_attachments_before_backend_dispatch(self) -> None:
+        chat_id = self._create_direct_chat(model="codex:gpt-5.4")
+        attachment = self._create_uploaded_attachment("txt", b"notes")
+
+        with (
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=AssertionError("backend should not run")),
+            self._client() as client,
+        ):
+            with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                ws.send_json({
+                    "action": "send",
+                    "chat_id": chat_id,
+                    "prompt": "see attached",
+                    "attachments": [attachment],
+                })
+                msg = ws.receive_json()
+
+        self.assertEqual(msg["type"], "error")
+        self.assertIn("not supported for Codex chats yet", msg["message"])
+
+    def test_websocket_send_rejects_text_attachments_for_ollama_before_dispatch(self) -> None:
+        chat_id = self._create_direct_chat(model="qwen3:latest")
+        attachment = self._create_uploaded_attachment("txt", b"notes")
+
+        with (
+            mock.patch.object(ws_handler, "_run_ollama_chat", side_effect=AssertionError("backend should not run")),
+            self._client() as client,
+        ):
+            with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                ws.send_json({
+                    "action": "send",
+                    "chat_id": chat_id,
+                    "prompt": "see attached",
+                    "attachments": [attachment],
+                })
+                msg = ws.receive_json()
+
+        self.assertEqual(msg["type"], "error")
+        self.assertIn("Text attachments are not supported for Ollama chats yet", msg["message"])
+
+    def test_mcp_stdio_rejects_shell_interpreters(self) -> None:
+        with mock.patch.object(dashboard_mod.shutil, "which", return_value="/bin/sh"):
+            err = dashboard_mod._validate_mcp_server({
+                "type": "stdio",
+                "command": "/bin/sh",
+                "args": ["-c", "echo hi"],
+            })
+        self.assertIn("Shell interpreters are not allowed", err or "")
+
+    def test_mcp_stdio_rejects_shell_metacharacters_in_args(self) -> None:
+        with mock.patch.object(dashboard_mod.shutil, "which", return_value="/opt/homebrew/bin/npx"):
+            err = dashboard_mod._validate_mcp_server({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp;curl attacker"],
+            })
+        self.assertIn("Shell metacharacters are not allowed", err or "")
+
+    def test_mcp_stdio_rejects_blocked_env_keys(self) -> None:
+        with mock.patch.object(dashboard_mod.shutil, "which", return_value="/opt/homebrew/bin/npx"):
+            err = dashboard_mod._validate_mcp_server({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                "env": {"LD_PRELOAD": "/tmp/evil.so"},
+            })
+        self.assertIn("Blocked environment variables are not allowed", err or "")
+
+    def test_mcp_stdio_accepts_allowed_launcher(self) -> None:
+        with mock.patch.object(dashboard_mod.shutil, "which", return_value="/opt/homebrew/bin/npx"):
+            err = dashboard_mod._validate_mcp_server({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                "env": {"MCP_LOG_LEVEL": "debug"},
+            })
+        self.assertIsNone(err)
+
+    def test_websocket_set_model_requires_admin_token_and_whitelist(self) -> None:
+        with self._client() as client:
+            with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                ws.send_json({"action": "set_model", "model": "grok-4"})
+                msg = ws.receive_json()
+                self.assertEqual(msg["type"], "error")
+                self.assertIn("authorization required", msg["message"].lower())
+
+            with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                ws.send_json({
+                    "action": "set_model",
+                    "model": "definitely-not-a-model",
+                    "admin_token": "admin-secret",
+                })
+                msg = ws.receive_json()
+                self.assertEqual(msg["type"], "error")
+                self.assertIn("unsupported model", msg["message"].lower())
+
+            with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                ws.send_json({
+                    "action": "set_model",
+                    "model": "grok-4",
+                    "admin_token": "admin-secret",
+                })
+                msg = ws.receive_json()
+                self.assertEqual(msg["type"], "system")
+                self.assertEqual(msg["subtype"], "model_changed")
+                self.assertEqual(msg["model"], "grok-4")
+
+    def test_group_relay_depth_cap_is_twenty_five(self) -> None:
+        self.assertEqual(ws_handler.MAX_MENTION_DEPTH, 25)
+
+    def test_busy_group_agent_turn_is_queued_while_other_agent_can_run(self) -> None:
+        chat_id = self._create_test_group_chat()
+        release_codeexpert = asyncio.Event()
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            active_profile = _current_group_profile_id.get("")
+            if active_profile == "queue-codeexpert":
+                await release_codeexpert.wait()
+            return {
+                "text": f"reply:{prompt}",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        with mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "First for CodeExpert",
+                        "target_agent": "queue-codeexpert",
+                    })
+                    self._receive_until(
+                        ws,
+                        lambda msg: msg.get("type") == "stream_start" and msg.get("speaker_id") == "queue-codeexpert",
+                    )
+
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "Second for CodeExpert",
+                        "target_agent": "queue-codeexpert",
+                    })
+                    queued = self._receive_until(
+                        ws,
+                        lambda msg: msg.get("type") == "stream_queued" and msg.get("speaker_id") == "queue-codeexpert",
+                    )
+                    self.assertEqual(queued["position"], 1)
+
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "Immediate for Apex Assistant",
+                        "target_agent": "queue-apex-assistant",
+                    })
+                    other_agent = self._receive_until(
+                        ws,
+                        lambda msg: msg.get("type") == "stream_start" and msg.get("speaker_id") == "queue-apex-assistant",
+                    )
+                    self.assertEqual(other_agent["speaker_name"], "Queue Apex Assistant")
+
+                    release_codeexpert.set()
+                    dequeued = self._receive_until(
+                        ws,
+                        lambda msg: msg.get("type") == "stream_start" and msg.get("speaker_id") == "queue-codeexpert",
+                    )
+                    self.assertEqual(dequeued["speaker_name"], "Queue CodeExpert")
+
+    def test_codex_public_error_message_hides_internal_chunk_details(self) -> None:
+        msg = ws_handler._public_backend_error_message(
+            "codex",
+            "Separator is not found, and chunk exceed the limit",
+        )
+        self.assertIn("internal size limit", msg.lower())
+        self.assertNotIn("separator is not found", msg.lower())
+
+    def test_local_model_file_tools_are_contained_to_workspace(self) -> None:
+        workspace = Path(tempfile.mkdtemp(prefix="apex-tool-workspace-"))
+        outside_dir = Path(tempfile.mkdtemp(prefix="apex-tool-outside-"))
+        inside_file = workspace / "inside.txt"
+        outside_file = outside_dir / "outside.txt"
+        inside_file.write_text("hello\n", encoding="utf-8")
+        outside_file.write_text("secret\n", encoding="utf-8")
+
+        self.assertIn(
+            "outside workspace",
+            read_file.execute({"file_path": str(outside_file)}, workspace=str(workspace)),
+        )
+        self.assertIn(
+            "outside workspace",
+            write_file.execute(
+                {"file_path": str(outside_dir / "new.txt"), "content": "x"},
+                workspace=str(workspace),
+            ),
+        )
+        self.assertIn(
+            "outside workspace",
+            list_files.execute({"path": str(outside_dir), "pattern": "*.txt"}, workspace=str(workspace)),
+        )
+        self.assertIn(
+            "outside workspace",
+            search_files.execute({"path": str(outside_dir), "pattern": "secret"}, workspace=str(workspace)),
+        )
+        self.assertIn(
+            "inside.txt",
+            list_files.execute({"path": str(workspace), "pattern": "*.txt"}, workspace=str(workspace)),
+        )
+
+    def test_guardrail_summary_loader_does_not_execute_workspace_code(self) -> None:
+        workspace = Path(tempfile.mkdtemp(prefix="apex-guardrail-summary-"))
+        guardrails_dir = workspace / "scripts" / "guardrails"
+        guardrails_dir.mkdir(parents=True, exist_ok=True)
+        side_effect = workspace / "executed.txt"
+
+        (guardrails_dir / "guardrail_core.py").write_text(
+            f"""
+import os
+WORKSPACE = "{workspace}"
+APEX_ROOT = "/tmp/apex"
+PROTECTED_EXACT = {{"a", "b"}}
+PROTECTED_ABSOLUTE = {{os.path.expanduser("~/.apex/.env")}}
+PROTECTED_SUFFIXES = (".env",)
+PROTECTED_SUBSTRINGS = ("/secrets/",)
+SANDBOX_ALLOW = [APEX_ROOT + "/", "/tmp/"]
+SANDBOX_BLOCK = ["/etc/"]
+open({str(side_effect)!r}, "w").write("should not happen")
+""".strip(),
+            encoding="utf-8",
+        )
+        (guardrails_dir / "secret_patterns.py").write_text(
+            """
+import re
+SECRET_PATTERNS = [
+    ("A", re.compile("a")),
+    ("B", re.compile("b")),
+]
+raise RuntimeError("should not execute")
+""".strip(),
+            encoding="utf-8",
+        )
+
+        original_workspace_root = dashboard_mod._workspace_root
+        dashboard_mod._workspace_root = lambda: workspace
+        try:
+            summary = dashboard_mod._load_guardrail_summary()
+        finally:
+            dashboard_mod._workspace_root = original_workspace_root
+
+        self.assertFalse(side_effect.exists())
+        self.assertEqual(summary["protected_count"], 5)
+        self.assertEqual(summary["sandbox_rule_count"], 3)
+        self.assertEqual(summary["secret_pattern_count"], 2)
+
+
+    def test_allow_alert_creates_whitelist_entry(self) -> None:
+        """POST /api/alerts/{id}/allow must succeed end-to-end.
+
+        Regression for B-51: memory_extract._add_whitelist_entry() called
+        os.chmod() without `import os`, causing a NameError → 500 on every
+        Allow action.  This test drives the full route so the import error
+        surfaces immediately if it regresses.
+        """
+        with self._client() as client:
+            # Create an alert that looks like a guardrail block
+            create = client.post(
+                "/api/alerts",
+                json={
+                    "source": "guardrail",
+                    "severity": "warn",
+                    "title": "Bash blocked",
+                    "body": "echo test > /etc/test",
+                    "metadata": {
+                        "tool": "Bash",
+                        "target": "echo test > /etc/test",
+                    },
+                },
+                headers={"Authorization": "Bearer initial-alert-token"},
+            )
+            self.assertEqual(create.status_code, 201, create.text)
+            alert_id = create.json()["id"]
+
+            # Allow it — this exercises the full route + _add_whitelist_entry
+            allow = client.post(
+                f"/api/alerts/{alert_id}/allow",
+                headers={"Authorization": "Bearer initial-alert-token"},
+            )
+            self.assertEqual(allow.status_code, 200, allow.text)
+            data = allow.json()
+            self.assertTrue(data.get("ok"), f"expected ok=True, got: {data}")
+            self.assertIn("expires_at", data, f"missing expires_at in: {data}")
+
+            # Whitelist file must now exist and contain the entry
+            wl_path = env.APEX_ROOT / "state" / "guardrail_whitelist.json"
+            self.assertTrue(wl_path.exists(), "whitelist file not created")
+            entries = json.loads(wl_path.read_text())
+            self.assertTrue(
+                any(e.get("alert_id") == alert_id for e in entries),
+                f"alert_id {alert_id} not found in whitelist: {entries}",
+            )
+
+    def test_allow_alert_whitelist_entry_has_restricted_permissions(self) -> None:
+        """Whitelist file and parent dir must be owner-only (0o600 / 0o700)."""
+        with self._client() as client:
+            create = client.post(
+                "/api/alerts",
+                json={
+                    "source": "guardrail",
+                    "severity": "warn",
+                    "title": "Perm test",
+                    "body": "cat /etc/passwd",
+                    "metadata": {
+                        "tool": "Bash",
+                        "target": "cat /etc/passwd",
+                    },
+                },
+                headers={"Authorization": "Bearer initial-alert-token"},
+            )
+            self.assertEqual(create.status_code, 201)
+            alert_id = create.json()["id"]
+            client.post(
+                f"/api/alerts/{alert_id}/allow",
+                headers={"Authorization": "Bearer initial-alert-token"},
+            )
+
+        wl_path = env.APEX_ROOT / "state" / "guardrail_whitelist.json"
+        dir_mode = oct(os.stat(wl_path.parent).st_mode & 0o777)
+        file_mode = oct(os.stat(wl_path).st_mode & 0o777)
+        self.assertEqual(dir_mode, oct(0o700), f"state/ dir perms wrong: {dir_mode}")
+        self.assertEqual(file_mode, oct(0o600), f"whitelist file perms wrong: {file_mode}")
+
+
+if __name__ == "__main__":
+    unittest.main()

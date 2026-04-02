@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="320" viewBox="0 0 420 320">
+  <style>
+    .font { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; }
+    .mono { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Consolas, monospace; }
+    .step-title { font-size: 13px; fill: #e2e8f0; font-weight: 600; }
+    .step-desc { font-size: 11px; fill: #5a6577; }
+    .step-quote { font-size: 10.5px; fill: #8b95a8; font-style: italic; }
+  </style>
+
+  <rect width="420" height="320" rx="12" fill="#0d1117"/>
+
+  <!-- Step 1: Send message -->
+  <g transform="translate(24, 18)">
+    <rect width="372" height="56" rx="8" fill="#111827" stroke="#1e293b" stroke-width="1"/>
+    <!-- Icon bg -->
+    <rect x="12" y="10" width="36" height="36" rx="8" fill="#1a2235" stroke="#818cf8" stroke-width="1"/>
+    <text x="30" y="34" text-anchor="middle" font-size="16">&#x1F4AC;</text>
+    <!-- Text -->
+    <text x="60" y="28" class="font step-title">You send a message</text>
+    <text x="60" y="44" class="font step-quote">"How did we deploy the auth fix?"</text>
+  </g>
+
+  <!-- Arrow 1 -->
+  <g transform="translate(210, 78)">
+    <line x1="0" y1="0" x2="0" y2="14" stroke="#1e293b" stroke-width="2"/>
+    <polygon points="-4,14 4,14 0,20" fill="#1e293b"/>
+  </g>
+
+  <!-- Step 2: Whisper search -->
+  <g transform="translate(24, 94)">
+    <rect width="372" height="56" rx="8" fill="#111827" stroke="#1e293b" stroke-width="1"/>
+    <rect x="12" y="10" width="36" height="36" rx="8" fill="#1a2235" stroke="#38bdf8" stroke-width="1"/>
+    <text x="30" y="34" text-anchor="middle" font-size="16">&#x1F50D;</text>
+    <text x="60" y="28" class="font step-title">Whisper searches memory</text>
+    <text x="60" y="44" class="font step-quote">3 relevant memories found</text>
+  </g>
+
+  <!-- Arrow 2 -->
+  <g transform="translate(210, 154)">
+    <line x1="0" y1="0" x2="0" y2="14" stroke="#1e293b" stroke-width="2"/>
+    <polygon points="-4,14 4,14 0,20" fill="#1e293b"/>
+  </g>
+
+  <!-- Step 3: Context injected -->
+  <g transform="translate(24, 170)">
+    <rect width="372" height="56" rx="8" fill="#111827" stroke="#1e293b" stroke-width="1"/>
+    <rect x="12" y="10" width="36" height="36" rx="8" fill="#1a2235" stroke="#2dd4bf" stroke-width="1"/>
+    <text x="30" y="34" text-anchor="middle" font-size="16">&#x1F489;</text>
+    <text x="60" y="28" class="font step-title">Context injected silently</text>
+    <text x="60" y="44" class="font step-quote">Deploy notes + incident report added</text>
+  </g>
+
+  <!-- Arrow 3 -->
+  <g transform="translate(210, 230)">
+    <line x1="0" y1="0" x2="0" y2="14" stroke="#1e293b" stroke-width="2"/>
+    <polygon points="-4,14 4,14 0,20" fill="#1e293b"/>
+  </g>
+
+  <!-- Step 4: AI responds -->
+  <g transform="translate(24, 246)">
+    <rect width="372" height="56" rx="8" fill="#111827" stroke="#1e293b" stroke-width="1"/>
+    <rect x="12" y="10" width="36" height="36" rx="8" fill="#1a2235" stroke="#34d399" stroke-width="1"/>
+    <text x="30" y="34" text-anchor="middle" font-size="16">&#x2728;</text>
+    <text x="60" y="28" class="font step-title">AI responds with full context</text>
+    <text x="60" y="44" class="font step-quote">Remembers steps, bug, and fix</text>
+  </g>
+</svg>

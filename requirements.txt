@@ -1,0 +1,10 @@
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+python-multipart>=0.0.6
+websockets>=12.0
+cryptography>=42.0
+PyJWT>=2.8.0
+httpx[http2]>=0.27.0
+claude-agent-sdk>=0.1.0
+numpy>=1.24.0
+# Optional: google-genai>=1.0.0  # Only needed for Gemini embedding backend

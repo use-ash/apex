@@ -1,0 +1,300 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520" width="900" height="520">
+  <defs>
+    <style>
+      .font-sans { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; }
+      .font-mono { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace; }
+    </style>
+    <!-- Drop shadow for desktop -->
+    <filter id="shadow-desktop" x="-5%" y="-5%" width="115%" height="115%">
+      <feDropShadow dx="0" dy="4" stdDeviation="12" flood-color="#000000" flood-opacity="0.5"/>
+    </filter>
+    <!-- Drop shadow for phone -->
+    <filter id="shadow-phone" x="-8%" y="-5%" width="120%" height="112%">
+      <feDropShadow dx="0" dy="4" stdDeviation="14" flood-color="#000000" flood-opacity="0.55"/>
+    </filter>
+    <!-- Subtle radial glow -->
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#818cf8" stop-opacity="0.05"/>
+      <stop offset="40%" stop-color="#38bdf8" stop-opacity="0.03"/>
+      <stop offset="100%" stop-color="#0d1117" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Send button gradient -->
+    <linearGradient id="send-gradient" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#818cf8"/>
+    </linearGradient>
+    <!-- Code block background -->
+    <linearGradient id="code-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0d1117"/>
+      <stop offset="100%" stop-color="#0f1419"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="520" rx="12" fill="#0d1117"/>
+
+  <!-- Subtle radial glow behind devices -->
+  <ellipse cx="450" cy="270" rx="400" ry="260" fill="url(#glow)"/>
+
+  <!-- ==================== DESKTOP BROWSER ==================== -->
+  <g filter="url(#shadow-desktop)">
+    <!-- Browser frame -->
+    <rect x="20" y="20" width="560" height="480" rx="10" fill="#111827" stroke="#1e293b" stroke-width="1"/>
+
+    <!-- Browser chrome bar -->
+    <rect x="20" y="20" width="560" height="36" rx="10" fill="#1a2235"/>
+    <rect x="20" y="46" width="560" height="10" fill="#1a2235"/>
+    <line x1="20" y1="56" x2="580" y2="56" stroke="#1e293b" stroke-width="1"/>
+
+    <!-- Traffic light dots -->
+    <circle cx="40" cy="38" r="5.5" fill="#f87171"/>
+    <circle cx="56" cy="38" r="5.5" fill="#fbbf24"/>
+    <circle cx="72" cy="38" r="5.5" fill="#34d399"/>
+
+    <!-- URL bar -->
+    <rect x="120" y="28" width="340" height="20" rx="4" fill="#0d1117" stroke="#1e293b" stroke-width="0.5"/>
+    <text x="135" y="42" class="font-sans" font-size="9.5" fill="#8b95a8">&#x1f512; https://your-server:8300</text>
+
+    <!-- ===== SIDEBAR ===== -->
+    <rect x="20" y="56" width="160" height="444" fill="#0d1117"/>
+    <rect x="180" y="56" width="1" height="444" fill="#1e293b"/>
+
+    <!-- Sidebar header -->
+    <text x="34" y="78" class="font-sans" font-size="9" font-weight="700" letter-spacing="1.2" fill="#5a6577">CHANNELS</text>
+    <text x="158" y="79" class="font-sans" font-size="14" fill="#5a6577">+</text>
+
+    <!-- Channel: Coding (active) -->
+    <rect x="24" y="86" width="152" height="30" rx="5" fill="#1a2235"/>
+    <circle cx="36" cy="101" r="4" fill="#38bdf8"/>
+    <text x="46" y="105" class="font-sans" font-size="11" font-weight="600" fill="#e2e8f0">Coding</text>
+    <rect x="120" y="95" width="30" height="14" rx="3" fill="#1e293b"/>
+    <text x="127" y="105" class="font-mono" font-size="7.5" fill="#38bdf8">opus</text>
+
+    <!-- Channel: Research -->
+    <rect x="24" y="120" width="152" height="30" rx="5" fill="transparent"/>
+    <circle cx="36" cy="135" r="4" fill="#2dd4bf"/>
+    <text x="46" y="139" class="font-sans" font-size="11" fill="#8b95a8">Research</text>
+    <rect x="120" y="129" width="30" height="14" rx="3" fill="#1e293b"/>
+    <text x="129" y="139" class="font-mono" font-size="7.5" fill="#2dd4bf">grok</text>
+
+    <!-- Channel: Quick Q&A -->
+    <rect x="24" y="154" width="152" height="30" rx="5" fill="transparent"/>
+    <circle cx="36" cy="169" r="4" fill="#34d399"/>
+    <text x="46" y="173" class="font-sans" font-size="11" fill="#8b95a8">Quick Q&amp;A</text>
+    <rect x="120" y="163" width="30" height="14" rx="3" fill="#1e293b"/>
+    <text x="126" y="173" class="font-mono" font-size="7.5" fill="#34d399">qwen</text>
+
+    <!-- Channel: Design -->
+    <rect x="24" y="188" width="152" height="30" rx="5" fill="transparent"/>
+    <circle cx="36" cy="203" r="4" fill="#818cf8"/>
+    <text x="46" y="207" class="font-sans" font-size="11" fill="#8b95a8">Design</text>
+    <rect x="120" y="197" width="30" height="14" rx="3" fill="#1e293b"/>
+    <text x="127" y="207" class="font-mono" font-size="7.5" fill="#818cf8">opus</text>
+
+    <!-- Channel: Alerts -->
+    <rect x="24" y="222" width="152" height="30" rx="5" fill="transparent"/>
+    <circle cx="36" cy="237" r="4" fill="#fb923c"/>
+    <text x="46" y="241" class="font-sans" font-size="11" fill="#8b95a8">Alerts</text>
+    <rect x="124" y="231" width="24" height="14" rx="3" fill="#1e293b"/>
+    <text x="130.5" y="241" class="font-mono" font-size="7.5" fill="#fb923c">sys</text>
+
+    <!-- ===== CHAT MAIN AREA ===== -->
+    <!-- Top bar -->
+    <rect x="181" y="56" width="399" height="34" fill="#111827"/>
+    <line x1="181" y1="90" x2="580" y2="90" stroke="#1e293b" stroke-width="1"/>
+
+    <text x="196" y="78" class="font-sans" font-size="13" font-weight="700" fill="#e2e8f0">Coding</text>
+
+    <!-- Model badge -->
+    <rect x="260" y="66" width="78" height="16" rx="4" fill="#1e293b"/>
+    <text x="270" y="78" class="font-mono" font-size="8" fill="#38bdf8">claude-opus-4-6</text>
+
+    <!-- Connected status -->
+    <circle cx="358" cy="74" r="3" fill="#34d399"/>
+    <text x="365" y="78" class="font-sans" font-size="9" fill="#34d399">Connected</text>
+
+    <!-- Bell icon with badge -->
+    <text x="545" y="79" class="font-sans" font-size="13" fill="#8b95a8">&#x1f514;</text>
+    <circle cx="556" cy="66" r="6.5" fill="#f87171"/>
+    <text x="553.5" y="69.5" class="font-sans" font-size="7" font-weight="700" fill="#ffffff">2</text>
+
+    <!-- ===== MESSAGES ===== -->
+    <!-- User message -->
+    <g transform="translate(196, 100)">
+      <!-- Avatar -->
+      <circle cx="12" cy="12" r="12" fill="#818cf8"/>
+      <text x="12" y="16" class="font-sans" font-size="10" font-weight="700" fill="#ffffff" text-anchor="middle">D</text>
+      <!-- Name -->
+      <text x="30" y="10" class="font-sans" font-size="10" font-weight="700" fill="#e2e8f0">Dana</text>
+      <!-- Message -->
+      <text x="30" y="24" class="font-sans" font-size="11" fill="#e2e8f0">Can you refactor the auth middleware to support</text>
+      <text x="30" y="37" class="font-sans" font-size="11" fill="#e2e8f0">both mTLS and API key fallback?</text>
+    </g>
+
+    <!-- AI response -->
+    <g transform="translate(196, 152)">
+      <!-- Avatar -->
+      <circle cx="12" cy="12" r="12" fill="#2dd4bf"/>
+      <text x="12" y="16" class="font-sans" font-size="10" font-weight="700" fill="#0d1117" text-anchor="middle">A</text>
+      <!-- Name + model tag -->
+      <text x="30" y="10" class="font-sans" font-size="10" font-weight="700" fill="#e2e8f0">Apex</text>
+      <rect x="56" y="2" width="46" height="13" rx="3" fill="#1e293b"/>
+      <text x="63" y="12" class="font-mono" font-size="7" fill="#2dd4bf">opus-4-6</text>
+
+      <!-- Thinking block -->
+      <rect x="30" y="20" width="340" height="28" rx="4" fill="#1a2235" stroke="#fbbf24" stroke-width="0.8" stroke-opacity="0.5"/>
+      <text x="40" y="33" class="font-sans" font-size="8.5" font-weight="600" fill="#fbbf24">&#x1f4ad; THINKING</text>
+      <text x="40" y="43" class="font-sans" font-size="8.5" font-style="italic" fill="#5a6577">The current auth flow checks certs first...</text>
+
+      <!-- Tool block 1 -->
+      <rect x="30" y="54" width="340" height="18" rx="4" fill="#1a2235" stroke="#38bdf8" stroke-width="0.8" stroke-opacity="0.4"/>
+      <text x="40" y="66" class="font-mono" font-size="8.5" fill="#38bdf8">&#x1f527; Read server/apex.py:412-445</text>
+      <text x="290" y="66" class="font-sans" font-size="9" fill="#34d399">&#x2713;</text>
+
+      <!-- Tool block 2 -->
+      <rect x="30" y="76" width="340" height="18" rx="4" fill="#1a2235" stroke="#38bdf8" stroke-width="0.8" stroke-opacity="0.4"/>
+      <text x="40" y="88" class="font-mono" font-size="8.5" fill="#38bdf8">&#x1f527; Edit server/apex.py</text>
+      <text x="200" y="88" class="font-sans" font-size="9" fill="#34d399">&#x2713;</text>
+
+      <!-- Response text -->
+      <text x="30" y="108" class="font-sans" font-size="11" fill="#e2e8f0">Done. Refactored into a two-phase auth chain:</text>
+
+      <!-- Code block -->
+      <rect x="30" y="114" width="340" height="88" rx="5" fill="url(#code-bg)" stroke="#1e293b" stroke-width="0.8"/>
+      <!-- Line 1 -->
+      <text x="40" y="129" class="font-mono" font-size="9" fill="#818cf8">async</text>
+      <text x="70" y="129" class="font-mono" font-size="9" fill="#818cf8">def</text>
+      <text x="90" y="129" class="font-mono" font-size="9" fill="#38bdf8">authenticate</text>
+      <text x="164" y="129" class="font-mono" font-size="9" fill="#e2e8f0">(self, request):</text>
+      <!-- Line 2 -->
+      <text x="48" y="142" class="font-mono" font-size="9" fill="#5a6577"># Phase 1: try mTLS client cert</text>
+      <!-- Line 3 -->
+      <text x="48" y="155" class="font-mono" font-size="9" fill="#e2e8f0">cert = </text>
+      <text x="89" y="155" class="font-mono" font-size="9" fill="#818cf8">await</text>
+      <text x="119" y="155" class="font-mono" font-size="9" fill="#e2e8f0">self.</text>
+      <text x="140" y="155" class="font-mono" font-size="9" fill="#38bdf8">verify_cert</text>
+      <text x="210" y="155" class="font-mono" font-size="9" fill="#e2e8f0">(request)</text>
+      <!-- Line 4 -->
+      <text x="48" y="168" class="font-mono" font-size="9" fill="#818cf8">if</text>
+      <text x="60" y="168" class="font-mono" font-size="9" fill="#e2e8f0">cert:</text>
+      <!-- Line 5 -->
+      <text x="56" y="181" class="font-mono" font-size="9" fill="#818cf8">return</text>
+      <text x="90" y="181" class="font-mono" font-size="9" fill="#38bdf8">AuthResult</text>
+      <text x="152" y="181" class="font-mono" font-size="9" fill="#e2e8f0">(</text>
+      <text x="157" y="181" class="font-mono" font-size="9" fill="#34d399">"mtls"</text>
+      <text x="190" y="181" class="font-mono" font-size="9" fill="#e2e8f0">, cert)</text>
+      <!-- Line 6 -->
+      <text x="48" y="194" class="font-mono" font-size="9" fill="#5a6577"># Phase 2: fall back to API key</text>
+    </g>
+
+    <!-- ===== COMPOSER BAR ===== -->
+    <rect x="181" y="468" width="399" height="32" fill="#111827"/>
+    <line x1="181" y1="468" x2="580" y2="468" stroke="#1e293b" stroke-width="1"/>
+    <rect x="196" y="474" width="340" height="22" rx="6" fill="#0d1117" stroke="#1e293b" stroke-width="0.8"/>
+    <text x="212" y="489" class="font-sans" font-size="10" fill="#5a6577">Ask anything...</text>
+    <!-- Clip icon -->
+    <text x="198" y="489" class="font-sans" font-size="10" fill="#5a6577">&#x1f4ce;</text>
+    <!-- Mic icon -->
+    <text x="510" y="489" class="font-sans" font-size="11" fill="#5a6577">&#x1f399;</text>
+    <!-- Send button -->
+    <rect x="545" y="474" width="26" height="22" rx="6" fill="url(#send-gradient)"/>
+    <text x="553" y="489" class="font-sans" font-size="11" fill="#ffffff">&#x25B6;</text>
+  </g>
+
+  <!-- ==================== iPHONE ==================== -->
+  <g filter="url(#shadow-phone)">
+    <!-- Phone body -->
+    <rect x="620" y="30" width="260" height="470" rx="36" fill="#000000" stroke="#1e293b" stroke-width="1.5"/>
+
+    <!-- Dynamic Island -->
+    <rect x="720" y="38" width="40" height="12" rx="6" fill="#0d1117"/>
+
+    <!-- Screen -->
+    <rect x="630" y="54" width="240" height="434" rx="20" fill="#111827"/>
+
+    <!-- Status bar -->
+    <text x="646" y="72" class="font-sans" font-size="10" font-weight="600" fill="#e2e8f0">9:41</text>
+    <!-- Signal bars -->
+    <rect x="822" y="64" width="3" height="5" rx="0.5" fill="#e2e8f0"/>
+    <rect x="827" y="62" width="3" height="7" rx="0.5" fill="#e2e8f0"/>
+    <rect x="832" y="60" width="3" height="9" rx="0.5" fill="#e2e8f0"/>
+    <rect x="837" y="58" width="3" height="11" rx="0.5" fill="#e2e8f0"/>
+    <!-- WiFi icon (simplified) -->
+    <circle cx="848" cy="66" r="1.5" fill="#e2e8f0"/>
+    <path d="M844,62 Q848,58 852,62" fill="none" stroke="#e2e8f0" stroke-width="1.2"/>
+    <path d="M842,59 Q848,54 854,59" fill="none" stroke="#e2e8f0" stroke-width="1.2"/>
+    <!-- Battery -->
+    <rect x="858" y="61" width="16" height="8" rx="2" fill="none" stroke="#e2e8f0" stroke-width="1"/>
+    <rect x="874" y="63.5" width="1.5" height="3" rx="0.5" fill="#e2e8f0"/>
+    <rect x="860" y="63" width="10" height="4" rx="1" fill="#34d399"/>
+
+    <!-- Nav bar -->
+    <line x1="630" y1="82" x2="870" y2="82" stroke="#1e293b" stroke-width="0.8"/>
+    <text x="644" y="97" class="font-sans" font-size="16" font-weight="300" fill="#38bdf8">&#x2039;</text>
+    <text x="720" y="98" class="font-sans" font-size="13" font-weight="700" fill="#e2e8f0" text-anchor="middle">Research</text>
+    <rect x="762" y="88" width="38" height="14" rx="4" fill="#1e293b"/>
+    <text x="770" y="99" class="font-mono" font-size="8" fill="#2dd4bf">grok-4</text>
+    <line x1="630" y1="106" x2="870" y2="106" stroke="#1e293b" stroke-width="0.8"/>
+
+    <!-- ===== PHONE MESSAGES ===== -->
+    <!-- User message -->
+    <g transform="translate(640, 116)">
+      <circle cx="10" cy="10" r="10" fill="#818cf8"/>
+      <text x="10" y="14" class="font-sans" font-size="8" font-weight="700" fill="#ffffff" text-anchor="middle">D</text>
+      <text x="26" y="9" class="font-sans" font-size="9.5" fill="#e2e8f0">What's the latest on the EU AI Act</text>
+      <text x="26" y="21" class="font-sans" font-size="9.5" fill="#e2e8f0">enforcement?</text>
+    </g>
+
+    <!-- AI response -->
+    <g transform="translate(640, 152)">
+      <circle cx="10" cy="10" r="10" fill="#2dd4bf"/>
+      <text x="10" y="14" class="font-sans" font-size="8" font-weight="700" fill="#0d1117" text-anchor="middle">A</text>
+      <text x="26" y="8" class="font-sans" font-size="9.5" font-weight="700" fill="#e2e8f0">Apex</text>
+      <rect x="52" y="0" width="36" height="12" rx="3" fill="#1e293b"/>
+      <text x="58" y="9.5" class="font-mono" font-size="7" fill="#2dd4bf">grok-4</text>
+
+      <!-- Thinking block (small) -->
+      <rect x="26" y="16" width="200" height="18" rx="3" fill="#1a2235" stroke="#fbbf24" stroke-width="0.6" stroke-opacity="0.5"/>
+      <text x="34" y="28" class="font-sans" font-size="7.5" font-style="italic" fill="#fbbf24">Searching web for EU AI Act updates...</text>
+
+      <!-- Tool block -->
+      <rect x="26" y="38" width="200" height="16" rx="3" fill="#1a2235" stroke="#38bdf8" stroke-width="0.6" stroke-opacity="0.4"/>
+      <text x="34" y="49.5" class="font-mono" font-size="7.5" fill="#38bdf8">&#x1f50d; Web Search</text>
+      <text x="134" y="49.5" class="font-sans" font-size="8" fill="#34d399">&#x2713;</text>
+
+      <!-- Response text -->
+      <text x="26" y="68" class="font-sans" font-size="9.5" fill="#e2e8f0">Here are the key enforcement dates:</text>
+
+      <!-- Date entry 1 -->
+      <text x="26" y="86" class="font-sans" font-size="9.5" font-weight="700" fill="#38bdf8">Feb 2025</text>
+      <text x="78" y="86" class="font-sans" font-size="9.5" fill="#8b95a8">- Prohibited AI</text>
+      <text x="26" y="98" class="font-sans" font-size="9.5" fill="#8b95a8">systems ban takes effect</text>
+
+      <!-- Date entry 2 -->
+      <text x="26" y="116" class="font-sans" font-size="9.5" font-weight="700" fill="#38bdf8">Aug 2025</text>
+      <text x="78" y="116" class="font-sans" font-size="9.5" fill="#8b95a8">- GPAI model</text>
+      <text x="26" y="128" class="font-sans" font-size="9.5" fill="#8b95a8">transparency rules begin</text>
+
+      <!-- Date entry 3 -->
+      <text x="26" y="146" class="font-sans" font-size="9.5" font-weight="700" fill="#38bdf8">Aug 2026</text>
+      <text x="78" y="146" class="font-sans" font-size="9.5" fill="#8b95a8">- Full high-risk</text>
+      <text x="26" y="158" class="font-sans" font-size="9.5" fill="#8b95a8">AI system obligations apply</text>
+    </g>
+
+    <!-- ===== PHONE COMPOSER ===== -->
+    <line x1="636" y1="430" x2="864" y2="430" stroke="#1e293b" stroke-width="0.8"/>
+    <g transform="translate(640, 436)">
+      <!-- Clip icon -->
+      <text x="4" y="14" class="font-sans" font-size="11" fill="#5a6577">&#x1f4ce;</text>
+      <!-- Input -->
+      <rect x="22" y="2" width="166" height="20" rx="10" fill="#0d1117" stroke="#1e293b" stroke-width="0.6"/>
+      <text x="34" y="15" class="font-sans" font-size="9" fill="#5a6577">Message...</text>
+      <!-- Send button -->
+      <rect x="194" y="2" width="22" height="20" rx="10" fill="url(#send-gradient)"/>
+      <text x="200.5" y="15.5" class="font-sans" font-size="10" fill="#ffffff">&#x25B6;</text>
+    </g>
+
+    <!-- Home indicator -->
+    <rect x="716" y="476" width="68" height="4" rx="2" fill="#5a6577" opacity="0.5"/>
+  </g>
+</svg>
