@@ -14,6 +14,7 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
+from compat import safe_chmod
 import env
 from db import _get_chat, _get_messages
 from log import log
@@ -218,9 +219,9 @@ def _cache_oauth_data(oauth_data: dict, access_token: str) -> None:
     try:
         _TOKEN_CACHE.parent.mkdir(parents=True, exist_ok=True)
         _TOKEN_CACHE.write_text(access_token)
-        _TOKEN_CACHE.chmod(0o600)
+        safe_chmod(_TOKEN_CACHE, 0o600)
         _OAUTH_CACHE.write_text(json.dumps(oauth_data, separators=(",", ":")))
-        _OAUTH_CACHE.chmod(0o600)
+        safe_chmod(_OAUTH_CACHE, 0o600)
     except Exception:
         pass
 

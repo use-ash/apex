@@ -18,6 +18,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from setup.compat import safe_chmod
 from setup.progress import mark_phase_completed, phase_completed
 from setup.ui import (
     clear_line,
@@ -175,6 +176,8 @@ def detect_local_ips() -> list[dict]:
 
     if system == "Darwin":
         found.extend(_detect_ips_macos(seen))
+    elif system == "Windows":
+        found.extend(_detect_ips_windows(seen))
     elif system == "Linux":
         found.extend(_detect_ips_linux(seen))
 
@@ -234,6 +237,36 @@ def _detect_ips_macos(seen: set[str]) -> list[dict]:
                     })
                     seen.add(ip)
 
+    return results
+
+
+def _detect_ips_windows(seen: set[str]) -> list[dict]:
+    """Parse 'ipconfig' output on Windows."""
+    results: list[dict] = []
+    try:
+        output = subprocess.run(
+            ["ipconfig"], capture_output=True, text=True, timeout=5
+        ).stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return results
+    current_adapter = ""
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not line.startswith(" ") and line.rstrip().endswith(":"):
+            current_adapter = stripped.rstrip(":")
+        elif "IPv4 Address" in stripped or "IPv4-Adresse" in stripped:
+            parts = stripped.split(":")
+            if len(parts) >= 2:
+                ip = parts[-1].strip()
+                if ip not in seen and not ip.startswith("127."):
+                    results.append({
+                        "ip": ip,
+                        "interface": current_adapter[:20],
+                        "description": "Network",
+                    })
+                    seen.add(ip)
     return results
 
 
@@ -443,9 +476,9 @@ def generate_certificates(
 
     # ---- Set file permissions ----
     for key_file in [ca_key, server_key, client_key]:
-        key_file.chmod(0o600)
+        safe_chmod(key_file, 0o600)
     for cert_file in [ca_crt, server_crt, client_crt, client_p12]:
-        cert_file.chmod(0o644)
+        safe_chmod(cert_file, 0o644)
 
     # ---- Encrypt private keys at rest ----
     from setup.ssl_keystore import (
@@ -600,7 +633,7 @@ def create_initial_config(
             f.write("\n")
         os.replace(tmp, str(config_path))
         # Config should not be world-readable (contains settings)
-        config_path.chmod(0o600)
+        safe_chmod(config_path, 0o600)
     except Exception:
         try:
             os.unlink(tmp)

@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from compat import safe_chmod
 from state import _db_lock, _last_compacted_at
 from log import log
 from env import APEX_ROOT, DB_NAME
@@ -78,7 +79,7 @@ def _get_db() -> sqlite3.Connection:
 
 def _init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(DB_PATH.parent, 0o700)
+    safe_chmod(DB_PATH.parent, 0o700)
     conn = _get_db()
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS chats (

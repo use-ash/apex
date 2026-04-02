@@ -215,7 +215,8 @@ def _refresh_chatgpt_token() -> str:
     tmp.write(json.dumps(auth, indent=2))
     tmp.close()
     shutil.move(tmp.name, auth_path)
-    os.chmod(auth_path, 0o600)
+    from compat import safe_chmod
+    safe_chmod(auth_path, 0o600)
 
     return new_tokens["access_token"]
 

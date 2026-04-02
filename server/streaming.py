@@ -20,6 +20,7 @@ from env import APEX_ROOT, WORKSPACE, WORKSPACE_PATHS, MODEL, PERMISSION_MODE, D
 
 from fastapi import WebSocket
 
+from compat import safe_chmod
 from db import _get_db, _get_chat, _update_chat
 from log import log
 from memory_extract import _filter_stream_text_for_memory_tags, _clear_stream_text_filter
@@ -41,7 +42,7 @@ except ImportError:
 _STREAM_BUFFER_MAX = 200
 _STREAM_JOURNAL_DIR = APEX_ROOT / "state" / "streams"
 _STREAM_JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
-os.chmod(_STREAM_JOURNAL_DIR, 0o700)
+safe_chmod(_STREAM_JOURNAL_DIR, 0o700)
 _CHAT_ID_RE = re.compile(r"^[0-9a-f]{8,12}$")
 
 
@@ -117,6 +118,50 @@ def _get_active_stream_entries(chat_id: str) -> list[tuple[str, dict[str, object
     return active
 
 
+def _get_all_active_stream_entries() -> list[tuple[str, str, dict[str, object]]]:
+    """Return active stream entries across all chats after stale cleanup."""
+    active: list[tuple[str, str, dict[str, object]]] = []
+    empty_chat_ids: list[str] = []
+    for chat_id, streams in list(_active_send_tasks.items()):
+        stale_ids: list[str] = []
+        for stream_id, info in list(streams.items()):
+            if _stream_task_is_active(info.get("task")):
+                active.append((chat_id, stream_id, info))
+            else:
+                stale_ids.append(stream_id)
+        for stream_id in stale_ids:
+            streams.pop(stream_id, None)
+        if streams:
+            _active_send_tasks[chat_id] = streams
+        else:
+            empty_chat_ids.append(chat_id)
+    for chat_id in empty_chat_ids:
+        _active_send_tasks.pop(chat_id, None)
+    return active
+
+
+def _get_profile_active_stream_stats(profile_id: str) -> tuple[int, int | None]:
+    """Return active stream count and oldest active age for one profile across all chats."""
+    if not profile_id:
+        return 0, None
+
+    active_count = 0
+    oldest_started_at: float | None = None
+    for _, _, info in _get_all_active_stream_entries():
+        if str(info.get("profile_id") or "") != profile_id:
+            continue
+        started_at = float(info.get("started_at") or 0.0)
+        if started_at <= 0:
+            continue
+        active_count += 1
+        if oldest_started_at is None or started_at < oldest_started_at:
+            oldest_started_at = started_at
+
+    if oldest_started_at is None:
+        return active_count, None
+    return active_count, max(0, int(time.monotonic() - oldest_started_at))
+
+
 def _has_active_stream(chat_id: str, exclude_stream_id: str = "") -> bool:
     return any(stream_id != exclude_stream_id for stream_id, _ in _get_active_stream_entries(chat_id))
 
@@ -129,6 +174,7 @@ def _set_active_send_task(
     name: str = "",
     avatar: str = "",
     profile_id: str = "",
+    started_at: float = 0.0,
 ) -> None:
     _active_send_tasks.setdefault(chat_id, {})[stream_id] = {
         "task": task,
@@ -136,6 +182,7 @@ def _set_active_send_task(
         "name": name,
         "avatar": avatar,
         "profile_id": profile_id,
+        "started_at": started_at,
     }
 
 
@@ -146,6 +193,7 @@ def _update_active_send_task(
     name: str | None = None,
     avatar: str | None = None,
     profile_id: str | None = None,
+    started_at: float | None = None,
 ) -> None:
     streams = _active_send_tasks.get(chat_id)
     if not streams:
@@ -159,6 +207,8 @@ def _update_active_send_task(
         info["avatar"] = avatar
     if profile_id is not None:
         info["profile_id"] = profile_id
+    if started_at is not None:
+        info["started_at"] = started_at
 
 
 def _remove_active_send_task(chat_id: str, stream_id: str, task: asyncio.Task | None = None) -> None:

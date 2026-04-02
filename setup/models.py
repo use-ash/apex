@@ -17,6 +17,8 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
+from setup.compat import safe_chmod
+
 
 # ---------------------------------------------------------------------------
 # Cloud agent checks
@@ -293,7 +295,7 @@ def save_env_key(env_dir: Path, key_name: str, key_value: str) -> None:
     try:
         with os.fdopen(fd, "w") as f:
             f.write(content)
-        os.chmod(tmp, 0o600)
+        safe_chmod(tmp, 0o600)
         os.replace(tmp, str(env_path))
     except Exception:
         try:

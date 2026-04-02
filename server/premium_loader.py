@@ -21,6 +21,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 
+from compat import safe_chmod
 import env
 
 log = logging.getLogger("apex.premium")
@@ -84,7 +85,7 @@ class PremiumLoader:
         f = Fernet(ks_key)
         encrypted = f.encrypt(key_b64.encode())
         self._keystore_path.write_bytes(encrypted)
-        self._keystore_path.chmod(0o600)
+        safe_chmod(self._keystore_path, 0o600)
         log.info("Feature key stored in keystore")
 
     def load_feature_key(self) -> str | None:

@@ -16,6 +16,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from setup.compat import safe_chmod
+
 # ---------------------------------------------------------------------------
 # Keychain / passphrase storage
 # ---------------------------------------------------------------------------
@@ -72,7 +74,7 @@ def store_passphrase(passphrase: str) -> bool:
     try:
         _FALLBACK_DIR.mkdir(parents=True, exist_ok=True)
         _FALLBACK_FILE.write_text(passphrase, encoding="utf-8")
-        _FALLBACK_FILE.chmod(0o600)
+        safe_chmod(_FALLBACK_FILE, 0o600)
         return True
     except OSError:
         return False
@@ -171,7 +173,7 @@ def encrypt_key_file(key_path: Path, passphrase: str) -> Path:
                 f"Failed to encrypt {key_path.name}: {result.stderr.strip()}"
             )
 
-        tmp.chmod(0o600)
+        safe_chmod(tmp, 0o600)
         os.replace(str(tmp), str(key_path))
         return key_path
 
@@ -215,7 +217,7 @@ def decrypt_key_to_tempfile(key_path: Path, passphrase: str) -> Path:
                 f"Failed to decrypt {key_path.name}: {result.stderr.strip()}"
             )
 
-        tmp.chmod(0o600)
+        safe_chmod(tmp, 0o600)
         return tmp
 
     except Exception:
