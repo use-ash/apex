@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hmac
+import json
 import os
 import re
 import uuid
@@ -26,6 +27,7 @@ from db import (
     _get_chat, _update_chat, _update_chat_settings,
     _get_recent_messages_text,
     _save_message,
+    _get_latest_user_attachments,
 )
 from model_dispatch import _get_model_backend, get_available_model_ids
 from state import (
@@ -63,7 +65,7 @@ from skills import (
 )
 from agent_sdk import (
     _build_turn_payload, _websocket_origin_allowed, _run_query_turn,
-    _load_attachment, _summarize_attachments,
+    _load_attachment,
 )
 from memory_extract import _extract_and_save_memories
 from backends import (
@@ -104,6 +106,21 @@ def _public_backend_error_message(backend: str, err: Exception | str) -> str:
         return ("Claude is not authenticated. Open Terminal and run: claude auth login — "
                 "then retry. If using an API key, check it in [Credentials](/admin/#models).")
     return "The request failed while generating a response. Retry the turn."
+
+
+def _attachment_refs_json(loaded: list[dict]) -> tuple[str, list[dict]]:
+    refs = [
+        {
+            "id": item["id"],
+            "type": item["type"],
+            "name": item["name"],
+            "url": f"/api/uploads/{item['id']}.{item['ext']}",
+            "mimeType": item.get("mimeType") or "",
+            "size": len(item.get("data") or b""),
+        }
+        for item in loaded
+    ]
+    return json.dumps(refs), refs
 
 
 async def _broadcast_chat_event(chat_id: str, payload: dict) -> None:
@@ -609,6 +626,23 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         )
     )
 
+    # Inject attachment path refs into secondary-agent prompts.
+    # Secondary agents are dispatched without the original attachments payload, so
+    # they would otherwise see the user text with no awareness of shared images/files.
+    # Primary agent already received full base64; non-primary agents get a lightweight
+    # text reference — "[Attached: name — /api/uploads/...]" — at zero image token cost.
+    # Condition: suppress_user_message means this is a multi-dispatch secondary turn.
+    if suppress_user_message and not attachments and is_group_chat:
+        _recent_atts = _get_latest_user_attachments(chat_id)
+        if _recent_atts:
+            ref_lines = "\n".join(
+                f"[Attached: {a['name']} — {a['url']}]"
+                for a in _recent_atts
+                if a.get("name") and a.get("url")
+            )
+            if ref_lines:
+                prompt = (f"{prompt}\n\n{ref_lines}" if prompt else ref_lines).strip()
+
     try:
         attachment_error = validate_backend_attachments(backend, attachments)
     except ValueError as e:
@@ -703,22 +737,23 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         if group_agent:
             _group_profile_override[chat_id] = group_agent["profile_id"]
 
-        display_prompt = prompt
+        display_prompt = user_visible_prompt
         make_query_input = None
+        loaded_attachments: list[dict] = []
+        attachment_refs_json = "[]"
+        attachment_refs: list[dict] = []
+        if attachments:
+            try:
+                loaded_attachments = [_load_attachment(att) for att in attachments]
+                attachment_refs_json, attachment_refs = _attachment_refs_json(loaded_attachments)
+            except ValueError as e:
+                await _safe_ws_send_json(websocket, {"type": "error", "message": str(e)}, chat_id=chat_id)
+                return
         if backend in ("ollama", "xai", "mlx", "codex"):
-            display_prompt = user_visible_prompt if _recall_context else prompt
-            if attachments:
-                try:
-                    loaded = [_load_attachment(att) for att in attachments]
-                    att_label = _summarize_attachments(loaded)
-                    display_prompt = f"{display_prompt}\n{att_label}".strip() if display_prompt else att_label
-                except Exception:
-                    pass
+            display_prompt = user_visible_prompt
         else:
             try:
-                display_prompt, make_query_input = _build_turn_payload(chat_id, prompt, attachments)
-                if _recall_context:
-                    display_prompt = user_visible_prompt
+                _, make_query_input = _build_turn_payload(chat_id, prompt, attachments)
             except ValueError as e:
                 await _safe_ws_send_json(websocket, {"type": "error", "message": str(e)}, chat_id=chat_id)
                 return
@@ -727,14 +762,19 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             display_prompt = mention_prompt
 
         if not is_agent_handoff:
-            _save_message(chat_id, "user", display_prompt)
+            _save_message(chat_id, "user", display_prompt, attachments=attachment_refs_json)
 
             ws_set = _chat_ws.get(chat_id, set())
             for ows in ws_set:
                 if ows is not websocket:
                     await _safe_ws_send_json(
                         ows,
-                        {"type": "user_message_added", "chat_id": chat_id, "content": display_prompt},
+                        {
+                            "type": "user_message_added",
+                            "chat_id": chat_id,
+                            "content": display_prompt,
+                            "attachments": attachment_refs,
+                        },
                         chat_id=chat_id,
                     )
 
