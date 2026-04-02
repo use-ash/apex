@@ -230,7 +230,7 @@ async def api_features():
             "orchestration": lic["features"].get("orchestration", False),
             "agent_profiles": lic["features"].get("agent_profiles", False),
         },
-        "activate_url": "https://useash.dev/activate",
+        "activate_url": "https://buy.stripe.com/00w8wO6YE2s6gFJ4AscQU01",
     })
 
 
