@@ -17,6 +17,7 @@ from collections import deque
 from pathlib import Path
 
 from env import APEX_ROOT, WORKSPACE, WORKSPACE_PATHS, MODEL, PERMISSION_MODE, DEBUG, SDK_QUERY_TIMEOUT
+from compat import safe_chmod
 
 from fastapi import WebSocket
 

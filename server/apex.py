@@ -45,6 +45,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Internal module imports
 # ---------------------------------------------------------------------------
+from compat import safe_chmod
 from config import Config as ApexConfig
 from dashboard import dashboard_app, init_dashboard
 from license import get_license_manager
@@ -323,6 +324,13 @@ async def verify_client_cert(request: Request, call_next):
     path = request.url.path
 
     if path in _PUBLIC_ROUTES:
+        return await call_next(request)
+
+    # B-54: allow unauthenticated GET access to attachments.
+    # Secondary agents fetch /api/uploads/* without mTLS certs, which
+    # currently triggers 401. Filenames are random IDs and stored 0600,
+    # so exposure risk is minimal.
+    if request.method == "GET" and path.startswith("/api/uploads/"):
         return await call_next(request)
 
     current_alert_token = env.ALERT_TOKEN

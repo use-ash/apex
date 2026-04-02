@@ -7,6 +7,7 @@ import threading
 from datetime import datetime
 
 from env import APEX_ROOT, LOG_NAME
+from compat import safe_chmod
 
 LOG_PATH = APEX_ROOT / "state" / LOG_NAME
 LOG_MAX = 5 * 1024 * 1024  # 5MB

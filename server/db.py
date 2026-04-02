@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from state import _db_lock, _last_compacted_at
+from compat import safe_chmod
 from log import log
 from env import APEX_ROOT, DB_NAME
 

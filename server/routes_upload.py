@@ -18,6 +18,7 @@ import env
 from fastapi import APIRouter, File, UploadFile
 from fastapi.responses import JSONResponse, Response
 
+from compat import safe_chmod
 from log import log
 
 upload_router = APIRouter()

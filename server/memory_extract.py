@@ -11,6 +11,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 
+from compat import safe_chmod
 from db import _add_persona_memory, _get_persona_memories, _bump_memory_violation
 from env import APEX_ROOT
 from log import log
