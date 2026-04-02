@@ -486,6 +486,7 @@ body.sidebar-pinned .messages,
 body.sidebar-pinned .attach-preview,
 body.sidebar-pinned .transcribing,
 body.sidebar-pinned .composer{margin-left:var(--sidebar-width)}
+body.sidebar-pinned .premium-locked-bar{margin-left:var(--sidebar-width)}
 
 /* Profile picker modal */
 .profile-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;
@@ -944,14 +945,14 @@ opacity:0;transition:opacity 0.3s ease;pointer-events:none}
   </div>
 </div>
 <div class="drop-overlay" id="dropOverlay"><div class="drop-overlay-inner">&#128206; Drop files to attach</div></div>
-<div class="premium-locked-bar" id="premiumLockedBar" style="display:none">
-  <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:10px;margin:0 12px 8px">
+<div class="premium-locked-bar" id="premiumLockedBar" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:10;background:var(--surface);padding:8px 0;padding-bottom:calc(8px + var(--sab))">
+  <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:10px;margin:0 12px">
     <span style="font-size:18px">🔒</span>
     <div style="flex:1">
       <div style="font-weight:600;font-size:13px;color:var(--yellow,#F59E0B)">Group channels require Apex Pro</div>
       <div style="font-size:12px;color:var(--dim);margin-top:2px">Your message history is preserved. Upgrade to resume collaboration.</div>
     </div>
-    <a href="https://useash.dev/activate" target="_blank" style="font-size:12px;font-weight:600;color:var(--accent);text-decoration:none;white-space:nowrap">Upgrade →</a>
+    <a href="https://useash.dev/activate" target="_blank" id="premiumUpgradeLink" style="font-size:12px;font-weight:600;color:var(--accent);text-decoration:none;white-space:nowrap;padding:6px 14px;background:var(--accent);color:#fff;border-radius:6px">Upgrade →</a>
   </div>
 </div>
 <div class="composer" id="composerBar" style="position:relative">
