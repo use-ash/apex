@@ -182,7 +182,7 @@ def _add_whitelist_entry(tool: str, target: str, alert_id: str, ttl_seconds: int
     entries = [e for e in entries if e.get("expires_at", "") > now]
     entries.append(entry)
     GUARDRAIL_WHITELIST.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(GUARDRAIL_WHITELIST.parent, 0o700)
+    safe_chmod(GUARDRAIL_WHITELIST.parent, 0o700)
     GUARDRAIL_WHITELIST.write_text(json.dumps(entries, indent=2))
-    os.chmod(GUARDRAIL_WHITELIST, 0o600)
+    safe_chmod(GUARDRAIL_WHITELIST, 0o600)
     return entry

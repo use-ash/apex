@@ -18,6 +18,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from setup.compat import safe_chmod
 from setup.progress import mark_phase_completed, phase_completed
 from setup.ui import (
     clear_line,
@@ -443,9 +444,9 @@ def generate_certificates(
 
     # ---- Set file permissions ----
     for key_file in [ca_key, server_key, client_key]:
-        key_file.chmod(0o600)
+        safe_chmod(key_file, 0o600)
     for cert_file in [ca_crt, server_crt, client_crt, client_p12]:
-        cert_file.chmod(0o644)
+        safe_chmod(cert_file, 0o644)
 
     # ---- Encrypt private keys at rest ----
     from setup.ssl_keystore import (
@@ -600,7 +601,7 @@ def create_initial_config(
             f.write("\n")
         os.replace(tmp, str(config_path))
         # Config should not be world-readable (contains settings)
-        config_path.chmod(0o600)
+        safe_chmod(config_path, 0o600)
     except Exception:
         try:
             os.unlink(tmp)

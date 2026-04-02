@@ -563,7 +563,8 @@ class LicenseManager:
             import uuid as _uuid
             iid = str(_uuid.uuid4())
             id_file.write_text(iid)
-            id_file.chmod(0o600)
+            from compat import safe_chmod
+            safe_chmod(id_file, 0o600)
             return iid
         except OSError:
             return "unknown"

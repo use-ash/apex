@@ -147,7 +147,7 @@ if not LOG_PATH.exists() and _old_log.exists():
 
 UPLOAD_DIR = APEX_ROOT / "state" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-os.chmod(UPLOAD_DIR, 0o700)
+safe_chmod(UPLOAD_DIR, 0o700)
 
 SDK_QUERY_TIMEOUT = env.SDK_QUERY_TIMEOUT
 

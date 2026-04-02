@@ -28,7 +28,7 @@ upload_router = APIRouter()
 _APEX_ROOT = env.APEX_ROOT
 UPLOAD_DIR = _APEX_ROOT / "state" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-os.chmod(UPLOAD_DIR, 0o700)
+safe_chmod(UPLOAD_DIR, 0o700)
 
 IMAGE_TYPES = {"jpg", "jpeg", "png", "gif", "webp"}
 TEXT_TYPES = {"txt", "py", "json", "csv", "md", "yaml", "yml", "toml", "cfg", "ini", "log",
@@ -113,7 +113,7 @@ async def api_upload(file: UploadFile = File(...)):
     out_name = f"{file_id}.{ext}"
     path = UPLOAD_DIR / out_name
     path.write_bytes(data)
-    os.chmod(path, 0o600)
+    safe_chmod(path, 0o600)
 
     result = {
         "id": file_id,

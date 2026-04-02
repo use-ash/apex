@@ -14,6 +14,8 @@ import hashlib
 import importlib
 import logging
 import os
+
+from compat import safe_chmod
 import types
 from pathlib import Path
 
@@ -84,7 +86,7 @@ class PremiumLoader:
         f = Fernet(ks_key)
         encrypted = f.encrypt(key_b64.encode())
         self._keystore_path.write_bytes(encrypted)
-        self._keystore_path.chmod(0o600)
+        safe_chmod(self._keystore_path, 0o600)
         log.info("Feature key stored in keystore")
 
     def load_feature_key(self) -> str | None:

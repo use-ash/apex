@@ -20,7 +20,7 @@ def log(msg: str) -> None:
     with _log_lock:
         try:
             LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-            os.chmod(LOG_PATH.parent, 0o700)
+            safe_chmod(LOG_PATH.parent, 0o700)
             if LOG_PATH.exists() and LOG_PATH.stat().st_size > LOG_MAX:
                 rotated = LOG_PATH.with_suffix(".log.1")
                 if rotated.exists():

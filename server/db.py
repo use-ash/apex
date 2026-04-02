@@ -78,7 +78,7 @@ def _get_db() -> sqlite3.Connection:
 
 def _init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(DB_PATH.parent, 0o700)
+    safe_chmod(DB_PATH.parent, 0o700)
     conn = _get_db()
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS chats (

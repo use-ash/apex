@@ -41,7 +41,7 @@ except ImportError:
 _STREAM_BUFFER_MAX = 200
 _STREAM_JOURNAL_DIR = APEX_ROOT / "state" / "streams"
 _STREAM_JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
-os.chmod(_STREAM_JOURNAL_DIR, 0o700)
+safe_chmod(_STREAM_JOURNAL_DIR, 0o700)
 _CHAT_ID_RE = re.compile(r"^[0-9a-f]{8,12}$")
 
 
@@ -121,6 +121,28 @@ def _has_active_stream(chat_id: str, exclude_stream_id: str = "") -> bool:
     return any(stream_id != exclude_stream_id for stream_id, _ in _get_active_stream_entries(chat_id))
 
 
+def _get_profile_active_stream_stats(profile_id: str) -> tuple[int, int | None]:
+    """Return (active_count, oldest_age_seconds) across ALL chats for a profile.
+
+    Uses _stream_task_is_active() for stale cleanup.  Returns age as integer
+    seconds since the oldest started_at, or None if no active streams.
+    """
+    now = time.monotonic()
+    count = 0
+    oldest_age: float | None = None
+    for chat_id in list(_active_send_tasks):
+        for _sid, info in _get_active_stream_entries(chat_id):
+            if info.get("profile_id") != profile_id:
+                continue
+            count += 1
+            sa = info.get("started_at")
+            if sa is not None:
+                age = now - sa
+                if oldest_age is None or age > oldest_age:
+                    oldest_age = age
+    return count, int(oldest_age) if oldest_age is not None else None
+
+
 def _set_active_send_task(
     chat_id: str,
     stream_id: str,
@@ -146,6 +168,7 @@ def _update_active_send_task(
     name: str | None = None,
     avatar: str | None = None,
     profile_id: str | None = None,
+    started_at: float | None = None,
 ) -> None:
     streams = _active_send_tasks.get(chat_id)
     if not streams:
@@ -159,6 +182,8 @@ def _update_active_send_task(
         info["avatar"] = avatar
     if profile_id is not None:
         info["profile_id"] = profile_id
+    if started_at is not None:
+        info["started_at"] = started_at
 
 
 def _remove_active_send_task(chat_id: str, stream_id: str, task: asyncio.Task | None = None) -> None:

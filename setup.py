@@ -1031,7 +1031,8 @@ def _ensure_cli_wrapper() -> None:
             f'APEX_ROOT="{APEX_ROOT}"\n'
             f'exec "$APEX_ROOT/.venv/bin/python3" "$APEX_ROOT/setup.py" "$@"\n'
         )
-        wrapper.chmod(0o755)
+        from setup.compat import safe_chmod
+        safe_chmod(wrapper, 0o755)
     except Exception:
         pass  # non-critical — user can always run setup.py directly
 
