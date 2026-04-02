@@ -593,6 +593,17 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         if group_agent and is_group_chat and _ws_premium:
             multi_targets = _ws_premium.get_multi_dispatch_targets(chat_id, prompt, group_agent, data)
             for t in multi_targets:
+                # Pass attachment refs directly so secondary agents don't race
+                # with the primary's _save_message DB write (which hasn't happened
+                # yet at task-creation time).
+                _parent_att_refs = [
+                    {
+                        "name": att.get("name", ""),
+                        "url": f"/api/uploads/{att['id']}.{att.get('ext', '')}",
+                    }
+                    for att in attachments
+                    if att.get("id")
+                ] if attachments else []
                 extra_data = {
                     "chat_id": chat_id,
                     "prompt": prompt,
@@ -602,6 +613,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                     "_mention_chain": [],
                     "_source": "user_multi",
                     "_suppress_user_message": True,
+                    "_parent_attachment_refs": _parent_att_refs,
                 }
                 log(f"user multi-dispatch: @{t['name']} in chat={chat_id[:8]}")
                 extra_task = asyncio.create_task(
@@ -633,7 +645,10 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
     # text reference — "[Attached: name — /api/uploads/...]" — at zero image token cost.
     # Condition: suppress_user_message means this is a multi-dispatch secondary turn.
     if suppress_user_message and not attachments and is_group_chat:
-        _recent_atts = _get_latest_user_attachments(chat_id)
+        # Prefer refs passed from primary dispatch — avoids racing with the primary's
+        # _save_message DB write, which hasn't executed yet when secondary tasks run.
+        # Fall back to DB lookup for agent-to-agent handoffs that don't carry refs.
+        _recent_atts = data.get("_parent_attachment_refs") or _get_latest_user_attachments(chat_id)
         if _recent_atts:
             ref_lines = "\n".join(
                 f"[Attached: {a['name']} — {a['url']}]"
