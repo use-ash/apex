@@ -191,6 +191,10 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
     effective_model = model or "codex:gpt-5.4"
     cli_model = effective_model.removeprefix("codex:")
 
+    # Models that require OpenAI API key (not available on ChatGPT OAuth)
+    _API_KEY_MODELS = {"o3", "o4-mini"}
+    use_api_key = cli_model in _API_KEY_MODELS
+
     # Check for existing Codex thread to resume (in-memory → DB fallback)
     existing_thread = _codex_threads.get(chat_id, "")
     thread_turns = _codex_thread_turns.get(chat_id, 0)
@@ -361,13 +365,21 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
             "-m", cli_model, "-s", codex_sandbox, "-C", codex_workspace, "-",
         ]
 
-    # Spawn codex CLI
+    # Spawn codex CLI — API-key models use a separate config dir with API auth
+    codex_env = {**os.environ, "OPENAI_API_KEY": OPENAI_API_KEY}
+    if use_api_key:
+        api_config = Path.home() / ".codex-api"
+        if api_config.is_dir():
+            codex_env["CODEX_CONFIG_DIR"] = str(api_config)
+            log(f"codex: using API key auth for {cli_model}")
+        else:
+            log(f"codex: WARNING — {cli_model} requires API key but ~/.codex-api not configured")
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, "OPENAI_API_KEY": OPENAI_API_KEY},
+        env=codex_env,
     )
 
     if proc.stdin is not None:
