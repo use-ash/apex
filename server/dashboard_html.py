@@ -1501,6 +1501,13 @@ select {
                 </svg>
                 Logs
             </div>
+            <!-- License -->
+            <div class="nav-item" data-page="license">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                </svg>
+                License
+            </div>
         </nav>
 
         <div class="sidebar-footer">
@@ -2241,6 +2248,51 @@ select {
             </div>
         </div>
 
+        <!-- =========================================================
+             LICENSE PAGE
+             ========================================================= -->
+        <div class="page" id="page-license">
+            <div class="page-header">
+                <h2>License</h2>
+            </div>
+
+            <div id="license-status-banner" class="health-banner banner-ok" style="margin-bottom:20px">
+                <div class="banner-left">
+                    <span class="banner-dot"></span>
+                    <span id="license-status-text">Loading...</span>
+                </div>
+                <div class="banner-right" id="license-status-meta"></div>
+            </div>
+
+            <div class="config-section" id="license-details-section">
+                <div class="config-section-header">
+                    <span class="config-section-title">License Details</span>
+                </div>
+                <div id="license-details" style="padding:16px">
+                    <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                </div>
+            </div>
+
+            <div class="config-section" id="license-activate-section">
+                <div class="config-section-header">
+                    <span class="config-section-title">Activate License</span>
+                </div>
+                <div style="padding:16px">
+                    <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">
+                        Paste your license key below. You receive this after purchasing at
+                        <a href="https://use-ash.com" target="_blank" style="color:var(--accent)">use-ash.com</a>.
+                    </p>
+                    <textarea id="license-key-input" rows="6"
+                        style="width:100%;background:var(--bg-secondary);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:12px;font-family:'SF Mono','JetBrains Mono',monospace;font-size:11px;resize:vertical"
+                        placeholder='Paste your license JSON here...'></textarea>
+                    <div style="display:flex;gap:8px;margin-top:10px">
+                        <button class="btn btn-primary" id="btn-activate-license">Activate</button>
+                    </div>
+                    <div id="license-activate-result" style="margin-top:10px;font-size:13px"></div>
+                </div>
+            </div>
+        </div>
+
     </main>
 </div>
 
@@ -2430,9 +2482,100 @@ function navigateTo(page) {
         if (page === "personas") loadPersonas();
         if (page === "workspace") loadWorkspace();
         if (page === "logs") loadLogsPage();
+        if (page === "license") loadLicense();
     }
 }
 window.navigateTo = navigateTo;
+
+/* -- License -------------------------------------------------------- */
+
+async function loadLicense() {
+    try {
+        const r = await fetch("/api/license/status");
+        const s = await r.json();
+        const banner = document.getElementById("license-status-banner");
+        const statusText = document.getElementById("license-status-text");
+        const meta = document.getElementById("license-status-meta");
+        const details = document.getElementById("license-details");
+        const activateSection = document.getElementById("license-activate-section");
+
+        if (s.license_valid) {
+            banner.className = "health-banner banner-ok";
+            statusText.textContent = `Apex Pro \u2014 ${s.tier} license active`;
+            const exp = new Date(s.license_expires);
+            const daysLeft = Math.max(0, Math.ceil((exp - Date.now()) / 86400000));
+            meta.textContent = `${daysLeft} days remaining`;
+            details.innerHTML =
+                '<div style="display:grid;grid-template-columns:auto 1fr;gap:8px 16px;font-size:13px">' +
+                '<span style="color:var(--text-dim)">Tier</span><span>' + s.tier + '</span>' +
+                '<span style="color:var(--text-dim)">License ID</span><span style="font-family:monospace;font-size:11px">' + (s.license_id || '\u2014') + '</span>' +
+                '<span style="color:var(--text-dim)">Expires</span><span>' + (s.license_expires ? new Date(s.license_expires).toLocaleDateString() : '\u2014') + '</span>' +
+                '<span style="color:var(--text-dim)">Premium</span><span>' + [['groups','Group Channels'],['orchestration','Multi-Agent Orchestration'],['agent_profiles','Custom Personas']].filter(([k]) => s.features[k]).map(([,v]) => v).join(', ') + '</span>' +
+                '</div>';
+            activateSection.querySelector('[id=license-key-input]').style.display = 'none';
+            document.getElementById("btn-activate-license").style.display = 'none';
+        } else if (s.trial_active) {
+            banner.className = "health-banner banner-warn";
+            statusText.textContent = "Trial active";
+            meta.textContent = s.trial_days_remaining + " days remaining";
+            details.innerHTML =
+                '<div style="font-size:13px;color:var(--text-dim);padding:4px 0">' +
+                'All premium features are unlocked during the trial. ' +
+                'When it ends, group channels become read-only and your data is preserved.</div>';
+            activateSection.querySelector('[id=license-key-input]').style.display = '';
+            document.getElementById("btn-activate-license").style.display = '';
+        } else {
+            banner.className = "health-banner banner-critical";
+            statusText.textContent = "Free tier \u2014 premium features locked";
+            meta.textContent = "";
+            details.innerHTML =
+                '<div style="font-size:13px;color:var(--text-dim);padding:4px 0">' +
+                'Upgrade to Apex Pro for group channels, multi-agent orchestration, and custom personas. ' +
+                '<a href="https://buy.stripe.com/dRmcN40Ag8Qucptc2UcQU04" target="_blank" style="color:var(--accent)">View plans</a></div>';
+            activateSection.querySelector('[id=license-key-input]').style.display = '';
+            document.getElementById("btn-activate-license").style.display = '';
+        }
+    } catch(e) {
+        document.getElementById("license-details").innerHTML = '<div style="color:var(--text-dim)">Failed to load license status</div>';
+    }
+}
+
+async function activateLicense() {
+    const input = document.getElementById("license-key-input");
+    const result = document.getElementById("license-activate-result");
+    const raw = input.value.trim();
+    if (!raw) { result.innerHTML = '<span style="color:#f87171">Paste your license key first</span>'; return; }
+
+    result.innerHTML = '<span style="color:var(--accent)">Activating...</span>';
+    try {
+        const r = await fetch("/api/license/activate", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: raw,
+        });
+        const data = await r.json();
+        if (data.success) {
+            result.innerHTML = '<span style="color:#4ade80">License activated! Tier: ' + data.tier + '</span>';
+            input.value = '';
+            setTimeout(() => loadLicense(), 500);
+        } else {
+            result.innerHTML = '<span style="color:#f87171">Failed: ' + (data.error || 'Unknown error') + '</span>';
+        }
+    } catch(e) {
+        result.innerHTML = '<span style="color:#f87171">Error: ' + e.message + '</span>';
+    }
+}
+
+async function deactivateLicense() {
+    if (!confirm("Deactivate your license? Premium features will be locked until you re-activate.")) return;
+    try {
+        const r = await fetch("/api/license/deactivate", {method: "POST"});
+        const data = await r.json();
+        if (data.success) {
+            loadLicense();
+        }
+    } catch(e) { /* ignore */ }
+}
 
 /* -- Mobile Sidebar ------------------------------------------------- */
 
@@ -4597,58 +4740,7 @@ async function deleteMcpServer(name) {
 }
 window.deleteMcpServer = deleteMcpServer;
 
-async function addMcpServer() {
-    var name = document.getElementById("mcp-name").value.trim();
-    var type = document.getElementById("mcp-type").value;
-    if (!name) { showToast("Name is required", "error"); return; }
 
-    var body = {name: name, type: type};
-    if (type === "stdio") {
-        var cmdRaw = document.getElementById("mcp-command").value.trim();
-        if (!cmdRaw) { showToast("Command is required", "error"); return; }
-        var parts = cmdRaw.split(/\\s+/);
-        body.command = parts[0];
-        if (parts.length > 1) body.args = parts.slice(1);
-    } else {
-        var url = document.getElementById("mcp-url").value.trim();
-        if (!url) { showToast("URL is required", "error"); return; }
-        body.url = url;
-    }
-
-    try {
-        await apiFetch("/mcp/servers", {
-            method: "POST",
-            headers: {"Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest"},
-            body: JSON.stringify(body),
-        });
-        showToast("MCP server added: " + name, "success");
-        document.getElementById("mcp-add-form").style.display = "none";
-        document.getElementById("mcp-name").value = "";
-        document.getElementById("mcp-command").value = "";
-        document.getElementById("mcp-url").value = "";
-        loadWorkspace();
-    } catch (err) {
-        showToast("Failed to add: " + err.message, "error");
-    }
-}
-
-/* MCP form wiring */
-(function() {
-    document.addEventListener("DOMContentLoaded", function() {
-        var addBtn = document.getElementById("btn-mcp-add");
-        if (addBtn) addBtn.addEventListener("click", function() {
-            document.getElementById("mcp-add-form").style.display = "block";
-        });
-        var saveBtn = document.getElementById("btn-mcp-save");
-        if (saveBtn) saveBtn.addEventListener("click", addMcpServer);
-        var typeSelect = document.getElementById("mcp-type");
-        if (typeSelect) typeSelect.addEventListener("change", function() {
-            var isStdio = this.value === "stdio";
-            document.getElementById("mcp-stdio-fields").style.display = isStdio ? "block" : "none";
-            document.getElementById("mcp-url-fields").style.display = isStdio ? "none" : "block";
-        });
-    });
-})();
 
 /* -- Skills Catalog ------------------------------------------------ */
 
@@ -5392,6 +5484,7 @@ function init() {
     bindClick("btn-cleanup-uploads", cleanupUploads);
     bindClick("btn-create-backup", createBackup);
     bindClick("btn-save-sans", saveSANs);
+    bindClick("btn-activate-license", activateLicense);
 
     /* Route from URL hash */
     var route = parseDashboardHash(window.location.hash);
