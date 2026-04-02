@@ -2639,6 +2639,13 @@ function handleEvent(msg) {
       _removeThinkingIndicator();
       const sid = _resolveStreamId(msg, {allowFocusedFallback: true});
       const ctx = _getCtx(msg, {allowFocusedFallback: true});
+      // Backfill thinking text from result payload if real-time events were
+      // missed or empty (e.g. single-turn codex responses where pending_agent_message
+      // was never flushed as thinking, or non-streaming _call_openai_responses path).
+      if (ctx && msg.thinking && !ctx.thinkingText) {
+        ctx.thinkingText = msg.thinking;
+        if (!ctx.thinkingStart) ctx.thinkingStart = Date.now();
+      }
       // B-25: Finalize the stream state immediately on 'result' so the Stop
       // button and busy flag are cleared as soon as the agent's response is
       // complete.  Without this, the Stop button stayed active and a follow-up

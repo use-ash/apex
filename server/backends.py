@@ -538,6 +538,7 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
         "session_id": thread_id or None,
         "context_tokens_in": tokens_in,
         "context_window": _cw,
+        "thinking": thinking_text,
     })
     if thread_id:
         _codex_thread_turns[chat_id] = _codex_thread_turns.get(chat_id, 0) + 1
@@ -663,6 +664,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 "session_id": None,
                 "context_tokens_in": _est,
                 "context_window": _cw,
+                "thinking": result.get("thinking", ""),
             })
             return result
 
@@ -724,6 +726,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
         "cost_usd": 0, "tokens_in": 0, "tokens_out": 0, "session_id": None,
         "context_tokens_in": _est,
         "context_window": _cw,
+        "thinking": thinking_text,
     })
     return {"text": result_text, "is_error": is_error, "error": error_msg or None,
             "cost_usd": 0, "tokens_in": 0, "tokens_out": 0,

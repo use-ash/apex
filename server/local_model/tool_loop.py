@@ -349,15 +349,36 @@ def _call_chatgpt_backend(model: str, messages: list, tools: list,
                 content += event.get("delta", "")
             elif etype == "response.reasoning_summary_text.delta":
                 delta = event.get("delta", "")
-                reasoning_text += delta
-                # Emit delta in real-time via the outer async loop (we're in a thread)
-                if _loop is not None and _emit_fn is not None:
-                    asyncio.run_coroutine_threadsafe(
-                        _emit_fn({"type": "thinking", "text": delta}), _loop
-                    )
+                if delta:
+                    reasoning_text += delta
+                    # Emit delta in real-time via the outer async loop (we're in a thread)
+                    if _loop is not None and _emit_fn is not None:
+                        asyncio.run_coroutine_threadsafe(
+                            _emit_fn({"type": "thinking", "text": delta}), _loop
+                        )
+            elif etype == "response.reasoning_summary_text.done":
+                # Authoritative final text — use if delta events produced nothing
+                done_text = event.get("text", "")
+                if done_text and not reasoning_text:
+                    reasoning_text = done_text
+                    if _loop is not None and _emit_fn is not None:
+                        asyncio.run_coroutine_threadsafe(
+                            _emit_fn({"type": "thinking", "text": done_text}), _loop
+                        )
+                elif done_text:
+                    reasoning_text = done_text  # ensure final value is authoritative
             elif etype == "response.output_item.done":
                 item = event.get("item", {})
-                if item.get("type") == "function_call":
+                if item.get("type") == "reasoning":
+                    # Fallback: reasoning content in output_item.done summary
+                    for part in item.get("summary", []):
+                        if part.get("type") == "summary_text" and not reasoning_text:
+                            reasoning_text = part.get("text", "")
+                            if _loop is not None and _emit_fn is not None:
+                                asyncio.run_coroutine_threadsafe(
+                                    _emit_fn({"type": "thinking", "text": reasoning_text}), _loop
+                                )
+                elif item.get("type") == "function_call":
                     call_id = item.get("call_id", item.get("id", ""))
                     tool_calls.append({
                         "id": call_id,
