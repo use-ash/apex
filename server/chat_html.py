@@ -2415,6 +2415,17 @@ function openThinkingPanel(pillEl) {
     const thinkingEl = bodyEl.querySelector('.sp-thinking');
     thinkingEl.textContent = pillEl._thinkingText || '';
     renderMarkdown(thinkingEl);
+    if (pillEl.classList.contains('streaming')) {
+      function refreshThinking() {
+        const t = pillEl._thinkingText || '';
+        if (thinkingEl.textContent !== t) {
+          thinkingEl.textContent = t;
+          renderMarkdown(thinkingEl);
+        }
+        titleEl.innerHTML = `Thinking<span class="sp-dim">${pillEl._thinkingDuration ? ` · ${_formatDuration(pillEl._thinkingDuration)}` : ''}</span>`;
+      }
+      _sidePanelRefreshTimer = setInterval(refreshThinking, 800);
+    }
   });
 }
 
