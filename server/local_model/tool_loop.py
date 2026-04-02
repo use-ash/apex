@@ -367,6 +367,10 @@ def _call_chatgpt_backend(model: str, messages: list, tools: list,
                         )
                 elif done_text:
                     reasoning_text = done_text  # ensure final value is authoritative
+                    if _loop is not None and _emit_fn is not None:
+                        asyncio.run_coroutine_threadsafe(
+                            _emit_fn({"type": "thinking", "text": done_text}), _loop
+                        )
             elif etype == "response.output_item.done":
                 item = event.get("item", {})
                 if item.get("type") == "reasoning":
