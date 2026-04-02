@@ -299,6 +299,35 @@ class LicenseManager:
                 "error": f"Unsupported license version: {data.get('version')}",
             }
 
+        # Bind license to this instance (single-use enforcement)
+        import urllib.request
+        import urllib.error
+        license_id = data.get("license_id", "")
+        if license_id:
+            try:
+                bind_url = LICENSE_SERVER_URL.rsplit("/", 2)[0] + "/license/bind"
+                bind_payload = json.dumps({
+                    "license_id": license_id,
+                    "instance_id": self._instance_id(),
+                }).encode()
+                bind_req = urllib.request.Request(
+                    bind_url, data=bind_payload,
+                    headers={"Content-Type": "application/json", "User-Agent": "ApexLicense/1"},
+                    method="POST",
+                )
+                bind_resp = urllib.request.urlopen(bind_req, timeout=10)
+                bind_data = json.loads(bind_resp.read().decode())
+                # Server may return an updated feature key
+                if not feature_key and bind_data.get("feature_key"):
+                    feature_key = bind_data["feature_key"]
+                log.info("License bound to instance %s", self._instance_id()[:8])
+            except urllib.error.HTTPError as exc:
+                if exc.code == 409:
+                    return {"success": False, "error": "License already activated on another machine. Each license is single-use."}
+                log.debug("License bind failed (non-fatal, will retry on check-in): %s", exc)
+            except Exception as exc:
+                log.debug("License bind unavailable (offline activation): %s", exc)
+
         # Write license file (atomic)
         self._state_dir.mkdir(parents=True, exist_ok=True)
         tmp = self._license_path.with_suffix(".tmp")
