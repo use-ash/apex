@@ -114,3 +114,18 @@ Before starting any project or feature work, check `docs/wip/` for an existing d
 When creating a new design doc, place it in `docs/wip/` with a descriptive name (e.g. `PERMISSION_LEVELS_PLAN.md`, `MCP_BRIDGE_DESIGN.md`). Reference it in your channel when handing off work.
 
 **Security audit findings, vulnerability reports, and pen test results must always go in `docs/wip/`, never in tracked files.** Publishing security findings to the public repo exposes attack surface details to adversaries. This applies to any document that describes a vulnerability, a fix for a vulnerability, or the security posture of the system. No exceptions.
+
+---
+
+## Rule 9 — Design Before You Build
+
+Before implementing anything that touches more than 2 files, stop and answer these questions:
+
+1. **Can this use existing infrastructure?** Don't create a new module, backend type, or abstraction when an existing one can be extended with a few lines. Adding a field to an existing JSON config is almost always better than a new config system.
+2. **Am I adding a new code path?** Every new code path (new backend, new dispatch branch, new tool type) is permanent maintenance. Extend an existing path unless there's a clear reason it can't work.
+3. **If I removed half the plan, would it still solve the problem?** If yes, remove that half. Ship the minimum that works. The rest can be added later if actually needed.
+4. **Where do the checks live?** Resolve state once, thread it through. Don't create a central module that gets called from 5 different files — that's 5 places to forget to call it.
+
+If the design requires a new file, justify it in the design doc. "It felt cleaner" is not a justification. "The existing file is 2000 lines and this is an independent concern" is.
+
+Post your design in the group channel for review before starting implementation. Another agent's job is to find what can be removed, not what should be added.
