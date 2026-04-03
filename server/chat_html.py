@@ -4275,37 +4275,13 @@ async function toggleVoiceRecording() {
 }
 
 // --- Send ---
-function _resolveLeadingMentionTarget(text) {
-  if (currentChatType !== 'group' || !text || !currentGroupMembers.length) return '';
-  const trimmed = text.trimStart();
-  if (!trimmed.startsWith('@')) return '';
-  const reserved = trimmed.match(/^@([^\s:,.!?-]+)/);
-  if (reserved && reserved[1] && reserved[1].toLowerCase() === 'all') return '';
-  const members = currentGroupMembers.slice().sort((a, b) => {
-    const aLen = Math.max((a.name || '').length, (a.profile_id || '').length);
-    const bLen = Math.max((b.name || '').length, (b.profile_id || '').length);
-    return bLen - aLen;
-  });
-  for (const member of members) {
-    const aliases = [member.name || '', member.profile_id || ''].filter(Boolean);
-    for (const alias of aliases) {
-      const prefix = '@' + alias;
-      if (trimmed.slice(0, prefix.length).toLowerCase() !== prefix.toLowerCase()) continue;
-      const next = trimmed.charAt(prefix.length);
-      if (next && !/[\s:,.!?-]/.test(next)) continue;
-      return member.profile_id || '';
-    }
-  }
-  return '';
-}
-
 async function send(options = {}) {
   const allowLastPrompt = Boolean(options.allowLastPrompt);
   const input = document.getElementById('input');
   const draftText = input.value;
   const rawText = draftText.trim();
   const text = rawText || (allowLastPrompt ? lastSubmittedPrompt : '');
-  const effectiveTargetAgent = options.targetAgent || _resolveLeadingMentionTarget(text) || '';
+  const effectiveTargetAgent = options.targetAgent || '';
   dbg(' send:', {text: text?.substring(0,30), currentChat, streaming, wsState: ws?.readyState});
   if (!text && pendingAttachments.length === 0) return;
   if (!currentChat) {
