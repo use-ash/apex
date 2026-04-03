@@ -5,6 +5,7 @@ from pathlib import Path
 from cryptography import x509
 from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
 from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.hazmat.primitives.asymmetric import rsa
 import ipaddress
 
@@ -74,14 +75,13 @@ cc = (x509.CertificateBuilder()
 wk(ssl / "client.key", ck)
 wc(ssl / "client.crt", cc)
 try:
-    p12 = serialization.pkcs12.serialize_key_and_certificates(
+    p12_data = pkcs12.serialize_key_and_certificates(
         b"Apex Client", ck, cc, [ca_cert],
         serialization.BestAvailableEncryption(b"apex"))
 except Exception:
-    # Fallback for older cryptography versions
-    p12 = serialization.pkcs12.serialize_key_and_certificates(
+    p12_data = pkcs12.serialize_key_and_certificates(
         b"Apex Client", ck, cc, [ca_cert],
         serialization.NoEncryption())
-(ssl / "client.p12").write_bytes(p12)
+(ssl / "client.p12").write_bytes(p12_data)
 print("Client + p12 ok")
 print("=== ALL CERTS OK ===")
