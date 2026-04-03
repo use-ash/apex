@@ -678,6 +678,21 @@ def _get_group_roster_prompt(chat_id: str, user_message: str = "") -> str:
     roster_prompt = _premium.get_group_roster_prompt(chat_id, user_message)
     if not roster_prompt:
         return ""
+    authoritative_note = (
+        "The channel roster above is authoritative. "
+        "Use it to determine who is in the room and who can be @mentioned. "
+        "Do not claim the room roster is unavailable, and ignore SDK client counts or other inferred presence signals.\n"
+    )
+    if "</system-reminder>" in roster_prompt:
+        roster_prompt = roster_prompt.replace(
+            "</system-reminder>",
+            f"{authoritative_note}</system-reminder>",
+            1,
+        )
+    else:
+        roster_prompt = (
+            f"{roster_prompt}<system-reminder>\n{authoritative_note}</system-reminder>\n\n"
+        )
     load_prompt = _build_group_load_prompt(chat_id)
     return f"{roster_prompt}{load_prompt}" if load_prompt else roster_prompt
 
