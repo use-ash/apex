@@ -672,11 +672,33 @@ def _build_group_load_prompt(chat_id: str) -> str:
     return "<system-reminder>\n" + "\n".join(lines) + "\n</system-reminder>\n\n"
 
 
+def _build_group_roster_prompt_fallback(chat_id: str) -> str:
+    """Build a basic authoritative roster prompt when premium is unavailable."""
+    members = _get_group_members(chat_id)
+    if not members:
+        return ""
+
+    lines = [
+        "# Group Roster",
+        "These are the agents currently in this room.",
+    ]
+    for member in members:
+        profile_id = str(member.get("profile_id") or "")
+        name = str(member.get("name") or profile_id or "Unknown")
+        avatar = str(member.get("avatar") or "")
+        routing_mode = str(member.get("routing_mode") or "mentioned")
+        primary_tag = " [primary]" if member.get("is_primary") else ""
+        lines.append(f"- {name} [{profile_id}] {avatar}{primary_tag} — routing: {routing_mode}")
+    return "<system-reminder>\n" + "\n".join(lines) + "\n</system-reminder>\n\n"
+
+
 def _get_group_roster_prompt(chat_id: str, user_message: str = "") -> str:
     """Delegate to premium module, then append cross-chat load visibility."""
-    if not _premium:
-        return ""
-    roster_prompt = _premium.get_group_roster_prompt(chat_id, user_message)
+    roster_prompt = ""
+    if _premium:
+        roster_prompt = _premium.get_group_roster_prompt(chat_id, user_message)
+    if not roster_prompt:
+        roster_prompt = _build_group_roster_prompt_fallback(chat_id)
     if not roster_prompt:
         return ""
     authoritative_note = (
