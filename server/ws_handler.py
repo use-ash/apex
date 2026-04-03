@@ -1081,6 +1081,10 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
     permission_policy = _resolve_effective_tool_policy(chat_id, chat, group_agent)
     permission_level = int(permission_policy.get("level", 1))
     allowed_commands = list(permission_policy.get("allowed_commands") or [])
+    if handoff_source in {"relay_feedback", "relay_roster_feedback"}:
+        permission_policy = {**permission_policy, "level": 0, "allowed_commands": []}
+        permission_level = 0
+        allowed_commands = []
     if (
         group_agent
         and is_group_chat

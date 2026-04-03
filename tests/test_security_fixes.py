@@ -2108,6 +2108,78 @@ class SecurityFixTests(unittest.TestCase):
             seen_calls[1][1],
         )
 
+    def test_group_relay_roster_feedback_disables_tools(self) -> None:
+        chat_id = self._create_test_group_chat()
+        db_mod._update_chat_settings(chat_id, {"agent_mentions_enabled": True})
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                "UPDATE agent_profiles SET backend = ?, model = ? WHERE id IN (?, ?)",
+                ("claude", "claude-sonnet-4-6", "queue-codeexpert", "queue-apex-assistant"),
+            )
+            conn.commit()
+            conn.close()
+
+        permission_levels: list[tuple[str, int]] = []
+        seen_profiles: list[str] = []
+
+        async def fake_get_or_create_client(
+            client_key: str,
+            model=None,
+            permission_level=None,
+            allowed_commands=None,
+        ):
+            permission_levels.append((client_key, int(permission_level)))
+            return object()
+
+        async def fake_run_query_turn(client, make_query_input, chat_id_arg: str):
+            profile_id = _current_group_profile_id.get("")
+            seen_profiles.append(profile_id)
+            if profile_id == "queue-codeexpert":
+                if seen_profiles.count("queue-codeexpert") == 1:
+                    text = "I am unsure who is present in this room. I cannot see a live room roster."
+                else:
+                    text = "Passing to @Queue Apex Assistant."
+            else:
+                text = "Handled."
+            return {
+                "text": text,
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", None),
+            mock.patch.object(ws_handler, "_get_or_create_client", side_effect=fake_get_or_create_client),
+            mock.patch.object(ws_handler, "_run_query_turn", side_effect=fake_run_query_turn),
+        ):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "Start relay",
+                        "target_agent": "queue-codeexpert",
+                    })
+                    stream_end_count = 0
+                    while stream_end_count < 3:
+                        msg = ws.receive_json()
+                        if msg.get("type") == "stream_end":
+                            stream_end_count += 1
+
+        codeexpert_levels = [
+            level for client_key, level in permission_levels
+            if client_key == f"{chat_id}:queue-codeexpert"
+        ]
+        self.assertEqual(codeexpert_levels[:2], [2, 0])
+        self.assertIn((f"{chat_id}:queue-apex-assistant", 2), permission_levels)
+
     def test_group_relay_agent_at_all_is_suppressed(self) -> None:
         chat_id = self._create_test_group_chat()
         primary = self._group_agent(chat_id, "queue-codeexpert")
