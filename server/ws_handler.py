@@ -16,6 +16,7 @@ import re
 import time
 import uuid
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 import env
@@ -26,8 +27,9 @@ from license import get_license_manager
 
 from log import log
 from db import (
-    _get_chat, _update_chat, _update_chat_settings,
+    _get_chat, _update_chat, _update_chat_settings, _get_chat_settings,
     _get_group_members,
+    _get_chat_tool_policy, _get_profile_tool_policy, _set_profile_tool_policy,
     _get_recent_messages_text,
     _save_message,
     _get_latest_user_attachments,
@@ -47,7 +49,6 @@ from streaming import (
     _set_active_send_task, _update_active_send_task, _remove_active_send_task,
     _cancel_chat_streams,
     _make_options, _get_or_create_client,
-    _resolve_sdk_permission_level,
     _register_client, _has_client,
     _get_chat_lock, _get_chat_send_lock,
     _reset_stream_buffer, _cleanup_stream_journal, _load_journal_events,
@@ -129,7 +130,7 @@ def _match_group_mention_prefix(text: str, alias: str) -> int:
     if text[: len(prefix)].casefold() != prefix.casefold():
         return 0
     next_char = text[len(prefix): len(prefix) + 1]
-    if next_char and not re.match(r"[\s:,.!?-]", next_char):
+    if next_char and not re.match(r"[\s:,.!?\-)\]}>*_`~\"]", next_char):
         return 0
     return len(prefix)
 
@@ -160,6 +161,43 @@ def _find_group_mention_matches(prompt: str, members: list[dict]) -> list[tuple[
         matches.append((at_pos, at_pos + matched_len, matched_member))
         idx = at_pos + matched_len
     return matches
+
+
+def _find_invalid_group_mentions(prompt: str, members: list[dict]) -> list[str]:
+    valid_matches = {
+        start: end
+        for start, end, _matched_member in _find_group_mention_matches(prompt, members)
+    }
+    invalid: list[str] = []
+    seen: set[str] = set()
+    idx = 0
+    while idx < len(prompt):
+        at_pos = prompt.find("@", idx)
+        if at_pos < 0:
+            break
+        prev_char = prompt[at_pos - 1: at_pos] if at_pos > 0 else ""
+        if prev_char and re.match(r"[\w]", prev_char):
+            idx = at_pos + 1
+            continue
+        valid_end = valid_matches.get(at_pos)
+        if valid_end:
+            idx = valid_end
+            continue
+        text = prompt[at_pos + 1:]
+        match = re.match(
+            r"([A-Za-z0-9][A-Za-z0-9_-]*(?:\s+[A-Za-z0-9][A-Za-z0-9_-]*){0,4})",
+            text,
+        )
+        if not match:
+            idx = at_pos + 1
+            continue
+        candidate = " ".join(match.group(1).split()).strip()
+        folded = candidate.casefold()
+        if candidate and folded != "all" and folded not in seen:
+            seen.add(folded)
+            invalid.append(candidate)
+        idx = at_pos + 1 + len(match.group(1))
+    return invalid
 
 
 def _strip_group_leading_mentions(prompt: str, members: list[dict] | None = None) -> str:
@@ -200,6 +238,41 @@ def _find_group_mentioned_members(prompt: str, members: list[dict]) -> list[dict
     return mentioned
 
 
+def _find_specific_group_mentioned_members(prompt: str, members: list[dict]) -> list[dict]:
+    mentioned: list[dict] = []
+    seen_profile_ids: set[str] = set()
+    for _start, _end, matched_member in _find_group_mention_matches(prompt, members):
+        if matched_member is None:
+            continue
+        profile_id = str(matched_member.get("profile_id") or "")
+        if profile_id and profile_id not in seen_profile_ids:
+            seen_profile_ids.add(profile_id)
+            mentioned.append(matched_member)
+    return mentioned
+
+
+def _has_group_broadcast_mention(prompt: str, members: list[dict]) -> bool:
+    return any(matched_member is None for _start, _end, matched_member in _find_group_mention_matches(prompt, members))
+
+
+def _format_group_member_mentions(members: list[dict], *, exclude_profile_id: str = "") -> str:
+    handles: list[str] = []
+    seen: set[str] = set()
+    for member in members:
+        profile_id = str(member.get("profile_id") or "")
+        if exclude_profile_id and profile_id == exclude_profile_id:
+            continue
+        name = str(member.get("name") or "").strip()
+        if not name:
+            continue
+        folded = name.casefold()
+        if folded in seen:
+            continue
+        seen.add(folded)
+        handles.append(f"@{name}")
+    return ", ".join(handles)
+
+
 def _resolve_group_agent_fallback(chat_id: str, prompt: str) -> dict | None:
     members = _get_group_members(chat_id)
     if not members:
@@ -235,6 +308,41 @@ def _merge_group_dispatch_targets(*target_lists: list[dict]) -> list[dict]:
     return merged
 
 
+def _build_missing_group_mentions_message(
+    missing_mentions: list[str],
+    members: list[dict],
+    *,
+    sender_profile_id: str = "",
+) -> str:
+    available = _format_group_member_mentions(members, exclude_profile_id=sender_profile_id)
+    if len(missing_mentions) == 1:
+        message = f"@{missing_mentions[0]} isn't in this room."
+    else:
+        missing_list = ", ".join(f"@{name}" for name in missing_mentions)
+        message = f"These agents aren't in this room: {missing_list}."
+    if available:
+        message = f"{message} Available agents: {available}."
+    return message
+
+
+def _build_missing_group_mentions_feedback_prompt(
+    missing_mentions: list[str],
+    members: list[dict],
+    *,
+    sender_name: str,
+    sender_profile_id: str,
+) -> str:
+    base = _build_missing_group_mentions_message(
+        missing_mentions,
+        members,
+        sender_profile_id=sender_profile_id,
+    )
+    return (
+        f"System feedback for @{sender_name}: {base} "
+        "Continue yourself or hand off to an agent who is present."
+    )
+
+
 def _strip_group_target_prefix(prompt: str, member: dict) -> str:
     text = prompt.lstrip()
     leading_ws = prompt[: len(prompt) - len(text)]
@@ -261,6 +369,34 @@ def _resolve_primary_group_agent(chat_id: str, prompt: str) -> dict | None:
         return None
     primary = next((m for m in members if m.get("is_primary")), members[0])
     return {**primary, "clean_prompt": prompt}
+
+
+def _resolve_effective_tool_policy(chat_id: str, chat: dict, group_agent: dict | None) -> dict:
+    profile_id = str(group_agent.get("profile_id") or "").strip() if group_agent else str(chat.get("profile_id") or "").strip()
+    policy = _get_profile_tool_policy(profile_id) if profile_id else _get_chat_tool_policy(chat_id)
+    effective_policy = dict(policy)
+    elevated_until = str(effective_policy.get("elevated_until") or "").strip()
+    if not profile_id or not elevated_until:
+        return effective_policy
+    try:
+        expires_at = datetime.fromisoformat(elevated_until)
+    except ValueError:
+        expires_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at > datetime.now(timezone.utc):
+        return effective_policy
+    effective_policy["level"] = int(effective_policy.get("default_level", effective_policy.get("level", 1)))
+    effective_policy["elevated_until"] = None
+    try:
+        _set_profile_tool_policy(
+            profile_id,
+            effective_policy,
+            default_level=int(effective_policy.get("default_level", effective_policy.get("level", 1))),
+        )
+    except KeyError:
+        pass
+    return effective_policy
 
 
 def _public_backend_error_message(backend: str, err: Exception | str) -> str:
@@ -290,6 +426,105 @@ def _attachment_refs_json(loaded: list[dict]) -> tuple[str, list[dict]]:
         for item in loaded
     ]
     return json.dumps(refs), refs
+
+
+def _attachment_ref_payload(attachments: list[dict] | None) -> list[dict]:
+    refs: list[dict] = []
+    for att in attachments or []:
+        att_id = str(att.get("id") or "").strip().lower()
+        if not att_id:
+            continue
+        name = str(att.get("name") or "").strip()
+        att_type = str(att.get("type") or "").strip()
+        url = str(att.get("url") or "").strip()
+        if not url or not name or not att_type:
+            try:
+                loaded = _load_attachment(att)
+            except Exception:
+                loaded = None
+            if loaded:
+                if not name:
+                    name = str(loaded.get("name") or "")
+                if not att_type:
+                    att_type = str(loaded.get("type") or "")
+                if not url:
+                    url = f"/api/uploads/{loaded['id']}.{loaded['ext']}"
+        if not url:
+            continue
+        refs.append({
+            "id": att_id,
+            "type": att_type,
+            "name": name,
+            "url": url,
+        })
+    return refs
+
+
+def _inherited_group_attachments(data: dict, backend: str, is_group_chat: bool) -> list[dict]:
+    if not is_group_chat:
+        return []
+    inherited = list(data.get("_parent_attachments") or [])
+    if not inherited:
+        return []
+    try:
+        attachment_error = validate_backend_attachments(backend, inherited)
+    except ValueError:
+        return []
+    if attachment_error:
+        return []
+    return inherited
+
+
+def _merge_relay_actions(*action_lists: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for action_list in action_lists:
+        for action in action_list:
+            action_type = str(action.get("type") or "")
+            target = action.get("target") or {}
+            target_profile_id = str(target.get("profile_id") or "")
+            if action_type in {"relay", "redirect"}:
+                key = (action_type, target_profile_id)
+            elif action_type == "pair_blocked":
+                key = (action_type, str(action.get("target_name") or ""))
+            else:
+                key = (action_type, str(action.get("reason") or ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(action)
+    return merged
+
+
+def _get_agent_relay_fallback(
+    chat_id: str,
+    response_text: str,
+    group_agent: dict,
+    mention_chain: list[str],
+    mention_depth: int,
+) -> dict:
+    current_chain = list(mention_chain) + [str(group_agent.get("profile_id") or "")]
+    mentions_enabled = bool(_get_chat_settings(chat_id).get("agent_mentions_enabled"))
+    members = _get_group_members(chat_id)
+    explicit_targets = _find_specific_group_mentioned_members(response_text, members)
+    return {
+        "mentioned_names": [str(member.get("name") or "") for member in explicit_targets],
+        "mentions_enabled": mentions_enabled,
+        "current_chain": current_chain,
+        "actions": (
+            [
+                {
+                    "type": "relay",
+                    "target": member,
+                    "prompt": response_text,
+                    "depth": mention_depth + 1,
+                }
+                for member in explicit_targets
+            ]
+            if mentions_enabled and mention_depth < MAX_MENTION_DEPTH
+            else []
+        ),
+    }
 
 
 async def _broadcast_chat_event(chat_id: str, payload: dict) -> None:
@@ -667,6 +902,8 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
     chat_id = data.get("chat_id", "")
     prompt = str(data.get("prompt", "")).strip()
     attachments = data.get("attachments", [])
+    handoff_attachments = list(attachments or data.get("_parent_attachments") or [])
+    handoff_attachment_refs = list(data.get("_parent_attachment_refs") or _attachment_ref_payload(handoff_attachments))
     stream_id = str(data.get("stream_id") or _make_stream_id())
     if not (prompt or attachments) or not chat_id:
         return
@@ -774,6 +1011,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
     mention_depth = int(data.get("_mention_depth", 0) or 0)
     mention_chain: list[str] = list(data.get("_mention_chain") or [])
     handoff_source = str(data.get("_source") or "").strip().lower()
+    invalid_mention_feedback_depth = int(data.get("_invalid_mention_feedback_depth", 0) or 0)
     suppress_user_message = bool(data.get("_suppress_user_message"))
 
     # --- Group @mention routing (premium) ---
@@ -797,6 +1035,20 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             group_agent = _resolve_group_agent_fallback(chat_id, prompt)
         if group_agent is None and is_group_chat:
             group_agent = _resolve_primary_group_agent(chat_id, prompt)
+    permission_policy = _resolve_effective_tool_policy(chat_id, chat, group_agent)
+    permission_level = int(permission_policy.get("level", 1))
+    allowed_commands = list(permission_policy.get("allowed_commands") or [])
+    if (
+        group_agent
+        and is_group_chat
+        and handoff_source == "agent"
+        and permission_policy.get("invoke_policy") == "owner_only"
+    ):
+        log(
+            f"owner-only dispatch blocked: chat={chat_id[:8]} "
+            f"agent={group_agent['name']} source=agent"
+        )
+        return
     mention_prompt = prompt
     if (
         group_agent
@@ -814,20 +1066,6 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             if str(t.get("profile_id") or "") == str(group_agent.get("profile_id") or ""):
                 log(f"user multi-dispatch blocked (self-target): {group_agent['name']} chat={chat_id[:8]}")
                 continue
-            # Pass attachment refs directly so secondary agents don't race
-            # with the primary's _save_message DB write (which hasn't happened
-            # yet at task-creation time).
-            _parent_att_refs = [
-                {
-                    "name": att.get("name", ""),
-                    # Prefer the URL the client already computed from the upload
-                    # response. Fallback constructs it from id+ext in case an
-                    # older client omits the url field.
-                    "url": att.get("url") or f"/api/uploads/{att['id']}.{att.get('ext', '')}",
-                }
-                for att in attachments
-                if att.get("id")
-            ] if attachments else []
             extra_data = {
                 "chat_id": chat_id,
                 "prompt": prompt,
@@ -837,7 +1075,8 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 "_mention_chain": [],
                 "_source": "user_multi",
                 "_suppress_user_message": True,
-                "_parent_attachment_refs": _parent_att_refs,
+                "_parent_attachments": handoff_attachments,
+                "_parent_attachment_refs": handoff_attachment_refs,
             }
             log(f"user multi-dispatch: @{t['name']} in chat={chat_id[:8]}")
             extra_task = asyncio.create_task(
@@ -851,6 +1090,9 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         backend = _get_model_backend(chat_model)
         prompt = group_agent["clean_prompt"]
         log(f"group routing: chat={chat_id[:8]} agent={group_agent['name']} model={chat_model} backend={backend}")
+
+    if not attachments:
+        attachments = _inherited_group_attachments(data, backend, is_group_chat)
     is_agent_handoff = bool(
         is_group_chat and group_agent and (
             mention_depth > 0 or handoff_source == "agent" or suppress_user_message
@@ -1049,7 +1291,13 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         if backend == "codex":
             try:
                 if chat_model in {"codex:o3", "codex:o4-mini"} and env.OPENAI_API_KEY:
-                    result = await _run_ollama_chat(chat_id, prompt, model=chat_model, attachments=attachments)
+                    result = await _run_ollama_chat(
+                        chat_id,
+                        prompt,
+                        model=chat_model,
+                        attachments=attachments,
+                        permission_policy=permission_policy,
+                    )
                 else:
                     result = await _run_codex_chat(chat_id, prompt, model=chat_model, attachments=attachments)
             except Exception as codex_err:
@@ -1071,7 +1319,13 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         # --- Local model / xAI path ---
         elif backend in ("ollama", "xai", "mlx"):
             try:
-                result = await _run_ollama_chat(chat_id, prompt, model=chat_model, attachments=attachments)
+                result = await _run_ollama_chat(
+                    chat_id,
+                    prompt,
+                    model=chat_model,
+                    attachments=attachments,
+                    permission_policy=permission_policy,
+                )
             except Exception as ollama_err:
                 log(f"ollama chat error: {ollama_err}")
                 message = _public_backend_error_message(backend, ollama_err)
@@ -1096,7 +1350,12 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 log(f"pre-flight compaction error: chat={chat_id} {compact_err}")
 
             try:
-                client = await _get_or_create_client(client_key, model=chat_model)
+                client = await _get_or_create_client(
+                    client_key,
+                    model=chat_model,
+                    permission_level=permission_level,
+                    allowed_commands=allowed_commands,
+                )
                 result = await _run_query_turn(client, make_query_input, chat_id)
             except Exception as first_error:
                 if DEBUG: log(f"DBG RECOVERY: chat={chat_id} client_key={client_key} first error: {type(first_error).__name__}: {first_error}")
@@ -1112,12 +1371,13 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 existing_session = chat.get("claude_session_id") if chat else None
                 if DEBUG: log(f"DBG RECOVERY: attempting resume session={existing_session or 'NONE'}")
                 try:
-                    permission_level = _resolve_sdk_permission_level(client_key, chat_id)
                     options = _make_options(
                         model=chat_model,
                         session_id=existing_session,
                         client_key=client_key,
                         chat_id=chat_id,
+                        permission_level=permission_level,
+                        allowed_commands=allowed_commands,
                     )
                     client = ClaudeSDKClient(options)
                     await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
@@ -1131,12 +1391,13 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                     _clear_session_context(client_key)
                     if DEBUG: log(f"DBG RECOVERY: session_id NUKED, trying fresh...")
                     try:
-                        permission_level = _resolve_sdk_permission_level(client_key, chat_id)
                         options = _make_options(
                             model=chat_model,
                             session_id=None,
                             client_key=client_key,
                             chat_id=chat_id,
+                            permission_level=permission_level,
+                            allowed_commands=allowed_commands,
                         )
                         client = ClaudeSDKClient(options)
                         await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
@@ -1199,11 +1460,64 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         if group_agent:
             _update_chat_settings(chat_id, {"active_speaker_id": ""})
 
-        # Agent-to-agent @mention relay (premium)
-        if is_group_chat and group_agent and response_text and _ws_premium:
-            relay = _ws_premium.get_agent_relay_actions(
+        # Agent-to-agent @mention relay
+        if is_group_chat and group_agent and response_text:
+            relay_members = _get_group_members(chat_id)
+            broadcast_mention_present = _has_group_broadcast_mention(response_text, relay_members)
+            explicit_relay_targets = _find_specific_group_mentioned_members(response_text, relay_members)
+            missing_relay_mentions = _find_invalid_group_mentions(response_text, relay_members)
+            explicit_relay_target_ids = {
+                str(member.get("profile_id") or "")
+                for member in explicit_relay_targets
+                if str(member.get("profile_id") or "")
+            }
+            explicit_relay_target_names = {
+                str(member.get("name") or "")
+                for member in explicit_relay_targets
+                if str(member.get("name") or "")
+            }
+            fallback_relay = _get_agent_relay_fallback(
                 chat_id, response_text, group_agent, mention_chain, mention_depth,
             )
+            relay = fallback_relay
+            if _ws_premium:
+                premium_relay = _ws_premium.get_agent_relay_actions(
+                    chat_id, response_text, group_agent, mention_chain, mention_depth,
+                )
+                relay = {
+                    "mentioned_names": list(dict.fromkeys(
+                        list(premium_relay.get("mentioned_names") or [])
+                        + list(fallback_relay.get("mentioned_names") or [])
+                    )),
+                    "mentions_enabled": bool(
+                        premium_relay.get("mentions_enabled")
+                        or fallback_relay.get("mentions_enabled")
+                    ),
+                    "current_chain": list(
+                        premium_relay.get("current_chain")
+                        or fallback_relay.get("current_chain")
+                        or []
+                    ),
+                    "actions": _merge_relay_actions(
+                        list(premium_relay.get("actions") or []),
+                        list(fallback_relay.get("actions") or []),
+                    ),
+                }
+            if broadcast_mention_present:
+                log(f"relay blocked (@all reserved for user): {group_agent['name']} chat={chat_id[:8]}")
+                filtered_actions: list[dict] = []
+                for action in relay.get("actions") or []:
+                    action_type = str(action.get("type") or "")
+                    if action_type in {"relay", "redirect"}:
+                        target = action.get("target") or {}
+                        target_profile_id = str(target.get("profile_id") or "")
+                        if target_profile_id and target_profile_id in explicit_relay_target_ids:
+                            filtered_actions.append(action)
+                    elif action_type == "pair_blocked":
+                        target_name = str(action.get("target_name") or "")
+                        if target_name and target_name in explicit_relay_target_names:
+                            filtered_actions.append(action)
+                relay = {**relay, "actions": filtered_actions}
             log(
                 f"mention check: chat={chat_id[:8]} agent={group_agent['name']} "
                 f"mentions_enabled={relay['mentions_enabled']} "
@@ -1211,6 +1525,66 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 f"response_tail={response_text[-300:] if response_text else 'EMPTY'!r}"
             )
             sender_profile_id = str(group_agent.get("profile_id") or "")
+            actionable_relay_actions = [
+                action
+                for action in relay.get("actions") or []
+                if action.get("type") in {"relay", "redirect"}
+            ]
+            if missing_relay_mentions:
+                missing_message = _build_missing_group_mentions_message(
+                    missing_relay_mentions,
+                    relay_members,
+                    sender_profile_id=sender_profile_id,
+                )
+                log(
+                    f"relay missing targets: {group_agent['name']} "
+                    f"missing={missing_relay_mentions!r} chat={chat_id[:8]}"
+                )
+                await _safe_ws_send_json(
+                    original_ws,
+                    {"type": "system_message", "chat_id": chat_id, "text": missing_message},
+                    chat_id=chat_id,
+                )
+                if (
+                    len(missing_relay_mentions) == 1
+                    and not actionable_relay_actions
+                    and invalid_mention_feedback_depth < 1
+                ):
+                    feedback_prompt = _build_missing_group_mentions_feedback_prompt(
+                        missing_relay_mentions,
+                        relay_members,
+                        sender_name=str(group_agent.get("name") or sender_profile_id),
+                        sender_profile_id=sender_profile_id,
+                    )
+                    feedback_data = {
+                        "chat_id": chat_id,
+                        "prompt": feedback_prompt,
+                        "target_agent": sender_profile_id,
+                        "attachments": [],
+                        "stream_id": _make_stream_id(),
+                        "_mention_depth": mention_depth,
+                        "_mention_chain": mention_chain,
+                        "_source": "relay_feedback",
+                        "_suppress_user_message": True,
+                        "_invalid_mention_feedback_depth": invalid_mention_feedback_depth + 1,
+                        "_parent_attachments": handoff_attachments,
+                        "_parent_attachment_refs": handoff_attachment_refs,
+                    }
+                    log(
+                        f"relay feedback queued: {group_agent['name']} "
+                        f"missing=@{missing_relay_mentions[0]} chat={chat_id[:8]}"
+                    )
+                    feedback_task = asyncio.create_task(
+                        _handle_send_action(original_ws, feedback_data)
+                    )
+                    _set_active_send_task(
+                        chat_id,
+                        feedback_data["stream_id"],
+                        feedback_task,
+                        name=group_agent["name"],
+                        avatar=group_agent["avatar"],
+                        profile_id=sender_profile_id,
+                    )
             for action in relay["actions"]:
                 atype = action["type"]
                 if atype == "relay":
@@ -1223,11 +1597,14 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                         "chat_id": chat_id,
                         "prompt": action["prompt"],
                         "target_agent": target["profile_id"],
+                        "attachments": [],
                         "stream_id": _make_stream_id(),
                         "_mention_depth": action["depth"],
                         "_mention_chain": relay["current_chain"],
                         "_source": "agent",
                         "_suppress_user_message": True,
+                        "_parent_attachments": handoff_attachments,
+                        "_parent_attachment_refs": handoff_attachment_refs,
                     }
                     follow_task = asyncio.create_task(
                         _handle_send_action(original_ws, follow_up_data)
@@ -1251,11 +1628,14 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                         "chat_id": chat_id,
                         "prompt": action["prompt"],
                         "target_agent": target["profile_id"],
+                        "attachments": [],
                         "stream_id": _make_stream_id(),
                         "_mention_depth": action["depth"],
                         "_mention_chain": relay["current_chain"],
                         "_source": "agent",
                         "_suppress_user_message": True,
+                        "_parent_attachments": handoff_attachments,
+                        "_parent_attachment_refs": handoff_attachment_refs,
                     }
                     follow_task = asyncio.create_task(
                         _handle_send_action(original_ws, follow_up_data)

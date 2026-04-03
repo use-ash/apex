@@ -28,9 +28,11 @@ SYSTEM_PROFILE_NAME = "Open"
 SYSTEM_PROFILE_SLUG = "open"
 
 _CHAT_UPDATE_FIELDS = frozenset({"title", "model", "profile_id", "claude_session_id", "category", "type"})
-DEFAULT_TOOL_POLICY_LEVEL = 2
+DEFAULT_TOOL_POLICY_LEVEL = 1
+LEGACY_TOOL_POLICY_LEVEL = 2
 MIN_TOOL_POLICY_LEVEL = 0
 MAX_TOOL_POLICY_LEVEL = 3
+_VALID_INVOKE_POLICIES = frozenset({"anyone", "owner_only"})
 
 # ---------------------------------------------------------------------------
 # Alert category mapping
@@ -74,15 +76,55 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _coerce_tool_policy_level(value: object) -> int:
+def _coerce_tool_policy_level(
+    value: object,
+    *,
+    default: int = DEFAULT_TOOL_POLICY_LEVEL,
+) -> int:
     try:
         level = int(value)
     except (TypeError, ValueError):
-        return DEFAULT_TOOL_POLICY_LEVEL
+        return default
     return max(MIN_TOOL_POLICY_LEVEL, min(MAX_TOOL_POLICY_LEVEL, level))
 
 
-def _normalize_tool_policy(raw: str | dict | None) -> dict:
+def _normalize_tool_policy_timestamp(value: object) -> str | None:
+    if value in (None, "", 0):
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            dt = datetime.fromisoformat(str(value))
+        except (TypeError, ValueError):
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def _normalize_allowed_commands(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        command = " ".join(item.strip().split())
+        if not command or command in seen:
+            continue
+        seen.add(command)
+        normalized.append(command)
+    return normalized
+
+
+def _normalize_tool_policy(
+    raw: str | dict | None,
+    *,
+    default_level: int = DEFAULT_TOOL_POLICY_LEVEL,
+) -> dict:
+    default_level = _coerce_tool_policy_level(default_level, default=DEFAULT_TOOL_POLICY_LEVEL)
     if isinstance(raw, dict):
         policy = dict(raw)
     elif raw in (None, ""):
@@ -94,12 +136,35 @@ def _normalize_tool_policy(raw: str | dict | None) -> dict:
             policy = {}
         else:
             policy = dict(parsed) if isinstance(parsed, dict) else {}
-    policy["level"] = _coerce_tool_policy_level(policy.get("level", DEFAULT_TOOL_POLICY_LEVEL))
-    return policy
+    level = _coerce_tool_policy_level(policy.get("level", default_level), default=default_level)
+    normalized = {
+        "level": level,
+        "default_level": _coerce_tool_policy_level(policy.get("default_level", level), default=level),
+        "elevated_until": _normalize_tool_policy_timestamp(policy.get("elevated_until")),
+        "invoke_policy": str(policy.get("invoke_policy") or "anyone").strip().lower(),
+        "allowed_commands": _normalize_allowed_commands(policy.get("allowed_commands")),
+    }
+    if normalized["invoke_policy"] not in _VALID_INVOKE_POLICIES:
+        normalized["invoke_policy"] = "anyone"
+
+    workspace = policy.get("workspace")
+    if isinstance(workspace, str) and workspace.strip():
+        normalized["workspace"] = workspace.strip()
+    sandbox = policy.get("sandbox")
+    if isinstance(sandbox, str) and sandbox.strip():
+        normalized["sandbox"] = sandbox.strip()
+    return normalized
 
 
-def _normalize_tool_policy_text(raw: str | dict | None) -> str:
-    return json.dumps(_normalize_tool_policy(raw), separators=(",", ":"))
+def _normalize_tool_policy_text(
+    raw: str | dict | None,
+    *,
+    default_level: int = DEFAULT_TOOL_POLICY_LEVEL,
+) -> str:
+    return json.dumps(
+        _normalize_tool_policy(raw, default_level=default_level),
+        separators=(",", ":"),
+    )
 
 
 def _tool_policy_level(raw: str | dict | None) -> int:
@@ -111,22 +176,9 @@ def _migrate_tool_policy_levels(conn: sqlite3.Connection) -> None:
     updates: list[tuple[str, str, str]] = []
     for profile_id, raw in rows:
         raw_text = raw or ""
-        needs_update = not raw_text
-        if not needs_update:
-            try:
-                parsed = json.loads(raw_text)
-            except (json.JSONDecodeError, TypeError):
-                needs_update = True
-            else:
-                if not isinstance(parsed, dict):
-                    needs_update = True
-                else:
-                    expected = _coerce_tool_policy_level(parsed.get("level", DEFAULT_TOOL_POLICY_LEVEL))
-                    needs_update = parsed.get("level") != expected
-                    if "level" not in parsed:
-                        needs_update = True
-        if needs_update:
-            updates.append((_normalize_tool_policy_text(raw_text), _now(), profile_id))
+        normalized = _normalize_tool_policy_text(raw_text, default_level=LEGACY_TOOL_POLICY_LEVEL)
+        if raw_text != normalized:
+            updates.append((normalized, _now(), profile_id))
     if updates:
         conn.executemany(
             "UPDATE agent_profiles SET tool_policy = ?, updated_at = ? WHERE id = ?",
@@ -317,7 +369,7 @@ def _seed_default_profiles():
                 "",
                 "",
                 "",
-                _normalize_tool_policy_text(""),
+                _normalize_tool_policy_text("", default_level=LEGACY_TOOL_POLICY_LEVEL),
                 0,
                 now,
                 now,
@@ -356,7 +408,8 @@ def _seed_default_profiles():
                 "backend, model, system_prompt, tool_policy, is_default, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (p["id"], p["name"], p["slug"], p["avatar"], p["role_description"],
-                 p["backend"], p["model"], p["system_prompt"], _normalize_tool_policy_text(""),
+                 p["backend"], p["model"], p["system_prompt"],
+                 _normalize_tool_policy_text("", default_level=LEGACY_TOOL_POLICY_LEVEL),
                  p.get("is_default", 0), now, now),
             )
             inserted += cur.rowcount
@@ -515,7 +568,8 @@ def seed_system_personas() -> None:
                 "system_prompt, tool_policy, is_default, is_system, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
                 (p["id"], p["name"], p["slug"], p["avatar"], p["role_description"],
-                 p["backend"], p["model"], p["system_prompt"], _normalize_tool_policy_text(p["tool_policy"]),
+                 p["backend"], p["model"], p["system_prompt"],
+                 _normalize_tool_policy_text(p["tool_policy"], default_level=LEGACY_TOOL_POLICY_LEVEL),
                  p["is_default"], now, now),
             )
             conn.execute(
@@ -570,13 +624,38 @@ def _get_chat_tool_policy(chat_id: str, profile_id: str | None = None) -> dict:
     with _db_lock:
         conn = _get_db()
         row = conn.execute(
-            "SELECT ap.tool_policy FROM chats c "
+            "SELECT c.profile_id, ap.tool_policy FROM chats c "
             "LEFT JOIN agent_profiles ap ON ap.id = c.profile_id "
             "WHERE c.id = ?",
             (chat_id,),
         ).fetchone()
         conn.close()
-    return _normalize_tool_policy(row[0] if row else None)
+    if not row:
+        return _normalize_tool_policy(None, default_level=LEGACY_TOOL_POLICY_LEVEL)
+    profile_id = str(row[0] or "").strip()
+    if not profile_id:
+        return _normalize_tool_policy(None, default_level=LEGACY_TOOL_POLICY_LEVEL)
+    return _normalize_tool_policy(row[1], default_level=DEFAULT_TOOL_POLICY_LEVEL)
+
+
+def _set_profile_tool_policy(
+    profile_id: str,
+    raw: str | dict | None,
+    *,
+    default_level: int = DEFAULT_TOOL_POLICY_LEVEL,
+) -> dict:
+    policy = _normalize_tool_policy(raw, default_level=default_level)
+    with _db_lock:
+        conn = _get_db()
+        cur = conn.execute(
+            "UPDATE agent_profiles SET tool_policy = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(policy, separators=(",", ":")), _now(), profile_id),
+        )
+        conn.commit()
+        conn.close()
+    if cur.rowcount == 0:
+        raise KeyError(profile_id)
+    return policy
 
 
 # ---------------------------------------------------------------------------

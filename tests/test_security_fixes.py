@@ -53,6 +53,7 @@ from state import (  # noqa: E402
     _chat_locks,
     _chat_send_locks,
 )
+from local_model import safety as local_safety  # noqa: E402
 from local_model import tool_loop  # noqa: E402
 from local_model.tools import list_files, read_file, search_files, write_file  # noqa: E402
 from setup.progress import mark_phase_completed  # noqa: E402
@@ -499,6 +500,39 @@ class SecurityFixTests(unittest.TestCase):
         )
         self.assertEqual(run_tool_loop_mock.await_args.kwargs["permission_level"], 1)
 
+    def test_local_model_admin_commands_use_prefix_match_and_protected_paths(self) -> None:
+        workspace = str(TEST_ROOT)
+        self.assertIsNone(
+            local_safety.validate_command(
+                "git push origin dev",
+                workspace,
+                permission_level=3,
+                allowed_commands=["git push"],
+            )
+        )
+        self.assertIn(
+            "not allowed",
+            local_safety.validate_command(
+                "git merge origin/dev",
+                workspace,
+                permission_level=3,
+                allowed_commands=["git push"],
+            ) or "",
+        )
+        self.assertIn(
+            "protected path",
+            local_safety.validate_command(
+                f"sqlite3 {env.APEX_ROOT / 'state' / 'apex.db'} .schema",
+                workspace,
+                permission_level=3,
+                allowed_commands=["sqlite3"],
+            ) or "",
+        )
+        self.assertIn(
+            "protected path",
+            local_safety.validate_path(str(env.APEX_ROOT / "state" / "config.json"), allow_write=True) or "",
+        )
+
     def test_validate_backend_attachments_rejects_codex_attachments(self) -> None:
         attachment = self._create_uploaded_attachment("txt", b"notes")
         err = backends.validate_backend_attachments("codex", [attachment])
@@ -605,6 +639,226 @@ class SecurityFixTests(unittest.TestCase):
 
         self.assertEqual(msg["type"], "error")
         self.assertIn("Text attachments are not supported for Ollama chats yet", msg["message"])
+
+    def test_group_multi_dispatch_propagates_image_attachments_to_supported_agents(self) -> None:
+        chat_id = self._create_test_group_chat()
+        png = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+            b"\x90wS\xde"
+            b"\x00\x00\x00\x0cIDAT\x08\x99c```\x00\x00\x00\x04\x00\x01"
+            b"\x0b\xe7\x02\x9d"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        attachment = self._create_uploaded_attachment("png", png, kind="image", name="puppy.png")
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                "UPDATE agent_profiles SET backend = ?, model = ? WHERE id IN (?, ?)",
+                ("ollama", "qwen3:latest", "queue-codeexpert", "queue-apex-assistant"),
+            )
+            conn.commit()
+            conn.close()
+
+        seen_attachments: dict[str, list[dict] | None] = {}
+
+        async def fake_run_ollama_chat(chat_id_arg: str, prompt: str, model=None, attachments=None, permission_policy=None):
+            seen_attachments[_current_group_profile_id.get("")] = attachments
+            return {
+                "text": f"reply:{prompt}",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        with (
+            mock.patch.object(ws_handler, "_run_ollama_chat", side_effect=fake_run_ollama_chat),
+            self._client() as client,
+        ):
+            with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                ws.send_json({
+                    "action": "send",
+                    "chat_id": chat_id,
+                    "prompt": "@Queue CodeExpert @Queue Apex Assistant what do you see?",
+                    "attachments": [attachment],
+                })
+                stream_end_count = 0
+                while stream_end_count < 2:
+                    msg = ws.receive_json()
+                    if msg.get("type") == "stream_end":
+                        stream_end_count += 1
+
+        self.assertEqual(set(seen_attachments), {"queue-codeexpert", "queue-apex-assistant"})
+        self.assertTrue(all(items and items[0]["id"] == attachment["id"] for items in seen_attachments.values()))
+
+    def test_group_multi_dispatch_falls_back_to_attachment_refs_for_unsupported_agents(self) -> None:
+        chat_id = self._create_test_group_chat()
+        png = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+            b"\x90wS\xde"
+            b"\x00\x00\x00\x0cIDAT\x08\x99c```\x00\x00\x00\x04\x00\x01"
+            b"\x0b\xe7\x02\x9d"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        attachment = self._create_uploaded_attachment("png", png, kind="image", name="puppy.png")
+        attachment_url = f"/api/uploads/{attachment['id']}.png"
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                "UPDATE agent_profiles SET backend = ?, model = ? WHERE id = ?",
+                ("ollama", "qwen3:latest", "queue-codeexpert"),
+            )
+            conn.execute(
+                "UPDATE agent_profiles SET backend = ?, model = ? WHERE id = ?",
+                ("codex", "codex:gpt-5.4", "queue-apex-assistant"),
+            )
+            conn.commit()
+            conn.close()
+
+        seen_prompts: dict[str, str] = {}
+        seen_attachments: dict[str, list[dict] | None] = {}
+
+        async def fake_run_ollama_chat(chat_id_arg: str, prompt: str, model=None, attachments=None, permission_policy=None):
+            seen_prompts[_current_group_profile_id.get("")] = prompt
+            seen_attachments[_current_group_profile_id.get("")] = attachments
+            return {
+                "text": f"reply:{prompt}",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            seen_prompts[_current_group_profile_id.get("")] = prompt
+            seen_attachments[_current_group_profile_id.get("")] = attachments
+            return {
+                "text": f"reply:{prompt}",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        with (
+            mock.patch.object(ws_handler, "_run_ollama_chat", side_effect=fake_run_ollama_chat),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
+            self._client() as client,
+        ):
+            with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                ws.send_json({
+                    "action": "send",
+                    "chat_id": chat_id,
+                    "prompt": "@Queue CodeExpert @Queue Apex Assistant what do you see?",
+                    "attachments": [attachment],
+                })
+                stream_end_count = 0
+                while stream_end_count < 2:
+                    msg = ws.receive_json()
+                    if msg.get("type") == "stream_end":
+                        stream_end_count += 1
+
+        self.assertEqual(seen_attachments["queue-codeexpert"][0]["id"], attachment["id"])
+        self.assertEqual(seen_attachments["queue-apex-assistant"], [])
+        self.assertIn("[Attached: puppy.png", seen_prompts["queue-apex-assistant"])
+        self.assertIn(attachment_url, seen_prompts["queue-apex-assistant"])
+
+    def test_group_relay_propagates_image_attachments_to_supported_agents(self) -> None:
+        chat_id = self._create_test_group_chat()
+        png = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+            b"\x90wS\xde"
+            b"\x00\x00\x00\x0cIDAT\x08\x99c```\x00\x00\x00\x04\x00\x01"
+            b"\x0b\xe7\x02\x9d"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        attachment = self._create_uploaded_attachment("png", png, kind="image", name="puppy.png")
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                "UPDATE agent_profiles SET backend = ?, model = ? WHERE id IN (?, ?)",
+                ("ollama", "qwen3:latest", "queue-codeexpert", "queue-apex-assistant"),
+            )
+            conn.commit()
+            conn.close()
+
+        primary = self._group_agent(chat_id, "queue-codeexpert")
+        secondary = self._group_agent(chat_id, "queue-apex-assistant")
+        seen_attachments: dict[str, list[dict] | None] = {}
+        premium = SimpleNamespace(
+            resolve_target_agent=lambda _chat_id, _prompt, target_profile_id: dict(
+                primary if target_profile_id == primary["profile_id"] else secondary
+            ),
+            get_agent_relay_actions=lambda _chat_id, _response_text, group_agent, _chain, mention_depth: {
+                "mentions_enabled": True,
+                "mentioned_names": [secondary["name"]] if mention_depth == 0 else [],
+                "current_chain": [group_agent["profile_id"]],
+                "actions": (
+                    [{
+                        "type": "relay",
+                        "target": dict(secondary),
+                        "prompt": "Please inspect the same photo",
+                        "depth": mention_depth + 1,
+                    }]
+                    if mention_depth == 0
+                    else []
+                ),
+            },
+        )
+
+        async def fake_run_ollama_chat(chat_id_arg: str, prompt: str, model=None, attachments=None, permission_policy=None):
+            seen_attachments[_current_group_profile_id.get("")] = attachments
+            return {
+                "text": "Handing off to @Queue Apex Assistant",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", premium),
+            mock.patch.object(ws_handler, "_run_ollama_chat", side_effect=fake_run_ollama_chat),
+            self._client() as client,
+        ):
+            with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                ws.send_json({
+                    "action": "send",
+                    "chat_id": chat_id,
+                    "prompt": "Inspect this image",
+                    "target_agent": primary["profile_id"],
+                    "attachments": [attachment],
+                })
+                stream_end_count = 0
+                while stream_end_count < 2:
+                    msg = ws.receive_json()
+                    if msg.get("type") == "stream_end":
+                        stream_end_count += 1
+
+        self.assertEqual(set(seen_attachments), {"queue-codeexpert", "queue-apex-assistant"})
+        self.assertTrue(all(items and items[0]["id"] == attachment["id"] for items in seen_attachments.values()))
 
     def test_mcp_stdio_rejects_shell_interpreters(self) -> None:
         with mock.patch.object(dashboard_mod.shutil, "which", return_value="/bin/sh"):
@@ -926,6 +1180,150 @@ class SecurityFixTests(unittest.TestCase):
         self.assertEqual(started_speakers, {"queue-codeexpert", "queue-apex-assistant"})
         self.assertEqual(set(seen_profiles), {"queue-codeexpert", "queue-apex-assistant"})
         self.assertEqual(len(seen_profiles), 2)
+
+    def test_owner_only_group_dispatch_blocks_agent_source(self) -> None:
+        chat_id = self._create_test_group_chat()
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                "UPDATE agent_profiles SET tool_policy = ? WHERE id = ?",
+                (
+                    json.dumps({
+                        "level": 1,
+                        "default_level": 1,
+                        "elevated_until": None,
+                        "invoke_policy": "owner_only",
+                        "allowed_commands": [],
+                    }),
+                    "queue-apex-assistant",
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+        class _FakeWS:
+            def __init__(self) -> None:
+                self.sent: list[dict] = []
+
+            async def send_json(self, payload: dict) -> None:
+                self.sent.append(payload)
+
+        fake_ws = _FakeWS()
+
+        async def fake_run_codex_chat(*_args, **_kwargs):
+            raise AssertionError("owner-only agent dispatch should not reach backend")
+
+        with mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat):
+            asyncio.run(
+                ws_handler._handle_send_action(
+                    fake_ws,
+                    {
+                        "chat_id": chat_id,
+                        "prompt": "take this one",
+                        "target_agent": "queue-apex-assistant",
+                        "_source": "agent",
+                    },
+                )
+            )
+
+        self.assertEqual(fake_ws.sent, [])
+
+    def test_expired_elevation_reverts_to_default_level_inline(self) -> None:
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO agent_profiles (
+                    id, name, slug, avatar, role_description, backend, model,
+                    system_prompt, tool_policy, is_default, is_system, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, datetime('now'), datetime('now'))
+                """,
+                (
+                    "expired-admin",
+                    "Expired Admin",
+                    "expired-admin",
+                    "E",
+                    "expired admin test",
+                    "ollama",
+                    "qwen3:latest",
+                    "expired admin test",
+                    json.dumps({
+                        "level": 3,
+                        "default_level": 1,
+                        "elevated_until": "2020-01-01T00:00:00+00:00",
+                        "invoke_policy": "anyone",
+                        "allowed_commands": ["git push"],
+                    }),
+                ),
+            )
+            conn.commit()
+            conn.close()
+        chat_id = db_mod._create_chat(
+            title="Expired Admin Chat",
+            model="qwen3:latest",
+            profile_id="expired-admin",
+        )
+
+        chat = db_mod._get_chat(chat_id)
+        policy = ws_handler._resolve_effective_tool_policy(chat_id, chat, None)
+
+        self.assertEqual(policy["level"], 1)
+        self.assertIsNone(policy["elevated_until"])
+        self.assertEqual(db_mod._get_profile_tool_policy("expired-admin")["level"], 1)
+
+    def test_dashboard_persona_elevate_and_revoke_round_trip(self) -> None:
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO agent_profiles (
+                    id, name, slug, avatar, role_description, backend, model,
+                    system_prompt, tool_policy, is_default, is_system, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, datetime('now'), datetime('now'))
+                """,
+                (
+                    "persona-admin-test",
+                    "Persona Admin Test",
+                    "persona-admin-test",
+                    "P",
+                    "persona admin test",
+                    "ollama",
+                    "qwen3:latest",
+                    "persona admin test",
+                    json.dumps({
+                        "level": 1,
+                        "default_level": 1,
+                        "elevated_until": None,
+                        "invoke_policy": "owner_only",
+                        "allowed_commands": ["git push"],
+                    }),
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+        with self._client() as client:
+            elevate = client.post(
+                "/admin/api/personas/persona-admin-test/elevate",
+                json={"minutes": 5},
+                headers=self._admin_headers(),
+            )
+            self.assertEqual(elevate.status_code, 200, elevate.text)
+            elevated = elevate.json()
+            self.assertTrue(elevated["ok"])
+            self.assertEqual(elevated["tool_policy"]["level"], 3)
+            self.assertEqual(elevated["tool_policy"]["default_level"], 1)
+            self.assertEqual(elevated["tool_policy"]["allowed_commands"], ["git push"])
+            self.assertTrue(elevated["expires_at"])
+
+            revoke = client.post(
+                "/admin/api/personas/persona-admin-test/revoke",
+                headers=self._admin_headers(),
+            )
+            self.assertEqual(revoke.status_code, 200, revoke.text)
+            revoked = revoke.json()
+            self.assertEqual(revoked["tool_policy"]["level"], 1)
+            self.assertIsNone(revoked["tool_policy"]["elevated_until"])
 
     def test_group_multi_mentions_supplement_partial_premium_targets(self) -> None:
         chat_id = self._create_test_group_chat()
@@ -1345,6 +1743,370 @@ class SecurityFixTests(unittest.TestCase):
         self.assertEqual(created_send_tasks, 1)
         self.assertTrue(
             any("relay blocked (self-mention)" in str(call.args[0]) for call in log_mock.call_args_list)
+        )
+
+    def test_group_relay_specific_mentions_work_without_premium_module(self) -> None:
+        chat_id = self._create_test_group_chat()
+        db_mod._update_chat_settings(chat_id, {"agent_mentions_enabled": True})
+        seen_profiles: list[str] = []
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            profile_id = _current_group_profile_id.get("")
+            seen_profiles.append(profile_id)
+            text = (
+                "Please take this one, @Queue Apex Assistant."
+                if profile_id == "queue-codeexpert"
+                else "Handled."
+            )
+            return {
+                "text": text,
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        started_speakers: set[str] = set()
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", None),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
+        ):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "Start relay",
+                        "target_agent": "queue-codeexpert",
+                    })
+                    stream_end_count = 0
+                    while stream_end_count < 2:
+                        msg = ws.receive_json()
+                        if msg.get("type") == "stream_start":
+                            started_speakers.add(msg.get("speaker_id"))
+                        if msg.get("type") == "stream_end":
+                            stream_end_count += 1
+
+        self.assertEqual(started_speakers, {"queue-codeexpert", "queue-apex-assistant"})
+        self.assertEqual(set(seen_profiles), {"queue-codeexpert", "queue-apex-assistant"})
+        self.assertEqual(len(seen_profiles), 2)
+
+    def test_group_relay_multiple_markdown_mentions_dispatch_without_premium_module(self) -> None:
+        chat_id = self._create_test_group_chat()
+        db_mod._update_chat_settings(chat_id, {"agent_mentions_enabled": True})
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO agent_profiles (
+                    id, name, slug, avatar, role_description, backend, model,
+                    system_prompt, tool_policy, is_default, is_system, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 0, 0, datetime('now'), datetime('now'))
+                """,
+                (
+                    "queue-debugger",
+                    "Queue Debugger",
+                    "queue-debugger",
+                    "🪲",
+                    "Queue test agent",
+                    "codex",
+                    "codex:gpt-5.4",
+                    "Queue test agent",
+                ),
+            )
+            conn.commit()
+            conn.close()
+        db_mod._add_group_member(chat_id, "queue-debugger", routing_mode="mentioned", display_order=2)
+
+        seen_profiles: list[str] = []
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            profile_id = _current_group_profile_id.get("")
+            seen_profiles.append(profile_id)
+            text = (
+                "Passing to **@Queue Apex Assistant** and **@Queue Debugger**."
+                if profile_id == "queue-codeexpert"
+                else "Handled."
+            )
+            return {
+                "text": text,
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        started_speakers: set[str] = set()
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", None),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
+        ):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "Start relay",
+                        "target_agent": "queue-codeexpert",
+                    })
+                    stream_end_count = 0
+                    while stream_end_count < 3:
+                        msg = ws.receive_json()
+                        if msg.get("type") == "stream_start":
+                            started_speakers.add(msg.get("speaker_id"))
+                        if msg.get("type") == "stream_end":
+                            stream_end_count += 1
+
+        self.assertEqual(
+            started_speakers,
+            {"queue-codeexpert", "queue-apex-assistant", "queue-debugger"},
+        )
+        self.assertEqual(
+            set(seen_profiles),
+            {"queue-codeexpert", "queue-apex-assistant", "queue-debugger"},
+        )
+        self.assertEqual(len(seen_profiles), 3)
+
+    def test_group_relay_specific_mentions_survive_incidental_agent_at_all_text(self) -> None:
+        chat_id = self._create_test_group_chat()
+        db_mod._update_chat_settings(chat_id, {"agent_mentions_enabled": True})
+        seen_profiles: list[str] = []
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            profile_id = _current_group_profile_id.get("")
+            seen_profiles.append(profile_id)
+            text = (
+                "Please take this one, @Queue Apex Assistant.\n\n"
+                "Current dev commits:\n"
+                "- Restrict agent @all relay\n"
+                "- Fix non-leading multi-mention dispatch"
+                if profile_id == "queue-codeexpert"
+                else "Handled."
+            )
+            return {
+                "text": text,
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        started_speakers: set[str] = set()
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", None),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
+        ):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "Start relay",
+                        "target_agent": "queue-codeexpert",
+                    })
+                    stream_end_count = 0
+                    while stream_end_count < 2:
+                        msg = ws.receive_json()
+                        if msg.get("type") == "stream_start":
+                            started_speakers.add(msg.get("speaker_id"))
+                        if msg.get("type") == "stream_end":
+                            stream_end_count += 1
+
+        self.assertEqual(started_speakers, {"queue-codeexpert", "queue-apex-assistant"})
+        self.assertEqual(set(seen_profiles), {"queue-codeexpert", "queue-apex-assistant"})
+        self.assertEqual(len(seen_profiles), 2)
+
+    def test_group_relay_missing_single_target_warns_and_self_corrects(self) -> None:
+        chat_id = self._create_test_group_chat()
+        db_mod._update_chat_settings(chat_id, {"agent_mentions_enabled": True})
+        seen_calls: list[tuple[str, str]] = []
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            profile_id = _current_group_profile_id.get("")
+            seen_calls.append((profile_id, prompt))
+            if profile_id == "queue-codeexpert":
+                if sum(1 for pid, _ in seen_calls if pid == "queue-codeexpert") == 1:
+                    text = "Passing to @Queue Debugger."
+                else:
+                    text = "Passing to @Queue Apex Assistant."
+            else:
+                text = "Handled."
+            return {
+                "text": text,
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        system_messages: list[str] = []
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", None),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
+        ):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "Start relay",
+                        "target_agent": "queue-codeexpert",
+                    })
+                    stream_end_count = 0
+                    while stream_end_count < 3:
+                        msg = ws.receive_json()
+                        if msg.get("type") == "system_message":
+                            system_messages.append(msg.get("text") or "")
+                        if msg.get("type") == "stream_end":
+                            stream_end_count += 1
+
+        self.assertTrue(
+            any("@Queue Debugger isn't in this room." in text for text in system_messages)
+        )
+        self.assertTrue(
+            any("@Queue Apex Assistant" in text for text in system_messages)
+        )
+        self.assertEqual(
+            [profile_id for profile_id, _prompt in seen_calls],
+            ["queue-codeexpert", "queue-codeexpert", "queue-apex-assistant"],
+        )
+        self.assertIn("@Queue Debugger isn't in this room.", seen_calls[1][1])
+        self.assertIn("@Queue Apex Assistant", seen_calls[1][1])
+
+    def test_group_relay_missing_target_warns_without_self_correction_when_valid_target_exists(self) -> None:
+        chat_id = self._create_test_group_chat()
+        db_mod._update_chat_settings(chat_id, {"agent_mentions_enabled": True})
+        seen_calls: list[str] = []
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            profile_id = _current_group_profile_id.get("")
+            seen_calls.append(profile_id)
+            text = (
+                "Passing to @Queue Apex Assistant and @Queue Debugger."
+                if profile_id == "queue-codeexpert"
+                else "Handled."
+            )
+            return {
+                "text": text,
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        system_messages: list[str] = []
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", None),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
+        ):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "Start relay",
+                        "target_agent": "queue-codeexpert",
+                    })
+                    stream_end_count = 0
+                    while stream_end_count < 2:
+                        msg = ws.receive_json()
+                        if msg.get("type") == "system_message":
+                            system_messages.append(msg.get("text") or "")
+                        if msg.get("type") == "stream_end":
+                            stream_end_count += 1
+
+        self.assertEqual(seen_calls, ["queue-codeexpert", "queue-apex-assistant"])
+        self.assertTrue(
+            any("@Queue Debugger isn't in this room." in text for text in system_messages)
+        )
+        self.assertTrue(
+            any("@Queue Apex Assistant" in text for text in system_messages)
+        )
+
+    def test_group_relay_agent_at_all_is_suppressed(self) -> None:
+        chat_id = self._create_test_group_chat()
+        primary = self._group_agent(chat_id, "queue-codeexpert")
+        secondary = self._group_agent(chat_id, "queue-apex-assistant")
+        premium = SimpleNamespace(
+            resolve_target_agent=lambda _chat_id, _prompt, target_profile_id: dict(self._group_agent(chat_id, target_profile_id)),
+            get_agent_relay_actions=lambda _chat_id, _response_text, group_agent, _chain, mention_depth: {
+                "mentions_enabled": True,
+                "mentioned_names": ["all"] if mention_depth == 0 else [],
+                "current_chain": [group_agent["profile_id"]],
+                "actions": (
+                    [{
+                        "type": "relay",
+                        "target": dict(secondary),
+                        "prompt": "Broadcast relay",
+                        "depth": mention_depth + 1,
+                    }]
+                    if mention_depth == 0
+                    else []
+                ),
+            },
+        )
+        created_send_tasks = 0
+        real_create_task = ws_handler.asyncio.create_task
+
+        def counting_create_task(coro, *args, **kwargs):
+            nonlocal created_send_tasks
+            code = getattr(coro, "cr_code", None)
+            if getattr(code, "co_name", "") == "_handle_send_action":
+                created_send_tasks += 1
+            return real_create_task(coro, *args, **kwargs)
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            return {
+                "text": "Reply with @all",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", premium),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
+            mock.patch.object(ws_handler.asyncio, "create_task", side_effect=counting_create_task),
+            mock.patch.object(ws_handler, "log") as log_mock,
+        ):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "Start relay",
+                        "target_agent": primary["profile_id"],
+                    })
+                    self._receive_until(ws, lambda msg: msg.get("type") == "stream_end")
+
+        self.assertEqual(created_send_tasks, 1)
+        self.assertTrue(
+            any("relay blocked (@all reserved for user)" in str(call.args[0]) for call in log_mock.call_args_list)
         )
 
     def test_user_multi_dispatch_skips_primary_agent(self) -> None:

@@ -23,6 +23,7 @@ from fastapi import WebSocket
 
 from db import _get_db, _get_chat, _update_chat, _get_chat_tool_policy, _get_profile_tool_policy
 from log import log
+from local_model.safety import validate_command, validate_path
 from memory_extract import _filter_stream_text_for_memory_tags, _clear_stream_text_filter
 from state import (
     _clients, _client_sessions, _client_last_used, _client_permission_levels,
@@ -50,6 +51,14 @@ _STREAM_JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
 safe_chmod(_STREAM_JOURNAL_DIR, 0o700)
 _CHAT_ID_RE = re.compile(r"^[0-9a-f]{8,12}$")
 _STANDARD_SDK_TOOLS = frozenset({"Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch"})
+_SDK_WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
+_SDK_PATH_INPUT_KEYS = (
+    "path",
+    "file_path",
+    "new_path",
+    "old_path",
+    "notebook_path",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +375,7 @@ def _resolve_sdk_permission_level(client_key: str | None, chat_id: str | None = 
         policy = _get_profile_tool_policy(profile_id)
     else:
         policy = _get_chat_tool_policy(real_chat_id)
-    return min(int(policy.get("level", 2)), 2)
+    return int(policy.get("level", 2))
 
 
 def _sdk_permission_mode_for_level(level: int) -> str:
@@ -375,13 +384,52 @@ def _sdk_permission_mode_for_level(level: int) -> str:
     return "acceptEdits"
 
 
-def _make_sdk_tool_gate(level: int):
+def _sdk_tool_input_paths(tool_input: dict) -> list[str]:
+    paths: list[str] = []
+    if not isinstance(tool_input, dict):
+        return paths
+    for key in _SDK_PATH_INPUT_KEYS:
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            paths.append(value.strip())
+    return paths
+
+
+def _sdk_resolve_path(path: str) -> str:
+    expanded = os.path.expanduser(path)
+    if os.path.isabs(expanded):
+        return os.path.realpath(expanded)
+    return os.path.realpath(os.path.join(str(WORKSPACE), expanded))
+
+
+def _sdk_path_error(tool_name: str, tool_input: dict) -> str | None:
+    allow_write = tool_name in _SDK_WRITE_TOOLS
+    for raw_path in _sdk_tool_input_paths(tool_input):
+        err = validate_path(_sdk_resolve_path(raw_path), allow_write=allow_write)
+        if err:
+            return err
+    return None
+
+
+def _make_sdk_tool_gate(level: int, *, allowed_commands: list[str] | None = None):
     async def _can_use_tool(tool_name: str, tool_input: dict, _context):
-        del tool_input
         if level <= 0:
             return PermissionResultDeny(
                 message="This agent is Restricted and cannot use tools or access files."
             )
+        path_err = _sdk_path_error(tool_name, tool_input)
+        if path_err:
+            return PermissionResultDeny(message=path_err)
+        if tool_name == "Bash":
+            command = str((tool_input or {}).get("command") or "").strip()
+            command_err = validate_command(
+                command,
+                str(WORKSPACE),
+                permission_level=min(level, 2),
+                allowed_commands=allowed_commands,
+            )
+            if command_err:
+                return PermissionResultDeny(message=command_err)
         if level == 1 and tool_name not in _STANDARD_SDK_TOOLS:
             return PermissionResultDeny(
                 message="This action requires Elevated or Admin permissions."
@@ -397,9 +445,12 @@ def _make_options(
     *,
     client_key: str | None = None,
     chat_id: str | None = None,
+    permission_level: int | None = None,
+    allowed_commands: list[str] | None = None,
 ) -> ClaudeAgentOptions:
     """Build SDK options for a new or resumed session."""
-    permission_level = _resolve_sdk_permission_level(client_key, chat_id)
+    if permission_level is None:
+        permission_level = _resolve_sdk_permission_level(client_key, chat_id)
     # Extra workspace roots beyond the primary (colon-separated APEX_WORKSPACE)
     extra_dirs = [
         r.strip() for r in WORKSPACE_PATHS.split(":")[1:]
@@ -413,7 +464,7 @@ def _make_options(
         resume=session_id,
         setting_sources=["user"],
         add_dirs=extra_dirs,
-        can_use_tool=_make_sdk_tool_gate(permission_level),
+        can_use_tool=_make_sdk_tool_gate(permission_level, allowed_commands=allowed_commands),
     )
     mcp_servers = _load_mcp_servers()
     if mcp_servers:
@@ -467,14 +518,21 @@ async def _evict_lru_client() -> None:
     await _disconnect_client(victim)
 
 
-async def _get_or_create_client(client_key: str, model: str | None = None) -> ClaudeSDKClient:
+async def _get_or_create_client(
+    client_key: str,
+    model: str | None = None,
+    *,
+    permission_level: int | None = None,
+    allowed_commands: list[str] | None = None,
+) -> ClaudeSDKClient:
     """Get existing persistent client or create a new one.
 
     client_key is chat_id for solo chats, or chat_id:profile_id for group agents.
     Enforces a max pool size — evicts LRU idle client when at capacity.
     Group agents persist session_id for resume across client evictions.
     """
-    permission_level = _resolve_sdk_permission_level(client_key)
+    if permission_level is None:
+        permission_level = _resolve_sdk_permission_level(client_key)
     if client_key in _clients:
         client = _clients[client_key]
         if _client_is_alive(client) and _client_permission_levels.get(client_key) == permission_level:
@@ -505,6 +563,8 @@ async def _get_or_create_client(client_key: str, model: str | None = None) -> Cl
         session_id=session_id,
         client_key=client_key,
         chat_id=real_chat_id,
+        permission_level=permission_level,
+        allowed_commands=allowed_commands,
     )
 
     effective_model = model or MODEL

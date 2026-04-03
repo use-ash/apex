@@ -7,13 +7,24 @@ from ..safety import (
 )
 
 
-def execute(args: dict, workspace: str | None = None) -> str:
+def execute(
+    args: dict,
+    workspace: str | None = None,
+    *,
+    permission_level: int = 2,
+    allowed_commands: list[str] | None = None,
+) -> str:
     """Execute a bash command and return output."""
     command = args.get("command", "").strip()
     if not command:
         return "Error: no command provided"
 
-    argv, err = prepare_command(command, workspace)
+    argv, err = prepare_command(
+        command,
+        workspace,
+        permission_level=permission_level,
+        allowed_commands=allowed_commands,
+    )
     if err:
         return err
 
