@@ -73,9 +73,15 @@ cc = (x509.CertificateBuilder()
     .sign(ca_key, hashes.SHA256()))
 wk(ssl / "client.key", ck)
 wc(ssl / "client.crt", cc)
-p12 = serialization.pkcs12.serialize_key_and_certificates(
-    b"Apex Client", ck, cc, [ca_cert],
-    serialization.BestAvailableEncryption(b"apex"))
+try:
+    p12 = serialization.pkcs12.serialize_key_and_certificates(
+        b"Apex Client", ck, cc, [ca_cert],
+        serialization.BestAvailableEncryption(b"apex"))
+except Exception:
+    # Fallback for older cryptography versions
+    p12 = serialization.pkcs12.serialize_key_and_certificates(
+        b"Apex Client", ck, cc, [ca_cert],
+        serialization.NoEncryption())
 (ssl / "client.p12").write_bytes(p12)
 print("Client + p12 ok")
 print("=== ALL CERTS OK ===")
