@@ -1672,6 +1672,8 @@ class SecurityFixTests(unittest.TestCase):
             loop.close()
 
         self.assertIn("# Group Roster", prompt)
+        self.assertIn("The channel roster above is authoritative.", prompt)
+        self.assertIn("ignore SDK client counts", prompt)
         self.assertIn("# Agent Load", prompt)
         self.assertIn("Queue CodeExpert [queue-codeexpert] 💻", prompt)
         self.assertIn("queue: 2/2", prompt)
