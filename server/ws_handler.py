@@ -135,62 +135,69 @@ def _match_group_mention_prefix(text: str, alias: str) -> int:
     return len(prefix)
 
 
-def _strip_group_leading_mentions(prompt: str, members: list[dict] | None = None) -> str:
-    text = prompt.lstrip()
-    leading_ws = prompt[: len(prompt) - len(text)]
-    aliases: list[str] = ["all"]
-    if members:
-        seen_aliases = {"all"}
-        for member in members:
-            for alias in _group_member_aliases(member):
-                folded = alias.casefold()
-                if folded in seen_aliases:
-                    continue
-                seen_aliases.add(folded)
-                aliases.append(alias)
-        aliases[1:] = sorted(aliases[1:], key=len, reverse=True)
-    while text.startswith("@"):
-        matched_len = 0
-        for alias in aliases:
-            matched_len = _match_group_mention_prefix(text, alias)
-            if matched_len:
-                break
-        if not matched_len:
+def _find_group_mention_matches(prompt: str, members: list[dict]) -> list[tuple[int, int, dict | None]]:
+    matches: list[tuple[int, int, dict | None]] = []
+    idx = 0
+    while idx < len(prompt):
+        at_pos = prompt.find("@", idx)
+        if at_pos < 0:
             break
-        text = text[matched_len:].lstrip(" \t:,.!?-")
-    return f"{leading_ws}{text}".strip()
-
-
-def _find_group_mentioned_members(prompt: str, members: list[dict]) -> list[dict]:
-    text = prompt.lstrip()
-    mentioned: list[dict] = []
-    seen_profile_ids: set[str] = set()
-    while text.startswith("@"):
-        all_match_len = _match_group_mention_prefix(text, "all")
-        if all_match_len:
-            for member in members:
-                profile_id = str(member.get("profile_id") or "")
-                if not profile_id or profile_id in seen_profile_ids:
-                    continue
-                seen_profile_ids.add(profile_id)
-                mentioned.append(member)
-            text = text[all_match_len:].lstrip(" \t:,.!?-")
+        prev_char = prompt[at_pos - 1: at_pos] if at_pos > 0 else ""
+        if prev_char and re.match(r"[\w]", prev_char):
+            idx = at_pos + 1
             continue
-        matched_member = None
-        matched_len = 0
+        text = prompt[at_pos:]
+        matched_member: dict | None = None
+        matched_len = _match_group_mention_prefix(text, "all")
         for member in members:
             for alias in _group_member_aliases(member):
                 prefix_len = _match_group_mention_prefix(text, alias)
                 if prefix_len > matched_len:
                     matched_member = member
                     matched_len = prefix_len
-        if not matched_member or not matched_len:
-            break
+        if not matched_len:
+            idx = at_pos + 1
+            continue
+        matches.append((at_pos, at_pos + matched_len, matched_member))
+        idx = at_pos + matched_len
+    return matches
+
+
+def _strip_group_leading_mentions(prompt: str, members: list[dict] | None = None) -> str:
+    if not members:
+        return prompt.strip()
+    matches = _find_group_mention_matches(prompt, members)
+    if not matches:
+        return prompt.strip()
+    parts: list[str] = []
+    cursor = 0
+    for start, end, _member in matches:
+        parts.append(prompt[cursor:start])
+        cursor = end
+        while cursor < len(prompt) and prompt[cursor] in " \t:,.!?-":
+            cursor += 1
+    parts.append(prompt[cursor:])
+    stripped = "".join(parts)
+    stripped = re.sub(r"\s{2,}", " ", stripped)
+    return stripped.strip()
+
+
+def _find_group_mentioned_members(prompt: str, members: list[dict]) -> list[dict]:
+    mentioned: list[dict] = []
+    seen_profile_ids: set[str] = set()
+    for _start, _end, matched_member in _find_group_mention_matches(prompt, members):
+        if matched_member is None:
+            for member in members:
+                profile_id = str(member.get("profile_id") or "")
+                if not profile_id or profile_id in seen_profile_ids:
+                    continue
+                seen_profile_ids.add(profile_id)
+                mentioned.append(member)
+            continue
         profile_id = str(matched_member.get("profile_id") or "")
         if profile_id and profile_id not in seen_profile_ids:
             seen_profile_ids.add(profile_id)
             mentioned.append(matched_member)
-        text = text[matched_len:].lstrip(" \t:,.!?-")
     return mentioned
 
 
@@ -214,6 +221,19 @@ def _get_multi_dispatch_targets_fallback(chat_id: str, prompt: str, group_agent:
     if not members:
         return []
     return _find_group_mentioned_members(prompt, members)
+
+
+def _merge_group_dispatch_targets(*target_lists: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    seen_profile_ids: set[str] = set()
+    for target_list in target_lists:
+        for target in target_list:
+            profile_id = str(target.get("profile_id") or "")
+            if not profile_id or profile_id in seen_profile_ids:
+                continue
+            seen_profile_ids.add(profile_id)
+            merged.append(target)
+    return merged
 
 
 def _strip_group_target_prefix(prompt: str, member: dict) -> str:
@@ -827,12 +847,12 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         and not suppress_user_message
         and handoff_source != "agent"
     ):
-        multi_targets: list[dict] = []
+        premium_multi_targets: list[dict] = []
         get_multi_dispatch_targets = getattr(_ws_premium, "get_multi_dispatch_targets", None) if _ws_premium else None
         if get_multi_dispatch_targets:
-            multi_targets = get_multi_dispatch_targets(chat_id, prompt, group_agent, data) or []
-        if not multi_targets:
-            multi_targets = _get_multi_dispatch_targets_fallback(chat_id, prompt, group_agent)
+            premium_multi_targets = get_multi_dispatch_targets(chat_id, prompt, group_agent, data) or []
+        fallback_multi_targets = _get_multi_dispatch_targets_fallback(chat_id, prompt, group_agent)
+        multi_targets = _merge_group_dispatch_targets(premium_multi_targets, fallback_multi_targets)
         for t in multi_targets:
             if str(t.get("profile_id") or "") == str(group_agent.get("profile_id") or ""):
                 log(f"user multi-dispatch blocked (self-target): {group_agent['name']} chat={chat_id[:8]}")
