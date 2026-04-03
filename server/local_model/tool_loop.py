@@ -1,6 +1,8 @@
 """Ollama tool-calling agent loop."""
 import asyncio
 import json
+import logging
+import re
 import urllib.request
 import uuid
 from typing import Callable, Awaitable
@@ -10,23 +12,137 @@ from env import ALLOW_LOCAL_TOOLS
 from .registry import get_tool_schemas, get_executor, is_mcp_tool
 from .guardrails import pre_check, filter_output
 
+log = logging.getLogger("apex.tool_loop")
+
 MAX_TOOL_ITERATIONS = 25
 OLLAMA_TIMEOUT = 300  # 5 minutes per Ollama call
 DEFAULT_NUM_CTX = 131072  # 128K context window
 
+# ── Text-based tool calling for models without native support ──
 
-def _call_ollama(ollama_url: str, model: str, messages: list, tools: list) -> dict:
+# Cache: model_name -> bool (supports native tool calling)
+_native_tool_support: dict[str, bool] = {}
+
+
+def _check_native_tool_support(ollama_url: str, model: str) -> bool:
+    """Check if model's Ollama template handles tools natively."""
+    if model in _native_tool_support:
+        return _native_tool_support[model]
+    try:
+        req = urllib.request.Request(
+            f"{ollama_url}/api/show",
+            data=json.dumps({"name": model}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        resp = urllib.request.urlopen(req, timeout=10)
+        data = json.loads(resp.read().decode())
+        template = data.get("template", "")
+        supported = ".Tools" in template or "tools" in template.lower() and "tool_call" in template.lower()
+        _native_tool_support[model] = supported
+        if not supported:
+            log.info("Model %s lacks native tool template — using text-based tool calling", model)
+        return supported
+    except Exception:
+        # If we can't check, assume native support (don't break existing models)
+        return True
+
+
+def _build_tool_prompt(tool_schemas: list[dict]) -> str:
+    """Build a text description of tools for the system prompt."""
+    lines = [
+        "\n## Available Tools",
+        "You have access to the following tools. To call a tool, output a <tool_call> block with valid JSON:",
+        "",
+        "```",
+        '<tool_call>{"name": "tool_name", "arguments": {"arg1": "value1"}}</tool_call>',
+        "```",
+        "",
+        "You may call multiple tools by outputting multiple <tool_call> blocks.",
+        "After each tool call, you will receive the result in a <tool_result> block.",
+        "When you have the final answer, respond with plain text (no <tool_call> block).",
+        "",
+        "### Tool Definitions",
+    ]
+    for schema in tool_schemas:
+        func = schema.get("function", {})
+        name = func.get("name", "unknown")
+        desc = func.get("description", "")
+        params = func.get("parameters", {})
+        props = params.get("properties", {})
+        required = params.get("required", [])
+
+        lines.append(f"\n**{name}**: {desc}")
+        if props:
+            lines.append("  Parameters:")
+            for pname, pinfo in props.items():
+                req_marker = " (required)" if pname in required else ""
+                pdesc = pinfo.get("description", "")
+                ptype = pinfo.get("type", "")
+                lines.append(f"  - {pname} ({ptype}){req_marker}: {pdesc}")
+    return "\n".join(lines)
+
+
+def _inject_tool_prompt(messages: list[dict], tool_prompt: str) -> list[dict]:
+    """Inject tool descriptions into the system message."""
+    messages = [m.copy() for m in messages]
+    for i, msg in enumerate(messages):
+        if msg.get("role") == "system":
+            messages[i] = {**msg, "content": msg.get("content", "") + "\n" + tool_prompt}
+            return messages
+    # No system message — prepend one
+    messages.insert(0, {"role": "system", "content": tool_prompt})
+    return messages
+
+
+_TOOL_CALL_RE = re.compile(
+    r"<tool_call>\s*(\{.*?\})\s*</tool_call>",
+    re.DOTALL,
+)
+
+
+def _parse_text_tool_calls(text: str) -> tuple[str, list[dict]]:
+    """Extract <tool_call> blocks from model text output.
+
+    Returns (clean_text, tool_calls) where tool_calls is in
+    Ollama-compatible format: [{"function": {"name": ..., "arguments": ...}}]
+    """
+    matches = _TOOL_CALL_RE.findall(text)
+    if not matches:
+        return text, []
+
+    tool_calls = []
+    for raw_json in matches:
+        try:
+            parsed = json.loads(raw_json)
+            tool_calls.append({
+                "function": {
+                    "name": parsed.get("name", "unknown"),
+                    "arguments": parsed.get("arguments", {}),
+                },
+            })
+        except json.JSONDecodeError:
+            log.warning("Failed to parse tool call JSON: %s", raw_json[:200])
+            continue
+
+    # Remove tool_call blocks from text to get clean response
+    clean = _TOOL_CALL_RE.sub("", text).strip()
+    return clean, tool_calls
+
+
+def _call_ollama(ollama_url: str, model: str, messages: list, tools: list,
+                  *, use_native_tools: bool = True) -> dict:
     """Synchronous Ollama API call (runs in thread)."""
-    payload = json.dumps({
+    payload: dict = {
         "model": model,
         "messages": messages,
-        "tools": tools,
         "stream": False,
         "options": {"num_ctx": DEFAULT_NUM_CTX},
-    }).encode()
+    }
+    if tools and use_native_tools:
+        payload["tools"] = tools
     req = urllib.request.Request(
         f"{ollama_url}/api/chat",
-        data=payload,
+        data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"},
     )
     resp = urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT)
@@ -485,24 +601,41 @@ async def run_tool_loop(
     # ChatGPT backend: uses Codex OAuth tokens, subscription billing (not API credits)
     _use_chatgpt_backend = api_url == "chatgpt"
 
+    # Check if local Ollama model supports native tool calling.
+    # If not, inject tool schemas as text and parse <tool_call> blocks.
+    _use_text_tools = False
+    if not is_remote and not _use_chatgpt_backend and tool_schemas:
+        _use_text_tools = not await asyncio.to_thread(
+            _check_native_tool_support, ollama_url, model
+        )
+
+    # For text-based tool calling, inject tool descriptions into messages
+    _loop_messages = messages
+    if _use_text_tools:
+        tool_prompt = _build_tool_prompt(tool_schemas)
+        _loop_messages = _inject_tool_prompt(messages, tool_prompt)
+    else:
+        _loop_messages = messages
+
     for iteration in range(iteration_limit):
         try:
             if _use_chatgpt_backend:
                 response = await asyncio.to_thread(
-                    _call_chatgpt_backend, model, messages, tool_schemas,
+                    _call_chatgpt_backend, model, _loop_messages, tool_schemas,
                     asyncio.get_event_loop(), emit_event
                 )
             elif _use_responses_api:
                 response = await asyncio.to_thread(
-                    _call_openai_responses, api_url, model, messages, tool_schemas, api_key
+                    _call_openai_responses, api_url, model, _loop_messages, tool_schemas, api_key
                 )
             elif api_key and api_url:
                 response = await asyncio.to_thread(
-                    _call_openai_compat, api_url, model, messages, tool_schemas, api_key
+                    _call_openai_compat, api_url, model, _loop_messages, tool_schemas, api_key
                 )
             else:
                 response = await asyncio.to_thread(
-                    _call_ollama, ollama_url, model, messages, tool_schemas
+                    _call_ollama, ollama_url, model, _loop_messages, tool_schemas,
+                    use_native_tools=not _use_text_tools,
                 )
         except Exception as e:
             backend = "API" if (api_key and api_url) else "Ollama"
@@ -523,23 +656,36 @@ async def run_tool_loop(
             thinking_text += thinking + "\n"
             await emit_event({"type": "thinking", "text": thinking})
 
-        # Check for tool calls
+        # Check for tool calls (native or text-based)
         tool_calls = assistant_msg.get("tool_calls")
+        content_text = assistant_msg.get("content", "")
+
+        # Text-based tool calling: parse <tool_call> blocks from content
+        if not tool_calls and _use_text_tools and content_text:
+            clean_text, parsed_calls = _parse_text_tool_calls(content_text)
+            if parsed_calls:
+                tool_calls = parsed_calls
+                content_text = clean_text
+
         if not tool_calls:
             # No tool calls — emit final text and return
-            text = assistant_msg.get("content", "")
-            if text:
-                result_text += text
-                await emit_event({"type": "text", "text": text})
+            if content_text:
+                result_text += content_text
+                await emit_event({"type": "text", "text": content_text})
             return _build_result(result_text, tool_events, thinking=thinking_text)
 
-        # Model produced text before tool calls — emit it
-        if assistant_msg.get("content"):
-            result_text += assistant_msg["content"]
-            await emit_event({"type": "text", "text": assistant_msg["content"]})
+        # Model produced text alongside tool calls — emit it
+        if content_text:
+            result_text += content_text
+            await emit_event({"type": "text", "text": content_text})
 
         # Add assistant message to history (preserves tool_calls for context)
-        messages.append(assistant_msg)
+        if _use_text_tools:
+            # For text-based: add the raw assistant text (with <tool_call> blocks)
+            raw_content = assistant_msg.get("content", "")
+            _loop_messages.append({"role": "assistant", "content": raw_content})
+        else:
+            _loop_messages.append(assistant_msg)
 
         # Execute each tool call
         for tc in tool_calls:
@@ -618,7 +764,13 @@ async def run_tool_loop(
             })
 
             # Add tool result to message history
-            messages.append({"role": "tool", "content": tool_result, "tool_call_id": tool_call_id})
+            if _use_text_tools:
+                _loop_messages.append({
+                    "role": "user",
+                    "content": f"<tool_result>\n{tool_result[:2000]}\n</tool_result>",
+                })
+            else:
+                _loop_messages.append({"role": "tool", "content": tool_result, "tool_call_id": tool_call_id})
 
     # Hit max iterations
     max_msg = "\n\n[Reached maximum tool iterations]"
