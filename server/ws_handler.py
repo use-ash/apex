@@ -29,6 +29,7 @@ from log import log
 from db import (
     _get_chat, _update_chat, _update_chat_settings, _get_chat_settings,
     _get_group_members,
+    _is_known_profile_alias,
     _get_chat_tool_policy, _get_profile_tool_policy, _set_profile_tool_policy,
     _get_recent_messages_text,
     _save_message,
@@ -193,7 +194,12 @@ def _find_invalid_group_mentions(prompt: str, members: list[dict]) -> list[str]:
             continue
         candidate = " ".join(match.group(1).split()).strip()
         folded = candidate.casefold()
-        if candidate and folded != "all" and folded not in seen:
+        if (
+            candidate
+            and folded != "all"
+            and folded not in seen
+            and _is_known_profile_alias(candidate)
+        ):
             seen.add(folded)
             invalid.append(candidate)
         idx = at_pos + 1 + len(match.group(1))

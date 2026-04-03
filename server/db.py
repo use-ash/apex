@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -603,6 +604,35 @@ def _get_groups_using_persona(profile_id: str) -> list[str]:
         ).fetchall()
         conn.close()
     return [r[0] or "(untitled)" for r in rows]
+
+
+def _is_known_profile_alias(candidate: str) -> bool:
+    normalized = " ".join(str(candidate or "").split()).strip()
+    if not normalized:
+        return False
+    folded = normalized.casefold()
+    with _db_lock:
+        conn = _get_db()
+        rows = conn.execute(
+            "SELECT id, name, slug FROM agent_profiles",
+        ).fetchall()
+        conn.close()
+    for profile_id, name, slug in rows:
+        aliases = [
+            str(profile_id or "").strip(),
+            str(name or "").strip(),
+            str(slug or "").strip(),
+        ]
+        profile_text = str(profile_id or "").strip()
+        slug_text = str(slug or "").strip()
+        if profile_text:
+            aliases.append(re.sub(r"[-_]+", " ", profile_text).strip())
+        if slug_text:
+            aliases.append(re.sub(r"[-_]+", " ", slug_text).strip())
+        for alias in aliases:
+            if alias and " ".join(alias.split()).casefold() == folded:
+                return True
+    return False
 
 
 def _get_profile_tool_policy(profile_id: str | None) -> dict:
