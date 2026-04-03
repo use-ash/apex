@@ -232,6 +232,11 @@ def _member_profile_id_list(members: list[dict]) -> list[str]:
     ]
 
 
+def _strict_relay_member_eligible(member: dict) -> bool:
+    profile_id = str(member.get("profile_id") or "")
+    return bool(profile_id) and not profile_id.startswith("sys-")
+
+
 def _member_map(members: list[dict]) -> dict[str, dict]:
     return {
         str(member.get("profile_id") or ""): member
@@ -241,7 +246,8 @@ def _member_map(members: list[dict]) -> dict[str, dict]:
 
 
 def _normalize_profile_id_sequence(profile_ids: list[str], members: list[dict]) -> list[str]:
-    member_map = _member_map(members)
+    eligible_members = [member for member in members if _strict_relay_member_eligible(member)]
+    member_map = _member_map(eligible_members)
     ordered: list[str] = []
     seen: set[str] = set()
     for raw_profile_id in profile_ids:
@@ -250,7 +256,7 @@ def _normalize_profile_id_sequence(profile_ids: list[str], members: list[dict]) 
             continue
         seen.add(profile_id)
         ordered.append(profile_id)
-    for profile_id in _member_profile_id_list(members):
+    for profile_id in _member_profile_id_list(eligible_members):
         if profile_id in seen:
             continue
         seen.add(profile_id)

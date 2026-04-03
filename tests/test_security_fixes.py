@@ -192,6 +192,7 @@ class SecurityFixTests(unittest.TestCase):
         name: str,
         *,
         avatar: str = "🧪",
+        is_system: bool = False,
     ) -> None:
         with apex._db_lock:
             conn = apex._get_db()
@@ -200,7 +201,7 @@ class SecurityFixTests(unittest.TestCase):
                 INSERT OR REPLACE INTO agent_profiles (
                     id, name, slug, avatar, role_description, backend, model,
                     system_prompt, tool_policy, is_default, is_system, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 0, 0, datetime('now'), datetime('now'))
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 0, ?, datetime('now'), datetime('now'))
                 """,
                 (
                     profile_id,
@@ -211,6 +212,7 @@ class SecurityFixTests(unittest.TestCase):
                     "codex",
                     "codex:gpt-5.4",
                     "Queue test agent",
+                    1 if is_system else 0,
                 ),
             )
             conn.commit()
@@ -2313,6 +2315,18 @@ class SecurityFixTests(unittest.TestCase):
                 (f"{chat_id}:queue-apex-assistant", 0),
             ],
         )
+
+    def test_group_strict_relay_excludes_system_personas_from_ordering(self) -> None:
+        chat_id = self._create_test_group_chat()
+        self._upsert_test_profile("sys-guide", "Guide", avatar="🧭", is_system=True)
+        db_mod._add_group_member(chat_id, "sys-guide", routing_mode="mentioned", display_order=0)
+        state = ws_handler._start_strict_group_relay(chat_id, first_profile_id="queue-codeexpert")
+
+        self.assertEqual(
+            state.ordered_profile_ids,
+            ["queue-codeexpert", "queue-apex-assistant"],
+        )
+        self.assertEqual(state.next_profile_id, "queue-codeexpert")
 
     def test_group_strict_relay_uncertainty_feedback_names_exact_next_agent(self) -> None:
         chat_id = self._create_test_group_chat()
