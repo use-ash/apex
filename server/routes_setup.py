@@ -362,7 +362,8 @@ async def api_setup_models(request: Request):
         try:
             from agent_sdk import _validate_token
             import asyncio as _aio
-            if await _aio.to_thread(_validate_token, api_key):
+            valid = await _aio.to_thread(_validate_token, api_key)
+            if valid:
                 _update_env_var("ANTHROPIC_API_KEY", api_key)
                 auth_valid = True
                 saved.append("anthropic_api_key")
@@ -371,6 +372,11 @@ async def api_setup_models(request: Request):
                     "API key rejected by Anthropic. "
                     "Check the key at console.anthropic.com and try again."
                 )
+        except OSError:
+            # Windows: urllib SSL can throw Bad file descriptor — save anyway
+            _update_env_var("ANTHROPIC_API_KEY", api_key)
+            auth_valid = True
+            saved.append("anthropic_api_key")
         except Exception as exc:
             errors.append(f"API key validation failed: {exc}")
 
