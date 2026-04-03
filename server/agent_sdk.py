@@ -720,6 +720,19 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
     async def _send(payload: dict) -> None:
         await _send_stream_event(chat_id, payload)
 
+    def _pending_tool_denial_message(items: list[dict]) -> str:
+        names = [str(item.get("name") or "").strip() for item in items]
+        names = [name for name in names if name]
+        if not names:
+            return "Tool execution was denied by host permissions."
+        if len(names) == 1:
+            return f"Tool execution was denied by host permissions: {names[0]}."
+        return (
+            "Tool execution was denied by host permissions: "
+            + ", ".join(names[:5])
+            + ("." if len(names) <= 5 else ", ...")
+        )
+
     async def _flush_pending_tools(default_content: str = "", default_is_error: bool = False) -> None:
         if not pending_tools:
             return
@@ -811,10 +824,26 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
 
             elif isinstance(msg, ResultMessage):
                 log(f"ResultMessage usage dict: {msg.usage}")
-                await _flush_pending_tools(default_content="", default_is_error=False)
+                blocked_tools = list(pending_tools.values())
+                blocked_tool_message = _pending_tool_denial_message(blocked_tools) if blocked_tools else ""
+                await _flush_pending_tools(
+                    default_content=blocked_tool_message,
+                    default_is_error=bool(blocked_tools),
+                )
+                final_text = msg.result or result_text
+                if blocked_tools:
+                    log(
+                        f"SDK pending tool flush forced deny: chat={chat_id} "
+                        f"tools={[item.get('name') for item in blocked_tools]}"
+                    )
+                    final_text = (
+                        f"{blocked_tool_message}\n\n"
+                        "The assistant attempted a blocked tool action, so the "
+                        "follow-up response was discarded."
+                    )
                 result_info = {
                     "session_id": msg.session_id,
-                    "text": msg.result or result_text,
+                    "text": final_text,
                     "thinking": thinking_text,
                     "tool_events": json.dumps(tool_events),
                     "cost_usd": msg.total_cost_usd or 0,
@@ -822,7 +851,7 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
                     "tokens_out": (msg.usage or {}).get("output_tokens", 0),
                     "error": None,
                     "stream_failed": False,
-                    "is_error": bool(msg.is_error),
+                    "is_error": bool(msg.is_error or blocked_tools),
                 }
                 _ctx_in = result_info["tokens_in"]
                 _chat = _get_chat(chat_id)

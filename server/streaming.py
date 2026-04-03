@@ -415,11 +415,12 @@ def _make_sdk_tool_gate(level: int, *, allowed_commands: list[str] | None = None
     async def _can_use_tool(tool_name: str, tool_input: dict, _context):
         if level <= 0:
             return PermissionResultDeny(
-                message="This agent is Restricted and cannot use tools or access files."
+                message="This agent is Restricted and cannot use tools or access files.",
+                interrupt=True,
             )
         path_err = _sdk_path_error(tool_name, tool_input)
         if path_err:
-            return PermissionResultDeny(message=path_err)
+            return PermissionResultDeny(message=path_err, interrupt=True)
         if tool_name == "Bash":
             command = str((tool_input or {}).get("command") or "").strip()
             command_err = validate_command(
@@ -429,10 +430,11 @@ def _make_sdk_tool_gate(level: int, *, allowed_commands: list[str] | None = None
                 allowed_commands=allowed_commands,
             )
             if command_err:
-                return PermissionResultDeny(message=command_err)
+                return PermissionResultDeny(message=command_err, interrupt=True)
         if level == 1 and tool_name not in _STANDARD_SDK_TOOLS:
             return PermissionResultDeny(
-                message="This action requires Elevated or Admin permissions."
+                message="This action requires Elevated or Admin permissions.",
+                interrupt=True,
             )
         return PermissionResultAllow()
 

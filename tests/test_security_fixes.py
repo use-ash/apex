@@ -450,6 +450,7 @@ class SecurityFixTests(unittest.TestCase):
         )
         self.assertEqual(allow_read.behavior, "allow")
         self.assertEqual(deny_bash.behavior, "deny")
+        self.assertTrue(deny_bash.interrupt)
         self.assertIn("Elevated", deny_bash.message)
 
     def test_make_options_restricted_profile_blocks_all_tools(self) -> None:
@@ -491,7 +492,49 @@ class SecurityFixTests(unittest.TestCase):
         deny_read = asyncio.run(opts.can_use_tool("Read", {}, SimpleNamespace(suggestions=[])))
         self.assertEqual(opts.permission_mode, "plan")
         self.assertEqual(deny_read.behavior, "deny")
+        self.assertTrue(deny_read.interrupt)
         self.assertIn("Restricted", deny_read.message)
+
+    def test_agent_sdk_pending_denied_tools_fail_closed(self) -> None:
+        fake_client = SimpleNamespace(receive_response=lambda: None)
+        sent: list[dict] = []
+
+        async def fake_send_stream_event(_chat_id: str, payload: dict) -> None:
+            sent.append(payload)
+
+        async def fake_stream():
+            yield agent_sdk.AssistantMessage(
+                content=[agent_sdk.ToolUseBlock(id="toolu_1", name="Bash", input={"command": "pwd"})],
+                model="claude-haiku-4-5-20251001",
+            )
+            yield agent_sdk.ResultMessage(
+                subtype="success",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=False,
+                num_turns=1,
+                session_id="sess-1",
+                usage={"input_tokens": 1, "output_tokens": 1},
+                result="/Users/dana/.openclaw/workspace",
+            )
+
+        with (
+            mock.patch.object(agent_sdk, "_send_stream_event", side_effect=fake_send_stream_event),
+            mock.patch.object(agent_sdk, "_normalize_response_stream", return_value=fake_stream()),
+        ):
+            result = asyncio.run(agent_sdk._stream_response(fake_client, "deadbeef"))
+
+        self.assertTrue(result["is_error"])
+        self.assertIn("denied by host permissions", result["text"])
+        self.assertIn("discarded", result["text"])
+        tool_events = json.loads(result["tool_events"])
+        self.assertEqual(len(tool_events), 1)
+        self.assertEqual(tool_events[0]["name"], "Bash")
+        self.assertTrue(tool_events[0]["result"]["is_error"])
+        self.assertIn("denied by host permissions", tool_events[0]["result"]["content"])
+        tool_result_event = next(evt for evt in sent if evt.get("type") == "tool_result")
+        self.assertTrue(tool_result_event["is_error"])
+        self.assertIn("denied by host permissions", tool_result_event["content"])
 
     def test_ollama_chat_passes_standard_tool_allowlist(self) -> None:
         with apex._db_lock:
