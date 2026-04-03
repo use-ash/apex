@@ -79,7 +79,10 @@ def _ensure_venv() -> str:
     Returns the path to the venv Python interpreter.
     If running inside the venv already, returns sys.executable.
     """
-    venv_python = VENV_DIR / "bin" / "python3"
+    if platform.system() == "Windows":
+        venv_python = VENV_DIR / "Scripts" / "python.exe"
+    else:
+        venv_python = VENV_DIR / "bin" / "python3"
     requirements = APEX_ROOT / "requirements.txt"
 
     # Already inside the venv?
@@ -512,7 +515,11 @@ def _launch_server(env: dict[str, str]) -> None:
     ssl_dir = STATE_DIR / "ssl"
 
     # Use venv Python for the server process
-    venv_python = str(VENV_DIR / "bin" / "python3") if (VENV_DIR / "bin" / "python3").exists() else sys.executable
+    if platform.system() == "Windows":
+        _vp = VENV_DIR / "Scripts" / "python.exe"
+    else:
+        _vp = VENV_DIR / "bin" / "python3"
+    venv_python = str(_vp) if _vp.exists() else sys.executable
     print_info("Starting Apex server...")
     proc = subprocess.Popen(
         [venv_python, str(SERVER_SCRIPT)],

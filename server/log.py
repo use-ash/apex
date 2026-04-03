@@ -6,6 +6,7 @@ import sys
 import threading
 from datetime import datetime
 
+from compat import safe_chmod
 from env import APEX_ROOT, LOG_NAME
 from compat import safe_chmod
 

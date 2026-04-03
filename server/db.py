@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from compat import safe_chmod
 from state import _db_lock, _last_compacted_at
 from compat import safe_chmod
 from log import log

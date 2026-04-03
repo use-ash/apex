@@ -15,7 +15,6 @@ import importlib
 import logging
 import os
 
-from compat import safe_chmod
 import types
 from pathlib import Path
 
@@ -23,6 +22,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 
+from compat import safe_chmod
 import env
 
 log = logging.getLogger("apex.premium")

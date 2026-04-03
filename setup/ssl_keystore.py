@@ -14,9 +14,10 @@ import platform
 import secrets
 import subprocess
 
-from setup.compat import safe_chmod
 import tempfile
 from pathlib import Path
+
+from setup.compat import safe_chmod
 
 # ---------------------------------------------------------------------------
 # Keychain / passphrase storage
