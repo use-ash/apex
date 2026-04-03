@@ -22,6 +22,7 @@ import env
 from env import SSL_CERT, SSL_CA, MODEL, DEBUG, WORKSPACE, ENABLE_SKILL_DISPATCH, SDK_QUERY_TIMEOUT
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from license import get_license_manager
 
 from log import log
 from db import (
@@ -589,6 +590,19 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         await _safe_ws_send_json(websocket, {"type": "error", "message": "Chat not found"}, chat_id=chat_id)
         return
     is_group_chat = chat.get("type") == "group"
+
+    # --- Groups are read-only after trial/license expiry ---
+    if is_group_chat:
+        _lm = get_license_manager()
+        if not (env.GROUPS_ENABLED or _lm.is_feature_enabled("groups")):
+            lic = _lm.status()
+            trial_str = "expired" if not lic["trial_active"] else f"active ({lic['trial_days_remaining']}d remaining)"
+            await _safe_ws_send_json(websocket, {
+                "type": "error",
+                "message": f"Groups are read-only — trial {trial_str}. Upgrade to Apex Pro at https://useash.dev/activate",
+                "premium_required": True,
+            }, chat_id=chat_id)
+            return
 
     chat_model = chat.get("model") or MODEL
     backend = _get_model_backend(chat_model)
