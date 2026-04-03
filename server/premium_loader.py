@@ -5,7 +5,8 @@ encrypted premium modules at runtime.  Without a valid feature key the
 encrypted .enc blobs are inert — the premium code never exists in memory.
 
 In dev mode (APEX_DEV_MODE=1 or port != 8300) plaintext .py files are
-loaded directly so IDE tooling and debugging work normally.
+preferred for debugging. If plaintext files are absent, fall back to the
+encrypted .enc modules so dev instances still retain premium behavior.
 """
 from __future__ import annotations
 
@@ -166,7 +167,10 @@ class PremiumLoader:
         that before giving up.
         """
         if env.DEV_MODE:
-            return self._load_plaintext(name)
+            mod = self._load_plaintext(name)
+            if mod is not None:
+                return mod
+            log.info("Dev mode: %s.py missing, falling back to encrypted module", name)
         feature_key = self.load_feature_key()
         if not feature_key:
             log.debug("No feature key — premium module %s not loaded", name)

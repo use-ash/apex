@@ -43,6 +43,7 @@ import db as db_mod  # noqa: E402
 import env  # noqa: E402
 import memory_extract  # noqa: E402
 import context as context_mod  # noqa: E402
+import premium_loader  # noqa: E402
 import streaming as streaming_mod  # noqa: E402
 import ws_handler  # noqa: E402
 from state import (  # noqa: E402
@@ -1832,6 +1833,23 @@ class SecurityFixTests(unittest.TestCase):
 
         self.assertNotIn(f"{chat_id}:queue-codeexpert", _session_context_sent)
         self.assertNotIn(f"{chat_id}:queue-apex-assistant", _session_context_sent)
+
+    def test_premium_loader_dev_mode_falls_back_to_encrypted_modules_when_plaintext_missing(self) -> None:
+        loader = premium_loader.PremiumLoader(REPO_ROOT / "server", TEST_ROOT / "state")
+        sentinel = object()
+
+        with (
+            mock.patch.object(premium_loader.env, "DEV_MODE", True),
+            mock.patch.object(loader, "_load_plaintext", return_value=None) as load_plaintext,
+            mock.patch.object(loader, "load_feature_key", return_value="feature-key") as load_feature_key,
+            mock.patch.object(loader, "_load_encrypted", return_value=sentinel) as load_encrypted,
+        ):
+            loaded = loader.load_premium_module("context_premium")
+
+        self.assertIs(loaded, sentinel)
+        load_plaintext.assert_called_once_with("context_premium")
+        load_feature_key.assert_called_once_with()
+        load_encrypted.assert_called_once_with("context_premium", "feature-key")
 
     def test_group_relay_self_mention_is_suppressed(self) -> None:
         chat_id = self._create_test_group_chat()
