@@ -99,23 +99,130 @@ MAX_MENTION_DEPTH = 25
 _ws_premium = None
 
 
-def _strip_group_target_prefix(prompt: str, member: dict) -> str:
-    text = prompt.lstrip()
-    leading_ws = prompt[: len(prompt) - len(text)]
-    aliases = [
+def _group_member_aliases(member: dict) -> list[str]:
+    aliases: list[str] = []
+    seen: set[str] = set()
+    candidates = [
         str(member.get("name") or "").strip(),
         str(member.get("profile_id") or "").strip(),
     ]
-    for alias in aliases:
+    profile_id = str(member.get("profile_id") or "").strip()
+    if profile_id:
+        candidates.append(re.sub(r"[-_]+", " ", profile_id).strip())
+    for candidate in candidates:
+        alias = " ".join(candidate.split())
         if not alias:
             continue
-        prefix = f"@{alias}"
-        if text[: len(prefix)].lower() != prefix.lower():
+        folded = alias.casefold()
+        if folded in seen:
             continue
-        next_char = text[len(prefix): len(prefix) + 1]
-        if next_char and not re.match(r"[\s:,.!?-]", next_char):
+        seen.add(folded)
+        aliases.append(alias)
+    aliases.sort(key=len, reverse=True)
+    return aliases
+
+
+def _match_group_mention_prefix(text: str, alias: str) -> int:
+    if not text or not alias:
+        return 0
+    prefix = f"@{alias}"
+    if text[: len(prefix)].casefold() != prefix.casefold():
+        return 0
+    next_char = text[len(prefix): len(prefix) + 1]
+    if next_char and not re.match(r"[\s:,.!?-]", next_char):
+        return 0
+    return len(prefix)
+
+
+def _strip_group_leading_mentions(prompt: str, members: list[dict] | None = None) -> str:
+    text = prompt.lstrip()
+    leading_ws = prompt[: len(prompt) - len(text)]
+    aliases: list[str] = ["all"]
+    if members:
+        seen_aliases = {"all"}
+        for member in members:
+            for alias in _group_member_aliases(member):
+                folded = alias.casefold()
+                if folded in seen_aliases:
+                    continue
+                seen_aliases.add(folded)
+                aliases.append(alias)
+        aliases[1:] = sorted(aliases[1:], key=len, reverse=True)
+    while text.startswith("@"):
+        matched_len = 0
+        for alias in aliases:
+            matched_len = _match_group_mention_prefix(text, alias)
+            if matched_len:
+                break
+        if not matched_len:
+            break
+        text = text[matched_len:].lstrip(" \t:,.!?-")
+    return f"{leading_ws}{text}".strip()
+
+
+def _find_group_mentioned_members(prompt: str, members: list[dict]) -> list[dict]:
+    text = prompt.lstrip()
+    mentioned: list[dict] = []
+    seen_profile_ids: set[str] = set()
+    while text.startswith("@"):
+        all_match_len = _match_group_mention_prefix(text, "all")
+        if all_match_len:
+            for member in members:
+                profile_id = str(member.get("profile_id") or "")
+                if not profile_id or profile_id in seen_profile_ids:
+                    continue
+                seen_profile_ids.add(profile_id)
+                mentioned.append(member)
+            text = text[all_match_len:].lstrip(" \t:,.!?-")
             continue
-        stripped = text[len(prefix):].lstrip(" \t:,.!?-")
+        matched_member = None
+        matched_len = 0
+        for member in members:
+            for alias in _group_member_aliases(member):
+                prefix_len = _match_group_mention_prefix(text, alias)
+                if prefix_len > matched_len:
+                    matched_member = member
+                    matched_len = prefix_len
+        if not matched_member or not matched_len:
+            break
+        profile_id = str(matched_member.get("profile_id") or "")
+        if profile_id and profile_id not in seen_profile_ids:
+            seen_profile_ids.add(profile_id)
+            mentioned.append(matched_member)
+        text = text[matched_len:].lstrip(" \t:,.!?-")
+    return mentioned
+
+
+def _resolve_group_agent_fallback(chat_id: str, prompt: str) -> dict | None:
+    members = _get_group_members(chat_id)
+    if not members:
+        return None
+    mentioned = _find_group_mentioned_members(prompt, members)
+    if not mentioned:
+        return None
+    return {
+        **mentioned[0],
+        "clean_prompt": _strip_group_leading_mentions(prompt, members),
+    }
+
+
+def _get_multi_dispatch_targets_fallback(chat_id: str, prompt: str, group_agent: dict | None) -> list[dict]:
+    if not group_agent:
+        return []
+    members = _get_group_members(chat_id)
+    if not members:
+        return []
+    return _find_group_mentioned_members(prompt, members)
+
+
+def _strip_group_target_prefix(prompt: str, member: dict) -> str:
+    text = prompt.lstrip()
+    leading_ws = prompt[: len(prompt) - len(text)]
+    for alias in _group_member_aliases(member):
+        matched_len = _match_group_mention_prefix(text, alias)
+        if not matched_len:
+            continue
+        stripped = text[matched_len:].lstrip(" \t:,.!?-")
         return f"{leading_ws}{stripped}".strip()
     return prompt
 
@@ -644,6 +751,10 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
 
     chat_model = chat.get("model") or MODEL
     backend = _get_model_backend(chat_model)
+    mention_depth = int(data.get("_mention_depth", 0) or 0)
+    mention_chain: list[str] = list(data.get("_mention_chain") or [])
+    handoff_source = str(data.get("_source") or "").strip().lower()
+    suppress_user_message = bool(data.get("_suppress_user_message"))
 
     # --- Group @mention routing (premium) ---
     group_agent = None
@@ -663,51 +774,58 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
     if group_agent is None:
         group_agent = _resolve_group_agent(chat_id, chat, prompt)
         if group_agent is None and is_group_chat:
+            group_agent = _resolve_group_agent_fallback(chat_id, prompt)
+        if group_agent is None and is_group_chat:
             group_agent = _resolve_primary_group_agent(chat_id, prompt)
-        # Multi-dispatch: spawn parallel tasks for additional @mentioned agents
-        if group_agent and is_group_chat and _ws_premium:
-            multi_targets = _ws_premium.get_multi_dispatch_targets(chat_id, prompt, group_agent, data)
-            for t in multi_targets:
-                if str(t.get("profile_id") or "") == str(group_agent.get("profile_id") or ""):
-                    log(f"user multi-dispatch blocked (self-target): {group_agent['name']} chat={chat_id[:8]}")
-                    continue
-                # Pass attachment refs directly so secondary agents don't race
-                # with the primary's _save_message DB write (which hasn't happened
-                # yet at task-creation time).
-                _parent_att_refs = [
-                    {
-                        "name": att.get("name", ""),
-                        # Prefer the URL the client already computed from the upload
-                        # response. Fallback constructs it from id+ext in case an
-                        # older client omits the url field.
-                        "url": att.get("url") or f"/api/uploads/{att['id']}.{att.get('ext', '')}",
-                    }
-                    for att in attachments
-                    if att.get("id")
-                ] if attachments else []
-                extra_data = {
-                    "chat_id": chat_id,
-                    "prompt": prompt,
-                    "target_agent": t["profile_id"],
-                    "stream_id": _make_stream_id(),
-                    "_mention_depth": 0,
-                    "_mention_chain": [],
-                    "_source": "user_multi",
-                    "_suppress_user_message": True,
-                    "_parent_attachment_refs": _parent_att_refs,
-                }
-                log(f"user multi-dispatch: @{t['name']} in chat={chat_id[:8]}")
-                extra_task = asyncio.create_task(
-                    _handle_send_action(websocket, extra_data)
-                )
-                _set_active_send_task(chat_id, extra_data["stream_id"], extra_task,
-                                      name=t["name"], avatar=t["avatar"],
-                                      profile_id=t["profile_id"])
     mention_prompt = prompt
-    mention_depth = int(data.get("_mention_depth", 0) or 0)
-    mention_chain: list[str] = list(data.get("_mention_chain") or [])
-    handoff_source = str(data.get("_source") or "").strip().lower()
-    suppress_user_message = bool(data.get("_suppress_user_message"))
+    if (
+        group_agent
+        and is_group_chat
+        and not suppress_user_message
+        and handoff_source != "agent"
+    ):
+        multi_targets: list[dict] = []
+        get_multi_dispatch_targets = getattr(_ws_premium, "get_multi_dispatch_targets", None) if _ws_premium else None
+        if get_multi_dispatch_targets:
+            multi_targets = get_multi_dispatch_targets(chat_id, prompt, group_agent, data) or []
+        if not multi_targets:
+            multi_targets = _get_multi_dispatch_targets_fallback(chat_id, prompt, group_agent)
+        for t in multi_targets:
+            if str(t.get("profile_id") or "") == str(group_agent.get("profile_id") or ""):
+                log(f"user multi-dispatch blocked (self-target): {group_agent['name']} chat={chat_id[:8]}")
+                continue
+            # Pass attachment refs directly so secondary agents don't race
+            # with the primary's _save_message DB write (which hasn't happened
+            # yet at task-creation time).
+            _parent_att_refs = [
+                {
+                    "name": att.get("name", ""),
+                    # Prefer the URL the client already computed from the upload
+                    # response. Fallback constructs it from id+ext in case an
+                    # older client omits the url field.
+                    "url": att.get("url") or f"/api/uploads/{att['id']}.{att.get('ext', '')}",
+                }
+                for att in attachments
+                if att.get("id")
+            ] if attachments else []
+            extra_data = {
+                "chat_id": chat_id,
+                "prompt": prompt,
+                "target_agent": t["profile_id"],
+                "stream_id": _make_stream_id(),
+                "_mention_depth": 0,
+                "_mention_chain": [],
+                "_source": "user_multi",
+                "_suppress_user_message": True,
+                "_parent_attachment_refs": _parent_att_refs,
+            }
+            log(f"user multi-dispatch: @{t['name']} in chat={chat_id[:8]}")
+            extra_task = asyncio.create_task(
+                _handle_send_action(websocket, extra_data)
+            )
+            _set_active_send_task(chat_id, extra_data["stream_id"], extra_task,
+                                  name=t["name"], avatar=t["avatar"],
+                                  profile_id=t["profile_id"])
     if group_agent:
         chat_model = group_agent["model"]
         backend = _get_model_backend(chat_model)
