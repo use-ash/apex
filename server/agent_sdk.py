@@ -853,13 +853,14 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
                     "stream_failed": False,
                     "is_error": bool(msg.is_error or blocked_tools),
                 }
+                result_is_error = bool(result_info["is_error"])
                 _ctx_in = result_info["tokens_in"]
                 _chat = _get_chat(chat_id)
                 _ctx_model = (_chat.get("model") or MODEL) if _chat else MODEL
                 _ctx_window = MODEL_CONTEXT_WINDOWS.get(_ctx_model, MODEL_CONTEXT_DEFAULT)
                 await _send({
                     "type": "result",
-                    "is_error": msg.is_error,
+                    "is_error": result_is_error,
                     "cost_usd": result_info["cost_usd"],
                     "tokens_in": result_info["tokens_in"],
                     "tokens_out": result_info["tokens_out"],

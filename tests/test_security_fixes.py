@@ -535,6 +535,8 @@ class SecurityFixTests(unittest.TestCase):
         tool_result_event = next(evt for evt in sent if evt.get("type") == "tool_result")
         self.assertTrue(tool_result_event["is_error"])
         self.assertIn("denied by host permissions", tool_result_event["content"])
+        result_event = next(evt for evt in sent if evt.get("type") == "result")
+        self.assertTrue(result_event["is_error"])
 
     def test_ollama_chat_passes_standard_tool_allowlist(self) -> None:
         with apex._db_lock:
