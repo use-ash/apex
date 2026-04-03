@@ -112,3 +112,5 @@ All work-in-progress design documents, feature plans, and architecture proposals
 Before starting any project or feature work, check `docs/wip/` for an existing design doc. If one exists, read it and use it as your reference for scope, decisions, and open questions. Do not duplicate or contradict decisions made in a WIP doc without flagging the conflict.
 
 When creating a new design doc, place it in `docs/wip/` with a descriptive name (e.g. `PERMISSION_LEVELS_PLAN.md`, `MCP_BRIDGE_DESIGN.md`). Reference it in your channel when handing off work.
+
+**Security audit findings, vulnerability reports, and pen test results must always go in `docs/wip/`, never in tracked files.** Publishing security findings to the public repo exposes attack surface details to adversaries. This applies to any document that describes a vulnerability, a fix for a vulnerability, or the security posture of the system. No exceptions.
