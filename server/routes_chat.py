@@ -261,13 +261,27 @@ async def api_cancel_chat(chat_id: str, request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Baseline group member routes — always available.
+# Baseline group member routes — GET always available (read-only).
+# Write operations (POST/PATCH/DELETE) require active groups license.
 # Premium module may shadow these with enhanced versions when loaded.
 # ---------------------------------------------------------------------------
 
+def _require_groups_license() -> JSONResponse | None:
+    """Return a 403 JSONResponse if groups are not licensed, else None."""
+    if GROUPS_ENABLED or _license_mgr.is_feature_enabled("groups"):
+        return None
+    lic = _license_mgr.status()
+    trial_str = "expired" if not lic["trial_active"] else f"active ({lic['trial_days_remaining']}d remaining)"
+    return JSONResponse(
+        {"error": f"Groups require Apex Pro. Trial {trial_str}. Activate at https://useash.dev/activate",
+         "premium_required": True},
+        status_code=403,
+    )
+
+
 @chat_router.get("/api/chats/{chat_id}/members")
 async def api_get_members(chat_id: str):
-    """Return the active members of a group channel."""
+    """Return the active members of a group channel (always available)."""
     chat = _get_chat(chat_id)
     if not chat:
         return JSONResponse({"error": "Chat not found"}, status_code=404)
@@ -278,7 +292,10 @@ async def api_get_members(chat_id: str):
 
 @chat_router.post("/api/chats/{chat_id}/members")
 async def api_add_member(chat_id: str, request: Request):
-    """Add an agent profile to a group channel."""
+    """Add an agent profile to a group channel (premium)."""
+    gate = _require_groups_license()
+    if gate:
+        return gate
     chat = _get_chat(chat_id)
     if not chat:
         return JSONResponse({"error": "Chat not found"}, status_code=404)
@@ -296,7 +313,10 @@ async def api_add_member(chat_id: str, request: Request):
 
 @chat_router.patch("/api/chats/{chat_id}/members/{profile_id}")
 async def api_update_member(chat_id: str, profile_id: str, request: Request):
-    """Update a group member's routing mode (primary ↔ mentioned)."""
+    """Update a group member's routing mode (premium)."""
+    gate = _require_groups_license()
+    if gate:
+        return gate
     chat = _get_chat(chat_id)
     if not chat:
         return JSONResponse({"error": "Chat not found"}, status_code=404)
@@ -314,7 +334,10 @@ async def api_update_member(chat_id: str, profile_id: str, request: Request):
 
 @chat_router.delete("/api/chats/{chat_id}/members/{profile_id}")
 async def api_remove_member(chat_id: str, profile_id: str):
-    """Remove (soft-delete) an agent from a group channel."""
+    """Remove (soft-delete) an agent from a group channel (premium)."""
+    gate = _require_groups_license()
+    if gate:
+        return gate
     chat = _get_chat(chat_id)
     if not chat:
         return JSONResponse({"error": "Chat not found"}, status_code=404)
