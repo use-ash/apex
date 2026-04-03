@@ -2243,6 +2243,77 @@ class SecurityFixTests(unittest.TestCase):
         self.assertEqual(codeexpert_levels[:2], [2, 0])
         self.assertIn((f"{chat_id}:queue-apex-assistant", 2), permission_levels)
 
+    def test_group_strict_relay_disables_tools_from_initial_turn(self) -> None:
+        chat_id = self._create_test_group_chat()
+        db_mod._update_chat_settings(chat_id, {"agent_mentions_enabled": True})
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                "UPDATE agent_profiles SET backend = ?, model = ? WHERE id IN (?, ?)",
+                ("claude", "claude-sonnet-4-6", "queue-codeexpert", "queue-apex-assistant"),
+            )
+            conn.commit()
+            conn.close()
+
+        permission_levels: list[tuple[str, int]] = []
+        seen_profiles: list[str] = []
+
+        async def fake_get_or_create_client(
+            client_key: str,
+            model=None,
+            permission_level=None,
+            allowed_commands=None,
+        ):
+            permission_levels.append((client_key, int(permission_level)))
+            return object()
+
+        async def fake_run_query_turn(client, make_query_input, chat_id_arg: str):
+            profile_id = _current_group_profile_id.get("")
+            seen_profiles.append(profile_id)
+            text = "Passing to @Queue Apex Assistant." if profile_id == "queue-codeexpert" else "Handled."
+            return {
+                "text": text,
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        with self._fast_relay_context(), \
+            mock.patch.object(ws_handler, "_ws_premium", None), \
+            mock.patch.object(ws_handler, "_get_or_create_client", side_effect=fake_get_or_create_client), \
+            mock.patch.object(ws_handler, "_run_query_turn", side_effect=fake_run_query_turn):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": (
+                            "Start a relay test. Each agent should respond exactly once, in order, "
+                            "by @ mentioning the next agent who has not spoken yet. Stop after every "
+                            "agent currently in the room has responded once."
+                        ),
+                        "target_agent": "queue-codeexpert",
+                    })
+                    stream_end_count = 0
+                    while stream_end_count < 2:
+                        msg = ws.receive_json()
+                        if msg.get("type") == "stream_end":
+                            stream_end_count += 1
+
+        self.assertEqual(seen_profiles, ["queue-codeexpert", "queue-apex-assistant"])
+        self.assertEqual(
+            permission_levels,
+            [
+                (f"{chat_id}:queue-codeexpert", 0),
+                (f"{chat_id}:queue-apex-assistant", 0),
+            ],
+        )
+
     def test_group_strict_relay_uncertainty_feedback_names_exact_next_agent(self) -> None:
         chat_id = self._create_test_group_chat()
         self._add_test_group_member(chat_id, "queue-planner", "Queue Planner", avatar="📊", display_order=2)

@@ -43,6 +43,7 @@ from group_coordinator import (
     _resolve_primary_group_agent,
     _response_indicates_group_roster_uncertainty,
     _start_strict_group_relay,
+    _strict_group_relay_active,
     _strict_relay_requested,
 )
 from model_dispatch import _get_model_backend, get_available_model_ids
@@ -725,10 +726,20 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             group_agent = _resolve_group_agent_fallback(chat_id, prompt)
         if group_agent is None and is_group_chat:
             group_agent = _resolve_primary_group_agent(chat_id, prompt)
+    mention_prompt = prompt
+    if group_agent and is_group_chat and not suppress_user_message and handoff_source not in {"agent", "user_multi"}:
+        if _strict_relay_requested(mention_prompt):
+            _start_strict_group_relay(
+                chat_id,
+                first_profile_id=str(group_agent.get("profile_id") or ""),
+            )
+        else:
+            _clear_strict_group_relay(chat_id)
+    strict_relay_active = bool(group_agent and is_group_chat and _strict_group_relay_active(chat_id))
     permission_policy = _resolve_effective_tool_policy(chat_id, chat, group_agent)
     permission_level = int(permission_policy.get("level", 1))
     allowed_commands = list(permission_policy.get("allowed_commands") or [])
-    if handoff_source in {"relay_feedback", "relay_roster_feedback", "relay_strict_feedback"}:
+    if strict_relay_active or handoff_source in {"relay_feedback", "relay_roster_feedback", "relay_strict_feedback"}:
         permission_policy = {**permission_policy, "level": 0, "allowed_commands": []}
         permission_level = 0
         allowed_commands = []
@@ -743,15 +754,6 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             f"agent={group_agent['name']} source=agent"
         )
         return
-    mention_prompt = prompt
-    if group_agent and is_group_chat and not suppress_user_message and handoff_source not in {"agent", "user_multi"}:
-        if _strict_relay_requested(mention_prompt):
-            _start_strict_group_relay(
-                chat_id,
-                first_profile_id=str(group_agent.get("profile_id") or ""),
-            )
-        else:
-            _clear_strict_group_relay(chat_id)
     if (
         group_agent
         and is_group_chat

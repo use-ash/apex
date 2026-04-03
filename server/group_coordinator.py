@@ -457,6 +457,10 @@ def _build_group_relay_state_prompt(chat_id: str) -> str:
     )
 
 
+def _strict_group_relay_active(chat_id: str) -> bool:
+    return _get_strict_group_relay_state(chat_id).active
+
+
 def _resolve_group_agent_fallback(chat_id: str, prompt: str) -> dict | None:
     members = _get_group_members(chat_id)
     if not members:
