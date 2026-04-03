@@ -1523,6 +1523,72 @@ class SecurityFixTests(unittest.TestCase):
             any("relay blocked (self-mention)" in str(call.args[0]) for call in log_mock.call_args_list)
         )
 
+    def test_group_relay_agent_at_all_is_suppressed(self) -> None:
+        chat_id = self._create_test_group_chat()
+        primary = self._group_agent(chat_id, "queue-codeexpert")
+        secondary = self._group_agent(chat_id, "queue-apex-assistant")
+        premium = SimpleNamespace(
+            resolve_target_agent=lambda _chat_id, _prompt, target_profile_id: dict(self._group_agent(chat_id, target_profile_id)),
+            get_agent_relay_actions=lambda _chat_id, _response_text, group_agent, _chain, mention_depth: {
+                "mentions_enabled": True,
+                "mentioned_names": ["all"] if mention_depth == 0 else [],
+                "current_chain": [group_agent["profile_id"]],
+                "actions": (
+                    [{
+                        "type": "relay",
+                        "target": dict(secondary),
+                        "prompt": "Broadcast relay",
+                        "depth": mention_depth + 1,
+                    }]
+                    if mention_depth == 0
+                    else []
+                ),
+            },
+        )
+        created_send_tasks = 0
+        real_create_task = ws_handler.asyncio.create_task
+
+        def counting_create_task(coro, *args, **kwargs):
+            nonlocal created_send_tasks
+            code = getattr(coro, "cr_code", None)
+            if getattr(code, "co_name", "") == "_handle_send_action":
+                created_send_tasks += 1
+            return real_create_task(coro, *args, **kwargs)
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            return {
+                "text": "Reply with @all",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", premium),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
+            mock.patch.object(ws_handler.asyncio, "create_task", side_effect=counting_create_task),
+            mock.patch.object(ws_handler, "log") as log_mock,
+        ):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "Start relay",
+                        "target_agent": primary["profile_id"],
+                    })
+                    self._receive_until(ws, lambda msg: msg.get("type") == "stream_end")
+
+        self.assertEqual(created_send_tasks, 1)
+        self.assertTrue(
+            any("relay blocked (@all reserved for user)" in str(call.args[0]) for call in log_mock.call_args_list)
+        )
+
     def test_user_multi_dispatch_skips_primary_agent(self) -> None:
         chat_id = self._create_test_group_chat()
         primary = self._group_agent(chat_id, "queue-codeexpert")

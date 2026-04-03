@@ -201,6 +201,23 @@ def _find_group_mentioned_members(prompt: str, members: list[dict]) -> list[dict
     return mentioned
 
 
+def _find_specific_group_mentioned_members(prompt: str, members: list[dict]) -> list[dict]:
+    mentioned: list[dict] = []
+    seen_profile_ids: set[str] = set()
+    for _start, _end, matched_member in _find_group_mention_matches(prompt, members):
+        if matched_member is None:
+            continue
+        profile_id = str(matched_member.get("profile_id") or "")
+        if profile_id and profile_id not in seen_profile_ids:
+            seen_profile_ids.add(profile_id)
+            mentioned.append(matched_member)
+    return mentioned
+
+
+def _has_group_broadcast_mention(prompt: str, members: list[dict]) -> bool:
+    return any(matched_member is None for _start, _end, matched_member in _find_group_mention_matches(prompt, members))
+
+
 def _resolve_group_agent_fallback(chat_id: str, prompt: str) -> dict | None:
     members = _get_group_members(chat_id)
     if not members:
@@ -1263,9 +1280,37 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
 
         # Agent-to-agent @mention relay (premium)
         if is_group_chat and group_agent and response_text and _ws_premium:
+            relay_members = _get_group_members(chat_id)
+            broadcast_mention_present = _has_group_broadcast_mention(response_text, relay_members)
+            explicit_relay_targets = _find_specific_group_mentioned_members(response_text, relay_members)
+            explicit_relay_target_ids = {
+                str(member.get("profile_id") or "")
+                for member in explicit_relay_targets
+                if str(member.get("profile_id") or "")
+            }
+            explicit_relay_target_names = {
+                str(member.get("name") or "")
+                for member in explicit_relay_targets
+                if str(member.get("name") or "")
+            }
             relay = _ws_premium.get_agent_relay_actions(
                 chat_id, response_text, group_agent, mention_chain, mention_depth,
             )
+            if broadcast_mention_present:
+                log(f"relay blocked (@all reserved for user): {group_agent['name']} chat={chat_id[:8]}")
+                filtered_actions: list[dict] = []
+                for action in relay.get("actions") or []:
+                    action_type = str(action.get("type") or "")
+                    if action_type in {"relay", "redirect"}:
+                        target = action.get("target") or {}
+                        target_profile_id = str(target.get("profile_id") or "")
+                        if target_profile_id and target_profile_id in explicit_relay_target_ids:
+                            filtered_actions.append(action)
+                    elif action_type == "pair_blocked":
+                        target_name = str(action.get("target_name") or "")
+                        if target_name and target_name in explicit_relay_target_names:
+                            filtered_actions.append(action)
+                relay = {**relay, "actions": filtered_actions}
             log(
                 f"mention check: chat={chat_id[:8]} agent={group_agent['name']} "
                 f"mentions_enabled={relay['mentions_enabled']} "
