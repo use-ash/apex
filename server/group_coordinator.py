@@ -12,7 +12,17 @@ from db import (
     _get_chat_settings,
     _get_group_members,
     _is_known_profile_alias,
+    _update_chat_settings,
 )
+
+
+@dataclass(frozen=True)
+class GroupStrictRelayState:
+    active: bool
+    ordered_profile_ids: list[str]
+    completed_profile_ids: list[str]
+    next_profile_id: str
+    next_target: dict | None
 
 
 @dataclass(frozen=True)
@@ -25,6 +35,12 @@ class GroupRelayPlan:
     explicit_relay_target_names: set[str]
     sender_profile_id: str
     actionable_relay_actions: list[dict]
+    strict_relay: GroupStrictRelayState
+    strict_relay_feedback_prompt: str
+    strict_relay_feedback_message: str
+
+
+_STRICT_RELAY_KEY = "strict_relay"
 
 
 def _group_member_aliases(member: dict) -> list[str]:
@@ -206,6 +222,239 @@ def _format_group_member_mentions(members: list[dict], *, exclude_profile_id: st
         seen.add(folded)
         handles.append(f"@{name}")
     return ", ".join(handles)
+
+
+def _member_profile_id_list(members: list[dict]) -> list[str]:
+    return [
+        str(member.get("profile_id") or "")
+        for member in members
+        if str(member.get("profile_id") or "")
+    ]
+
+
+def _member_map(members: list[dict]) -> dict[str, dict]:
+    return {
+        str(member.get("profile_id") or ""): member
+        for member in members
+        if str(member.get("profile_id") or "")
+    }
+
+
+def _normalize_profile_id_sequence(profile_ids: list[str], members: list[dict]) -> list[str]:
+    member_map = _member_map(members)
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for raw_profile_id in profile_ids:
+        profile_id = str(raw_profile_id or "")
+        if not profile_id or profile_id not in member_map or profile_id in seen:
+            continue
+        seen.add(profile_id)
+        ordered.append(profile_id)
+    for profile_id in _member_profile_id_list(members):
+        if profile_id in seen:
+            continue
+        seen.add(profile_id)
+        ordered.append(profile_id)
+    return ordered
+
+
+def _rotate_profile_ids(profile_ids: list[str], first_profile_id: str) -> list[str]:
+    if not first_profile_id or first_profile_id not in profile_ids:
+        return list(profile_ids)
+    start = profile_ids.index(first_profile_id)
+    return list(profile_ids[start:]) + list(profile_ids[:start])
+
+
+def _strict_relay_requested(prompt: str) -> bool:
+    lowered = " ".join(str(prompt or "").casefold().split())
+    if not lowered:
+        return False
+    has_once = (
+        "exactly once" in lowered
+        or "respond once each" in lowered
+        or "all agents have spoken" in lowered
+        or "until all agents have spoken" in lowered
+    )
+    has_handoff = (
+        "relay" in lowered
+        or "pass it off" in lowered
+        or "pass the baton" in lowered
+        or "hand off" in lowered
+        or "handoff" in lowered
+        or "@ mentioning the next agent" in lowered
+        or "@mentioning the next agent" in lowered
+    )
+    return has_once and has_handoff
+
+
+def _get_strict_relay_payload(chat_id: str) -> dict:
+    payload = _get_chat_settings(chat_id).get(_STRICT_RELAY_KEY) or {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _set_strict_relay_payload(chat_id: str, payload: dict | None) -> None:
+    _update_chat_settings(chat_id, {_STRICT_RELAY_KEY: payload or None})
+
+
+def _start_strict_group_relay(chat_id: str, *, first_profile_id: str = "") -> GroupStrictRelayState:
+    members = _get_group_members(chat_id)
+    ordered_profile_ids = _normalize_profile_id_sequence([], members)
+    ordered_profile_ids = _rotate_profile_ids(ordered_profile_ids, first_profile_id)
+    payload = {
+        "active": bool(len(ordered_profile_ids) > 1),
+        "ordered_profile_ids": ordered_profile_ids,
+        "completed_profile_ids": [],
+    }
+    _set_strict_relay_payload(chat_id, payload if payload["active"] else None)
+    return _get_strict_group_relay_state(chat_id, members)
+
+
+def _clear_strict_group_relay(chat_id: str) -> None:
+    _set_strict_relay_payload(chat_id, None)
+
+
+def _get_strict_group_relay_state(
+    chat_id: str,
+    members: list[dict] | None = None,
+) -> GroupStrictRelayState:
+    relay_members = list(members or _get_group_members(chat_id))
+    member_map = _member_map(relay_members)
+    payload = _get_strict_relay_payload(chat_id)
+    if not payload.get("active"):
+        return GroupStrictRelayState(False, [], [], "", None)
+    ordered_profile_ids = _normalize_profile_id_sequence(
+        list(payload.get("ordered_profile_ids") or []),
+        relay_members,
+    )
+    completed_profile_ids = [
+        profile_id
+        for profile_id in list(payload.get("completed_profile_ids") or [])
+        if profile_id in ordered_profile_ids
+    ]
+    next_profile_id = next(
+        (profile_id for profile_id in ordered_profile_ids if profile_id not in completed_profile_ids),
+        "",
+    )
+    active = bool(next_profile_id)
+    return GroupStrictRelayState(
+        active=active,
+        ordered_profile_ids=ordered_profile_ids,
+        completed_profile_ids=completed_profile_ids,
+        next_profile_id=next_profile_id,
+        next_target=member_map.get(next_profile_id),
+    )
+
+
+def _advance_strict_group_relay(
+    chat_id: str,
+    sender_profile_id: str,
+    members: list[dict] | None = None,
+) -> GroupStrictRelayState:
+    state = _get_strict_group_relay_state(chat_id, members)
+    if not state.active:
+        return state
+    completed_profile_ids = list(state.completed_profile_ids)
+    if (
+        sender_profile_id
+        and sender_profile_id in state.ordered_profile_ids
+        and sender_profile_id not in completed_profile_ids
+    ):
+        completed_profile_ids.append(sender_profile_id)
+    next_profile_id = next(
+        (profile_id for profile_id in state.ordered_profile_ids if profile_id not in completed_profile_ids),
+        "",
+    )
+    if next_profile_id:
+        _set_strict_relay_payload(
+            chat_id,
+            {
+                "active": True,
+                "ordered_profile_ids": state.ordered_profile_ids,
+                "completed_profile_ids": completed_profile_ids,
+            },
+        )
+    else:
+        _clear_strict_group_relay(chat_id)
+    return _get_strict_group_relay_state(chat_id, members)
+
+
+def _format_group_member_mentions_for_ids(members: list[dict], profile_ids: list[str]) -> str:
+    member_map = _member_map(members)
+    handles: list[str] = []
+    for profile_id in profile_ids:
+        member = member_map.get(profile_id)
+        if not member:
+            continue
+        name = str(member.get("name") or "").strip()
+        if name:
+            handles.append(f"@{name}")
+    return ", ".join(handles)
+
+
+def _build_strict_group_relay_feedback_prompt(
+    state: GroupStrictRelayState,
+    members: list[dict],
+    *,
+    sender_name: str,
+) -> str:
+    next_target = state.next_target
+    if not next_target:
+        return (
+            f"System feedback for @{sender_name}: The strict relay round is complete. "
+            "Do not hand off to another agent."
+        )
+    completed = _format_group_member_mentions_for_ids(members, state.completed_profile_ids) or "none yet"
+    remaining_profile_ids = [
+        profile_id
+        for profile_id in state.ordered_profile_ids
+        if profile_id not in state.completed_profile_ids
+    ]
+    remaining = _format_group_member_mentions_for_ids(members, remaining_profile_ids) or "none"
+    return (
+        f"System feedback for @{sender_name}: Strict relay is active. "
+        f"Agents already responded: {completed}. "
+        f"Agents still pending: {remaining}. "
+        f"Next agent to hand off to is @{next_target.get('name')}. "
+        f"@mention exactly @{next_target.get('name')} and do not mention anyone else."
+    )
+
+
+def _build_strict_group_relay_feedback_message(state: GroupStrictRelayState) -> str:
+    next_target = state.next_target
+    if not next_target:
+        return "Strict relay is complete. No further agents should be auto-invoked."
+    return f"Strict relay is active. The next agent is @{next_target.get('name')}."
+
+
+def _build_group_relay_state_prompt(chat_id: str) -> str:
+    members = _get_group_members(chat_id)
+    state = _get_strict_group_relay_state(chat_id, members)
+    if not state.active:
+        return ""
+    completed = _format_group_member_mentions_for_ids(members, state.completed_profile_ids) or "none yet"
+    remaining_profile_ids = [
+        profile_id
+        for profile_id in state.ordered_profile_ids
+        if profile_id not in state.completed_profile_ids
+    ]
+    remaining = _format_group_member_mentions_for_ids(members, remaining_profile_ids) or "none"
+    next_target = state.next_target
+    next_line = (
+        f"The next valid handoff target is @{next_target.get('name')}."
+        if next_target
+        else "The strict relay round is complete. Do not hand off again."
+    )
+    return (
+        "<system-reminder>\n"
+        "# Strict Relay\n"
+        "A strict relay is active for this room.\n"
+        f"Agents already responded this round: {completed}\n"
+        f"Agents still pending: {remaining}\n"
+        f"{next_line}\n"
+        "Use this relay state as authoritative. If you hand off, @mention exactly one pending agent and do not use "
+        "tools, files, SDK client counts, or inferred presence signals to determine room membership.\n"
+        "</system-reminder>\n\n"
+    )
 
 
 def _resolve_group_agent_fallback(chat_id: str, prompt: str) -> dict | None:
@@ -413,6 +662,11 @@ def _build_group_relay_plan(
     premium_relay: dict | None = None,
 ) -> GroupRelayPlan:
     relay_members = _get_group_members(chat_id)
+    strict_relay = _advance_strict_group_relay(
+        chat_id,
+        str(group_agent.get("profile_id") or ""),
+        relay_members,
+    )
     broadcast_mention_present = _has_group_broadcast_mention(response_text, relay_members)
     explicit_relay_targets = _find_specific_group_mentioned_members(response_text, relay_members)
     missing_relay_mentions = _find_invalid_group_mentions(response_text, relay_members)
@@ -469,6 +723,27 @@ def _build_group_relay_plan(
                 if target_name and target_name in explicit_relay_target_names:
                     filtered_actions.append(action)
         relay = {**relay, "actions": filtered_actions}
+    strict_relay_feedback_prompt = ""
+    strict_relay_feedback_message = ""
+    if strict_relay.active and relay.get("mentions_enabled"):
+        strict_target_profile_id = str(strict_relay.next_profile_id or "")
+        strict_actions: list[dict] = []
+        for action in relay.get("actions") or []:
+            action_type = str(action.get("type") or "")
+            if action_type not in {"relay", "redirect"}:
+                continue
+            target = action.get("target") or {}
+            target_profile_id = str(target.get("profile_id") or "")
+            if strict_target_profile_id and target_profile_id == strict_target_profile_id:
+                strict_actions.append(action)
+        relay = {**relay, "actions": strict_actions}
+        if not strict_actions:
+            strict_relay_feedback_prompt = _build_strict_group_relay_feedback_prompt(
+                strict_relay,
+                relay_members,
+                sender_name=str(group_agent.get("name") or group_agent.get("profile_id") or "agent"),
+            )
+            strict_relay_feedback_message = _build_strict_group_relay_feedback_message(strict_relay)
     sender_profile_id = str(group_agent.get("profile_id") or "")
     actionable_relay_actions = [
         action
@@ -484,4 +759,7 @@ def _build_group_relay_plan(
         explicit_relay_target_names=explicit_relay_target_names,
         sender_profile_id=sender_profile_id,
         actionable_relay_actions=actionable_relay_actions,
+        strict_relay=strict_relay,
+        strict_relay_feedback_prompt=strict_relay_feedback_prompt,
+        strict_relay_feedback_message=strict_relay_feedback_message,
     )

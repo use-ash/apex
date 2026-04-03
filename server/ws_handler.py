@@ -35,12 +35,15 @@ from group_coordinator import (
     _build_group_roster_feedback_prompt,
     _build_missing_group_mentions_feedback_prompt,
     _build_missing_group_mentions_message,
+    _clear_strict_group_relay,
     _get_multi_dispatch_targets_fallback,
     _merge_group_dispatch_targets,
     _resolve_direct_group_agent,
     _resolve_group_agent_fallback,
     _resolve_primary_group_agent,
     _response_indicates_group_roster_uncertainty,
+    _start_strict_group_relay,
+    _strict_relay_requested,
 )
 from model_dispatch import _get_model_backend, get_available_model_ids
 from state import (
@@ -698,6 +701,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
     handoff_source = str(data.get("_source") or "").strip().lower()
     invalid_mention_feedback_depth = int(data.get("_invalid_mention_feedback_depth", 0) or 0)
     roster_feedback_depth = int(data.get("_roster_feedback_depth", 0) or 0)
+    strict_feedback_depth = int(data.get("_strict_feedback_depth", 0) or 0)
     suppress_user_message = bool(data.get("_suppress_user_message"))
 
     # --- Group @mention routing (premium) ---
@@ -724,7 +728,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
     permission_policy = _resolve_effective_tool_policy(chat_id, chat, group_agent)
     permission_level = int(permission_policy.get("level", 1))
     allowed_commands = list(permission_policy.get("allowed_commands") or [])
-    if handoff_source in {"relay_feedback", "relay_roster_feedback"}:
+    if handoff_source in {"relay_feedback", "relay_roster_feedback", "relay_strict_feedback"}:
         permission_policy = {**permission_policy, "level": 0, "allowed_commands": []}
         permission_level = 0
         allowed_commands = []
@@ -740,6 +744,14 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         )
         return
     mention_prompt = prompt
+    if group_agent and is_group_chat and not suppress_user_message and handoff_source not in {"agent", "user_multi"}:
+        if _strict_relay_requested(mention_prompt):
+            _start_strict_group_relay(
+                chat_id,
+                first_profile_id=str(group_agent.get("profile_id") or ""),
+            )
+        else:
+            _clear_strict_group_relay(chat_id)
     if (
         group_agent
         and is_group_chat
@@ -1180,6 +1192,46 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             )
             sender_profile_id = relay_plan.sender_profile_id
             actionable_relay_actions = relay_plan.actionable_relay_actions
+            if relay_plan.strict_relay_feedback_message:
+                log(
+                    f"relay strict feedback: {group_agent['name']} "
+                    f"chat={chat_id[:8]} next={relay_plan.strict_relay.next_profile_id or 'done'}"
+                )
+                await _safe_ws_send_json(
+                    original_ws,
+                    {
+                        "type": "system_message",
+                        "chat_id": chat_id,
+                        "text": relay_plan.strict_relay_feedback_message,
+                    },
+                    chat_id=chat_id,
+                )
+            if relay_plan.strict_relay_feedback_prompt and strict_feedback_depth < 1:
+                feedback_data = {
+                    "chat_id": chat_id,
+                    "prompt": relay_plan.strict_relay_feedback_prompt,
+                    "target_agent": sender_profile_id,
+                    "attachments": [],
+                    "stream_id": _make_stream_id(),
+                    "_mention_depth": mention_depth,
+                    "_mention_chain": mention_chain,
+                    "_source": "relay_strict_feedback",
+                    "_suppress_user_message": True,
+                    "_strict_feedback_depth": strict_feedback_depth + 1,
+                    "_parent_attachments": handoff_attachments,
+                    "_parent_attachment_refs": handoff_attachment_refs,
+                }
+                feedback_task = asyncio.create_task(
+                    _handle_send_action(original_ws, feedback_data)
+                )
+                _set_active_send_task(
+                    chat_id,
+                    feedback_data["stream_id"],
+                    feedback_task,
+                    name=group_agent["name"],
+                    avatar=group_agent["avatar"],
+                    profile_id=sender_profile_id,
+                )
             if relay_plan.missing_relay_mentions:
                 missing_message = _build_missing_group_mentions_message(
                     relay_plan.missing_relay_mentions,
@@ -1198,6 +1250,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 if (
                     len(relay_plan.missing_relay_mentions) == 1
                     and not actionable_relay_actions
+                    and not relay_plan.strict_relay_feedback_prompt
                     and invalid_mention_feedback_depth < 1
                 ):
                     feedback_prompt = _build_missing_group_mentions_feedback_prompt(
@@ -1238,6 +1291,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             if (
                 not actionable_relay_actions
                 and not relay_plan.missing_relay_mentions
+                and not relay_plan.strict_relay_feedback_prompt
                 and relay.get("mentions_enabled")
                 and roster_feedback_depth < 1
                 and _response_indicates_group_roster_uncertainty(response_text)

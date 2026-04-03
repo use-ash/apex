@@ -28,6 +28,7 @@ from db import (
 )
 import env
 from log import log
+from group_coordinator import _build_group_relay_state_prompt
 from model_dispatch import _get_model_backend, OLLAMA_BASE_URL
 from streaming import _get_profile_active_stream_stats
 from state import (
@@ -694,7 +695,13 @@ def _get_group_roster_prompt(chat_id: str, user_message: str = "") -> str:
             f"{roster_prompt}<system-reminder>\n{authoritative_note}</system-reminder>\n\n"
         )
     load_prompt = _build_group_load_prompt(chat_id)
-    return f"{roster_prompt}{load_prompt}" if load_prompt else roster_prompt
+    relay_prompt = _build_group_relay_state_prompt(chat_id)
+    parts = [roster_prompt]
+    if load_prompt:
+        parts.append(load_prompt)
+    if relay_prompt:
+        parts.append(relay_prompt)
+    return "".join(parts)
 
 
 def _resolve_group_agent(chat_id: str, chat: dict, prompt: str) -> dict | None:

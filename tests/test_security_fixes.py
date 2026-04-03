@@ -36,6 +36,7 @@ if str(SERVER_DIR) not in sys.path:
 
 import apex  # noqa: E402
 import alert_client  # noqa: E402
+import agent_sdk  # noqa: E402
 import backends  # noqa: E402
 import dashboard as dashboard_mod  # noqa: E402
 import db as db_mod  # noqa: E402
@@ -89,6 +90,15 @@ class SecurityFixTests(unittest.TestCase):
 
     def _client(self) -> TestClient:
         return TestClient(apex.app)
+
+    def _fast_relay_context(self):
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(ws_handler, "_has_session_context", return_value=True))
+        stack.enter_context(mock.patch.object(ws_handler, "_generate_recovery_context", return_value=""))
+        stack.enter_context(mock.patch.object(context_mod, "_get_workspace_context", return_value=""))
+        stack.enter_context(mock.patch.object(backends, "_get_workspace_context", return_value=""))
+        stack.enter_context(mock.patch.object(agent_sdk, "_get_workspace_context", return_value=""))
+        return stack
 
     def _admin_headers(self) -> dict[str, str]:
         return {
@@ -175,6 +185,48 @@ class SecurityFixTests(unittest.TestCase):
             if member["profile_id"] == profile_id:
                 return {**member, "clean_prompt": f"Prompt for {member['name']}"}
         self.fail(f"group agent {profile_id} not found in chat {chat_id}")
+
+    def _upsert_test_profile(
+        self,
+        profile_id: str,
+        name: str,
+        *,
+        avatar: str = "🧪",
+    ) -> None:
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO agent_profiles (
+                    id, name, slug, avatar, role_description, backend, model,
+                    system_prompt, tool_policy, is_default, is_system, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 0, 0, datetime('now'), datetime('now'))
+                """,
+                (
+                    profile_id,
+                    name,
+                    profile_id,
+                    avatar,
+                    "Queue test agent",
+                    "codex",
+                    "codex:gpt-5.4",
+                    "Queue test agent",
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+    def _add_test_group_member(
+        self,
+        chat_id: str,
+        profile_id: str,
+        name: str,
+        *,
+        avatar: str = "🧪",
+        display_order: int = 2,
+    ) -> None:
+        self._upsert_test_profile(profile_id, name, avatar=avatar)
+        db_mod._add_group_member(chat_id, profile_id, routing_mode="mentioned", display_order=display_order)
 
     def test_logs_search_treats_regex_as_literal_text(self) -> None:
         apex.LOG_PATH.write_text(
@@ -1679,6 +1731,22 @@ class SecurityFixTests(unittest.TestCase):
         self.assertIn("queue: 2/2", prompt)
         self.assertIn("Queue Apex Assistant [queue-apex-assistant] ✨ — 🟢 idle", prompt)
 
+    def test_group_roster_prompt_includes_strict_relay_state(self) -> None:
+        chat_id = self._create_test_group_chat()
+        premium = SimpleNamespace(
+            get_group_roster_prompt=lambda _chat_id, _user_message="": "<system-reminder>\n# Group Roster\n- base\n</system-reminder>\n\n",
+        )
+        self.assertTrue(ws_handler._strict_relay_requested(
+            "Start a relay test. Each agent should respond exactly once and pass it off until all agents have spoken."
+        ))
+        ws_handler._start_strict_group_relay(chat_id, first_profile_id="queue-codeexpert")
+        with mock.patch.object(context_mod, "_premium", premium):
+            prompt = context_mod._get_group_roster_prompt(chat_id, user_message="Start relay")
+
+        self.assertIn("# Strict Relay", prompt)
+        self.assertIn("Agents already responded this round: none yet", prompt)
+        self.assertIn("The next valid handoff target is @Queue CodeExpert.", prompt)
+
     def test_group_relay_self_mention_is_suppressed(self) -> None:
         chat_id = self._create_test_group_chat()
         agent = self._group_agent(chat_id, "queue-codeexpert")
@@ -1771,10 +1839,9 @@ class SecurityFixTests(unittest.TestCase):
             }
 
         started_speakers: set[str] = set()
-        with (
-            mock.patch.object(ws_handler, "_ws_premium", None),
-            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
-        ):
+        with self._fast_relay_context(), \
+            mock.patch.object(ws_handler, "_ws_premium", None), \
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat):
             with self._client() as client:
                 with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
                     ws.send_json({
@@ -1845,10 +1912,9 @@ class SecurityFixTests(unittest.TestCase):
             }
 
         started_speakers: set[str] = set()
-        with (
-            mock.patch.object(ws_handler, "_ws_premium", None),
-            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
-        ):
+        with self._fast_relay_context(), \
+            mock.patch.object(ws_handler, "_ws_premium", None), \
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat):
             with self._client() as client:
                 with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
                     ws.send_json({
@@ -1904,10 +1970,9 @@ class SecurityFixTests(unittest.TestCase):
             }
 
         started_speakers: set[str] = set()
-        with (
-            mock.patch.object(ws_handler, "_ws_premium", None),
-            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
-        ):
+        with self._fast_relay_context(), \
+            mock.patch.object(ws_handler, "_ws_premium", None), \
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat):
             with self._client() as client:
                 with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
                     ws.send_json({
@@ -1930,6 +1995,7 @@ class SecurityFixTests(unittest.TestCase):
 
     def test_group_relay_missing_single_target_warns_and_self_corrects(self) -> None:
         chat_id = self._create_test_group_chat()
+        self._upsert_test_profile("queue-debugger", "Queue Debugger", avatar="🛠️")
         db_mod._update_chat_settings(chat_id, {"agent_mentions_enabled": True})
         seen_calls: list[tuple[str, str]] = []
 
@@ -1956,10 +2022,9 @@ class SecurityFixTests(unittest.TestCase):
             }
 
         system_messages: list[str] = []
-        with (
-            mock.patch.object(ws_handler, "_ws_premium", None),
-            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
-        ):
+        with self._fast_relay_context(), \
+            mock.patch.object(ws_handler, "_ws_premium", None), \
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat):
             with self._client() as client:
                 with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
                     ws.send_json({
@@ -1991,6 +2056,7 @@ class SecurityFixTests(unittest.TestCase):
 
     def test_group_relay_missing_target_warns_without_self_correction_when_valid_target_exists(self) -> None:
         chat_id = self._create_test_group_chat()
+        self._upsert_test_profile("queue-debugger", "Queue Debugger", avatar="🛠️")
         db_mod._update_chat_settings(chat_id, {"agent_mentions_enabled": True})
         seen_calls: list[str] = []
 
@@ -2015,10 +2081,9 @@ class SecurityFixTests(unittest.TestCase):
             }
 
         system_messages: list[str] = []
-        with (
-            mock.patch.object(ws_handler, "_ws_premium", None),
-            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
-        ):
+        with self._fast_relay_context(), \
+            mock.patch.object(ws_handler, "_ws_premium", None), \
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat):
             with self._client() as client:
                 with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
                     ws.send_json({
@@ -2071,10 +2136,9 @@ class SecurityFixTests(unittest.TestCase):
             }
 
         started_speakers: list[str] = []
-        with (
-            mock.patch.object(ws_handler, "_ws_premium", None),
-            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
-        ):
+        with self._fast_relay_context(), \
+            mock.patch.object(ws_handler, "_ws_premium", None), \
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat):
             with self._client() as client:
                 with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
                     ws.send_json({
@@ -2154,11 +2218,10 @@ class SecurityFixTests(unittest.TestCase):
                 "tool_events": "[]",
             }
 
-        with (
-            mock.patch.object(ws_handler, "_ws_premium", None),
-            mock.patch.object(ws_handler, "_get_or_create_client", side_effect=fake_get_or_create_client),
-            mock.patch.object(ws_handler, "_run_query_turn", side_effect=fake_run_query_turn),
-        ):
+        with self._fast_relay_context(), \
+            mock.patch.object(ws_handler, "_ws_premium", None), \
+            mock.patch.object(ws_handler, "_get_or_create_client", side_effect=fake_get_or_create_client), \
+            mock.patch.object(ws_handler, "_run_query_turn", side_effect=fake_run_query_turn):
             with self._client() as client:
                 with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
                     ws.send_json({
@@ -2179,6 +2242,140 @@ class SecurityFixTests(unittest.TestCase):
         ]
         self.assertEqual(codeexpert_levels[:2], [2, 0])
         self.assertIn((f"{chat_id}:queue-apex-assistant", 2), permission_levels)
+
+    def test_group_strict_relay_uncertainty_feedback_names_exact_next_agent(self) -> None:
+        chat_id = self._create_test_group_chat()
+        self._add_test_group_member(chat_id, "queue-planner", "Queue Planner", avatar="📊", display_order=2)
+        db_mod._update_chat_settings(chat_id, {"agent_mentions_enabled": True})
+        seen_calls: list[tuple[str, str]] = []
+        system_messages: list[str] = []
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            profile_id = _current_group_profile_id.get("")
+            seen_calls.append((profile_id, prompt))
+            if profile_id == "queue-codeexpert":
+                if sum(1 for pid, _ in seen_calls if pid == "queue-codeexpert") == 1:
+                    text = "I am unsure who is present in this room."
+                else:
+                    text = "Passing to @Queue Apex Assistant."
+            elif profile_id == "queue-apex-assistant":
+                text = "Passing to @Queue Planner."
+            else:
+                text = "Handled."
+            return {
+                "text": text,
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        with self._fast_relay_context(), \
+            mock.patch.object(ws_handler, "_ws_premium", None), \
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": (
+                            "Start a relay test. Each agent should respond exactly once, in order, "
+                            "by @ mentioning the next agent who has not spoken yet. Stop after every "
+                            "agent currently in the room has responded once."
+                        ),
+                        "target_agent": "queue-codeexpert",
+                    })
+                    stream_end_count = 0
+                    while stream_end_count < 4:
+                        msg = ws.receive_json()
+                        if msg.get("type") == "system_message":
+                            system_messages.append(msg.get("text") or "")
+                        if msg.get("type") == "stream_end":
+                            stream_end_count += 1
+
+        self.assertEqual(
+            [profile_id for profile_id, _prompt in seen_calls],
+            [
+                "queue-codeexpert",
+                "queue-codeexpert",
+                "queue-apex-assistant",
+                "queue-planner",
+            ],
+        )
+        self.assertTrue(
+            any("Strict relay is active. The next agent is @Queue Apex Assistant." in text for text in system_messages)
+        )
+        self.assertIn("Next agent to hand off to is @Queue Apex Assistant.", seen_calls[1][1])
+        self.assertIn("Agents already responded: @Queue CodeExpert.", seen_calls[1][1])
+
+    def test_group_strict_relay_wrong_present_target_self_corrects(self) -> None:
+        chat_id = self._create_test_group_chat()
+        self._add_test_group_member(chat_id, "queue-planner", "Queue Planner", avatar="📊", display_order=2)
+        db_mod._update_chat_settings(chat_id, {"agent_mentions_enabled": True})
+        seen_calls: list[tuple[str, str]] = []
+        started_speakers: list[str] = []
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            profile_id = _current_group_profile_id.get("")
+            seen_calls.append((profile_id, prompt))
+            if profile_id == "queue-codeexpert":
+                if sum(1 for pid, _ in seen_calls if pid == "queue-codeexpert") == 1:
+                    text = "Passing to @Queue Planner."
+                else:
+                    text = "Passing to @Queue Apex Assistant."
+            elif profile_id == "queue-apex-assistant":
+                text = "Passing to @Queue Planner."
+            else:
+                text = "Handled."
+            return {
+                "text": text,
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        with self._fast_relay_context(), \
+            mock.patch.object(ws_handler, "_ws_premium", None), \
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": (
+                            "Start a relay test. Each agent should respond exactly once, in order, "
+                            "by @ mentioning the next agent who has not spoken yet."
+                        ),
+                        "target_agent": "queue-codeexpert",
+                    })
+                    stream_end_count = 0
+                    while stream_end_count < 4:
+                        msg = ws.receive_json()
+                        if msg.get("type") == "stream_start":
+                            started_speakers.append(msg.get("speaker_id") or "")
+                        if msg.get("type") == "stream_end":
+                            stream_end_count += 1
+
+        self.assertEqual(
+            started_speakers,
+            [
+                "queue-codeexpert",
+                "queue-codeexpert",
+                "queue-apex-assistant",
+                "queue-planner",
+            ],
+        )
+        self.assertIn("Next agent to hand off to is @Queue Apex Assistant.", seen_calls[1][1])
+        self.assertNotIn("queue-planner", seen_calls[1][1].casefold().split("next agent to hand off to is", 1)[-1])
 
     def test_group_relay_plain_english_at_mention_does_not_trigger_missing_target_warning(self) -> None:
         chat_id = self._create_test_group_chat()
@@ -2208,10 +2405,9 @@ class SecurityFixTests(unittest.TestCase):
                 "tool_events": "[]",
             }
 
-        with (
-            mock.patch.object(ws_handler, "_ws_premium", None),
-            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
-        ):
+        with self._fast_relay_context(), \
+            mock.patch.object(ws_handler, "_ws_premium", None), \
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat):
             with self._client() as client:
                 with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
                     ws.send_json({
@@ -2279,12 +2475,11 @@ class SecurityFixTests(unittest.TestCase):
                 "tool_events": "[]",
             }
 
-        with (
-            mock.patch.object(ws_handler, "_ws_premium", premium),
-            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
-            mock.patch.object(ws_handler.asyncio, "create_task", side_effect=counting_create_task),
-            mock.patch.object(ws_handler, "log") as log_mock,
-        ):
+        with self._fast_relay_context(), \
+            mock.patch.object(ws_handler, "_ws_premium", premium), \
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat), \
+            mock.patch.object(ws_handler.asyncio, "create_task", side_effect=counting_create_task), \
+            mock.patch.object(ws_handler, "log") as log_mock:
             with self._client() as client:
                 with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
                     ws.send_json({
