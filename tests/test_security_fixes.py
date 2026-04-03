@@ -1743,6 +1743,109 @@ class SecurityFixTests(unittest.TestCase):
             any("relay blocked (self-mention)" in str(call.args[0]) for call in log_mock.call_args_list)
         )
 
+    def test_group_relay_specific_mentions_work_without_premium_module(self) -> None:
+        chat_id = self._create_test_group_chat()
+        db_mod._update_chat_settings(chat_id, {"agent_mentions_enabled": True})
+        seen_profiles: list[str] = []
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            profile_id = _current_group_profile_id.get("")
+            seen_profiles.append(profile_id)
+            text = (
+                "Please take this one, @Queue Apex Assistant."
+                if profile_id == "queue-codeexpert"
+                else "Handled."
+            )
+            return {
+                "text": text,
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        started_speakers: set[str] = set()
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", None),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
+        ):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "Start relay",
+                        "target_agent": "queue-codeexpert",
+                    })
+                    stream_end_count = 0
+                    while stream_end_count < 2:
+                        msg = ws.receive_json()
+                        if msg.get("type") == "stream_start":
+                            started_speakers.add(msg.get("speaker_id"))
+                        if msg.get("type") == "stream_end":
+                            stream_end_count += 1
+
+        self.assertEqual(started_speakers, {"queue-codeexpert", "queue-apex-assistant"})
+        self.assertEqual(set(seen_profiles), {"queue-codeexpert", "queue-apex-assistant"})
+        self.assertEqual(len(seen_profiles), 2)
+
+    def test_group_relay_specific_mentions_survive_incidental_agent_at_all_text(self) -> None:
+        chat_id = self._create_test_group_chat()
+        db_mod._update_chat_settings(chat_id, {"agent_mentions_enabled": True})
+        seen_profiles: list[str] = []
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            profile_id = _current_group_profile_id.get("")
+            seen_profiles.append(profile_id)
+            text = (
+                "Please take this one, @Queue Apex Assistant.\n\n"
+                "Current dev commits:\n"
+                "- Restrict agent @all relay\n"
+                "- Fix non-leading multi-mention dispatch"
+                if profile_id == "queue-codeexpert"
+                else "Handled."
+            )
+            return {
+                "text": text,
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        started_speakers: set[str] = set()
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", None),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
+        ):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "Start relay",
+                        "target_agent": "queue-codeexpert",
+                    })
+                    stream_end_count = 0
+                    while stream_end_count < 2:
+                        msg = ws.receive_json()
+                        if msg.get("type") == "stream_start":
+                            started_speakers.add(msg.get("speaker_id"))
+                        if msg.get("type") == "stream_end":
+                            stream_end_count += 1
+
+        self.assertEqual(started_speakers, {"queue-codeexpert", "queue-apex-assistant"})
+        self.assertEqual(set(seen_profiles), {"queue-codeexpert", "queue-apex-assistant"})
+        self.assertEqual(len(seen_profiles), 2)
+
     def test_group_relay_agent_at_all_is_suppressed(self) -> None:
         chat_id = self._create_test_group_chat()
         primary = self._group_agent(chat_id, "queue-codeexpert")

@@ -27,7 +27,7 @@ from license import get_license_manager
 
 from log import log
 from db import (
-    _get_chat, _update_chat, _update_chat_settings,
+    _get_chat, _update_chat, _update_chat_settings, _get_chat_settings,
     _get_group_members,
     _get_chat_tool_policy, _get_profile_tool_policy, _set_profile_tool_policy,
     _get_recent_messages_text,
@@ -383,6 +383,58 @@ def _inherited_group_attachments(data: dict, backend: str, is_group_chat: bool) 
     if attachment_error:
         return []
     return inherited
+
+
+def _merge_relay_actions(*action_lists: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for action_list in action_lists:
+        for action in action_list:
+            action_type = str(action.get("type") or "")
+            target = action.get("target") or {}
+            target_profile_id = str(target.get("profile_id") or "")
+            if action_type in {"relay", "redirect"}:
+                key = (action_type, target_profile_id)
+            elif action_type == "pair_blocked":
+                key = (action_type, str(action.get("target_name") or ""))
+            else:
+                key = (action_type, str(action.get("reason") or ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(action)
+    return merged
+
+
+def _get_agent_relay_fallback(
+    chat_id: str,
+    response_text: str,
+    group_agent: dict,
+    mention_chain: list[str],
+    mention_depth: int,
+) -> dict:
+    current_chain = list(mention_chain) + [str(group_agent.get("profile_id") or "")]
+    mentions_enabled = bool(_get_chat_settings(chat_id).get("agent_mentions_enabled"))
+    members = _get_group_members(chat_id)
+    explicit_targets = _find_specific_group_mentioned_members(response_text, members)
+    return {
+        "mentioned_names": [str(member.get("name") or "") for member in explicit_targets],
+        "mentions_enabled": mentions_enabled,
+        "current_chain": current_chain,
+        "actions": (
+            [
+                {
+                    "type": "relay",
+                    "target": member,
+                    "prompt": response_text,
+                    "depth": mention_depth + 1,
+                }
+                for member in explicit_targets
+            ]
+            if mentions_enabled and mention_depth < MAX_MENTION_DEPTH
+            else []
+        ),
+    }
 
 
 async def _broadcast_chat_event(chat_id: str, payload: dict) -> None:
@@ -1317,8 +1369,8 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         if group_agent:
             _update_chat_settings(chat_id, {"active_speaker_id": ""})
 
-        # Agent-to-agent @mention relay (premium)
-        if is_group_chat and group_agent and response_text and _ws_premium:
+        # Agent-to-agent @mention relay
+        if is_group_chat and group_agent and response_text:
             relay_members = _get_group_members(chat_id)
             broadcast_mention_present = _has_group_broadcast_mention(response_text, relay_members)
             explicit_relay_targets = _find_specific_group_mentioned_members(response_text, relay_members)
@@ -1332,9 +1384,33 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 for member in explicit_relay_targets
                 if str(member.get("name") or "")
             }
-            relay = _ws_premium.get_agent_relay_actions(
+            fallback_relay = _get_agent_relay_fallback(
                 chat_id, response_text, group_agent, mention_chain, mention_depth,
             )
+            relay = fallback_relay
+            if _ws_premium:
+                premium_relay = _ws_premium.get_agent_relay_actions(
+                    chat_id, response_text, group_agent, mention_chain, mention_depth,
+                )
+                relay = {
+                    "mentioned_names": list(dict.fromkeys(
+                        list(premium_relay.get("mentioned_names") or [])
+                        + list(fallback_relay.get("mentioned_names") or [])
+                    )),
+                    "mentions_enabled": bool(
+                        premium_relay.get("mentions_enabled")
+                        or fallback_relay.get("mentions_enabled")
+                    ),
+                    "current_chain": list(
+                        premium_relay.get("current_chain")
+                        or fallback_relay.get("current_chain")
+                        or []
+                    ),
+                    "actions": _merge_relay_actions(
+                        list(premium_relay.get("actions") or []),
+                        list(fallback_relay.get("actions") or []),
+                    ),
+                }
             if broadcast_mention_present:
                 log(f"relay blocked (@all reserved for user): {group_agent['name']} chat={chat_id[:8]}")
                 filtered_actions: list[dict] = []
