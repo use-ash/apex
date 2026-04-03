@@ -732,7 +732,7 @@ def _get_chats() -> list[dict]:
                     "SELECT m.agent_profile_id, m.is_primary, ap2.name, ap2.avatar "
                     "FROM channel_agent_memberships m "
                     "JOIN agent_profiles ap2 ON m.agent_profile_id = ap2.id "
-                    "WHERE m.channel_id = ?", (gid,)
+                    "WHERE m.channel_id = ? AND COALESCE(m.status, 'active') = 'active'", (gid,)
                 ).fetchall()
                 primary = next((m for m in members if m[1]), None)
                 group_meta[gid] = {
@@ -930,6 +930,29 @@ def _add_group_member(channel_id: str, profile_id: str, routing_mode: str = "men
         conn.commit()
         conn.close()
     return mid
+
+
+def _update_group_member(channel_id: str, profile_id: str, routing_mode: str | None = None) -> bool:
+    """Update an active member's routing mode (primary ↔ mentioned)."""
+    if routing_mode not in ("primary", "mentioned", None):
+        return False
+    with _db_lock:
+        conn = _get_db()
+        row = conn.execute(
+            "SELECT id FROM channel_agent_memberships "
+            "WHERE channel_id = ? AND agent_profile_id = ? AND COALESCE(status, 'active') = 'active'",
+            (channel_id, profile_id),
+        ).fetchone()
+        if not row:
+            conn.close()
+            return False
+        if routing_mode:
+            is_primary = routing_mode == "primary"
+            preferred = profile_id if is_primary else None
+            _normalize_group_primary_locked(conn, channel_id, preferred_profile_id=preferred)
+        conn.commit()
+        conn.close()
+    return True
 
 
 def _remove_group_member(channel_id: str, profile_id: str) -> bool:

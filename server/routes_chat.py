@@ -20,6 +20,8 @@ from db import (
     _get_chat_settings, _update_chat_settings,
     _get_group_members,
     _add_group_member,
+    _update_group_member,
+    _remove_group_member,
     _get_messages,
     _get_last_turn_tokens_in, _estimate_tokens,
 )
@@ -258,8 +260,70 @@ async def api_cancel_chat(chat_id: str, request: Request):
     return Response(status_code=204)
 
 
-# Group member CRUD routes (GET/POST/DELETE/PATCH members) are registered
-# by routes_chat_premium.py when the premium module is loaded.
+# ---------------------------------------------------------------------------
+# Baseline group member routes — always available.
+# Premium module may shadow these with enhanced versions when loaded.
+# ---------------------------------------------------------------------------
+
+@chat_router.get("/api/chats/{chat_id}/members")
+async def api_get_members(chat_id: str):
+    """Return the active members of a group channel."""
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    if (chat.get("type") or "chat") != "group":
+        return JSONResponse({"error": "Not a group channel"}, status_code=400)
+    return JSONResponse({"members": _get_group_members(chat_id)})
+
+
+@chat_router.post("/api/chats/{chat_id}/members")
+async def api_add_member(chat_id: str, request: Request):
+    """Add an agent profile to a group channel."""
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    if (chat.get("type") or "chat") != "group":
+        return JSONResponse({"error": "Not a group channel"}, status_code=400)
+    data = await request.json()
+    profile_id = data.get("profile_id", "")
+    if not profile_id:
+        return JSONResponse({"error": "profile_id required"}, status_code=400)
+    routing_mode = data.get("routing_mode", "mentioned")
+    is_primary = data.get("is_primary", False) or routing_mode == "primary"
+    _add_group_member(chat_id, profile_id, routing_mode=routing_mode, is_primary=is_primary)
+    return JSONResponse({"ok": True, "members": _get_group_members(chat_id)})
+
+
+@chat_router.patch("/api/chats/{chat_id}/members/{profile_id}")
+async def api_update_member(chat_id: str, profile_id: str, request: Request):
+    """Update a group member's routing mode (primary ↔ mentioned)."""
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    if (chat.get("type") or "chat") != "group":
+        return JSONResponse({"error": "Not a group channel"}, status_code=400)
+    data = await request.json()
+    routing_mode = data.get("routing_mode")
+    if routing_mode not in ("primary", "mentioned"):
+        return JSONResponse({"error": "routing_mode must be 'primary' or 'mentioned'"}, status_code=400)
+    updated = _update_group_member(chat_id, profile_id, routing_mode=routing_mode)
+    if not updated:
+        return JSONResponse({"error": "Member not found"}, status_code=404)
+    return JSONResponse({"ok": True, "members": _get_group_members(chat_id)})
+
+
+@chat_router.delete("/api/chats/{chat_id}/members/{profile_id}")
+async def api_remove_member(chat_id: str, profile_id: str):
+    """Remove (soft-delete) an agent from a group channel."""
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    if (chat.get("type") or "chat") != "group":
+        return JSONResponse({"error": "Not a group channel"}, status_code=400)
+    removed = _remove_group_member(chat_id, profile_id)
+    if not removed:
+        return JSONResponse({"error": "Member not found or is the last member"}, status_code=400)
+    return JSONResponse({"ok": True, "members": _get_group_members(chat_id)})
 
 
 @chat_router.get("/api/chats/{chat_id}/settings")
