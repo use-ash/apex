@@ -60,7 +60,7 @@ _recovery_pending: dict[str, asyncio.Event] = {}  # chat_id -> set when ready
 # Session context
 # Primary writer: context.py — use _clear_session_context() for writes.
 # ---------------------------------------------------------------------------
-_session_context_sent: set[str] = set()  # chat_ids that got workspace context
+_session_context_sent: set[str] = set()  # session keys that got workspace context
 
 # ---------------------------------------------------------------------------
 # Group routing

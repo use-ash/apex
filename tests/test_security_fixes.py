@@ -53,6 +53,7 @@ from state import (  # noqa: E402
     _stream_buffers,
     _chat_locks,
     _chat_send_locks,
+    _session_context_sent,
 )
 from local_model import safety as local_safety  # noqa: E402
 from local_model import tool_loop  # noqa: E402
@@ -83,6 +84,7 @@ class SecurityFixTests(unittest.TestCase):
             _stream_buffers,
             _chat_locks,
             _chat_send_locks,
+            _session_context_sent,
         ):
             state.clear()
         context_mod._premium = None
@@ -1793,6 +1795,43 @@ class SecurityFixTests(unittest.TestCase):
         self.assertIn("# Strict Relay", prompt)
         self.assertIn("Agents already responded this round: none yet", prompt)
         self.assertIn("The next valid handoff target is @Queue CodeExpert.", prompt)
+
+    def test_group_workspace_context_is_scoped_per_agent_in_group_chats(self) -> None:
+        chat_id = self._create_test_group_chat()
+        (TEST_ROOT / "APEX.md").write_text("Project instructions here", encoding="utf-8")
+        memory_dir = TEST_ROOT / "memory"
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        (memory_dir / "MEMORY.md").write_text("Persistent memory here", encoding="utf-8")
+
+        with (
+            mock.patch.object(context_mod, "_get_live_state_snapshot", return_value=""),
+            mock.patch.object(context_mod, "_get_recent_exchange_context", return_value=""),
+        ):
+            token = _current_group_profile_id.set("queue-codeexpert")
+            try:
+                first_agent_ctx = context_mod._get_workspace_context(chat_id)
+                repeated_first_agent_ctx = context_mod._get_workspace_context(chat_id)
+            finally:
+                _current_group_profile_id.reset(token)
+
+            token = _current_group_profile_id.set("queue-apex-assistant")
+            try:
+                second_agent_ctx = context_mod._get_workspace_context(chat_id)
+            finally:
+                _current_group_profile_id.reset(token)
+
+        self.assertIn("Project instructions here", first_agent_ctx)
+        self.assertIn("Persistent memory here", first_agent_ctx)
+        self.assertEqual(repeated_first_agent_ctx, "")
+        self.assertIn("Project instructions here", second_agent_ctx)
+        self.assertIn("Persistent memory here", second_agent_ctx)
+        self.assertIn(f"{chat_id}:queue-codeexpert", _session_context_sent)
+        self.assertIn(f"{chat_id}:queue-apex-assistant", _session_context_sent)
+
+        context_mod._clear_session_context(chat_id)
+
+        self.assertNotIn(f"{chat_id}:queue-codeexpert", _session_context_sent)
+        self.assertNotIn(f"{chat_id}:queue-apex-assistant", _session_context_sent)
 
     def test_group_relay_self_mention_is_suppressed(self) -> None:
         chat_id = self._create_test_group_chat()

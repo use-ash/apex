@@ -454,7 +454,7 @@ async def _maybe_compact_chat(chat_id: str) -> bool:
     from streaming import _disconnect_client, _send_stream_event
     await _disconnect_client(chat_id)
     _update_chat(chat_id, claude_session_id=None)
-    _session_context_sent.discard(chat_id)
+    _clear_session_context(chat_id)
 
     await _send_stream_event(chat_id, {
         "type": "system",
@@ -878,12 +878,21 @@ def _try_consume_recovery(chat_id: str) -> str | None:
     return summary
 
 
+def _get_session_context_key(chat_id_or_key: str) -> str:
+    """Resolve workspace-context scope to chat_id:profile_id for group turns."""
+    if ":" in chat_id_or_key:
+        return chat_id_or_key
+    current_pid = _current_group_profile_id.get("")
+    return f"{chat_id_or_key}:{current_pid}" if current_pid else chat_id_or_key
+
+
 def _get_workspace_context(chat_id: str) -> str:
     """Load APEX.md + MEMORY.md + skills catalog once per session for Claude Code parity."""
-    if chat_id in _session_context_sent:
+    session_key = _get_session_context_key(chat_id)
+    if session_key in _session_context_sent:
         summary = _try_consume_recovery(chat_id)
         if summary is not None:
-            log(f"Injecting recovery context for chat={chat_id}")
+            log(f"Injecting recovery context for session={session_key}")
             recovery_block = _build_recovery_block(chat_id, summary)
             live = _get_live_state_snapshot()
             return recovery_block + "\n\n" + live + "\n\n" if live else recovery_block + "\n\n"
@@ -929,28 +938,33 @@ def _get_workspace_context(chat_id: str) -> str:
         if recent:
             parts.append(recent)
     if parts:
-        _session_context_sent.add(chat_id)
+        _session_context_sent.add(session_key)
         ctx_parts = "APEX.md + MEMORY.md + skills"
         if not has_existing_session:
             ctx_parts += " + recent exchanges"
-        log(f"Workspace context injected for chat={chat_id} ({ctx_parts})")
+        log(f"Workspace context injected for session={session_key} ({ctx_parts})")
         return "\n\n".join(parts) + "\n\n"
     return ""
 
 
-def _clear_session_context(chat_id: str) -> None:
-    """Remove chat_id from the session-context-sent set.
+def _clear_session_context(chat_id_or_key: str) -> None:
+    """Remove chat or session keys from the session-context-sent set.
 
     Use this instead of mutating _session_context_sent directly from outside
     context.py.  Called when a chat's model/profile is changed and the context
     must be re-injected on the next turn.
     """
-    _session_context_sent.discard(chat_id)
+    if ":" in chat_id_or_key:
+        _session_context_sent.discard(chat_id_or_key)
+        return
+    prefix = f"{chat_id_or_key}:"
+    stale_keys = {key for key in _session_context_sent if key == chat_id_or_key or key.startswith(prefix)}
+    _session_context_sent.difference_update(stale_keys)
 
 
-def _has_session_context(chat_id: str) -> bool:
-    """Return True if workspace context has already been sent for chat_id."""
-    return chat_id in _session_context_sent
+def _has_session_context(chat_id_or_key: str) -> bool:
+    """Return True if workspace context has already been sent for this session scope."""
+    return _get_session_context_key(chat_id_or_key) in _session_context_sent
 
 
 # ---------------------------------------------------------------------------

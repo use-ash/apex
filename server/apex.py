@@ -56,7 +56,6 @@ from db import (
 )
 from state import (
     _recovery_pending,
-    _session_context_sent,
     _clients, _rate_buckets, _db_lock,
 )
 
@@ -222,7 +221,7 @@ async def lifespan(app: FastAPI):
                     recovery = await asyncio.to_thread(_generate_recovery_context, transcript)
                     # Always store — even empty summary triggers transcript tail injection
                     _store_recovery_context(cid, recovery or "", skip_targeting=True)
-                    _session_context_sent.discard(cid)
+                    _context_mod._clear_session_context(cid)
                     log(f"startup recovery: chat={cid[:8]} len={len(recovery or '')}")
             except Exception as e:
                 log(f"startup recovery error chat={cid[:8]}: {e}")
