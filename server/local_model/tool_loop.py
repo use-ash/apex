@@ -94,10 +94,83 @@ def _inject_tool_prompt(messages: list[dict], tool_prompt: str) -> list[dict]:
     return messages
 
 
-_TOOL_CALL_RE = re.compile(
-    r"<tool_call>\s*(\{.*?\})\s*</tool_call>",
-    re.DOTALL,
-)
+_TOOL_CALL_TAG_RE = re.compile(r"<tool_call>\s*", re.DOTALL)
+_TOOL_CALL_END_RE = re.compile(r"\s*</tool_call>")
+
+
+def _extract_json_object(text: str, start: int) -> tuple[str, int] | tuple[None, int]:
+    """Extract a complete JSON object from text starting at `start`.
+
+    Tries json.loads on successively larger substrings ending at each `}`
+    to find the complete JSON object. Handles malformed JSON with raw
+    control characters by preprocessing before parsing.
+    Returns (json_string, end_pos) or (None, start) on failure.
+    """
+    if start >= len(text) or text[start] != "{":
+        return None, start
+
+    # Try parsing at each closing brace from right to left within
+    # a reasonable window (scan for `}</tool_call>` pattern first)
+    end_tag = "</tool_call>"
+    tag_pos = text.find(end_tag, start)
+    if tag_pos > start:
+        # Try the substring up to the closing tag
+        candidate = text[start:tag_pos].rstrip()
+        fixed = _fix_json_control_chars(candidate)
+        try:
+            json.loads(fixed)
+            return candidate, tag_pos
+        except json.JSONDecodeError:
+            pass
+
+    # Fallback: try at each `}` from innermost to outermost
+    pos = start
+    last_brace = -1
+    while True:
+        last_brace = text.find("}", last_brace + 1 if last_brace >= 0 else start)
+        if last_brace < 0 or last_brace > start + 50000:
+            break
+        candidate = text[start:last_brace + 1]
+        fixed = _fix_json_control_chars(candidate)
+        try:
+            json.loads(fixed)
+            return candidate, last_brace + 1
+        except json.JSONDecodeError:
+            continue
+
+    return None, start
+
+
+def _fix_json_control_chars(raw: str) -> str:
+    """Escape raw control characters inside JSON string values.
+
+    Models often output literal newlines/tabs inside JSON strings
+    which is invalid JSON. This fixes them before parsing.
+    """
+    # Replace raw newlines/tabs that aren't already escaped
+    result = []
+    in_string = False
+    j = 0
+    while j < len(raw):
+        c = raw[j]
+        if c == '\\' and in_string:
+            # Already escaped — keep both chars
+            result.append(raw[j:j + 2])
+            j += 2
+            continue
+        if c == '"':
+            in_string = not in_string
+            result.append(c)
+        elif in_string and c == '\n':
+            result.append('\\n')
+        elif in_string and c == '\r':
+            result.append('\\r')
+        elif in_string and c == '\t':
+            result.append('\\t')
+        else:
+            result.append(c)
+        j += 1
+    return "".join(result)
 
 
 def _parse_text_tool_calls(text: str) -> tuple[str, list[dict]]:
@@ -106,14 +179,36 @@ def _parse_text_tool_calls(text: str) -> tuple[str, list[dict]]:
     Returns (clean_text, tool_calls) where tool_calls is in
     Ollama-compatible format: [{"function": {"name": ..., "arguments": ...}}]
     """
-    matches = _TOOL_CALL_RE.findall(text)
-    if not matches:
-        return text, []
-
     tool_calls = []
-    for raw_json in matches:
+    clean_parts = []
+    pos = 0
+
+    while pos < len(text):
+        match = _TOOL_CALL_TAG_RE.search(text, pos)
+        if not match:
+            clean_parts.append(text[pos:])
+            break
+
+        # Add text before the <tool_call> tag
+        clean_parts.append(text[pos:match.start()])
+
+        # Extract JSON object after the opening tag
+        json_start = match.end()
+        raw_json, json_end = _extract_json_object(text, json_start)
+
+        if raw_json is None:
+            # Failed to extract — keep the tag text as-is
+            clean_parts.append(text[match.start():match.end()])
+            pos = match.end()
+            continue
+
+        # Skip past the closing </tool_call> tag
+        end_match = _TOOL_CALL_END_RE.match(text, json_end)
+        pos = end_match.end() if end_match else json_end
+
         try:
-            parsed = json.loads(raw_json)
+            fixed = _fix_json_control_chars(raw_json)
+            parsed = json.loads(fixed)
             tool_calls.append({
                 "function": {
                     "name": parsed.get("name", "unknown"),
@@ -124,8 +219,7 @@ def _parse_text_tool_calls(text: str) -> tuple[str, list[dict]]:
             log.warning("Failed to parse tool call JSON: %s", raw_json[:200])
             continue
 
-    # Remove tool_call blocks from text to get clean response
-    clean = _TOOL_CALL_RE.sub("", text).strip()
+    clean = "".join(clean_parts).strip()
     return clean, tool_calls
 
 
