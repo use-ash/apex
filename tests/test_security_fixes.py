@@ -640,6 +640,226 @@ class SecurityFixTests(unittest.TestCase):
         self.assertEqual(msg["type"], "error")
         self.assertIn("Text attachments are not supported for Ollama chats yet", msg["message"])
 
+    def test_group_multi_dispatch_propagates_image_attachments_to_supported_agents(self) -> None:
+        chat_id = self._create_test_group_chat()
+        png = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+            b"\x90wS\xde"
+            b"\x00\x00\x00\x0cIDAT\x08\x99c```\x00\x00\x00\x04\x00\x01"
+            b"\x0b\xe7\x02\x9d"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        attachment = self._create_uploaded_attachment("png", png, kind="image", name="puppy.png")
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                "UPDATE agent_profiles SET backend = ?, model = ? WHERE id IN (?, ?)",
+                ("ollama", "qwen3:latest", "queue-codeexpert", "queue-apex-assistant"),
+            )
+            conn.commit()
+            conn.close()
+
+        seen_attachments: dict[str, list[dict] | None] = {}
+
+        async def fake_run_ollama_chat(chat_id_arg: str, prompt: str, model=None, attachments=None, permission_policy=None):
+            seen_attachments[_current_group_profile_id.get("")] = attachments
+            return {
+                "text": f"reply:{prompt}",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        with (
+            mock.patch.object(ws_handler, "_run_ollama_chat", side_effect=fake_run_ollama_chat),
+            self._client() as client,
+        ):
+            with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                ws.send_json({
+                    "action": "send",
+                    "chat_id": chat_id,
+                    "prompt": "@Queue CodeExpert @Queue Apex Assistant what do you see?",
+                    "attachments": [attachment],
+                })
+                stream_end_count = 0
+                while stream_end_count < 2:
+                    msg = ws.receive_json()
+                    if msg.get("type") == "stream_end":
+                        stream_end_count += 1
+
+        self.assertEqual(set(seen_attachments), {"queue-codeexpert", "queue-apex-assistant"})
+        self.assertTrue(all(items and items[0]["id"] == attachment["id"] for items in seen_attachments.values()))
+
+    def test_group_multi_dispatch_falls_back_to_attachment_refs_for_unsupported_agents(self) -> None:
+        chat_id = self._create_test_group_chat()
+        png = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+            b"\x90wS\xde"
+            b"\x00\x00\x00\x0cIDAT\x08\x99c```\x00\x00\x00\x04\x00\x01"
+            b"\x0b\xe7\x02\x9d"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        attachment = self._create_uploaded_attachment("png", png, kind="image", name="puppy.png")
+        attachment_url = f"/api/uploads/{attachment['id']}.png"
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                "UPDATE agent_profiles SET backend = ?, model = ? WHERE id = ?",
+                ("ollama", "qwen3:latest", "queue-codeexpert"),
+            )
+            conn.execute(
+                "UPDATE agent_profiles SET backend = ?, model = ? WHERE id = ?",
+                ("codex", "codex:gpt-5.4", "queue-apex-assistant"),
+            )
+            conn.commit()
+            conn.close()
+
+        seen_prompts: dict[str, str] = {}
+        seen_attachments: dict[str, list[dict] | None] = {}
+
+        async def fake_run_ollama_chat(chat_id_arg: str, prompt: str, model=None, attachments=None, permission_policy=None):
+            seen_prompts[_current_group_profile_id.get("")] = prompt
+            seen_attachments[_current_group_profile_id.get("")] = attachments
+            return {
+                "text": f"reply:{prompt}",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            seen_prompts[_current_group_profile_id.get("")] = prompt
+            seen_attachments[_current_group_profile_id.get("")] = attachments
+            return {
+                "text": f"reply:{prompt}",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        with (
+            mock.patch.object(ws_handler, "_run_ollama_chat", side_effect=fake_run_ollama_chat),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
+            self._client() as client,
+        ):
+            with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                ws.send_json({
+                    "action": "send",
+                    "chat_id": chat_id,
+                    "prompt": "@Queue CodeExpert @Queue Apex Assistant what do you see?",
+                    "attachments": [attachment],
+                })
+                stream_end_count = 0
+                while stream_end_count < 2:
+                    msg = ws.receive_json()
+                    if msg.get("type") == "stream_end":
+                        stream_end_count += 1
+
+        self.assertEqual(seen_attachments["queue-codeexpert"][0]["id"], attachment["id"])
+        self.assertEqual(seen_attachments["queue-apex-assistant"], [])
+        self.assertIn("[Attached: puppy.png", seen_prompts["queue-apex-assistant"])
+        self.assertIn(attachment_url, seen_prompts["queue-apex-assistant"])
+
+    def test_group_relay_propagates_image_attachments_to_supported_agents(self) -> None:
+        chat_id = self._create_test_group_chat()
+        png = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+            b"\x90wS\xde"
+            b"\x00\x00\x00\x0cIDAT\x08\x99c```\x00\x00\x00\x04\x00\x01"
+            b"\x0b\xe7\x02\x9d"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        attachment = self._create_uploaded_attachment("png", png, kind="image", name="puppy.png")
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                "UPDATE agent_profiles SET backend = ?, model = ? WHERE id IN (?, ?)",
+                ("ollama", "qwen3:latest", "queue-codeexpert", "queue-apex-assistant"),
+            )
+            conn.commit()
+            conn.close()
+
+        primary = self._group_agent(chat_id, "queue-codeexpert")
+        secondary = self._group_agent(chat_id, "queue-apex-assistant")
+        seen_attachments: dict[str, list[dict] | None] = {}
+        premium = SimpleNamespace(
+            resolve_target_agent=lambda _chat_id, _prompt, target_profile_id: dict(
+                primary if target_profile_id == primary["profile_id"] else secondary
+            ),
+            get_agent_relay_actions=lambda _chat_id, _response_text, group_agent, _chain, mention_depth: {
+                "mentions_enabled": True,
+                "mentioned_names": [secondary["name"]] if mention_depth == 0 else [],
+                "current_chain": [group_agent["profile_id"]],
+                "actions": (
+                    [{
+                        "type": "relay",
+                        "target": dict(secondary),
+                        "prompt": "Please inspect the same photo",
+                        "depth": mention_depth + 1,
+                    }]
+                    if mention_depth == 0
+                    else []
+                ),
+            },
+        )
+
+        async def fake_run_ollama_chat(chat_id_arg: str, prompt: str, model=None, attachments=None, permission_policy=None):
+            seen_attachments[_current_group_profile_id.get("")] = attachments
+            return {
+                "text": "Handing off to @Queue Apex Assistant",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", premium),
+            mock.patch.object(ws_handler, "_run_ollama_chat", side_effect=fake_run_ollama_chat),
+            self._client() as client,
+        ):
+            with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                ws.send_json({
+                    "action": "send",
+                    "chat_id": chat_id,
+                    "prompt": "Inspect this image",
+                    "target_agent": primary["profile_id"],
+                    "attachments": [attachment],
+                })
+                stream_end_count = 0
+                while stream_end_count < 2:
+                    msg = ws.receive_json()
+                    if msg.get("type") == "stream_end":
+                        stream_end_count += 1
+
+        self.assertEqual(set(seen_attachments), {"queue-codeexpert", "queue-apex-assistant"})
+        self.assertTrue(all(items and items[0]["id"] == attachment["id"] for items in seen_attachments.values()))
+
     def test_mcp_stdio_rejects_shell_interpreters(self) -> None:
         with mock.patch.object(dashboard_mod.shutil, "which", return_value="/bin/sh"):
             err = dashboard_mod._validate_mcp_server({

@@ -338,6 +338,53 @@ def _attachment_refs_json(loaded: list[dict]) -> tuple[str, list[dict]]:
     return json.dumps(refs), refs
 
 
+def _attachment_ref_payload(attachments: list[dict] | None) -> list[dict]:
+    refs: list[dict] = []
+    for att in attachments or []:
+        att_id = str(att.get("id") or "").strip().lower()
+        if not att_id:
+            continue
+        name = str(att.get("name") or "").strip()
+        att_type = str(att.get("type") or "").strip()
+        url = str(att.get("url") or "").strip()
+        if not url or not name or not att_type:
+            try:
+                loaded = _load_attachment(att)
+            except Exception:
+                loaded = None
+            if loaded:
+                if not name:
+                    name = str(loaded.get("name") or "")
+                if not att_type:
+                    att_type = str(loaded.get("type") or "")
+                if not url:
+                    url = f"/api/uploads/{loaded['id']}.{loaded['ext']}"
+        if not url:
+            continue
+        refs.append({
+            "id": att_id,
+            "type": att_type,
+            "name": name,
+            "url": url,
+        })
+    return refs
+
+
+def _inherited_group_attachments(data: dict, backend: str, is_group_chat: bool) -> list[dict]:
+    if not is_group_chat:
+        return []
+    inherited = list(data.get("_parent_attachments") or [])
+    if not inherited:
+        return []
+    try:
+        attachment_error = validate_backend_attachments(backend, inherited)
+    except ValueError:
+        return []
+    if attachment_error:
+        return []
+    return inherited
+
+
 async def _broadcast_chat_event(chat_id: str, payload: dict) -> None:
     for ws in list(_chat_ws.get(chat_id, set())):
         await _safe_ws_send_json(ws, payload, chat_id=chat_id)
@@ -713,6 +760,8 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
     chat_id = data.get("chat_id", "")
     prompt = str(data.get("prompt", "")).strip()
     attachments = data.get("attachments", [])
+    handoff_attachments = list(attachments or data.get("_parent_attachments") or [])
+    handoff_attachment_refs = list(data.get("_parent_attachment_refs") or _attachment_ref_payload(handoff_attachments))
     stream_id = str(data.get("stream_id") or _make_stream_id())
     if not (prompt or attachments) or not chat_id:
         return
@@ -874,20 +923,6 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             if str(t.get("profile_id") or "") == str(group_agent.get("profile_id") or ""):
                 log(f"user multi-dispatch blocked (self-target): {group_agent['name']} chat={chat_id[:8]}")
                 continue
-            # Pass attachment refs directly so secondary agents don't race
-            # with the primary's _save_message DB write (which hasn't happened
-            # yet at task-creation time).
-            _parent_att_refs = [
-                {
-                    "name": att.get("name", ""),
-                    # Prefer the URL the client already computed from the upload
-                    # response. Fallback constructs it from id+ext in case an
-                    # older client omits the url field.
-                    "url": att.get("url") or f"/api/uploads/{att['id']}.{att.get('ext', '')}",
-                }
-                for att in attachments
-                if att.get("id")
-            ] if attachments else []
             extra_data = {
                 "chat_id": chat_id,
                 "prompt": prompt,
@@ -897,7 +932,8 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 "_mention_chain": [],
                 "_source": "user_multi",
                 "_suppress_user_message": True,
-                "_parent_attachment_refs": _parent_att_refs,
+                "_parent_attachments": handoff_attachments,
+                "_parent_attachment_refs": handoff_attachment_refs,
             }
             log(f"user multi-dispatch: @{t['name']} in chat={chat_id[:8]}")
             extra_task = asyncio.create_task(
@@ -911,6 +947,9 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         backend = _get_model_backend(chat_model)
         prompt = group_agent["clean_prompt"]
         log(f"group routing: chat={chat_id[:8]} agent={group_agent['name']} model={chat_model} backend={backend}")
+
+    if not attachments:
+        attachments = _inherited_group_attachments(data, backend, is_group_chat)
     is_agent_handoff = bool(
         is_group_chat and group_agent and (
             mention_depth > 0 or handoff_source == "agent" or suppress_user_message
@@ -1330,11 +1369,14 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                         "chat_id": chat_id,
                         "prompt": action["prompt"],
                         "target_agent": target["profile_id"],
+                        "attachments": [],
                         "stream_id": _make_stream_id(),
                         "_mention_depth": action["depth"],
                         "_mention_chain": relay["current_chain"],
                         "_source": "agent",
                         "_suppress_user_message": True,
+                        "_parent_attachments": handoff_attachments,
+                        "_parent_attachment_refs": handoff_attachment_refs,
                     }
                     follow_task = asyncio.create_task(
                         _handle_send_action(original_ws, follow_up_data)
@@ -1358,11 +1400,14 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                         "chat_id": chat_id,
                         "prompt": action["prompt"],
                         "target_agent": target["profile_id"],
+                        "attachments": [],
                         "stream_id": _make_stream_id(),
                         "_mention_depth": action["depth"],
                         "_mention_chain": relay["current_chain"],
                         "_source": "agent",
                         "_suppress_user_message": True,
+                        "_parent_attachments": handoff_attachments,
+                        "_parent_attachment_refs": handoff_attachment_refs,
                     }
                     follow_task = asyncio.create_task(
                         _handle_send_action(original_ws, follow_up_data)
