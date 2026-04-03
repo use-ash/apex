@@ -652,6 +652,7 @@ async def run_tool_loop(
     max_iterations: int | None = None,
     permission_level: int = 2,
     allowed_tools: set[str] | None = None,
+    allowed_commands: list[str] | None = None,
 ) -> dict:
     """
     Run the tool-calling agent loop (Ollama or OpenAI-compatible API).
@@ -820,7 +821,16 @@ async def run_tool_loop(
                     executor = get_executor(tool_name)
                     if executor:
                         try:
-                            tool_result = await asyncio.to_thread(executor, tool_args, workspace)
+                            if tool_name == "bash":
+                                tool_result = await asyncio.to_thread(
+                                    executor,
+                                    tool_args,
+                                    workspace,
+                                    permission_level=permission_level,
+                                    allowed_commands=allowed_commands,
+                                )
+                            else:
+                                tool_result = await asyncio.to_thread(executor, tool_args, workspace)
                         except Exception as e:
                             tool_result = f"Error executing {tool_name}: {type(e).__name__}: {e}"
                     elif is_mcp_tool(tool_name):

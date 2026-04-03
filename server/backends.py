@@ -564,17 +564,19 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
 # ---------------------------------------------------------------------------
 
 async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
-                           attachments: list[dict] | None = None) -> dict:
+                           attachments: list[dict] | None = None,
+                           permission_policy: dict | None = None) -> dict:
     """Run a chat response from Ollama/xAI/MLX with tool-calling support."""
     effective_model = model or MODEL
     recent = _get_messages(chat_id, days=1)["messages"]
     current_pid = _current_group_profile_id.get("")
-    tool_policy = (
+    tool_policy = permission_policy or (
         _get_profile_tool_policy(current_pid)
         if current_pid
         else _get_chat_tool_policy(chat_id)
     )
     permission_level = int(tool_policy.get("level", 2))
+    allowed_commands = list(tool_policy.get("allowed_commands") or [])
     allowed_local_tools: set[str] | None = None
     if permission_level <= 0:
         allowed_local_tools = set()
@@ -640,6 +642,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 max_iterations=MAX_TOOL_ITERATIONS,
                 permission_level=permission_level,
                 allowed_tools=allowed_local_tools,
+                allowed_commands=allowed_commands,
             )
         elif backend == "codex":
             codex_model = effective_model[6:]
@@ -655,6 +658,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                     max_iterations=MAX_TOOL_ITERATIONS,
                     permission_level=permission_level,
                     allowed_tools=allowed_local_tools,
+                    allowed_commands=allowed_commands,
                 )
             else:
                 result = await run_tool_loop(
@@ -668,6 +672,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                     max_iterations=MAX_TOOL_ITERATIONS,
                     permission_level=permission_level,
                     allowed_tools=allowed_local_tools,
+                    allowed_commands=allowed_commands,
                 )
         elif ALLOW_LOCAL_TOOLS and backend == "mlx":
             mlx_model = effective_model[4:]
@@ -682,6 +687,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 max_iterations=MAX_TOOL_ITERATIONS,
                 permission_level=permission_level,
                 allowed_tools=allowed_local_tools,
+                allowed_commands=allowed_commands,
             )
         elif ALLOW_LOCAL_TOOLS:
             result = await run_tool_loop(
@@ -693,6 +699,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 max_iterations=MAX_TOOL_ITERATIONS,
                 permission_level=permission_level,
                 allowed_tools=allowed_local_tools,
+                allowed_commands=allowed_commands,
             )
         else:
             result = None  # fall through to plain streaming below

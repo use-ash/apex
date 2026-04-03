@@ -93,11 +93,11 @@ class ProfileSystemTests(unittest.TestCase):
             data = resp.json()
             self.assertEqual(data["profile_id"], "architect")
             self.assertEqual(data["profile_name"], "Architect")
-            self.assertEqual(data["model"], "claude-opus-4-6")
+            self.assertEqual(data["model"], "claude-sonnet-4-6")
 
             chat = self._chat_row(client, data["id"])
             self.assertEqual(chat["profile_id"], "architect")
-            self.assertEqual(chat["model"], "claude-opus-4-6")
+            self.assertEqual(chat["model"], "claude-sonnet-4-6")
 
     def test_create_chat_with_invalid_profile_returns_400(self) -> None:
         with self._client() as client:
@@ -117,7 +117,7 @@ class ProfileSystemTests(unittest.TestCase):
 
             chat = self._chat_row(client, chat_id)
             self.assertEqual(chat["profile_id"], "architect")
-            self.assertEqual(chat["model"], "claude-opus-4-6")
+            self.assertEqual(chat["model"], "claude-sonnet-4-6")
 
             remove = client.patch(f"/api/chats/{chat_id}", json={"profile_id": ""})
             self.assertEqual(remove.status_code, 200)
@@ -131,7 +131,7 @@ class ProfileSystemTests(unittest.TestCase):
             create = client.post("/api/chats", json={"profile_id": "architect"})
             chat_id = create.json()["id"]
 
-            with client.websocket_connect("/ws") as ws:
+            with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
                 ws.send_json({"action": "set_chat_model", "chat_id": chat_id, "model": "grok-4"})
                 msg = ws.receive_json()
 
@@ -139,7 +139,7 @@ class ProfileSystemTests(unittest.TestCase):
             self.assertIn("locked by profile", msg["message"])
 
             chat = self._chat_row(client, chat_id)
-            self.assertEqual(chat["model"], "claude-opus-4-6")
+            self.assertEqual(chat["model"], "claude-sonnet-4-6")
 
     def test_non_chat_channels_reject_profile_assignment(self) -> None:
         with self._client() as client:
@@ -148,7 +148,7 @@ class ProfileSystemTests(unittest.TestCase):
                 json={"type": "alerts", "category": "system", "profile_id": "architect"},
             )
             self.assertEqual(create.status_code, 400)
-            self.assertIn("regular chats", create.json()["error"])
+            self.assertIn("channels and threads", create.json()["error"])
 
             alerts_chat = client.post("/api/chats", json={"type": "alerts", "category": "system"})
             self.assertEqual(alerts_chat.status_code, 200)
@@ -180,15 +180,34 @@ class ProfileSystemTests(unittest.TestCase):
             self.assertIn("system_prompt", data)
             self.assertIn("tool_policy", data)
             self.assertEqual(data["backend"], "claude")
+            self.assertEqual(
+                json.loads(data["tool_policy"]),
+                {
+                    "level": 2,
+                    "default_level": 2,
+                    "elevated_until": None,
+                    "invoke_policy": "anyone",
+                    "allowed_commands": [],
+                },
+            )
 
-    def test_create_profile_defaults_tool_policy_to_level_2(self) -> None:
+    def test_create_profile_defaults_tool_policy_to_level_1(self) -> None:
         with self._client() as client:
             status, body = self._create_profile(client, tool_policy="")
             self.assertEqual(status, 201)
 
             detail = client.get(f"/api/profiles/{body['id']}")
             self.assertEqual(detail.status_code, 200)
-            self.assertEqual(json.loads(detail.json()["tool_policy"]), {"level": 2})
+            self.assertEqual(
+                json.loads(detail.json()["tool_policy"]),
+                {
+                    "level": 1,
+                    "default_level": 1,
+                    "elevated_until": None,
+                    "invoke_policy": "anyone",
+                    "allowed_commands": [],
+                },
+            )
 
     def test_create_profile_merges_level_into_existing_tool_policy_json(self) -> None:
         with self._client() as client:
@@ -202,7 +221,15 @@ class ProfileSystemTests(unittest.TestCase):
             self.assertEqual(detail.status_code, 200)
             self.assertEqual(
                 json.loads(detail.json()["tool_policy"]),
-                {"workspace": "/tmp/project", "sandbox": "suggest", "level": 2},
+                {
+                    "level": 1,
+                    "default_level": 1,
+                    "elevated_until": None,
+                    "invoke_policy": "anyone",
+                    "allowed_commands": [],
+                    "workspace": "/tmp/project",
+                    "sandbox": "suggest",
+                },
             )
 
     def test_update_profile_normalizes_tool_policy_level(self) -> None:
@@ -220,7 +247,14 @@ class ProfileSystemTests(unittest.TestCase):
             self.assertEqual(detail.status_code, 200)
             self.assertEqual(
                 json.loads(detail.json()["tool_policy"]),
-                {"workspace": "/tmp/code", "level": 2},
+                {
+                    "level": 1,
+                    "default_level": 1,
+                    "elevated_until": None,
+                    "invoke_policy": "anyone",
+                    "allowed_commands": [],
+                    "workspace": "/tmp/code",
+                },
             )
 
     def test_duplicate_slug_on_update_returns_409(self) -> None:
@@ -237,7 +271,7 @@ class ProfileSystemTests(unittest.TestCase):
         with self._client() as client:
             resp = client.delete("/api/profiles/missing-profile")
             self.assertEqual(resp.status_code, 404)
-            self.assertIn("profile not found", resp.json()["error"])
+            self.assertIn("Persona not found", resp.json()["error"])
 
 
 if __name__ == "__main__":

@@ -3,6 +3,8 @@ import os
 import shlex
 from pathlib import Path
 
+from env import APEX_ROOT
+
 MAX_COMMAND_TIMEOUT = 120
 DEFAULT_COMMAND_TIMEOUT = 30
 MAX_OUTPUT_CHARS = 50_000
@@ -82,6 +84,27 @@ READ_ONLY_COMMANDS = {
 }
 
 PYTHON_COMMANDS = {"python", "python3", "/opt/homebrew/bin/python3"}
+PROTECTED_PATHS = {
+    os.path.realpath(str(APEX_ROOT / "state" / "apex.db")),
+    os.path.realpath(str(APEX_ROOT / "state" / "config.json")),
+    os.path.realpath(str(APEX_ROOT / "ssl")),
+    os.path.realpath(str(APEX_ROOT / "state" / "ssl")),
+    os.path.realpath(str(APEX_ROOT / "server")),
+}
+
+
+def _is_env_path(path: str) -> bool:
+    base = os.path.basename(path)
+    return base == ".env" or base.startswith(".env.")
+
+
+def _protected_path_error(path: str) -> str | None:
+    for protected in PROTECTED_PATHS:
+        if path == protected or path.startswith(protected + os.sep):
+            return f"Error: access to protected path is blocked: {path}"
+    if _is_env_path(path):
+        return f"Error: access to protected path is blocked: {path}"
+    return None
 
 
 def _looks_like_path(arg: str) -> bool:
@@ -105,6 +128,9 @@ def _resolve_candidate_path(arg: str, workspace: str | None) -> str:
 
 
 def _is_sensitive_path(path: str) -> bool:
+    protected = _protected_path_error(path)
+    if protected:
+        return True
     base = os.path.basename(path)
     if base in SENSITIVE_BASENAMES:
         return True
@@ -128,8 +154,23 @@ def _validate_arg_paths(args: list[str], workspace: str | None) -> str | None:
         if not _looks_like_path(arg):
             continue
         resolved = _resolve_candidate_path(arg, primary)
+        protected = _protected_path_error(resolved)
+        if protected:
+            return protected
         if _is_sensitive_path(resolved):
             return f"Error: access to sensitive path is blocked: {arg}"
+    return None
+
+
+def _validate_write_capable_arg_paths(args: list[str], workspace: str | None) -> str | None:
+    primary = _primary_workspace(workspace)
+    for arg in args:
+        if not _looks_like_path(arg):
+            continue
+        resolved = _resolve_candidate_path(arg, primary)
+        err = validate_path(resolved, allow_write=True)
+        if err:
+            return err
     return None
 
 
@@ -182,11 +223,37 @@ def _validate_python_command(argv: list[str], workspace: str | None) -> str | No
     return "Error: python is limited to version checks and -m py_compile"
 
 
-def prepare_command(command: str, workspace: str | None = None) -> tuple[list[str] | None, str | None]:
+def _normalize_command_text(command: str) -> str:
+    try:
+        return " ".join(shlex.split(command, posix=True))
+    except ValueError:
+        return " ".join(command.strip().split())
+
+
+def _command_matches_allowed_prefix(command: str, allowed_commands: list[str] | None) -> bool:
+    normalized = _normalize_command_text(command)
+    for entry in allowed_commands or []:
+        prefix = _normalize_command_text(entry)
+        if not prefix:
+            continue
+        if normalized == prefix or normalized.startswith(prefix + " "):
+            return True
+    return False
+
+
+def prepare_command(
+    command: str,
+    workspace: str | None = None,
+    *,
+    permission_level: int = 2,
+    allowed_commands: list[str] | None = None,
+) -> tuple[list[str] | None, str | None]:
     """Parse and validate a bash-tool command, returning argv on success."""
     cmd = command.strip()
     if not cmd:
         return None, "Error: no command provided"
+    if permission_level <= 0:
+        return None, "Error: tools are disabled for this persona"
     if any(snippet in cmd for snippet in SHELL_META_SNIPPETS):
         return None, "Error: shell syntax is not allowed"
 
@@ -203,15 +270,33 @@ def prepare_command(command: str, workspace: str | None = None) -> tuple[list[st
     if base in READ_ONLY_COMMANDS:
         return argv, _validate_read_only_command(argv, workspace)
     if base == "git":
-        return argv, _validate_git_command(argv, workspace)
+        git_err = _validate_git_command(argv, workspace)
+        if not git_err:
+            return argv, None
+        if permission_level >= 3 and _command_matches_allowed_prefix(cmd, allowed_commands):
+            return argv, _validate_write_capable_arg_paths(argv[1:], workspace)
+        return None, git_err
     if exe in PYTHON_COMMANDS or base in PYTHON_COMMANDS:
         return argv, _validate_python_command(argv, workspace)
+    if permission_level >= 3 and _command_matches_allowed_prefix(cmd, allowed_commands):
+        return argv, _validate_write_capable_arg_paths(argv[1:], workspace)
     return None, f"Error: command is not allowed: {exe}"
 
 
-def validate_command(command: str, workspace: str | None = None) -> str | None:
+def validate_command(
+    command: str,
+    workspace: str | None = None,
+    *,
+    permission_level: int = 2,
+    allowed_commands: list[str] | None = None,
+) -> str | None:
     """Returns error string if command is blocked, None if OK."""
-    _, err = prepare_command(command, workspace)
+    _, err = prepare_command(
+        command,
+        workspace,
+        permission_level=permission_level,
+        allowed_commands=allowed_commands,
+    )
     return err
 
 
@@ -262,6 +347,9 @@ def ensure_workspace_path(
 def validate_path(path: str, allow_write: bool = False) -> str | None:
     """Returns error string if path is blocked, None if OK."""
     resolved = os.path.realpath(os.path.expanduser(path))
+    protected = _protected_path_error(resolved)
+    if protected:
+        return protected
     if allow_write:
         for blocked in BLOCKED_WRITE_PATHS:
             if resolved.startswith(blocked):

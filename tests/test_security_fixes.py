@@ -53,6 +53,7 @@ from state import (  # noqa: E402
     _chat_locks,
     _chat_send_locks,
 )
+from local_model import safety as local_safety  # noqa: E402
 from local_model import tool_loop  # noqa: E402
 from local_model.tools import list_files, read_file, search_files, write_file  # noqa: E402
 from setup.progress import mark_phase_completed  # noqa: E402
@@ -499,6 +500,39 @@ class SecurityFixTests(unittest.TestCase):
         )
         self.assertEqual(run_tool_loop_mock.await_args.kwargs["permission_level"], 1)
 
+    def test_local_model_admin_commands_use_prefix_match_and_protected_paths(self) -> None:
+        workspace = str(TEST_ROOT)
+        self.assertIsNone(
+            local_safety.validate_command(
+                "git push origin dev",
+                workspace,
+                permission_level=3,
+                allowed_commands=["git push"],
+            )
+        )
+        self.assertIn(
+            "not allowed",
+            local_safety.validate_command(
+                "git merge origin/dev",
+                workspace,
+                permission_level=3,
+                allowed_commands=["git push"],
+            ) or "",
+        )
+        self.assertIn(
+            "protected path",
+            local_safety.validate_command(
+                f"sqlite3 {env.APEX_ROOT / 'state' / 'apex.db'} .schema",
+                workspace,
+                permission_level=3,
+                allowed_commands=["sqlite3"],
+            ) or "",
+        )
+        self.assertIn(
+            "protected path",
+            local_safety.validate_path(str(env.APEX_ROOT / "state" / "config.json"), allow_write=True) or "",
+        )
+
     def test_validate_backend_attachments_rejects_codex_attachments(self) -> None:
         attachment = self._create_uploaded_attachment("txt", b"notes")
         err = backends.validate_backend_attachments("codex", [attachment])
@@ -887,6 +921,150 @@ class SecurityFixTests(unittest.TestCase):
         self.assertEqual(started_speakers, {"queue-codeexpert", "queue-apex-assistant"})
         self.assertEqual(set(seen_profiles), {"queue-codeexpert", "queue-apex-assistant"})
         self.assertEqual(len(seen_profiles), 2)
+
+    def test_owner_only_group_dispatch_blocks_agent_source(self) -> None:
+        chat_id = self._create_test_group_chat()
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                "UPDATE agent_profiles SET tool_policy = ? WHERE id = ?",
+                (
+                    json.dumps({
+                        "level": 1,
+                        "default_level": 1,
+                        "elevated_until": None,
+                        "invoke_policy": "owner_only",
+                        "allowed_commands": [],
+                    }),
+                    "queue-apex-assistant",
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+        class _FakeWS:
+            def __init__(self) -> None:
+                self.sent: list[dict] = []
+
+            async def send_json(self, payload: dict) -> None:
+                self.sent.append(payload)
+
+        fake_ws = _FakeWS()
+
+        async def fake_run_codex_chat(*_args, **_kwargs):
+            raise AssertionError("owner-only agent dispatch should not reach backend")
+
+        with mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat):
+            asyncio.run(
+                ws_handler._handle_send_action(
+                    fake_ws,
+                    {
+                        "chat_id": chat_id,
+                        "prompt": "take this one",
+                        "target_agent": "queue-apex-assistant",
+                        "_source": "agent",
+                    },
+                )
+            )
+
+        self.assertEqual(fake_ws.sent, [])
+
+    def test_expired_elevation_reverts_to_default_level_inline(self) -> None:
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO agent_profiles (
+                    id, name, slug, avatar, role_description, backend, model,
+                    system_prompt, tool_policy, is_default, is_system, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, datetime('now'), datetime('now'))
+                """,
+                (
+                    "expired-admin",
+                    "Expired Admin",
+                    "expired-admin",
+                    "E",
+                    "expired admin test",
+                    "ollama",
+                    "qwen3:latest",
+                    "expired admin test",
+                    json.dumps({
+                        "level": 3,
+                        "default_level": 1,
+                        "elevated_until": "2020-01-01T00:00:00+00:00",
+                        "invoke_policy": "anyone",
+                        "allowed_commands": ["git push"],
+                    }),
+                ),
+            )
+            conn.commit()
+            conn.close()
+        chat_id = db_mod._create_chat(
+            title="Expired Admin Chat",
+            model="qwen3:latest",
+            profile_id="expired-admin",
+        )
+
+        chat = db_mod._get_chat(chat_id)
+        policy = ws_handler._resolve_effective_tool_policy(chat_id, chat, None)
+
+        self.assertEqual(policy["level"], 1)
+        self.assertIsNone(policy["elevated_until"])
+        self.assertEqual(db_mod._get_profile_tool_policy("expired-admin")["level"], 1)
+
+    def test_dashboard_persona_elevate_and_revoke_round_trip(self) -> None:
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO agent_profiles (
+                    id, name, slug, avatar, role_description, backend, model,
+                    system_prompt, tool_policy, is_default, is_system, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, datetime('now'), datetime('now'))
+                """,
+                (
+                    "persona-admin-test",
+                    "Persona Admin Test",
+                    "persona-admin-test",
+                    "P",
+                    "persona admin test",
+                    "ollama",
+                    "qwen3:latest",
+                    "persona admin test",
+                    json.dumps({
+                        "level": 1,
+                        "default_level": 1,
+                        "elevated_until": None,
+                        "invoke_policy": "owner_only",
+                        "allowed_commands": ["git push"],
+                    }),
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+        with self._client() as client:
+            elevate = client.post(
+                "/admin/api/personas/persona-admin-test/elevate",
+                json={"minutes": 5},
+                headers=self._admin_headers(),
+            )
+            self.assertEqual(elevate.status_code, 200, elevate.text)
+            elevated = elevate.json()
+            self.assertTrue(elevated["ok"])
+            self.assertEqual(elevated["tool_policy"]["level"], 3)
+            self.assertEqual(elevated["tool_policy"]["default_level"], 1)
+            self.assertEqual(elevated["tool_policy"]["allowed_commands"], ["git push"])
+            self.assertTrue(elevated["expires_at"])
+
+            revoke = client.post(
+                "/admin/api/personas/persona-admin-test/revoke",
+                headers=self._admin_headers(),
+            )
+            self.assertEqual(revoke.status_code, 200, revoke.text)
+            revoked = revoke.json()
+            self.assertEqual(revoked["tool_policy"]["level"], 1)
+            self.assertIsNone(revoked["tool_policy"]["elevated_until"])
 
     def test_group_primary_fallback_uses_effective_model_instead_of_stale_chat_model(self) -> None:
         chat_id = self._create_test_group_chat()

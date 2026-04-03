@@ -102,11 +102,12 @@ def get_tool_schemas(allowed_names: set[str] | None = None) -> list[dict]:
         schemas = [t["schema"] for t in TOOLS.values()]
     else:
         schemas = [TOOLS[name]["schema"] for name in TOOLS if name in allowed_names]
-    try:
-        from .mcp_bridge import get_mcp_tool_schemas
-        schemas.extend(get_mcp_tool_schemas())
-    except Exception:
-        pass
+    if allowed_names is None:
+        try:
+            from .mcp_bridge import get_mcp_tool_schemas
+            schemas.extend(get_mcp_tool_schemas())
+        except Exception:
+            pass
     return schemas
 
 

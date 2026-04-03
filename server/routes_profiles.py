@@ -141,7 +141,8 @@ async def api_install_persona_templates(request: Request):
                 "backend, model, system_prompt, tool_policy, is_default, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (p["id"], p["name"], p["slug"], p["avatar"], p["role_description"],
-                 p["backend"], p["model"], p["system_prompt"], _normalize_tool_policy_text(""),
+                 p["backend"], p["model"], p["system_prompt"],
+                 _normalize_tool_policy_text(""),
                  p.get("is_default", 0), now, now),
             )
             if cur.rowcount:

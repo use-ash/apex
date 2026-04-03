@@ -16,6 +16,7 @@ import re
 import time
 import uuid
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 import env
@@ -28,6 +29,7 @@ from log import log
 from db import (
     _get_chat, _update_chat, _update_chat_settings,
     _get_group_members,
+    _get_chat_tool_policy, _get_profile_tool_policy, _set_profile_tool_policy,
     _get_recent_messages_text,
     _save_message,
     _get_latest_user_attachments,
@@ -47,7 +49,6 @@ from streaming import (
     _set_active_send_task, _update_active_send_task, _remove_active_send_task,
     _cancel_chat_streams,
     _make_options, _get_or_create_client,
-    _resolve_sdk_permission_level,
     _register_client, _has_client,
     _get_chat_lock, _get_chat_send_lock,
     _reset_stream_buffer, _cleanup_stream_journal, _load_journal_events,
@@ -241,6 +242,34 @@ def _resolve_primary_group_agent(chat_id: str, prompt: str) -> dict | None:
         return None
     primary = next((m for m in members if m.get("is_primary")), members[0])
     return {**primary, "clean_prompt": prompt}
+
+
+def _resolve_effective_tool_policy(chat_id: str, chat: dict, group_agent: dict | None) -> dict:
+    profile_id = str(group_agent.get("profile_id") or "").strip() if group_agent else str(chat.get("profile_id") or "").strip()
+    policy = _get_profile_tool_policy(profile_id) if profile_id else _get_chat_tool_policy(chat_id)
+    effective_policy = dict(policy)
+    elevated_until = str(effective_policy.get("elevated_until") or "").strip()
+    if not profile_id or not elevated_until:
+        return effective_policy
+    try:
+        expires_at = datetime.fromisoformat(elevated_until)
+    except ValueError:
+        expires_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at > datetime.now(timezone.utc):
+        return effective_policy
+    effective_policy["level"] = int(effective_policy.get("default_level", effective_policy.get("level", 1)))
+    effective_policy["elevated_until"] = None
+    try:
+        _set_profile_tool_policy(
+            profile_id,
+            effective_policy,
+            default_level=int(effective_policy.get("default_level", effective_policy.get("level", 1))),
+        )
+    except KeyError:
+        pass
+    return effective_policy
 
 
 def _public_backend_error_message(backend: str, err: Exception | str) -> str:
@@ -777,6 +806,20 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             group_agent = _resolve_group_agent_fallback(chat_id, prompt)
         if group_agent is None and is_group_chat:
             group_agent = _resolve_primary_group_agent(chat_id, prompt)
+    permission_policy = _resolve_effective_tool_policy(chat_id, chat, group_agent)
+    permission_level = int(permission_policy.get("level", 1))
+    allowed_commands = list(permission_policy.get("allowed_commands") or [])
+    if (
+        group_agent
+        and is_group_chat
+        and handoff_source == "agent"
+        and permission_policy.get("invoke_policy") == "owner_only"
+    ):
+        log(
+            f"owner-only dispatch blocked: chat={chat_id[:8]} "
+            f"agent={group_agent['name']} source=agent"
+        )
+        return
     mention_prompt = prompt
     if (
         group_agent
@@ -1029,7 +1072,13 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         if backend == "codex":
             try:
                 if chat_model in {"codex:o3", "codex:o4-mini"} and env.OPENAI_API_KEY:
-                    result = await _run_ollama_chat(chat_id, prompt, model=chat_model, attachments=attachments)
+                    result = await _run_ollama_chat(
+                        chat_id,
+                        prompt,
+                        model=chat_model,
+                        attachments=attachments,
+                        permission_policy=permission_policy,
+                    )
                 else:
                     result = await _run_codex_chat(chat_id, prompt, model=chat_model, attachments=attachments)
             except Exception as codex_err:
@@ -1051,7 +1100,13 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         # --- Local model / xAI path ---
         elif backend in ("ollama", "xai", "mlx"):
             try:
-                result = await _run_ollama_chat(chat_id, prompt, model=chat_model, attachments=attachments)
+                result = await _run_ollama_chat(
+                    chat_id,
+                    prompt,
+                    model=chat_model,
+                    attachments=attachments,
+                    permission_policy=permission_policy,
+                )
             except Exception as ollama_err:
                 log(f"ollama chat error: {ollama_err}")
                 message = _public_backend_error_message(backend, ollama_err)
@@ -1076,7 +1131,12 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 log(f"pre-flight compaction error: chat={chat_id} {compact_err}")
 
             try:
-                client = await _get_or_create_client(client_key, model=chat_model)
+                client = await _get_or_create_client(
+                    client_key,
+                    model=chat_model,
+                    permission_level=permission_level,
+                    allowed_commands=allowed_commands,
+                )
                 result = await _run_query_turn(client, make_query_input, chat_id)
             except Exception as first_error:
                 if DEBUG: log(f"DBG RECOVERY: chat={chat_id} client_key={client_key} first error: {type(first_error).__name__}: {first_error}")
@@ -1092,12 +1152,13 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 existing_session = chat.get("claude_session_id") if chat else None
                 if DEBUG: log(f"DBG RECOVERY: attempting resume session={existing_session or 'NONE'}")
                 try:
-                    permission_level = _resolve_sdk_permission_level(client_key, chat_id)
                     options = _make_options(
                         model=chat_model,
                         session_id=existing_session,
                         client_key=client_key,
                         chat_id=chat_id,
+                        permission_level=permission_level,
+                        allowed_commands=allowed_commands,
                     )
                     client = ClaudeSDKClient(options)
                     await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
@@ -1111,12 +1172,13 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                     _clear_session_context(client_key)
                     if DEBUG: log(f"DBG RECOVERY: session_id NUKED, trying fresh...")
                     try:
-                        permission_level = _resolve_sdk_permission_level(client_key, chat_id)
                         options = _make_options(
                             model=chat_model,
                             session_id=None,
                             client_key=client_key,
                             chat_id=chat_id,
+                            permission_level=permission_level,
+                            allowed_commands=allowed_commands,
                         )
                         client = ClaudeSDKClient(options)
                         await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)

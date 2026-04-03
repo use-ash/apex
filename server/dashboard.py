@@ -101,7 +101,7 @@ import tempfile
 import time
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -112,7 +112,14 @@ from starlette.responses import StreamingResponse
 
 from config import Config, SCHEMA
 from context import _parse_iso
-from db import _get_persona_memories
+from db import (
+    SYSTEM_PROFILE_ID,
+    _db_lock,
+    _get_db,
+    _get_persona_memories,
+    _normalize_tool_policy,
+    _set_profile_tool_policy,
+)
 import env
 from log import LOG_PATH
 from model_dispatch import get_available_model_ids
@@ -267,6 +274,17 @@ def _render_dashboard_html(markup: str) -> HTMLResponse:
     })
 
 
+def _get_persona_row(profile_id: str):
+    with _db_lock:
+        conn = _get_db()
+        row = conn.execute(
+            "SELECT id, name, tool_policy FROM agent_profiles WHERE id = ?",
+            (profile_id,),
+        ).fetchone()
+        conn.close()
+    return row
+
+
 # ---------------------------------------------------------------------------
 # GET / — Dashboard HTML
 # ---------------------------------------------------------------------------
@@ -301,6 +319,66 @@ async def security_config_index():
             "</body></html>",
             status_code=200,
         )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/personas/{id}/elevate | /revoke
+# ---------------------------------------------------------------------------
+
+@dashboard_app.post("/api/personas/{profile_id}/elevate")
+async def api_persona_elevate(profile_id: str, request: Request):
+    """Grant temporary Admin access to a persona."""
+    if profile_id == SYSTEM_PROFILE_ID:
+        return _error("reserved profile", "RESERVED_PROFILE", status=403)
+    row = _get_persona_row(profile_id)
+    if not row:
+        return _error("profile not found", "PROFILE_NOT_FOUND", status=404)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        minutes = int(body.get("minutes", body.get("duration_minutes", 15)))
+    except (TypeError, ValueError):
+        return _error("minutes must be an integer", "INVALID_DURATION", status=400)
+    if minutes < 1 or minutes > 24 * 60:
+        return _error("minutes must be between 1 and 1440", "INVALID_DURATION", status=400)
+
+    policy = _normalize_tool_policy(row[2])
+    default_level = int(policy.get("default_level", policy.get("level", 1)))
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat(timespec="seconds")
+    policy["default_level"] = default_level
+    policy["level"] = 3
+    policy["elevated_until"] = expires_at
+    policy = _set_profile_tool_policy(profile_id, policy, default_level=default_level)
+    return JSONResponse({
+        "ok": True,
+        "profile_id": row[0],
+        "name": row[1],
+        "tool_policy": policy,
+        "expires_at": expires_at,
+    })
+
+
+@dashboard_app.post("/api/personas/{profile_id}/revoke")
+async def api_persona_revoke(profile_id: str):
+    """Drop a persona back to its default level and clear elevation expiry."""
+    if profile_id == SYSTEM_PROFILE_ID:
+        return _error("reserved profile", "RESERVED_PROFILE", status=403)
+    row = _get_persona_row(profile_id)
+    if not row:
+        return _error("profile not found", "PROFILE_NOT_FOUND", status=404)
+    policy = _normalize_tool_policy(row[2])
+    default_level = int(policy.get("default_level", policy.get("level", 1)))
+    policy["level"] = default_level
+    policy["elevated_until"] = None
+    policy = _set_profile_tool_policy(profile_id, policy, default_level=default_level)
+    return JSONResponse({
+        "ok": True,
+        "profile_id": row[0],
+        "name": row[1],
+        "tool_policy": policy,
+    })
 
 
 # ---------------------------------------------------------------------------
