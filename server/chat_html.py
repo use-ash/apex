@@ -4275,13 +4275,35 @@ async function toggleVoiceRecording() {
 }
 
 // --- Send ---
+function _resolveLeadingMentionTarget(text) {
+  if (currentChatType !== 'group' || !text || !currentGroupMembers.length) return '';
+  const trimmed = text.trimStart();
+  if (!trimmed.startsWith('@')) return '';
+  const members = currentGroupMembers.slice().sort((a, b) => {
+    const aLen = Math.max((a.name || '').length, (a.profile_id || '').length);
+    const bLen = Math.max((b.name || '').length, (b.profile_id || '').length);
+    return bLen - aLen;
+  });
+  for (const member of members) {
+    const aliases = [member.name || '', member.profile_id || ''].filter(Boolean);
+    for (const alias of aliases) {
+      const prefix = '@' + alias;
+      if (trimmed.slice(0, prefix.length).toLowerCase() !== prefix.toLowerCase()) continue;
+      const next = trimmed.charAt(prefix.length);
+      if (next && !/[\\s:,.!?-]/.test(next)) continue;
+      return member.profile_id || '';
+    }
+  }
+  return '';
+}
+
 async function send(options = {}) {
-  const targetAgent = options.targetAgent || '';
   const allowLastPrompt = Boolean(options.allowLastPrompt);
   const input = document.getElementById('input');
   const draftText = input.value;
   const rawText = draftText.trim();
   const text = rawText || (allowLastPrompt ? lastSubmittedPrompt : '');
+  const effectiveTargetAgent = options.targetAgent || _resolveLeadingMentionTarget(text) || '';
   dbg(' send:', {text: text?.substring(0,30), currentChat, streaming, wsState: ws?.readyState});
   if (!text && pendingAttachments.length === 0) return;
   if (!currentChat) {
@@ -4304,7 +4326,7 @@ async function send(options = {}) {
   _hideNewContentPill();
   const attachmentSnapshot = pendingAttachments.map(att => ({...att}));
   const msg = {action: 'send', chat_id: currentChat, prompt: text};
-  if (targetAgent) msg.target_agent = targetAgent;
+  if (effectiveTargetAgent) msg.target_agent = effectiveTargetAgent;
   if (attachmentSnapshot.length > 0) {
     msg.attachments = attachmentSnapshot.map(a => ({id: a.id, type: a.type, name: a.name, url: a.url, ext: a.ext}));
   }

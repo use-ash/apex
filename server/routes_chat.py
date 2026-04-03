@@ -87,7 +87,11 @@ async def api_new_chat(request: Request):
         with _db_lock:
             conn = _get_db()
             profile_row = conn.execute(
-                "SELECT model FROM agent_profiles WHERE id = ?", (profile_id,)
+                "SELECT COALESCE(o.model, p.model) "
+                "FROM agent_profiles p "
+                "LEFT JOIN persona_model_overrides o ON o.profile_id = p.id "
+                "WHERE p.id = ?",
+                (profile_id,),
             ).fetchone()
             conn.close()
         if not profile_row:
@@ -180,7 +184,11 @@ async def api_update_chat(chat_id: str, request: Request):
             with _db_lock:
                 conn = _get_db()
                 profile_row = conn.execute(
-                    "SELECT model, name, avatar FROM agent_profiles WHERE id = ?", (pid,)
+                    "SELECT COALESCE(o.model, p.model), p.name, p.avatar "
+                    "FROM agent_profiles p "
+                    "LEFT JOIN persona_model_overrides o ON o.profile_id = p.id "
+                    "WHERE p.id = ?",
+                    (pid,),
                 ).fetchone()
                 conn.close()
             if not profile_row:

@@ -27,6 +27,7 @@ from license import get_license_manager
 from log import log
 from db import (
     _get_chat, _update_chat, _update_chat_settings,
+    _get_group_members,
     _get_recent_messages_text,
     _save_message,
     _get_latest_user_attachments,
@@ -96,6 +97,43 @@ MAX_MENTION_DEPTH = 25
 # Premium module — injected by apex.py when loaded. Provides group routing
 # and agent relay functions. When None, all group routing is disabled.
 _ws_premium = None
+
+
+def _strip_group_target_prefix(prompt: str, member: dict) -> str:
+    text = prompt.lstrip()
+    leading_ws = prompt[: len(prompt) - len(text)]
+    aliases = [
+        str(member.get("name") or "").strip(),
+        str(member.get("profile_id") or "").strip(),
+    ]
+    for alias in aliases:
+        if not alias:
+            continue
+        prefix = f"@{alias}"
+        if text[: len(prefix)].lower() != prefix.lower():
+            continue
+        next_char = text[len(prefix): len(prefix) + 1]
+        if next_char and not re.match(r"[\s:,.!?-]", next_char):
+            continue
+        stripped = text[len(prefix):].lstrip(" \t:,.!?-")
+        return f"{leading_ws}{stripped}".strip()
+    return prompt
+
+
+def _resolve_direct_group_agent(chat_id: str, prompt: str, target_profile_id: str) -> dict | None:
+    for member in _get_group_members(chat_id):
+        if str(member.get("profile_id") or "") != target_profile_id:
+            continue
+        return {**member, "clean_prompt": _strip_group_target_prefix(prompt, member)}
+    return None
+
+
+def _resolve_primary_group_agent(chat_id: str, prompt: str) -> dict | None:
+    members = _get_group_members(chat_id)
+    if not members:
+        return None
+    primary = next((m for m in members if m.get("is_primary")), members[0])
+    return {**primary, "clean_prompt": prompt}
 
 
 def _public_backend_error_message(backend: str, err: Exception | str) -> str:
@@ -610,8 +648,11 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
     # --- Group @mention routing (premium) ---
     group_agent = None
     target_profile_id = str(data.get("target_agent") or "").strip()
-    if target_profile_id and is_group_chat and _ws_premium:
-        group_agent = _ws_premium.resolve_target_agent(chat_id, prompt, target_profile_id)
+    if target_profile_id and is_group_chat:
+        if _ws_premium:
+            group_agent = _ws_premium.resolve_target_agent(chat_id, prompt, target_profile_id)
+        if not group_agent:
+            group_agent = _resolve_direct_group_agent(chat_id, prompt, target_profile_id)
         if not group_agent:
             await _safe_ws_send_json(
                 websocket,
@@ -621,6 +662,8 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             return
     if group_agent is None:
         group_agent = _resolve_group_agent(chat_id, chat, prompt)
+        if group_agent is None and is_group_chat:
+            group_agent = _resolve_primary_group_agent(chat_id, prompt)
         # Multi-dispatch: spawn parallel tasks for additional @mentioned agents
         if group_agent and is_group_chat and _ws_premium:
             multi_targets = _ws_premium.get_multi_dispatch_targets(chat_id, prompt, group_agent, data)

@@ -676,6 +676,98 @@ class SecurityFixTests(unittest.TestCase):
     def test_group_relay_depth_cap_is_twenty_five(self) -> None:
         self.assertEqual(ws_handler.MAX_MENTION_DEPTH, 25)
 
+    def test_group_members_use_effective_override_model(self) -> None:
+        chat_id = self._create_test_group_chat()
+        db_mod._set_persona_model_override("queue-apex-assistant", "grok-4")
+
+        members = db_mod._get_group_members(chat_id)
+        assistant = next(m for m in members if m["profile_id"] == "queue-apex-assistant")
+
+        self.assertEqual(assistant["model"], "grok-4")
+        self.assertEqual(assistant["backend"], "xai")
+
+    def test_group_target_agent_routes_without_premium_module(self) -> None:
+        chat_id = self._create_test_group_chat()
+        seen_profiles: list[str] = []
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            seen_profiles.append(_current_group_profile_id.get(""))
+            return {
+                "text": f"reply:{prompt}",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        with mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "@Queue Apex Assistant take this one",
+                        "target_agent": "queue-apex-assistant",
+                    })
+                    start = self._receive_until(
+                        ws,
+                        lambda msg: msg.get("type") == "stream_start" and msg.get("speaker_id") == "queue-apex-assistant",
+                    )
+                    self.assertEqual(start["speaker_name"], "Queue Apex Assistant")
+                    self._receive_until(ws, lambda msg: msg.get("type") == "stream_end")
+
+        self.assertEqual(seen_profiles, ["queue-apex-assistant"])
+
+    def test_group_primary_fallback_uses_effective_model_instead_of_stale_chat_model(self) -> None:
+        chat_id = self._create_test_group_chat()
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                "UPDATE agent_profiles SET backend = ?, model = ? WHERE id = ?",
+                ("claude", "claude-sonnet-4-6", "queue-codeexpert"),
+            )
+            conn.commit()
+            conn.close()
+        db_mod._set_persona_model_override("queue-codeexpert", "codex:gpt-5.4")
+        db_mod._update_chat(chat_id, model="claude-sonnet-4-6")
+
+        seen_profiles: list[str] = []
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            seen_profiles.append(_current_group_profile_id.get(""))
+            return {
+                "text": f"reply:{prompt}",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        with mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "Primary should answer with the override model",
+                    })
+                    start = self._receive_until(
+                        ws,
+                        lambda msg: msg.get("type") == "stream_start" and msg.get("speaker_id") == "queue-codeexpert",
+                    )
+                    self.assertEqual(start["speaker_name"], "Queue CodeExpert")
+                    self._receive_until(ws, lambda msg: msg.get("type") == "stream_end")
+
+        self.assertEqual(seen_profiles, ["queue-codeexpert"])
+
     def test_busy_group_agent_turn_is_queued_while_other_agent_can_run(self) -> None:
         chat_id = self._create_test_group_chat()
         release_codeexpert = asyncio.Event()
