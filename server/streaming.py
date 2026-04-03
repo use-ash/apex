@@ -16,24 +16,28 @@ import uuid
 from collections import deque
 from pathlib import Path
 
-from env import APEX_ROOT, WORKSPACE, WORKSPACE_PATHS, MODEL, PERMISSION_MODE, DEBUG, SDK_QUERY_TIMEOUT
+from env import APEX_ROOT, WORKSPACE, WORKSPACE_PATHS, MODEL, DEBUG, SDK_QUERY_TIMEOUT
 from compat import safe_chmod
 
 from fastapi import WebSocket
 
-from compat import safe_chmod
-from db import _get_db, _get_chat, _update_chat
+from db import _get_db, _get_chat, _update_chat, _get_chat_tool_policy, _get_profile_tool_policy
 from log import log
 from memory_extract import _filter_stream_text_for_memory_tags, _clear_stream_text_filter
 from state import (
-    _clients, _client_sessions, _client_last_used,
+    _clients, _client_sessions, _client_last_used, _client_permission_levels,
     _chat_locks, _chat_ws, _ws_chat,
     _active_send_tasks, _stream_buffers, _stream_seq, _chat_send_locks,
     _ws_send_count, _ws_fail_count, _db_lock, _current_stream_id,
 )
 
 try:
-    from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
+    from claude_agent_sdk import (
+        ClaudeSDKClient,
+        ClaudeAgentOptions,
+        PermissionResultAllow,
+        PermissionResultDeny,
+    )
 except ImportError:
     ClaudeSDKClient = None  # type: ignore[misc,assignment]
     ClaudeAgentOptions = None  # type: ignore[misc,assignment]
@@ -45,6 +49,7 @@ _STREAM_JOURNAL_DIR = APEX_ROOT / "state" / "streams"
 _STREAM_JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
 safe_chmod(_STREAM_JOURNAL_DIR, 0o700)
 _CHAT_ID_RE = re.compile(r"^[0-9a-f]{8,12}$")
+_STANDARD_SDK_TOOLS = frozenset({"Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch"})
 
 
 # ---------------------------------------------------------------------------
@@ -352,8 +357,49 @@ def _load_mcp_servers() -> dict[str, dict]:
         return {}
 
 
-def _make_options(model: str | None = None, session_id: str | None = None) -> ClaudeAgentOptions:
+def _resolve_sdk_permission_level(client_key: str | None, chat_id: str | None = None) -> int:
+    if not client_key:
+        return 2
+    real_chat_id = chat_id or client_key.split(":")[0]
+    profile_id = client_key.split(":", 1)[1] if ":" in client_key else ""
+    if profile_id:
+        policy = _get_profile_tool_policy(profile_id)
+    else:
+        policy = _get_chat_tool_policy(real_chat_id)
+    return min(int(policy.get("level", 2)), 2)
+
+
+def _sdk_permission_mode_for_level(level: int) -> str:
+    if level <= 1:
+        return "plan"
+    return "acceptEdits"
+
+
+def _make_sdk_tool_gate(level: int):
+    async def _can_use_tool(tool_name: str, tool_input: dict, _context):
+        del tool_input
+        if level <= 0:
+            return PermissionResultDeny(
+                message="This agent is Restricted and cannot use tools or access files."
+            )
+        if level == 1 and tool_name not in _STANDARD_SDK_TOOLS:
+            return PermissionResultDeny(
+                message="This action requires Elevated or Admin permissions."
+            )
+        return PermissionResultAllow()
+
+    return _can_use_tool
+
+
+def _make_options(
+    model: str | None = None,
+    session_id: str | None = None,
+    *,
+    client_key: str | None = None,
+    chat_id: str | None = None,
+) -> ClaudeAgentOptions:
     """Build SDK options for a new or resumed session."""
+    permission_level = _resolve_sdk_permission_level(client_key, chat_id)
     # Extra workspace roots beyond the primary (colon-separated APEX_WORKSPACE)
     extra_dirs = [
         r.strip() for r in WORKSPACE_PATHS.split(":")[1:]
@@ -362,11 +408,12 @@ def _make_options(model: str | None = None, session_id: str | None = None) -> Cl
     opts = ClaudeAgentOptions(
         model=model or MODEL,
         cwd=str(WORKSPACE),
-        permission_mode=PERMISSION_MODE,
+        permission_mode=_sdk_permission_mode_for_level(permission_level),
         max_turns=50,
         resume=session_id,
         setting_sources=["user"],
         add_dirs=extra_dirs,
+        can_use_tool=_make_sdk_tool_gate(permission_level),
     )
     mcp_servers = _load_mcp_servers()
     if mcp_servers:
@@ -427,9 +474,10 @@ async def _get_or_create_client(client_key: str, model: str | None = None) -> Cl
     Enforces a max pool size — evicts LRU idle client when at capacity.
     Group agents persist session_id for resume across client evictions.
     """
+    permission_level = _resolve_sdk_permission_level(client_key)
     if client_key in _clients:
         client = _clients[client_key]
-        if _client_is_alive(client):
+        if _client_is_alive(client) and _client_permission_levels.get(client_key) == permission_level:
             _client_last_used[client_key] = time.time()
             return client
         log(f"stale SDK client detected: key={client_key}, evicting")
@@ -452,7 +500,12 @@ async def _get_or_create_client(client_key: str, model: str | None = None) -> Cl
     else:
         session_id = chat.get("claude_session_id") if chat else None
 
-    options = _make_options(model=model, session_id=session_id)
+    options = _make_options(
+        model=model,
+        session_id=session_id,
+        client_key=client_key,
+        chat_id=real_chat_id,
+    )
 
     effective_model = model or MODEL
     log(f"creating SDK client: key={client_key} model={effective_model} resume={session_id or 'new'} pool={len(_clients)+1}/{_MAX_SDK_CLIENTS}")
@@ -460,10 +513,11 @@ async def _get_or_create_client(client_key: str, model: str | None = None) -> Cl
     await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
     _clients[client_key] = client
     _client_last_used[client_key] = time.time()
+    _client_permission_levels[client_key] = permission_level
     return client
 
 
-def _register_client(client_key: str, client: ClaudeSDKClient) -> None:
+def _register_client(client_key: str, client: ClaudeSDKClient, permission_level: int | None = None) -> None:
     """Register an externally-created SDK client in the shared registry.
 
     Use this instead of writing to _clients directly.  The recovery path in
@@ -472,6 +526,10 @@ def _register_client(client_key: str, client: ClaudeSDKClient) -> None:
     """
     _clients[client_key] = client
     _client_last_used[client_key] = time.time()
+    if permission_level is None:
+        _client_permission_levels.pop(client_key, None)
+    else:
+        _client_permission_levels[client_key] = permission_level
 
 
 def store_client_session(client_key: str, session_id: str) -> None:
@@ -701,6 +759,7 @@ async def _finalize_stream(chat_id: str, stream_id: str, task: asyncio.Task | No
 async def _disconnect_client(chat_id: str) -> None:
     client = _clients.pop(chat_id, None)
     _client_last_used.pop(chat_id, None)
+    _client_permission_levels.pop(chat_id, None)
     # NOTE: _client_sessions is NOT cleared here — we want to preserve
     # the session_id so group agents can resume after eviction.
     if client is None:

@@ -92,6 +92,7 @@ _STREAM_TEXT_FILTERS: dict[tuple[str, str], dict[str, Any]] = {}
 _clients: dict[str, Any] = {}                            # client_key -> ClaudeSDKClient
 _client_sessions: dict[str, str] = {}                    # client_key -> session_id (group agents)
 _client_last_used: dict[str, float] = {}                 # client_key -> timestamp (for LRU eviction)
+_client_permission_levels: dict[str, int] = {}          # client_key -> effective SDK permission level
 _codex_threads: dict[str, str] = {}                      # chat_id -> codex thread_id (for resume)
 _codex_thread_turns: dict[str, int] = {}                 # chat_id -> turn count (for thread rotation)
 _chat_locks: dict[str, asyncio.Lock] = {}                # chat_id -> processing lock

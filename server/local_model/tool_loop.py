@@ -440,6 +440,8 @@ async def run_tool_loop(
     api_key: str | None = None,
     api_url: str | None = None,
     max_iterations: int | None = None,
+    permission_level: int = 2,
+    allowed_tools: set[str] | None = None,
 ) -> dict:
     """
     Run the tool-calling agent loop (Ollama or OpenAI-compatible API).
@@ -467,7 +469,7 @@ async def run_tool_loop(
     if not ALLOW_LOCAL_TOOLS and not is_remote:
         raise RuntimeError("Local model tools are disabled (set APEX_ALLOW_LOCAL_TOOLS=1 to enable)")
 
-    tool_schemas = get_tool_schemas()
+    tool_schemas = get_tool_schemas(allowed_tools)
     tool_events: list[dict] = []
     result_text = ""
     thinking_text = ""
@@ -561,26 +563,33 @@ async def run_tool_loop(
                 "input": tool_args,
             })
 
-            # Guardrail pre-check
-            block_reason = pre_check(tool_name, tool_args, model=model)
-            if block_reason:
-                tool_result = block_reason
+            if allowed_tools is not None and tool_name not in allowed_tools:
+                if permission_level <= 0:
+                    tool_result = "This agent is Restricted and cannot use tools or access files."
+                else:
+                    tool_result = "This action requires Elevated or Admin permissions."
                 is_error = True
             else:
-                # Execute the tool
-                executor = get_executor(tool_name)
-                if executor:
-                    try:
-                        tool_result = await asyncio.to_thread(executor, tool_args, workspace)
-                    except Exception as e:
-                        tool_result = f"Error executing {tool_name}: {type(e).__name__}: {e}"
+                # Guardrail pre-check
+                block_reason = pre_check(tool_name, tool_args, model=model)
+                if block_reason:
+                    tool_result = block_reason
+                    is_error = True
                 else:
-                    tool_result = f"Error: unknown tool '{tool_name}'"
+                    # Execute the tool
+                    executor = get_executor(tool_name)
+                    if executor:
+                        try:
+                            tool_result = await asyncio.to_thread(executor, tool_args, workspace)
+                        except Exception as e:
+                            tool_result = f"Error executing {tool_name}: {type(e).__name__}: {e}"
+                    else:
+                        tool_result = f"Error: unknown tool '{tool_name}'"
 
-                is_error = tool_result.startswith("Error:")
+                    is_error = tool_result.startswith("Error:")
 
-                # Secret filtering on output
-                tool_result = filter_output(tool_name, tool_result, model=model)
+                    # Secret filtering on output
+                    tool_result = filter_output(tool_name, tool_result, model=model)
 
             # Emit tool_result event
             await emit_event({

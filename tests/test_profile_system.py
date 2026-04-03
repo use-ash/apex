@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -28,11 +29,13 @@ if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 
 import apex  # noqa: E402
+from setup.progress import mark_phase_completed  # noqa: E402
 
 
 class ProfileSystemTests(unittest.TestCase):
     def setUp(self) -> None:
         apex._init_db()
+        mark_phase_completed(TEST_ROOT / "state", "setup_complete")
         with apex._db_lock:
             conn = apex._get_db()
             conn.execute("DELETE FROM messages")
@@ -177,6 +180,48 @@ class ProfileSystemTests(unittest.TestCase):
             self.assertIn("system_prompt", data)
             self.assertIn("tool_policy", data)
             self.assertEqual(data["backend"], "claude")
+
+    def test_create_profile_defaults_tool_policy_to_level_2(self) -> None:
+        with self._client() as client:
+            status, body = self._create_profile(client, tool_policy="")
+            self.assertEqual(status, 201)
+
+            detail = client.get(f"/api/profiles/{body['id']}")
+            self.assertEqual(detail.status_code, 200)
+            self.assertEqual(json.loads(detail.json()["tool_policy"]), {"level": 2})
+
+    def test_create_profile_merges_level_into_existing_tool_policy_json(self) -> None:
+        with self._client() as client:
+            status, body = self._create_profile(
+                client,
+                tool_policy=json.dumps({"workspace": "/tmp/project", "sandbox": "suggest"}),
+            )
+            self.assertEqual(status, 201)
+
+            detail = client.get(f"/api/profiles/{body['id']}")
+            self.assertEqual(detail.status_code, 200)
+            self.assertEqual(
+                json.loads(detail.json()["tool_policy"]),
+                {"workspace": "/tmp/project", "sandbox": "suggest", "level": 2},
+            )
+
+    def test_update_profile_normalizes_tool_policy_level(self) -> None:
+        with self._client() as client:
+            status, body = self._create_profile(client, tool_policy="manual")
+            self.assertEqual(status, 201)
+
+            update = client.put(
+                f"/api/profiles/{body['id']}",
+                json={"tool_policy": json.dumps({"workspace": "/tmp/code"})},
+            )
+            self.assertEqual(update.status_code, 200)
+
+            detail = client.get(f"/api/profiles/{body['id']}")
+            self.assertEqual(detail.status_code, 200)
+            self.assertEqual(
+                json.loads(detail.json()["tool_policy"]),
+                {"workspace": "/tmp/code", "level": 2},
+            )
 
     def test_duplicate_slug_on_update_returns_409(self) -> None:
         with self._client() as client:

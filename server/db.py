@@ -12,7 +12,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from compat import safe_chmod
 from state import _db_lock, _last_compacted_at
 from compat import safe_chmod
 from log import log
@@ -28,6 +27,9 @@ SYSTEM_PROFILE_NAME = "Open"
 SYSTEM_PROFILE_SLUG = "open"
 
 _CHAT_UPDATE_FIELDS = frozenset({"title", "model", "profile_id", "claude_session_id", "category", "type"})
+DEFAULT_TOOL_POLICY_LEVEL = 2
+MIN_TOOL_POLICY_LEVEL = 0
+MAX_TOOL_POLICY_LEVEL = 3
 
 # ---------------------------------------------------------------------------
 # Alert category mapping
@@ -69,6 +71,66 @@ def _alert_category(source: str) -> str:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _coerce_tool_policy_level(value: object) -> int:
+    try:
+        level = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_TOOL_POLICY_LEVEL
+    return max(MIN_TOOL_POLICY_LEVEL, min(MAX_TOOL_POLICY_LEVEL, level))
+
+
+def _normalize_tool_policy(raw: str | dict | None) -> dict:
+    if isinstance(raw, dict):
+        policy = dict(raw)
+    elif raw in (None, ""):
+        policy = {}
+    else:
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            policy = {}
+        else:
+            policy = dict(parsed) if isinstance(parsed, dict) else {}
+    policy["level"] = _coerce_tool_policy_level(policy.get("level", DEFAULT_TOOL_POLICY_LEVEL))
+    return policy
+
+
+def _normalize_tool_policy_text(raw: str | dict | None) -> str:
+    return json.dumps(_normalize_tool_policy(raw), separators=(",", ":"))
+
+
+def _tool_policy_level(raw: str | dict | None) -> int:
+    return _normalize_tool_policy(raw)["level"]
+
+
+def _migrate_tool_policy_levels(conn: sqlite3.Connection) -> None:
+    rows = conn.execute("SELECT id, tool_policy FROM agent_profiles").fetchall()
+    updates: list[tuple[str, str, str]] = []
+    for profile_id, raw in rows:
+        raw_text = raw or ""
+        needs_update = not raw_text
+        if not needs_update:
+            try:
+                parsed = json.loads(raw_text)
+            except (json.JSONDecodeError, TypeError):
+                needs_update = True
+            else:
+                if not isinstance(parsed, dict):
+                    needs_update = True
+                else:
+                    expected = _coerce_tool_policy_level(parsed.get("level", DEFAULT_TOOL_POLICY_LEVEL))
+                    needs_update = parsed.get("level") != expected
+                    if "level" not in parsed:
+                        needs_update = True
+        if needs_update:
+            updates.append((_normalize_tool_policy_text(raw_text), _now(), profile_id))
+    if updates:
+        conn.executemany(
+            "UPDATE agent_profiles SET tool_policy = ?, updated_at = ? WHERE id = ?",
+            updates,
+        )
 
 
 def _get_db() -> sqlite3.Connection:
@@ -155,6 +217,7 @@ def _init_db() -> None:
     # Migration: add system_prompt_override column to agent_profiles
     with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("ALTER TABLE agent_profiles ADD COLUMN system_prompt_override TEXT DEFAULT NULL")
+    _migrate_tool_policy_levels(conn)
     # Migration: channel_agent_memberships table (groups foundation)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS channel_agent_memberships (
@@ -244,7 +307,20 @@ def _seed_default_profiles():
         conn.execute(
             "INSERT OR IGNORE INTO agent_profiles (id, name, slug, avatar, role_description, backend, model, system_prompt, tool_policy, is_default, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (SYSTEM_PROFILE_ID, SYSTEM_PROFILE_NAME, SYSTEM_PROFILE_SLUG, "\U0001f4ac", "Open model chat shared memory pool", "", "", "", "", 0, now, now),
+            (
+                SYSTEM_PROFILE_ID,
+                SYSTEM_PROFILE_NAME,
+                SYSTEM_PROFILE_SLUG,
+                "\U0001f4ac",
+                "Open model chat shared memory pool",
+                "",
+                "",
+                "",
+                _normalize_tool_policy_text(""),
+                0,
+                now,
+                now,
+            ),
         )
         conn.commit()
         conn.close()
@@ -279,7 +355,7 @@ def _seed_default_profiles():
                 "backend, model, system_prompt, tool_policy, is_default, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (p["id"], p["name"], p["slug"], p["avatar"], p["role_description"],
-                 p["backend"], p["model"], p["system_prompt"], "",
+                 p["backend"], p["model"], p["system_prompt"], _normalize_tool_policy_text(""),
                  p.get("is_default", 0), now, now),
             )
             inserted += cur.rowcount
@@ -438,7 +514,7 @@ def seed_system_personas() -> None:
                 "system_prompt, tool_policy, is_default, is_system, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
                 (p["id"], p["name"], p["slug"], p["avatar"], p["role_description"],
-                 p["backend"], p["model"], p["system_prompt"], p["tool_policy"],
+                 p["backend"], p["model"], p["system_prompt"], _normalize_tool_policy_text(p["tool_policy"]),
                  p["is_default"], now, now),
             )
             conn.execute(
@@ -472,6 +548,34 @@ def _get_groups_using_persona(profile_id: str) -> list[str]:
         ).fetchall()
         conn.close()
     return [r[0] or "(untitled)" for r in rows]
+
+
+def _get_profile_tool_policy(profile_id: str | None) -> dict:
+    if not profile_id:
+        return _normalize_tool_policy(None)
+    with _db_lock:
+        conn = _get_db()
+        row = conn.execute(
+            "SELECT tool_policy FROM agent_profiles WHERE id = ?",
+            (profile_id,),
+        ).fetchone()
+        conn.close()
+    return _normalize_tool_policy(row[0] if row else None)
+
+
+def _get_chat_tool_policy(chat_id: str, profile_id: str | None = None) -> dict:
+    if profile_id:
+        return _get_profile_tool_policy(profile_id)
+    with _db_lock:
+        conn = _get_db()
+        row = conn.execute(
+            "SELECT ap.tool_policy FROM chats c "
+            "LEFT JOIN agent_profiles ap ON ap.id = c.profile_id "
+            "WHERE c.id = ?",
+            (chat_id,),
+        ).fetchone()
+        conn.close()
+    return _normalize_tool_policy(row[0] if row else None)
 
 
 # ---------------------------------------------------------------------------

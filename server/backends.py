@@ -18,7 +18,14 @@ from env import (
     MAX_TOOL_ITERATIONS, ALLOW_LOCAL_TOOLS,
 )
 
-from db import _get_messages, _estimate_tokens, _get_chat_settings, _update_chat_settings
+from db import (
+    _get_messages,
+    _estimate_tokens,
+    _get_chat_settings,
+    _update_chat_settings,
+    _get_chat_tool_policy,
+    _get_profile_tool_policy,
+)
 from log import log
 from model_dispatch import (
     _get_model_backend, OLLAMA_BASE_URL, MLX_BASE_URL,
@@ -164,6 +171,7 @@ _BACKEND_LABELS = {
     "mlx": "MLX",
 }
 _CODEX_RESPONSES_API_MODELS = {"o3", "o4-mini"}
+_STANDARD_LOCAL_TOOLS = frozenset({"read_file", "list_files", "search_files"})
 
 
 def validate_backend_attachments(backend: str, attachments: list[dict] | None) -> str | None:
@@ -560,6 +568,18 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
     """Run a chat response from Ollama/xAI/MLX with tool-calling support."""
     effective_model = model or MODEL
     recent = _get_messages(chat_id, days=1)["messages"]
+    current_pid = _current_group_profile_id.get("")
+    tool_policy = (
+        _get_profile_tool_policy(current_pid)
+        if current_pid
+        else _get_chat_tool_policy(chat_id)
+    )
+    permission_level = int(tool_policy.get("level", 2))
+    allowed_local_tools: set[str] | None = None
+    if permission_level <= 0:
+        allowed_local_tools = set()
+    elif permission_level == 1:
+        allowed_local_tools = set(_STANDARD_LOCAL_TOOLS)
     if _TOOL_LOOP_AVAILABLE and ALLOW_LOCAL_TOOLS:
         sys_prompt = build_system_prompt(effective_model)
     else:
@@ -573,7 +593,6 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
         sys_prompt = f"{sys_prompt}\n\n{profile_prompt}{group_roster_prompt}{memory_prompt}{workspace_ctx}"
 
     messages = [{"role": "system", "content": sys_prompt}]
-    current_pid = _current_group_profile_id.get("")
     for m in recent[-50:]:
         content = m["content"]
         if "<system-reminder>" in content:
@@ -619,6 +638,8 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 api_key=XAI_API_KEY,
                 api_url="https://api.x.ai/v1",
                 max_iterations=MAX_TOOL_ITERATIONS,
+                permission_level=permission_level,
+                allowed_tools=allowed_local_tools,
             )
         elif backend == "codex":
             codex_model = effective_model[6:]
@@ -632,6 +653,8 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                     api_key=OPENAI_API_KEY,
                     api_url="https://api.openai.com/v1",
                     max_iterations=MAX_TOOL_ITERATIONS,
+                    permission_level=permission_level,
+                    allowed_tools=allowed_local_tools,
                 )
             else:
                 result = await run_tool_loop(
@@ -643,6 +666,8 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                     api_key="chatgpt-oauth",
                     api_url="chatgpt",
                     max_iterations=MAX_TOOL_ITERATIONS,
+                    permission_level=permission_level,
+                    allowed_tools=allowed_local_tools,
                 )
         elif ALLOW_LOCAL_TOOLS and backend == "mlx":
             mlx_model = effective_model[4:]
@@ -655,6 +680,8 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 api_key="local",
                 api_url=f"{MLX_BASE_URL}/v1",
                 max_iterations=MAX_TOOL_ITERATIONS,
+                permission_level=permission_level,
+                allowed_tools=allowed_local_tools,
             )
         elif ALLOW_LOCAL_TOOLS:
             result = await run_tool_loop(
@@ -664,6 +691,8 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 emit_event=emit,
                 workspace=WORKSPACE_PATHS,
                 max_iterations=MAX_TOOL_ITERATIONS,
+                permission_level=permission_level,
+                allowed_tools=allowed_local_tools,
             )
         else:
             result = None  # fall through to plain streaming below

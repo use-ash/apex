@@ -45,6 +45,7 @@ from streaming import (
     _set_active_send_task, _update_active_send_task, _remove_active_send_task,
     _cancel_chat_streams,
     _make_options, _get_or_create_client,
+    _resolve_sdk_permission_level,
     _register_client, _has_client,
     _get_chat_lock, _get_chat_send_lock,
     _reset_stream_buffer, _cleanup_stream_journal, _load_journal_events,
@@ -916,10 +917,16 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 existing_session = chat.get("claude_session_id") if chat else None
                 if DEBUG: log(f"DBG RECOVERY: attempting resume session={existing_session or 'NONE'}")
                 try:
-                    options = _make_options(model=chat_model, session_id=existing_session)
+                    permission_level = _resolve_sdk_permission_level(client_key, chat_id)
+                    options = _make_options(
+                        model=chat_model,
+                        session_id=existing_session,
+                        client_key=client_key,
+                        chat_id=chat_id,
+                    )
                     client = ClaudeSDKClient(options)
                     await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
-                    _register_client(client_key, client)
+                    _register_client(client_key, client, permission_level=permission_level)
                     result = await _run_query_turn(client, _make_retry_input, chat_id)
                     if DEBUG: log(f"DBG RECOVERY: resume OK client_key={client_key} session={existing_session or 'new'}")
                 except Exception as resume_error:
@@ -929,10 +936,16 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                     _clear_session_context(client_key)
                     if DEBUG: log(f"DBG RECOVERY: session_id NUKED, trying fresh...")
                     try:
-                        options = _make_options(model=chat_model, session_id=None)
+                        permission_level = _resolve_sdk_permission_level(client_key, chat_id)
+                        options = _make_options(
+                            model=chat_model,
+                            session_id=None,
+                            client_key=client_key,
+                            chat_id=chat_id,
+                        )
                         client = ClaudeSDKClient(options)
                         await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
-                        _register_client(client_key, client)
+                        _register_client(client_key, client, permission_level=permission_level)
                         result = await _run_query_turn(client, _make_retry_input, chat_id)
                         if DEBUG: log(f"DBG RECOVERY: fresh session OK client_key={client_key}")
                     except Exception as fresh_error:

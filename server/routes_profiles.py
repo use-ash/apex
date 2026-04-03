@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from db import (
     _db_lock, _get_db,
     SYSTEM_PROFILE_ID,
+    _normalize_tool_policy_text,
     _add_persona_memory, _get_persona_memories, _delete_persona_memory,
     _get_persona_model_override, _set_persona_model_override,
     _get_groups_using_persona,
@@ -140,7 +141,7 @@ async def api_install_persona_templates(request: Request):
                 "backend, model, system_prompt, tool_policy, is_default, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (p["id"], p["name"], p["slug"], p["avatar"], p["role_description"],
-                 p["backend"], p["model"], p["system_prompt"], "",
+                 p["backend"], p["model"], p["system_prompt"], _normalize_tool_policy_text(""),
                  p.get("is_default", 0), now, now),
             )
             if cur.rowcount:
@@ -212,7 +213,7 @@ async def api_get_profile_detail(profile_id: str):
         "default_system_prompt": row[7] or "",
         "system_prompt_override": prompt_override,
         "has_prompt_override": bool(prompt_override),
-        "tool_policy": row[9],
+        "tool_policy": _normalize_tool_policy_text(row[9]),
         "is_default": bool(row[10]),
         "created_at": row[11],
         "updated_at": row[12],
@@ -244,10 +245,10 @@ async def api_create_profile(request: Request):
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (profile_id, name, slug,
                  str(data.get("avatar", "")),
-                 str(data.get("role_description", "")),
-                 backend, model,
-                 str(data.get("system_prompt", "")),
-                 str(data.get("tool_policy", "")),
+                str(data.get("role_description", "")),
+                backend, model,
+                str(data.get("system_prompt", "")),
+                 _normalize_tool_policy_text(data.get("tool_policy", "")),
                  1 if data.get("is_default") else 0,
                  now, now),
             )
@@ -286,7 +287,10 @@ async def api_update_profile(profile_id: str, request: Request):
             allowed_keys = ("avatar", "role_description")
         for key in allowed_keys:
             if key in data:
-                val = str(data[key]).strip() if key == "name" else str(data[key])
+                if key == "tool_policy":
+                    val = _normalize_tool_policy_text(data[key])
+                else:
+                    val = str(data[key]).strip() if key == "name" else str(data[key])
                 if key == "name" and not val:
                     conn.close()
                     return JSONResponse({"error": "name cannot be empty"}, status_code=400)

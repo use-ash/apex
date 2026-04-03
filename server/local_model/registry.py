@@ -93,9 +93,11 @@ _register(
 )
 
 
-def get_tool_schemas() -> list[dict]:
+def get_tool_schemas(allowed_names: set[str] | None = None) -> list[dict]:
     """Return list of tool schemas for Ollama API (no executor key)."""
-    return [t["schema"] for t in TOOLS.values()]
+    if allowed_names is None:
+        return [t["schema"] for t in TOOLS.values()]
+    return [TOOLS[name]["schema"] for name in TOOLS if name in allowed_names]
 
 
 def get_executor(name: str):

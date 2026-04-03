@@ -352,6 +352,153 @@ class SecurityFixTests(unittest.TestCase):
         self.assertEqual(result["tool_events"], "[]")
         run_tool_loop_mock.assert_not_awaited()
 
+    def test_make_options_standard_profile_uses_plan_and_blocks_write_tools(self) -> None:
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO agent_profiles (
+                    id, name, slug, avatar, role_description, backend, model,
+                    system_prompt, tool_policy, is_default, is_system, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, datetime('now'), datetime('now'))
+                """,
+                (
+                    "perm-standard",
+                    "Perm Standard",
+                    "perm-standard",
+                    "S",
+                    "standard test",
+                    "claude",
+                    "claude-sonnet-4-6",
+                    "standard test",
+                    json.dumps({"level": 1}),
+                ),
+            )
+            conn.commit()
+            conn.close()
+        chat_id = db_mod._create_chat(
+            title="Standard Persona",
+            model="claude-sonnet-4-6",
+            profile_id="perm-standard",
+        )
+
+        opts = streaming_mod._make_options(
+            model="claude-sonnet-4-6",
+            client_key=chat_id,
+            chat_id=chat_id,
+        )
+
+        self.assertEqual(opts.permission_mode, "plan")
+        allow_read = asyncio.run(opts.can_use_tool("Read", {}, SimpleNamespace(suggestions=[])))
+        deny_bash = asyncio.run(
+            opts.can_use_tool("Bash", {"command": "pwd"}, SimpleNamespace(suggestions=[]))
+        )
+        self.assertEqual(allow_read.behavior, "allow")
+        self.assertEqual(deny_bash.behavior, "deny")
+        self.assertIn("Elevated", deny_bash.message)
+
+    def test_make_options_restricted_profile_blocks_all_tools(self) -> None:
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO agent_profiles (
+                    id, name, slug, avatar, role_description, backend, model,
+                    system_prompt, tool_policy, is_default, is_system, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, datetime('now'), datetime('now'))
+                """,
+                (
+                    "perm-restricted",
+                    "Perm Restricted",
+                    "perm-restricted",
+                    "R",
+                    "restricted test",
+                    "claude",
+                    "claude-sonnet-4-6",
+                    "restricted test",
+                    json.dumps({"level": 0}),
+                ),
+            )
+            conn.commit()
+            conn.close()
+        chat_id = db_mod._create_chat(
+            title="Restricted Persona",
+            model="claude-sonnet-4-6",
+            profile_id="perm-restricted",
+        )
+
+        opts = streaming_mod._make_options(
+            model="claude-sonnet-4-6",
+            client_key=chat_id,
+            chat_id=chat_id,
+        )
+
+        deny_read = asyncio.run(opts.can_use_tool("Read", {}, SimpleNamespace(suggestions=[])))
+        self.assertEqual(opts.permission_mode, "plan")
+        self.assertEqual(deny_read.behavior, "deny")
+        self.assertIn("Restricted", deny_read.message)
+
+    def test_ollama_chat_passes_standard_tool_allowlist(self) -> None:
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO agent_profiles (
+                    id, name, slug, avatar, role_description, backend, model,
+                    system_prompt, tool_policy, is_default, is_system, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, datetime('now'), datetime('now'))
+                """,
+                (
+                    "perm-ollama-standard",
+                    "Perm Ollama Standard",
+                    "perm-ollama-standard",
+                    "O",
+                    "ollama standard test",
+                    "ollama",
+                    "qwen3:latest",
+                    "ollama standard test",
+                    json.dumps({"level": 1}),
+                ),
+            )
+            conn.commit()
+            conn.close()
+        chat_id = db_mod._create_chat(
+            title="Ollama Standard Persona",
+            model="qwen3:latest",
+            profile_id="perm-ollama-standard",
+        )
+        run_tool_loop_mock = mock.AsyncMock(
+            return_value={
+                "text": "ok",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+        )
+
+        with (
+            mock.patch.object(backends, "_TOOL_LOOP_AVAILABLE", True),
+            mock.patch.object(backends, "ALLOW_LOCAL_TOOLS", True),
+            mock.patch.object(backends, "build_system_prompt", return_value="system"),
+            mock.patch.object(backends, "run_tool_loop", run_tool_loop_mock),
+            mock.patch.object(backends, "_send_stream_event", mock.AsyncMock()),
+        ):
+            result = asyncio.run(
+                backends._run_ollama_chat(chat_id, "Inspect the repo", model="qwen3:latest")
+            )
+
+        self.assertFalse(result["is_error"])
+        self.assertEqual(
+            run_tool_loop_mock.await_args.kwargs["allowed_tools"],
+            {"read_file", "list_files", "search_files"},
+        )
+        self.assertEqual(run_tool_loop_mock.await_args.kwargs["permission_level"], 1)
+
     def test_validate_backend_attachments_rejects_codex_attachments(self) -> None:
         attachment = self._create_uploaded_attachment("txt", b"notes")
         err = backends.validate_backend_attachments("codex", [attachment])
