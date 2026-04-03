@@ -340,7 +340,7 @@ def _seed_default_profiles():
     if not templates_path.exists():
         return
     try:
-        profiles = json.loads(templates_path.read_text())
+        profiles = json.loads(templates_path.read_text(encoding="utf-8"))
     except Exception as e:
         log(f"Failed to load persona templates: {e}")
         return
