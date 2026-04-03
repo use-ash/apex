@@ -259,9 +259,20 @@ async def lifespan(app: FastAPI):
             log(f"embedding reindex failed (non-fatal): {e}")
     asyncio.create_task(_startup_recovery())
     asyncio.create_task(_license_mgr.run_check_in_loop())
+
+    # Initialize MCP bridge for local model tool loop
+    try:
+        from local_model.mcp_bridge import initialize as mcp_init, shutdown as mcp_shutdown
+        await mcp_init()
+    except Exception as e:
+        log(f"MCP bridge init failed (non-fatal): {e}")
     try:
         yield
     finally:
+        try:
+            await mcp_shutdown()
+        except Exception:
+            pass
         for chat_id in list(_clients):
             await _disconnect_client(chat_id)
 

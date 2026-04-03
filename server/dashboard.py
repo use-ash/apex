@@ -841,7 +841,7 @@ async def _update_config_section(section: str, request: Request) -> JSONResponse
 
 _MCP_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 _MCP_VALID_TYPES = frozenset({"stdio", "sse", "http"})
-_MCP_ALLOWED_STDIO_COMMANDS = frozenset({"npx", "uvx", "node", "python3", "deno"})
+_MCP_ALLOWED_STDIO_COMMANDS = frozenset({"npx", "uvx", "node", "python3", "deno", "docker"})
 _MCP_ALLOWED_STDIO_PREFIXES = ("mcp-", "mcp_")
 _MCP_BLOCKED_STDIO_PATHS = frozenset({"/bin/sh", "/bin/bash", "/bin/zsh"})
 _MCP_BLOCKED_STDIO_NAMES = frozenset({"sh", "bash", "zsh"})

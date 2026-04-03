@@ -34,7 +34,16 @@ def build_system_prompt(model: str) -> str:
     else:
         parts = [f"You are a local AI assistant running {model} via Ollama."]
         parts.append("You are NOT Claude, NOT made by Anthropic.")
-    parts.append("You have tools: bash, read_file, write_file, list_files, search_files. Use them to answer questions and complete tasks.")
+    # Build dynamic tool list (built-in + MCP)
+    tool_names = ["bash", "read_file", "write_file", "list_files", "search_files"]
+    try:
+        from local_model.mcp_bridge import get_mcp_tool_schemas
+        mcp_tools = get_mcp_tool_schemas()
+        for t in mcp_tools:
+            tool_names.append(t["function"]["name"])
+    except Exception:
+        pass
+    parts.append(f"You have tools: {', '.join(tool_names)}. Use them to answer questions and complete tasks.")
     parts.append("")
 
     # Workspace context
@@ -65,16 +74,47 @@ def build_system_prompt(model: str) -> str:
         parts.append(f"- Start with: read_file('{project_md}') for full project context")
     parts.append("")
 
-    # Available scripts (if workspace has skills)
+    # Available scripts (if workspace has skills or tools)
     skills_dir = WORKSPACE / "skills"
+    skill_entries = []
     if skills_dir.is_dir():
+        # Scan for Python scripts with docstrings in skills/
+        for script in sorted(skills_dir.rglob("*.py")):
+            if script.name.startswith("_") or "/lib/" in str(script):
+                continue
+            try:
+                first_lines = script.read_text()[:800]
+                # Extract docstring
+                for marker in ('"""', "'''"):
+                    start = first_lines.find(marker)
+                    if start >= 0:
+                        end = first_lines.find(marker, start + 3)
+                        if end > start:
+                            desc = first_lines[start + 3:end].strip().split("\n")[0]
+                            skill_entries.append(f"- {script.name}: {desc} — `{python_exe} {script}`")
+                            break
+            except Exception:
+                continue
+    # Also check for standalone tool scripts in workspace root
+    for name in ("fetch_x.py",):
+        script = WORKSPACE / name
+        if script.exists():
+            try:
+                first_lines = script.read_text()[:800]
+                for marker in ('"""', "'''"):
+                    start = first_lines.find(marker)
+                    if start >= 0:
+                        end = first_lines.find(marker, start + 3)
+                        if end > start:
+                            desc = first_lines[start + 3:end].strip().split("\n")[0]
+                            skill_entries.append(f"- {name}: {desc} — `{python_exe} {script}`")
+                            break
+            except Exception:
+                pass
+    if skill_entries:
         parts.append("## Skills (use via bash tool)")
-        recall_script = skills_dir / "recall" / "search_transcripts.py"
-        if recall_script.exists():
-            parts.append(f"- Recall past conversations: {python_exe} {recall_script} '<query>' --top 5")
-        embedding_script = skills_dir / "embedding" / "memory_search.py"
-        if embedding_script.exists():
-            parts.append(f"- Semantic memory search: {python_exe} {embedding_script} search '<query>' --top 5")
+        # Cap at 15 to avoid bloating context
+        parts.extend(skill_entries[:15])
         parts.append("")
 
     # Safety rules
