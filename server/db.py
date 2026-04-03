@@ -16,6 +16,7 @@ from state import _db_lock, _last_compacted_at
 from compat import safe_chmod
 from log import log
 from env import APEX_ROOT, DB_NAME
+from model_dispatch import _get_model_backend
 
 # ---------------------------------------------------------------------------
 # Paths & constants
@@ -846,20 +847,34 @@ def _get_group_members(channel_id: str) -> list[dict]:
         conn.commit()
         rows = conn.execute(
             "SELECT m.id, m.agent_profile_id, m.routing_mode, m.is_primary, m.display_order, "
-            "ap.name, ap.avatar, ap.model, ap.backend, m.role, m.status "
+            "ap.name, ap.avatar, COALESCE(o.model, ap.model), m.role, m.status "
             "FROM channel_agent_memberships m "
             "JOIN agent_profiles ap ON m.agent_profile_id = ap.id "
+            "LEFT JOIN persona_model_overrides o ON o.profile_id = ap.id "
             "WHERE m.channel_id = ? AND COALESCE(m.status, 'active') = 'active' "
             "ORDER BY m.is_primary DESC, m.display_order",
             (channel_id,),
         ).fetchall()
         conn.close()
-    return [
-        {"id": r[0], "profile_id": r[1], "routing_mode": r[2], "is_primary": bool(r[3]),
-         "display_order": r[4], "name": r[5], "avatar": r[6], "model": r[7], "backend": r[8],
-         "role": r[9] or "member", "status": r[10] or "active"}
-        for r in rows
-    ]
+    members = []
+    for row in rows:
+        effective_model = row[7] or ""
+        members.append(
+            {
+                "id": row[0],
+                "profile_id": row[1],
+                "routing_mode": row[2],
+                "is_primary": bool(row[3]),
+                "display_order": row[4],
+                "name": row[5],
+                "avatar": row[6],
+                "model": effective_model,
+                "backend": _get_model_backend(effective_model) if effective_model else "",
+                "role": row[8] or "member",
+                "status": row[9] or "active",
+            }
+        )
+    return members
 
 
 def _get_chat_settings(chat_id: str) -> dict:
