@@ -39,6 +39,12 @@ _CODEX_MAX_THREAD_TURNS = int(os.environ.get("APEX_CODEX_MAX_TURNS", "8"))
 _VALID_CODEX_SANDBOX = {"read-only", "suggest", "full"}
 
 
+def _get_codex_scope_key(chat_id: str) -> tuple[str, str]:
+    """Return (scope_key, profile_id) for Codex thread state."""
+    profile_id = _current_group_profile_id.get("")
+    return (f"{chat_id}:{profile_id}", profile_id) if profile_id else (chat_id, "")
+
+
 def _resolve_codex_profile_overrides(chat_id: str) -> tuple[str, str]:
     """Resolve per-agent workspace and sandbox mode from tool_policy JSON.
 
@@ -97,7 +103,22 @@ def _public_codex_error_message(err_msg: str) -> str:
 def _persist_codex_thread(chat_id: str, thread_id: str, turns: int) -> None:
     """Write Codex thread state to DB settings for restart survival."""
     try:
-        _update_chat_settings(chat_id, {"codex_thread_id": thread_id, "codex_thread_turns": turns})
+        _scope_key, profile_id = _get_codex_scope_key(chat_id)
+        if profile_id:
+            settings = _get_chat_settings(chat_id)
+            thread_map = dict(settings.get("codex_threads_by_profile") or {})
+            turns_map = dict(settings.get("codex_thread_turns_by_profile") or {})
+            thread_map[profile_id] = thread_id
+            turns_map[profile_id] = int(turns)
+            _update_chat_settings(
+                chat_id,
+                {
+                    "codex_threads_by_profile": thread_map,
+                    "codex_thread_turns_by_profile": turns_map,
+                },
+            )
+        else:
+            _update_chat_settings(chat_id, {"codex_thread_id": thread_id, "codex_thread_turns": turns})
     except Exception:
         pass  # fire-and-forget — never fail the stream
 
@@ -105,9 +126,54 @@ def _persist_codex_thread(chat_id: str, thread_id: str, turns: int) -> None:
 def _clear_persisted_codex_thread(chat_id: str) -> None:
     """Clear persisted Codex thread state from DB."""
     try:
-        _update_chat_settings(chat_id, {"codex_thread_id": "", "codex_thread_turns": 0})
+        _scope_key, profile_id = _get_codex_scope_key(chat_id)
+        if profile_id:
+            settings = _get_chat_settings(chat_id)
+            thread_map = dict(settings.get("codex_threads_by_profile") or {})
+            turns_map = dict(settings.get("codex_thread_turns_by_profile") or {})
+            thread_map.pop(profile_id, None)
+            turns_map.pop(profile_id, None)
+            _update_chat_settings(
+                chat_id,
+                {
+                    "codex_threads_by_profile": thread_map,
+                    "codex_thread_turns_by_profile": turns_map,
+                },
+            )
+        else:
+            _update_chat_settings(chat_id, {"codex_thread_id": "", "codex_thread_turns": 0})
     except Exception:
         pass
+
+
+def _get_codex_thread_state(chat_id: str) -> tuple[str, int, str]:
+    """Return (thread_id, turns, scope_key) for the current Codex turn."""
+    scope_key, profile_id = _get_codex_scope_key(chat_id)
+    existing_thread = _codex_threads.get(scope_key, "")
+    thread_turns = _codex_thread_turns.get(scope_key, 0)
+    if existing_thread:
+        return existing_thread, thread_turns, scope_key
+
+    try:
+        settings = _get_chat_settings(chat_id)
+        if profile_id:
+            thread_map = settings.get("codex_threads_by_profile") or {}
+            turns_map = settings.get("codex_thread_turns_by_profile") or {}
+            existing_thread = str(thread_map.get(profile_id, "") or "")
+            thread_turns = int(turns_map.get(profile_id, 0) or 0)
+        else:
+            existing_thread = str(settings.get("codex_thread_id", "") or "")
+            thread_turns = int(settings.get("codex_thread_turns", 0) or 0)
+        if existing_thread:
+            _codex_threads[scope_key] = existing_thread
+            _codex_thread_turns[scope_key] = thread_turns
+            log(
+                f"codex thread restored from DB: session={scope_key[:24]} "
+                f"thread={existing_thread[:8]} turns={thread_turns}"
+            )
+    except Exception:
+        pass
+    return existing_thread, thread_turns, scope_key
 
 
 def _build_journal_recovery_context(chat_id: str) -> str:
@@ -205,26 +271,17 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
     use_api_key = cli_model in _API_KEY_MODELS
 
     # Check for existing Codex thread to resume (in-memory → DB fallback)
-    existing_thread = _codex_threads.get(chat_id, "")
-    thread_turns = _codex_thread_turns.get(chat_id, 0)
-    if not existing_thread:
-        try:
-            settings = _get_chat_settings(chat_id)
-            existing_thread = settings.get("codex_thread_id", "")
-            thread_turns = settings.get("codex_thread_turns", 0)
-            if existing_thread:
-                _codex_threads[chat_id] = existing_thread
-                _codex_thread_turns[chat_id] = thread_turns
-                log(f"codex thread restored from DB: chat={chat_id[:8]} thread={existing_thread[:8]} turns={thread_turns}")
-        except Exception:
-            pass
+    existing_thread, thread_turns, scope_key = _get_codex_thread_state(chat_id)
 
     # Rotate thread if it's getting long — prevents context overflow
     is_rotation = False
     if existing_thread and thread_turns >= _CODEX_MAX_THREAD_TURNS:
-        log(f"codex thread rotation: chat={chat_id[:8]} thread={existing_thread[:8]} turns={thread_turns}/{_CODEX_MAX_THREAD_TURNS}")
-        _codex_threads.pop(chat_id, None)
-        _codex_thread_turns.pop(chat_id, None)
+        log(
+            f"codex thread rotation: session={scope_key[:24]} "
+            f"thread={existing_thread[:8]} turns={thread_turns}/{_CODEX_MAX_THREAD_TURNS}"
+        )
+        _codex_threads.pop(scope_key, None)
+        _codex_thread_turns.pop(scope_key, None)
         _clear_persisted_codex_thread(chat_id)
         is_rotation = True
         existing_thread = ""
@@ -238,7 +295,7 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
         # prior turns. Re-injecting every turn causes ~4K token bloat per turn that
         # compounds as Codex replays the full thread on resume.
         full_prompt = prompt
-        log(f"codex resume: chat={chat_id[:8]} thread={existing_thread[:8]} (no ctx injection)")
+        log(f"codex resume: session={scope_key[:24]} thread={existing_thread[:8]} (no ctx injection)")
         cmd = [
             CODEX_CLI, "exec", "resume", existing_thread,
             "--json", "--skip-git-repo-check",
@@ -423,12 +480,12 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
         if event_type == "thread.started":
             thread_id = event.get("thread_id", "")
             if thread_id:
-                _codex_threads[chat_id] = thread_id
+                _codex_threads[scope_key] = thread_id
                 if not existing_thread:
-                    _codex_thread_turns[chat_id] = 0
-                _persist_codex_thread(chat_id, thread_id, _codex_thread_turns.get(chat_id, 0))
+                    _codex_thread_turns[scope_key] = 0
+                _persist_codex_thread(chat_id, thread_id, _codex_thread_turns.get(scope_key, 0))
                 if DEBUG:
-                    log(f"codex thread: chat={chat_id[:8]} thread={thread_id[:8]} fresh={not existing_thread}")
+                    log(f"codex thread: session={scope_key[:24]} thread={thread_id[:8]} fresh={not existing_thread}")
             continue
 
         if event_type == "item.started":
@@ -505,9 +562,9 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
 
         # If resume failed, clear thread and retry as fresh session
         if existing_thread:
-            log(f"codex resume failed, retrying fresh: chat={chat_id[:8]} thread={existing_thread[:8]}")
-            _codex_threads.pop(chat_id, None)
-            _codex_thread_turns.pop(chat_id, None)
+            log(f"codex resume failed, retrying fresh: session={scope_key[:24]} thread={existing_thread[:8]}")
+            _codex_threads.pop(scope_key, None)
+            _codex_thread_turns.pop(scope_key, None)
             _clear_persisted_codex_thread(chat_id)
             return await _run_codex_chat(chat_id, prompt, model=model, attachments=attachments)
 
@@ -550,10 +607,13 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
         "thinking": thinking_text,
     })
     if thread_id:
-        _codex_thread_turns[chat_id] = _codex_thread_turns.get(chat_id, 0) + 1
-        turns = _codex_thread_turns[chat_id]
+        _codex_thread_turns[scope_key] = _codex_thread_turns.get(scope_key, 0) + 1
+        turns = _codex_thread_turns[scope_key]
         _persist_codex_thread(chat_id, thread_id, turns)
-        log(f"codex turn complete: chat={chat_id[:8]} thread={thread_id[:8]} turn={turns}/{_CODEX_MAX_THREAD_TURNS} tokens={tokens_in}in/{tokens_out}out")
+        log(
+            f"codex turn complete: session={scope_key[:24]} thread={thread_id[:8]} "
+            f"turn={turns}/{_CODEX_MAX_THREAD_TURNS} tokens={tokens_in}in/{tokens_out}out"
+        )
     return {"text": result_text, "is_error": False, "error": None,
             "cost_usd": 0, "tokens_in": tokens_in, "tokens_out": tokens_out,
             "session_id": thread_id or None, "thinking": thinking_text, "tool_events": json.dumps(tool_events)}

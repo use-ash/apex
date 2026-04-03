@@ -2347,6 +2347,46 @@ class SecurityFixTests(unittest.TestCase):
         self.assertEqual(codeexpert_levels[:2], [2, 0])
         self.assertIn((f"{chat_id}:queue-apex-assistant", 2), permission_levels)
 
+    def test_group_codex_threads_are_scoped_per_agent(self) -> None:
+        chat_id = self._create_test_group_chat()
+
+        token = _current_group_profile_id.set("queue-codeexpert")
+        try:
+            backends._persist_codex_thread(chat_id, "thread-codeexpert", 1)
+            codeexpert_state = backends._get_codex_thread_state(chat_id)
+        finally:
+            _current_group_profile_id.reset(token)
+
+        token = _current_group_profile_id.set("queue-apex-assistant")
+        try:
+            assistant_initial_state = backends._get_codex_thread_state(chat_id)
+            backends._persist_codex_thread(chat_id, "thread-assistant", 2)
+            assistant_state = backends._get_codex_thread_state(chat_id)
+        finally:
+            _current_group_profile_id.reset(token)
+
+        self.assertEqual(codeexpert_state[:2], ("thread-codeexpert", 1))
+        self.assertEqual(assistant_initial_state[:2], ("", 0))
+        self.assertEqual(assistant_state[:2], ("thread-assistant", 2))
+        self.assertEqual(backends._codex_threads[f"{chat_id}:queue-codeexpert"], "thread-codeexpert")
+        self.assertEqual(backends._codex_threads[f"{chat_id}:queue-apex-assistant"], "thread-assistant")
+
+        settings = db_mod._get_chat_settings(chat_id)
+        self.assertEqual(
+            settings.get("codex_threads_by_profile"),
+            {
+                "queue-codeexpert": "thread-codeexpert",
+                "queue-apex-assistant": "thread-assistant",
+            },
+        )
+        self.assertEqual(
+            settings.get("codex_thread_turns_by_profile"),
+            {
+                "queue-codeexpert": 1,
+                "queue-apex-assistant": 2,
+            },
+        )
+
     def test_group_strict_relay_disables_tools_from_initial_turn(self) -> None:
         chat_id = self._create_test_group_chat()
         db_mod._update_chat_settings(chat_id, {"agent_mentions_enabled": True})
