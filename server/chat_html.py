@@ -5436,9 +5436,15 @@ async function loadProfiles() {
   return _profilesCache;
 }
 
-function showNewChatProfilePicker() {
+async function showNewChatProfilePicker() {
   // Remove any existing modal
   document.querySelector('.profile-modal-overlay')?.remove();
+
+  // Refresh Ollama model list so we have current availability
+  try {
+    const r = await fetch('/api/models/local', {credentials: 'same-origin'});
+    if (r.ok) _settingsModels = await r.json();
+  } catch(e) {}
 
   const overlay = document.createElement('div');
   overlay.className = 'profile-modal-overlay';
