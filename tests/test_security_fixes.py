@@ -2043,6 +2043,71 @@ class SecurityFixTests(unittest.TestCase):
             any("@Queue Apex Assistant" in text for text in system_messages)
         )
 
+    def test_group_relay_roster_uncertainty_self_corrects_with_authoritative_roster(self) -> None:
+        chat_id = self._create_test_group_chat()
+        db_mod._update_chat_settings(chat_id, {"agent_mentions_enabled": True})
+        seen_calls: list[tuple[str, str]] = []
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            profile_id = _current_group_profile_id.get("")
+            seen_calls.append((profile_id, prompt))
+            if profile_id == "queue-codeexpert":
+                if sum(1 for pid, _ in seen_calls if pid == "queue-codeexpert") == 1:
+                    text = "I am unsure who is present in this room. I cannot see a live room roster."
+                else:
+                    text = "Passing to @Queue Apex Assistant."
+            else:
+                text = "Handled."
+            return {
+                "text": text,
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        started_speakers: list[str] = []
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", None),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
+        ):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "Start relay",
+                        "target_agent": "queue-codeexpert",
+                    })
+                    stream_end_count = 0
+                    while stream_end_count < 3:
+                        msg = ws.receive_json()
+                        if msg.get("type") == "stream_start":
+                            started_speakers.append(msg.get("speaker_id") or "")
+                        if msg.get("type") == "stream_end":
+                            stream_end_count += 1
+
+        self.assertEqual(
+            [profile_id for profile_id, _prompt in seen_calls],
+            ["queue-codeexpert", "queue-codeexpert", "queue-apex-assistant"],
+        )
+        self.assertEqual(
+            started_speakers.count("queue-codeexpert"),
+            2,
+        )
+        self.assertIn(
+            "The agents currently in this room are: @Queue Apex Assistant.",
+            seen_calls[1][1],
+        )
+        self.assertIn(
+            "Do not use tools, files, SDK client counts, or inferred presence signals",
+            seen_calls[1][1],
+        )
+
     def test_group_relay_agent_at_all_is_suppressed(self) -> None:
         chat_id = self._create_test_group_chat()
         primary = self._group_agent(chat_id, "queue-codeexpert")

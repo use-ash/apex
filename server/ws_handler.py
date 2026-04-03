@@ -343,6 +343,48 @@ def _build_missing_group_mentions_feedback_prompt(
     )
 
 
+def _response_indicates_group_roster_uncertainty(response_text: str) -> bool:
+    lowered = " ".join(str(response_text or "").casefold().split())
+    if not lowered:
+        return False
+    uncertainty_markers = (
+        "unsure who is present",
+        "don't know who is present",
+        "do not know who is present",
+        "don't know which other agents are present",
+        "do not know which other agents are present",
+        "room roster is not visible",
+        "roster is not visible",
+        "cannot see a live room roster",
+        "can't see a live room roster",
+        "cannot see the room roster",
+        "can't see the room roster",
+        "not able to see a room roster",
+        "cannot identify who to @mention next",
+        "cannot identify who to mention next",
+    )
+    return any(marker in lowered for marker in uncertainty_markers)
+
+
+def _build_group_roster_feedback_prompt(
+    members: list[dict],
+    *,
+    sender_name: str,
+    sender_profile_id: str,
+) -> str:
+    available = _format_group_member_mentions(members, exclude_profile_id=sender_profile_id)
+    if available:
+        roster_line = f"The agents currently in this room are: {available}."
+    else:
+        roster_line = "You are the only agent currently in this room."
+    return (
+        f"System feedback for @{sender_name}: {roster_line} "
+        "This roster is authoritative. Do not use tools, files, SDK client counts, or inferred presence signals "
+        "to determine room membership. If you intend to hand off, @mention exactly one present agent from this "
+        "roster. If no handoff is needed, continue yourself."
+    )
+
+
 def _strip_group_target_prefix(prompt: str, member: dict) -> str:
     text = prompt.lstrip()
     leading_ws = prompt[: len(prompt) - len(text)]
@@ -1012,6 +1054,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
     mention_chain: list[str] = list(data.get("_mention_chain") or [])
     handoff_source = str(data.get("_source") or "").strip().lower()
     invalid_mention_feedback_depth = int(data.get("_invalid_mention_feedback_depth", 0) or 0)
+    roster_feedback_depth = int(data.get("_roster_feedback_depth", 0) or 0)
     suppress_user_message = bool(data.get("_suppress_user_message"))
 
     # --- Group @mention routing (premium) ---
@@ -1585,6 +1628,47 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                         avatar=group_agent["avatar"],
                         profile_id=sender_profile_id,
                     )
+            if (
+                not actionable_relay_actions
+                and not missing_relay_mentions
+                and relay.get("mentions_enabled")
+                and roster_feedback_depth < 1
+                and _response_indicates_group_roster_uncertainty(response_text)
+            ):
+                feedback_prompt = _build_group_roster_feedback_prompt(
+                    relay_members,
+                    sender_name=str(group_agent.get("name") or sender_profile_id),
+                    sender_profile_id=sender_profile_id,
+                )
+                log(
+                    f"relay roster feedback queued: {group_agent['name']} "
+                    f"chat={chat_id[:8]}"
+                )
+                feedback_data = {
+                    "chat_id": chat_id,
+                    "prompt": feedback_prompt,
+                    "target_agent": sender_profile_id,
+                    "attachments": [],
+                    "stream_id": _make_stream_id(),
+                    "_mention_depth": mention_depth,
+                    "_mention_chain": mention_chain,
+                    "_source": "relay_roster_feedback",
+                    "_suppress_user_message": True,
+                    "_roster_feedback_depth": roster_feedback_depth + 1,
+                    "_parent_attachments": handoff_attachments,
+                    "_parent_attachment_refs": handoff_attachment_refs,
+                }
+                feedback_task = asyncio.create_task(
+                    _handle_send_action(original_ws, feedback_data)
+                )
+                _set_active_send_task(
+                    chat_id,
+                    feedback_data["stream_id"],
+                    feedback_task,
+                    name=group_agent["name"],
+                    avatar=group_agent["avatar"],
+                    profile_id=sender_profile_id,
+                )
             for action in relay["actions"]:
                 atype = action["type"]
                 if atype == "relay":
