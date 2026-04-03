@@ -130,7 +130,7 @@ def _match_group_mention_prefix(text: str, alias: str) -> int:
     if text[: len(prefix)].casefold() != prefix.casefold():
         return 0
     next_char = text[len(prefix): len(prefix) + 1]
-    if next_char and not re.match(r"[\s:,.!?-]", next_char):
+    if next_char and not re.match(r"[\s:,.!?\-)\]}>*_`~\"]", next_char):
         return 0
     return len(prefix)
 
