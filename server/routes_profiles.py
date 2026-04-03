@@ -279,7 +279,12 @@ async def api_update_profile(profile_id: str, request: Request):
 
         fields = []
         values = []
-        for key in ("name", "avatar", "role_description", "model", "tool_policy"):
+        # System personas: only allow avatar, role_description, and model override changes.
+        # model and tool_policy are locked to prevent tampering with built-in personas.
+        allowed_keys = ("name", "avatar", "role_description", "model", "tool_policy")
+        if is_system:
+            allowed_keys = ("avatar", "role_description")
+        for key in allowed_keys:
             if key in data:
                 val = str(data[key]).strip() if key == "name" else str(data[key])
                 if key == "name" and not val:
