@@ -94,11 +94,25 @@ _register(
 
 
 def get_tool_schemas() -> list[dict]:
-    """Return list of tool schemas for Ollama API (no executor key)."""
-    return [t["schema"] for t in TOOLS.values()]
+    """Return list of tool schemas for Ollama API (no executor key).
+
+    Includes built-in tools + any connected MCP server tools.
+    """
+    schemas = [t["schema"] for t in TOOLS.values()]
+    try:
+        from .mcp_bridge import get_mcp_tool_schemas
+        schemas.extend(get_mcp_tool_schemas())
+    except Exception:
+        pass
+    return schemas
 
 
 def get_executor(name: str):
     """Return executor function for a tool name, or None."""
     tool = TOOLS.get(name)
     return tool["executor"] if tool else None
+
+
+def is_mcp_tool(name: str) -> bool:
+    """Check if a tool name is an MCP tool (server__tool format)."""
+    return "__" in name and name not in TOOLS

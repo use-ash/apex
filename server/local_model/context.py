@@ -34,7 +34,16 @@ def build_system_prompt(model: str) -> str:
     else:
         parts = [f"You are a local AI assistant running {model} via Ollama."]
         parts.append("You are NOT Claude, NOT made by Anthropic.")
-    parts.append("You have tools: bash, read_file, write_file, list_files, search_files. Use them to answer questions and complete tasks.")
+    # Build dynamic tool list (built-in + MCP)
+    tool_names = ["bash", "read_file", "write_file", "list_files", "search_files"]
+    try:
+        from local_model.mcp_bridge import get_mcp_tool_schemas
+        mcp_tools = get_mcp_tool_schemas()
+        for t in mcp_tools:
+            tool_names.append(t["function"]["name"])
+    except Exception:
+        pass
+    parts.append(f"You have tools: {', '.join(tool_names)}. Use them to answer questions and complete tasks.")
     parts.append("")
 
     # Workspace context

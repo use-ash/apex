@@ -7,7 +7,7 @@ from typing import Callable, Awaitable
 
 from env import ALLOW_LOCAL_TOOLS
 
-from .registry import get_tool_schemas, get_executor
+from .registry import get_tool_schemas, get_executor, is_mcp_tool
 from .guardrails import pre_check, filter_output
 
 MAX_TOOL_ITERATIONS = 25
@@ -574,6 +574,12 @@ async def run_tool_loop(
                         tool_result = await asyncio.to_thread(executor, tool_args, workspace)
                     except Exception as e:
                         tool_result = f"Error executing {tool_name}: {type(e).__name__}: {e}"
+                elif is_mcp_tool(tool_name):
+                    try:
+                        from .mcp_bridge import call_mcp_tool
+                        tool_result = await call_mcp_tool(tool_name, tool_args)
+                    except Exception as e:
+                        tool_result = f"Error calling MCP tool {tool_name}: {type(e).__name__}: {e}"
                 else:
                     tool_result = f"Error: unknown tool '{tool_name}'"
 
