@@ -112,7 +112,9 @@ def build_system_prompt(model: str) -> str:
             except Exception:
                 pass
     if skill_entries:
-        parts.append("## Skills (use via bash tool)")
+        parts.append("## Skills")
+        parts.append("These are scripts you run using your `bash` tool. They are NOT standalone tools.")
+        parts.append("Example: bash({\"command\": \"/opt/homebrew/bin/python3 /path/to/script.py 'argument'\"})")
         # Cap at 15 to avoid bloating context
         parts.extend(skill_entries[:15])
         parts.append("")
