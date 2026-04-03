@@ -2504,6 +2504,17 @@ class SecurityFixTests(unittest.TestCase):
         self.assertIn("queue: 2/2", prompt)
         self.assertIn("Queue Apex Assistant [queue-apex-assistant] ✨ — 🟢 idle", prompt)
 
+    def test_group_roster_prompt_falls_back_to_db_members_without_premium(self) -> None:
+        chat_id = self._create_test_group_chat()
+
+        with mock.patch.object(context_mod, "_premium", None):
+            prompt = context_mod._get_group_roster_prompt(chat_id, user_message="Start a relay test")
+
+        self.assertIn("# Group Roster", prompt)
+        self.assertIn("Queue CodeExpert [queue-codeexpert] 💻 [primary] — routing: primary", prompt)
+        self.assertIn("Queue Apex Assistant [queue-apex-assistant] ✨ — routing: mentioned", prompt)
+        self.assertIn("The channel roster above is authoritative.", prompt)
+
     def test_group_roster_prompt_includes_strict_relay_state(self) -> None:
         chat_id = self._create_test_group_chat()
         premium = SimpleNamespace(
