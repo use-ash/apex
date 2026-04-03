@@ -163,6 +163,43 @@ def _find_group_mention_matches(prompt: str, members: list[dict]) -> list[tuple[
     return matches
 
 
+def _find_invalid_group_mentions(prompt: str, members: list[dict]) -> list[str]:
+    valid_matches = {
+        start: end
+        for start, end, _matched_member in _find_group_mention_matches(prompt, members)
+    }
+    invalid: list[str] = []
+    seen: set[str] = set()
+    idx = 0
+    while idx < len(prompt):
+        at_pos = prompt.find("@", idx)
+        if at_pos < 0:
+            break
+        prev_char = prompt[at_pos - 1: at_pos] if at_pos > 0 else ""
+        if prev_char and re.match(r"[\w]", prev_char):
+            idx = at_pos + 1
+            continue
+        valid_end = valid_matches.get(at_pos)
+        if valid_end:
+            idx = valid_end
+            continue
+        text = prompt[at_pos + 1:]
+        match = re.match(
+            r"([A-Za-z0-9][A-Za-z0-9_-]*(?:\s+[A-Za-z0-9][A-Za-z0-9_-]*){0,4})",
+            text,
+        )
+        if not match:
+            idx = at_pos + 1
+            continue
+        candidate = " ".join(match.group(1).split()).strip()
+        folded = candidate.casefold()
+        if candidate and folded != "all" and folded not in seen:
+            seen.add(folded)
+            invalid.append(candidate)
+        idx = at_pos + 1 + len(match.group(1))
+    return invalid
+
+
 def _strip_group_leading_mentions(prompt: str, members: list[dict] | None = None) -> str:
     if not members:
         return prompt.strip()
@@ -218,6 +255,24 @@ def _has_group_broadcast_mention(prompt: str, members: list[dict]) -> bool:
     return any(matched_member is None for _start, _end, matched_member in _find_group_mention_matches(prompt, members))
 
 
+def _format_group_member_mentions(members: list[dict], *, exclude_profile_id: str = "") -> str:
+    handles: list[str] = []
+    seen: set[str] = set()
+    for member in members:
+        profile_id = str(member.get("profile_id") or "")
+        if exclude_profile_id and profile_id == exclude_profile_id:
+            continue
+        name = str(member.get("name") or "").strip()
+        if not name:
+            continue
+        folded = name.casefold()
+        if folded in seen:
+            continue
+        seen.add(folded)
+        handles.append(f"@{name}")
+    return ", ".join(handles)
+
+
 def _resolve_group_agent_fallback(chat_id: str, prompt: str) -> dict | None:
     members = _get_group_members(chat_id)
     if not members:
@@ -251,6 +306,41 @@ def _merge_group_dispatch_targets(*target_lists: list[dict]) -> list[dict]:
             seen_profile_ids.add(profile_id)
             merged.append(target)
     return merged
+
+
+def _build_missing_group_mentions_message(
+    missing_mentions: list[str],
+    members: list[dict],
+    *,
+    sender_profile_id: str = "",
+) -> str:
+    available = _format_group_member_mentions(members, exclude_profile_id=sender_profile_id)
+    if len(missing_mentions) == 1:
+        message = f"@{missing_mentions[0]} isn't in this room."
+    else:
+        missing_list = ", ".join(f"@{name}" for name in missing_mentions)
+        message = f"These agents aren't in this room: {missing_list}."
+    if available:
+        message = f"{message} Available agents: {available}."
+    return message
+
+
+def _build_missing_group_mentions_feedback_prompt(
+    missing_mentions: list[str],
+    members: list[dict],
+    *,
+    sender_name: str,
+    sender_profile_id: str,
+) -> str:
+    base = _build_missing_group_mentions_message(
+        missing_mentions,
+        members,
+        sender_profile_id=sender_profile_id,
+    )
+    return (
+        f"System feedback for @{sender_name}: {base} "
+        "Continue yourself or hand off to an agent who is present."
+    )
 
 
 def _strip_group_target_prefix(prompt: str, member: dict) -> str:
@@ -921,6 +1011,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
     mention_depth = int(data.get("_mention_depth", 0) or 0)
     mention_chain: list[str] = list(data.get("_mention_chain") or [])
     handoff_source = str(data.get("_source") or "").strip().lower()
+    invalid_mention_feedback_depth = int(data.get("_invalid_mention_feedback_depth", 0) or 0)
     suppress_user_message = bool(data.get("_suppress_user_message"))
 
     # --- Group @mention routing (premium) ---
@@ -1374,6 +1465,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             relay_members = _get_group_members(chat_id)
             broadcast_mention_present = _has_group_broadcast_mention(response_text, relay_members)
             explicit_relay_targets = _find_specific_group_mentioned_members(response_text, relay_members)
+            missing_relay_mentions = _find_invalid_group_mentions(response_text, relay_members)
             explicit_relay_target_ids = {
                 str(member.get("profile_id") or "")
                 for member in explicit_relay_targets
@@ -1433,6 +1525,66 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 f"response_tail={response_text[-300:] if response_text else 'EMPTY'!r}"
             )
             sender_profile_id = str(group_agent.get("profile_id") or "")
+            actionable_relay_actions = [
+                action
+                for action in relay.get("actions") or []
+                if action.get("type") in {"relay", "redirect"}
+            ]
+            if missing_relay_mentions:
+                missing_message = _build_missing_group_mentions_message(
+                    missing_relay_mentions,
+                    relay_members,
+                    sender_profile_id=sender_profile_id,
+                )
+                log(
+                    f"relay missing targets: {group_agent['name']} "
+                    f"missing={missing_relay_mentions!r} chat={chat_id[:8]}"
+                )
+                await _safe_ws_send_json(
+                    original_ws,
+                    {"type": "system_message", "chat_id": chat_id, "text": missing_message},
+                    chat_id=chat_id,
+                )
+                if (
+                    len(missing_relay_mentions) == 1
+                    and not actionable_relay_actions
+                    and invalid_mention_feedback_depth < 1
+                ):
+                    feedback_prompt = _build_missing_group_mentions_feedback_prompt(
+                        missing_relay_mentions,
+                        relay_members,
+                        sender_name=str(group_agent.get("name") or sender_profile_id),
+                        sender_profile_id=sender_profile_id,
+                    )
+                    feedback_data = {
+                        "chat_id": chat_id,
+                        "prompt": feedback_prompt,
+                        "target_agent": sender_profile_id,
+                        "attachments": [],
+                        "stream_id": _make_stream_id(),
+                        "_mention_depth": mention_depth,
+                        "_mention_chain": mention_chain,
+                        "_source": "relay_feedback",
+                        "_suppress_user_message": True,
+                        "_invalid_mention_feedback_depth": invalid_mention_feedback_depth + 1,
+                        "_parent_attachments": handoff_attachments,
+                        "_parent_attachment_refs": handoff_attachment_refs,
+                    }
+                    log(
+                        f"relay feedback queued: {group_agent['name']} "
+                        f"missing=@{missing_relay_mentions[0]} chat={chat_id[:8]}"
+                    )
+                    feedback_task = asyncio.create_task(
+                        _handle_send_action(original_ws, feedback_data)
+                    )
+                    _set_active_send_task(
+                        chat_id,
+                        feedback_data["stream_id"],
+                        feedback_task,
+                        name=group_agent["name"],
+                        avatar=group_agent["avatar"],
+                        profile_id=sender_profile_id,
+                    )
             for action in relay["actions"]:
                 atype = action["type"]
                 if atype == "relay":

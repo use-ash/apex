@@ -1926,6 +1926,121 @@ class SecurityFixTests(unittest.TestCase):
         self.assertEqual(set(seen_profiles), {"queue-codeexpert", "queue-apex-assistant"})
         self.assertEqual(len(seen_profiles), 2)
 
+    def test_group_relay_missing_single_target_warns_and_self_corrects(self) -> None:
+        chat_id = self._create_test_group_chat()
+        db_mod._update_chat_settings(chat_id, {"agent_mentions_enabled": True})
+        seen_calls: list[tuple[str, str]] = []
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            profile_id = _current_group_profile_id.get("")
+            seen_calls.append((profile_id, prompt))
+            if profile_id == "queue-codeexpert":
+                if sum(1 for pid, _ in seen_calls if pid == "queue-codeexpert") == 1:
+                    text = "Passing to @Queue Debugger."
+                else:
+                    text = "Passing to @Queue Apex Assistant."
+            else:
+                text = "Handled."
+            return {
+                "text": text,
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        system_messages: list[str] = []
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", None),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
+        ):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "Start relay",
+                        "target_agent": "queue-codeexpert",
+                    })
+                    stream_end_count = 0
+                    while stream_end_count < 3:
+                        msg = ws.receive_json()
+                        if msg.get("type") == "system_message":
+                            system_messages.append(msg.get("text") or "")
+                        if msg.get("type") == "stream_end":
+                            stream_end_count += 1
+
+        self.assertTrue(
+            any("@Queue Debugger isn't in this room." in text for text in system_messages)
+        )
+        self.assertTrue(
+            any("@Queue Apex Assistant" in text for text in system_messages)
+        )
+        self.assertEqual(
+            [profile_id for profile_id, _prompt in seen_calls],
+            ["queue-codeexpert", "queue-codeexpert", "queue-apex-assistant"],
+        )
+        self.assertIn("@Queue Debugger isn't in this room.", seen_calls[1][1])
+        self.assertIn("@Queue Apex Assistant", seen_calls[1][1])
+
+    def test_group_relay_missing_target_warns_without_self_correction_when_valid_target_exists(self) -> None:
+        chat_id = self._create_test_group_chat()
+        db_mod._update_chat_settings(chat_id, {"agent_mentions_enabled": True})
+        seen_calls: list[str] = []
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            profile_id = _current_group_profile_id.get("")
+            seen_calls.append(profile_id)
+            text = (
+                "Passing to @Queue Apex Assistant and @Queue Debugger."
+                if profile_id == "queue-codeexpert"
+                else "Handled."
+            )
+            return {
+                "text": text,
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        system_messages: list[str] = []
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", None),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
+        ):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "Start relay",
+                        "target_agent": "queue-codeexpert",
+                    })
+                    stream_end_count = 0
+                    while stream_end_count < 2:
+                        msg = ws.receive_json()
+                        if msg.get("type") == "system_message":
+                            system_messages.append(msg.get("text") or "")
+                        if msg.get("type") == "stream_end":
+                            stream_end_count += 1
+
+        self.assertEqual(seen_calls, ["queue-codeexpert", "queue-apex-assistant"])
+        self.assertTrue(
+            any("@Queue Debugger isn't in this room." in text for text in system_messages)
+        )
+        self.assertTrue(
+            any("@Queue Apex Assistant" in text for text in system_messages)
+        )
+
     def test_group_relay_agent_at_all_is_suppressed(self) -> None:
         chat_id = self._create_test_group_chat()
         primary = self._group_agent(chat_id, "queue-codeexpert")
