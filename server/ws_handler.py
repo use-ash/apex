@@ -215,6 +215,19 @@ def _get_multi_dispatch_targets_fallback(chat_id: str, prompt: str, group_agent:
     return _find_group_mentioned_members(prompt, members)
 
 
+def _merge_group_dispatch_targets(*target_lists: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    seen_profile_ids: set[str] = set()
+    for target_list in target_lists:
+        for target in target_list:
+            profile_id = str(target.get("profile_id") or "")
+            if not profile_id or profile_id in seen_profile_ids:
+                continue
+            seen_profile_ids.add(profile_id)
+            merged.append(target)
+    return merged
+
+
 def _strip_group_target_prefix(prompt: str, member: dict) -> str:
     text = prompt.lstrip()
     leading_ws = prompt[: len(prompt) - len(text)]
@@ -784,12 +797,12 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         and not suppress_user_message
         and handoff_source != "agent"
     ):
-        multi_targets: list[dict] = []
+        premium_multi_targets: list[dict] = []
         get_multi_dispatch_targets = getattr(_ws_premium, "get_multi_dispatch_targets", None) if _ws_premium else None
         if get_multi_dispatch_targets:
-            multi_targets = get_multi_dispatch_targets(chat_id, prompt, group_agent, data) or []
-        if not multi_targets:
-            multi_targets = _get_multi_dispatch_targets_fallback(chat_id, prompt, group_agent)
+            premium_multi_targets = get_multi_dispatch_targets(chat_id, prompt, group_agent, data) or []
+        fallback_multi_targets = _get_multi_dispatch_targets_fallback(chat_id, prompt, group_agent)
+        multi_targets = _merge_group_dispatch_targets(premium_multi_targets, fallback_multi_targets)
         for t in multi_targets:
             if str(t.get("profile_id") or "") == str(group_agent.get("profile_id") or ""):
                 log(f"user multi-dispatch blocked (self-target): {group_agent['name']} chat={chat_id[:8]}")
