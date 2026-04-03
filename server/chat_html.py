@@ -4279,6 +4279,8 @@ function _resolveLeadingMentionTarget(text) {
   if (currentChatType !== 'group' || !text || !currentGroupMembers.length) return '';
   const trimmed = text.trimStart();
   if (!trimmed.startsWith('@')) return '';
+  const reserved = trimmed.match(/^@([^\s:,.!?-]+)/);
+  if (reserved && reserved[1] && reserved[1].toLowerCase() === 'all') return '';
   const members = currentGroupMembers.slice().sort((a, b) => {
     const aLen = Math.max((a.name || '').length, (a.profile_id || '').length);
     const bLen = Math.max((b.name || '').length, (b.profile_id || '').length);
@@ -4290,7 +4292,7 @@ function _resolveLeadingMentionTarget(text) {
       const prefix = '@' + alias;
       if (trimmed.slice(0, prefix.length).toLowerCase() !== prefix.toLowerCase()) continue;
       const next = trimmed.charAt(prefix.length);
-      if (next && !/[\\s:,.!?-]/.test(next)) continue;
+      if (next && !/[\s:,.!?-]/.test(next)) continue;
       return member.profile_id || '';
     }
   }
