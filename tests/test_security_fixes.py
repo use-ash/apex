@@ -835,6 +835,45 @@ class SecurityFixTests(unittest.TestCase):
         self.assertEqual(set(seen_profiles), {"queue-codeexpert", "queue-apex-assistant"})
         self.assertEqual(len(seen_profiles), 2)
 
+    def test_group_multi_mentions_dispatch_without_premium_module_when_not_leading(self) -> None:
+        chat_id = self._create_test_group_chat()
+        seen_profiles: list[str] = []
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            seen_profiles.append(_current_group_profile_id.get(""))
+            return {
+                "text": f"reply:{prompt}",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        started_speakers: set[str] = set()
+        with mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "testing @Queue CodeExpert @Queue Apex Assistant",
+                    })
+                    stream_end_count = 0
+                    while stream_end_count < 2:
+                        msg = ws.receive_json()
+                        if msg.get("type") == "stream_start":
+                            started_speakers.add(msg.get("speaker_id"))
+                        if msg.get("type") == "stream_end":
+                            stream_end_count += 1
+
+        self.assertEqual(started_speakers, {"queue-codeexpert", "queue-apex-assistant"})
+        self.assertEqual(set(seen_profiles), {"queue-codeexpert", "queue-apex-assistant"})
+        self.assertEqual(len(seen_profiles), 2)
+
     def test_group_at_all_multi_dispatches_even_with_target_agent(self) -> None:
         chat_id = self._create_test_group_chat()
         seen_profiles: list[str] = []
@@ -932,6 +971,63 @@ class SecurityFixTests(unittest.TestCase):
                         "action": "send",
                         "chat_id": chat_id,
                         "prompt": "@Queue CodeExpert @Queue Apex Assistant weigh in",
+                    })
+                    stream_end_count = 0
+                    while stream_end_count < 2:
+                        msg = ws.receive_json()
+                        if msg.get("type") == "stream_start":
+                            started_speakers.add(msg.get("speaker_id"))
+                        if msg.get("type") == "stream_end":
+                            stream_end_count += 1
+
+        self.assertEqual(started_speakers, {"queue-codeexpert", "queue-apex-assistant"})
+        self.assertEqual(set(seen_profiles), {"queue-codeexpert", "queue-apex-assistant"})
+        self.assertEqual(len(seen_profiles), 2)
+
+    def test_group_multi_mentions_supplement_partial_premium_targets_when_not_leading(self) -> None:
+        chat_id = self._create_test_group_chat()
+        primary = self._group_agent(chat_id, "queue-codeexpert")
+        secondary = self._group_agent(chat_id, "queue-apex-assistant")
+        seen_profiles: list[str] = []
+        premium = SimpleNamespace(
+            resolve_target_agent=lambda _chat_id, _prompt, target_profile_id: dict(
+                primary if target_profile_id == primary["profile_id"] else secondary
+            ),
+            get_multi_dispatch_targets=lambda _chat_id, _prompt, _group_agent, _data: [dict(primary)],
+            get_agent_relay_actions=lambda *_args, **_kwargs: {
+                "mentions_enabled": True,
+                "mentioned_names": [],
+                "current_chain": [],
+                "actions": [],
+            },
+        )
+
+        async def fake_run_codex_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+            seen_profiles.append(_current_group_profile_id.get(""))
+            return {
+                "text": f"reply:{prompt}",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        started_speakers: set[str] = set()
+        with (
+            mock.patch.object(ws_handler, "_ws_premium", premium),
+            mock.patch.object(ws_handler, "_resolve_group_agent", return_value=dict(primary)),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=fake_run_codex_chat),
+        ):
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "send",
+                        "chat_id": chat_id,
+                        "prompt": "testing @Queue CodeExpert @Queue Apex Assistant",
                     })
                     stream_end_count = 0
                     while stream_end_count < 2:

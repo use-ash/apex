@@ -134,62 +134,69 @@ def _match_group_mention_prefix(text: str, alias: str) -> int:
     return len(prefix)
 
 
-def _strip_group_leading_mentions(prompt: str, members: list[dict] | None = None) -> str:
-    text = prompt.lstrip()
-    leading_ws = prompt[: len(prompt) - len(text)]
-    aliases: list[str] = ["all"]
-    if members:
-        seen_aliases = {"all"}
-        for member in members:
-            for alias in _group_member_aliases(member):
-                folded = alias.casefold()
-                if folded in seen_aliases:
-                    continue
-                seen_aliases.add(folded)
-                aliases.append(alias)
-        aliases[1:] = sorted(aliases[1:], key=len, reverse=True)
-    while text.startswith("@"):
-        matched_len = 0
-        for alias in aliases:
-            matched_len = _match_group_mention_prefix(text, alias)
-            if matched_len:
-                break
-        if not matched_len:
+def _find_group_mention_matches(prompt: str, members: list[dict]) -> list[tuple[int, int, dict | None]]:
+    matches: list[tuple[int, int, dict | None]] = []
+    idx = 0
+    while idx < len(prompt):
+        at_pos = prompt.find("@", idx)
+        if at_pos < 0:
             break
-        text = text[matched_len:].lstrip(" \t:,.!?-")
-    return f"{leading_ws}{text}".strip()
-
-
-def _find_group_mentioned_members(prompt: str, members: list[dict]) -> list[dict]:
-    text = prompt.lstrip()
-    mentioned: list[dict] = []
-    seen_profile_ids: set[str] = set()
-    while text.startswith("@"):
-        all_match_len = _match_group_mention_prefix(text, "all")
-        if all_match_len:
-            for member in members:
-                profile_id = str(member.get("profile_id") or "")
-                if not profile_id or profile_id in seen_profile_ids:
-                    continue
-                seen_profile_ids.add(profile_id)
-                mentioned.append(member)
-            text = text[all_match_len:].lstrip(" \t:,.!?-")
+        prev_char = prompt[at_pos - 1: at_pos] if at_pos > 0 else ""
+        if prev_char and re.match(r"[\w]", prev_char):
+            idx = at_pos + 1
             continue
-        matched_member = None
-        matched_len = 0
+        text = prompt[at_pos:]
+        matched_member: dict | None = None
+        matched_len = _match_group_mention_prefix(text, "all")
         for member in members:
             for alias in _group_member_aliases(member):
                 prefix_len = _match_group_mention_prefix(text, alias)
                 if prefix_len > matched_len:
                     matched_member = member
                     matched_len = prefix_len
-        if not matched_member or not matched_len:
-            break
+        if not matched_len:
+            idx = at_pos + 1
+            continue
+        matches.append((at_pos, at_pos + matched_len, matched_member))
+        idx = at_pos + matched_len
+    return matches
+
+
+def _strip_group_leading_mentions(prompt: str, members: list[dict] | None = None) -> str:
+    if not members:
+        return prompt.strip()
+    matches = _find_group_mention_matches(prompt, members)
+    if not matches:
+        return prompt.strip()
+    parts: list[str] = []
+    cursor = 0
+    for start, end, _member in matches:
+        parts.append(prompt[cursor:start])
+        cursor = end
+        while cursor < len(prompt) and prompt[cursor] in " \t:,.!?-":
+            cursor += 1
+    parts.append(prompt[cursor:])
+    stripped = "".join(parts)
+    stripped = re.sub(r"\s{2,}", " ", stripped)
+    return stripped.strip()
+
+
+def _find_group_mentioned_members(prompt: str, members: list[dict]) -> list[dict]:
+    mentioned: list[dict] = []
+    seen_profile_ids: set[str] = set()
+    for _start, _end, matched_member in _find_group_mention_matches(prompt, members):
+        if matched_member is None:
+            for member in members:
+                profile_id = str(member.get("profile_id") or "")
+                if not profile_id or profile_id in seen_profile_ids:
+                    continue
+                seen_profile_ids.add(profile_id)
+                mentioned.append(member)
+            continue
         profile_id = str(matched_member.get("profile_id") or "")
         if profile_id and profile_id not in seen_profile_ids:
             seen_profile_ids.add(profile_id)
             mentioned.append(matched_member)
-        text = text[matched_len:].lstrip(" \t:,.!?-")
     return mentioned
 
 
