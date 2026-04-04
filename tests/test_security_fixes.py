@@ -1878,6 +1878,8 @@ class SecurityFixTests(unittest.TestCase):
     def test_new_chat_picker_includes_no_profile_option(self) -> None:
         self.assertIn("Plain chat with no persona assigned", chat_html_mod.CHAT_HTML)
         self.assertIn("Use chat model directly", chat_html_mod.CHAT_HTML)
+        self.assertIn('id="newChatModelSelect"', chat_html_mod.CHAT_HTML)
+        self.assertIn('Pick the model before creating the chat.', chat_html_mod.CHAT_HTML)
 
     def test_sdk_pre_tool_hook_blocks_level_3_non_allowlisted_date(self) -> None:
         allowed, message = streaming_mod._sdk_pre_tool_use_decision(

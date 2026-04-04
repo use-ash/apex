@@ -5451,6 +5451,7 @@ async function showNewChatProfilePicker() {
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
 
   let selectedProfileId = '';
+  let selectedModel = '';
   const modal = document.createElement('div');
   modal.className = 'profile-modal';
 
@@ -5491,6 +5492,35 @@ async function showNewChatProfilePicker() {
   const body = document.createElement('div');
   body.className = 'profile-modal-body';
 
+  function getNewChatModelOptions() {
+    const cloudModels = [
+      {id: 'claude-opus-4-6', name: 'Claude Opus 4.6'},
+      {id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6'},
+      {id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5'},
+      {id: 'grok-4', name: 'Grok 4'},
+      {id: 'grok-4-fast', name: 'Grok 4 Fast'},
+      {id: 'codex:gpt-5.4', name: 'GPT-5.4'},
+      {id: 'codex:gpt-5.4-mini', name: 'GPT-5.4 Mini'},
+      {id: 'codex:gpt-5.3-codex', name: 'GPT-5.3'},
+      {id: 'codex:gpt-5.2', name: 'GPT-5.2'},
+      {id: 'codex:gpt-5.1-codex-max', name: 'GPT-5.1 Max'},
+    ];
+    const localModels = (_settingsModels || []).map(m => ({
+      id: m.id,
+      name: m.displayName || m.id,
+      local: true,
+    }));
+    return cloudModels.concat(localModels);
+  }
+
+  function defaultNewChatModel() {
+    const preferred = (document.getElementById('serverModelDisplay')?.textContent || '').trim();
+    const options = getNewChatModelOptions();
+    return options.some(m => m.id === preferred) ? preferred : (options[0]?.id || 'claude-sonnet-4-6');
+  }
+
+  selectedModel = defaultNewChatModel();
+
   function renderCards() {
     body.innerHTML = '';
     const hasCustomProfiles = _profilesCache.some(p => !p.is_system);
@@ -5512,17 +5542,41 @@ async function showNewChatProfilePicker() {
     }
     const noProfileCard = document.createElement('div');
     noProfileCard.className = 'profile-card' + (!selectedProfileId ? ' selected' : '');
-    noProfileCard.innerHTML = `<div class="profile-avatar">💬</div>
+    let noProfileHtml = `<div class="profile-avatar">💬</div>
       <div class="profile-info">
         <div class="profile-name">No Profile</div>
         <div class="profile-role">Plain chat with no persona assigned</div>
-        <div class="profile-model">Use chat model directly</div>
-      </div>`;
+        <div class="profile-model">Use chat model directly</div>`;
+    if (!selectedProfileId) {
+      const options = getNewChatModelOptions();
+      const localStart = options.findIndex(m => m.local);
+      const selectOptions = options.map((m, idx) => {
+        const separator = localStart === idx ? '<option disabled>── Local Models ──</option>' : '';
+        return separator + `<option value="${escHtml(m.id)}"${m.id === selectedModel ? ' selected' : ''}>${escHtml(m.name)}</option>`;
+      }).join('');
+      noProfileHtml += `
+        <div style="margin-top:10px;">
+          <label style="display:block;font-size:12px;font-weight:600;color:var(--dim);margin-bottom:6px;">Model</label>
+          <select id="newChatModelSelect" style="width:100%;padding:10px 12px;background:var(--surface);border:1px solid var(--bg);border-radius:10px;color:var(--fg);">
+            ${selectOptions}
+          </select>
+          <div style="margin-top:6px;font-size:12px;color:var(--dim);">Pick the model before creating the chat.</div>
+        </div>`;
+    }
+    noProfileHtml += `</div>`;
+    noProfileCard.innerHTML = noProfileHtml;
     noProfileCard.onclick = () => {
       selectedProfileId = '';
       renderCards();
     };
     body.appendChild(noProfileCard);
+    if (!selectedProfileId) {
+      const sel = noProfileCard.querySelector('#newChatModelSelect');
+      if (sel) {
+        sel.onclick = (e) => e.stopPropagation();
+        sel.onchange = () => { selectedModel = sel.value; };
+      }
+    }
     const ollamaAvailable = _settingsModels.length > 0;
     _profilesCache.forEach(p => {
       const isLocal = (p.backend === 'ollama' || p.backend === 'mlx');
@@ -5546,6 +5600,7 @@ async function showNewChatProfilePicker() {
       }
       body.appendChild(card);
     });
+
     const newPersonaLink = document.createElement('button');
     newPersonaLink.type = 'button';
     newPersonaLink.className = 'profile-modal-new-persona';
@@ -5563,12 +5618,8 @@ async function showNewChatProfilePicker() {
   actions.className = 'profile-modal-actions';
   const skipBtn = document.createElement('button');
   skipBtn.className = 'btn-skip';
-  skipBtn.textContent = 'Plain Chat';
-  skipBtn.onclick = async () => {
-    overlay.remove();
-    if (!sidebarPinned) closeSidebar();
-    await newChat().catch(err => reportError('newChat skip', err));
-  };
+  skipBtn.textContent = 'Cancel';
+  skipBtn.onclick = () => overlay.remove();
   actions.appendChild(skipBtn);
 
   const createBtn = document.createElement('button');
@@ -5577,7 +5628,7 @@ async function showNewChatProfilePicker() {
   createBtn.onclick = async () => {
     overlay.remove();
     if (!sidebarPinned) closeSidebar();
-    await newChatWithProfile(selectedProfileId).catch(err => reportError('newChat profile', err));
+    await newChatWithProfile(selectedProfileId, selectedProfileId ? '' : selectedModel).catch(err => reportError('newChat profile', err));
   };
   actions.appendChild(createBtn);
   modal.appendChild(actions);
@@ -5585,9 +5636,12 @@ async function showNewChatProfilePicker() {
   document.body.appendChild(overlay);
 }
 
-async function newChatWithProfile(profileId) {
-  dbg(' creating new chat with profile:', profileId || '(none)');
-  const body = profileId ? JSON.stringify({profile_id: profileId}) : undefined;
+async function newChatWithProfile(profileId, model) {
+  dbg(' creating new chat with profile:', profileId || '(none)', 'model:', model || '(default)');
+  const payload = {};
+  if (profileId) payload.profile_id = profileId;
+  if (!profileId && model) payload.model = model;
+  const body = Object.keys(payload).length ? JSON.stringify(payload) : undefined;
   const r = await fetch('/api/chats', {
     method: 'POST',
     credentials: 'same-origin',
