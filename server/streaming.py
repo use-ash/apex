@@ -23,7 +23,7 @@ from fastapi import WebSocket
 
 from db import _get_db, _get_chat, _update_chat, _get_chat_tool_policy, _get_profile_tool_policy
 from log import log
-from local_model.safety import validate_command, validate_path
+from local_model.safety import ensure_workspace_path, validate_command, validate_path
 from memory_extract import _filter_stream_text_for_memory_tags, _clear_stream_text_filter
 from state import (
     _clients, _client_sessions, _client_last_used, _client_permission_levels, _client_permission_policies,
@@ -36,6 +36,7 @@ try:
     from claude_agent_sdk import (
         ClaudeSDKClient,
         ClaudeAgentOptions,
+        HookMatcher,
         PermissionResultAllow,
         PermissionResultDeny,
     )
@@ -409,8 +410,9 @@ def _sdk_path_error(tool_name: str, tool_input: dict, *, permission_level: int =
         return None
     allow_write = tool_name in _SDK_WRITE_TOOLS
     for raw_path in _sdk_tool_input_paths(tool_input):
-        err = validate_path(
-            _sdk_resolve_path(raw_path),
+        _, err = ensure_workspace_path(
+            raw_path,
+            str(WORKSPACE_PATHS),
             allow_write=allow_write,
             permission_level=permission_level,
         )
@@ -451,6 +453,68 @@ def _make_sdk_tool_gate(level: int, *, allowed_commands: list[str] | None = None
     return _can_use_tool
 
 
+def _sdk_pre_tool_use_decision(
+    tool_name: str,
+    tool_input: dict,
+    *,
+    level: int,
+    allowed_commands: list[str] | None = None,
+) -> tuple[bool, str]:
+    if level <= 0:
+        return False, "This agent is Restricted and cannot use tools or access files."
+    if level >= 4:
+        return True, ""
+    path_err = _sdk_path_error(tool_name, tool_input, permission_level=level)
+    if path_err:
+        return False, path_err
+    if tool_name == "Bash":
+        command = str((tool_input or {}).get("command") or "").strip()
+        command_err = validate_command(
+            command,
+            str(WORKSPACE),
+            permission_level=level,
+            allowed_commands=allowed_commands,
+        )
+        if command_err:
+            return False, command_err
+    if level == 1 and tool_name not in _STANDARD_SDK_TOOLS:
+        return False, "This action requires Elevated or Admin permissions."
+    return True, ""
+
+
+def _make_sdk_pre_tool_use_hook(level: int, *, allowed_commands: list[str] | None = None):
+    async def _hook(hook_input, _tool_use_id, _context):
+        tool_name = str((hook_input or {}).get("tool_name") or "")
+        tool_input = hook_input.get("tool_input") if isinstance(hook_input, dict) else {}
+        if not isinstance(tool_input, dict):
+            tool_input = {}
+        allowed, message = _sdk_pre_tool_use_decision(
+            tool_name,
+            tool_input,
+            level=level,
+            allowed_commands=allowed_commands,
+        )
+        if allowed:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                }
+            }
+        return {
+            "decision": "block",
+            "systemMessage": message,
+            "reason": message,
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": message,
+            },
+        }
+
+    return _hook
+
+
 def _make_options(
     model: str | None = None,
     session_id: str | None = None,
@@ -477,6 +541,14 @@ def _make_options(
         setting_sources=["user"],
         add_dirs=extra_dirs,
         can_use_tool=_make_sdk_tool_gate(permission_level, allowed_commands=allowed_commands),
+        hooks={
+            "PreToolUse": [
+                HookMatcher(
+                    matcher="Bash|Read|Write|Edit|MultiEdit|NotebookEdit|Grep|Glob|LS|WebFetch|WebSearch",
+                    hooks=[_make_sdk_pre_tool_use_hook(permission_level, allowed_commands=allowed_commands)],
+                )
+            ]
+        },
     )
     mcp_servers = _load_mcp_servers()
     if mcp_servers:

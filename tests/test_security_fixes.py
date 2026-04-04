@@ -1708,6 +1708,44 @@ class SecurityFixTests(unittest.TestCase):
         )
         self.assertEqual(opts.permission_mode, "bypassPermissions")
 
+    def test_sdk_pre_tool_hook_blocks_level_3_date_and_tmp_write(self) -> None:
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Bash",
+            {"command": "date +%s"},
+            level=3,
+            allowed_commands=["echo", "grep", "rg", "find", "ls", "cat", "head", "tail", "sed", "awk", "wc", "ps", "lsof", "curl"],
+        )
+        self.assertFalse(allowed)
+        self.assertIn("command is not allowed", message)
+
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Write",
+            {"file_path": "/tmp/apex_level4_check2.txt", "content": "1775331902"},
+            level=3,
+            allowed_commands=["echo"],
+        )
+        self.assertFalse(allowed)
+        self.assertIn("outside workspace", message)
+
+    def test_sdk_pre_tool_hook_allows_level_4_any_path_and_command(self) -> None:
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Bash",
+            {"command": "date +%s"},
+            level=4,
+            allowed_commands=[],
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
+
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Write",
+            {"file_path": "/tmp/apex_level4_check2.txt", "content": "1775331902"},
+            level=4,
+            allowed_commands=[],
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
+
     def test_group_multi_mentions_supplement_partial_premium_targets(self) -> None:
         chat_id = self._create_test_group_chat()
         primary = self._group_agent(chat_id, "queue-codeexpert")
