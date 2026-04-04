@@ -5510,6 +5510,19 @@ async function showNewChatProfilePicker() {
     if (_profilesCache.length === 0) {
       body.insertAdjacentHTML('beforeend', '<div style="padding:12px;color:var(--dim);font-size:13px">No agent profiles configured. Creating a plain channel.</div>');
     }
+    const noProfileCard = document.createElement('div');
+    noProfileCard.className = 'profile-card' + (!selectedProfileId ? ' selected' : '');
+    noProfileCard.innerHTML = `<div class="profile-avatar">💬</div>
+      <div class="profile-info">
+        <div class="profile-name">No Profile</div>
+        <div class="profile-role">Plain chat with no persona assigned</div>
+        <div class="profile-model">Use chat model directly</div>
+      </div>`;
+    noProfileCard.onclick = () => {
+      selectedProfileId = '';
+      renderCards();
+    };
+    body.appendChild(noProfileCard);
     const ollamaAvailable = _settingsModels.length > 0;
     _profilesCache.forEach(p => {
       const isLocal = (p.backend === 'ollama' || p.backend === 'mlx');

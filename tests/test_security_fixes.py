@@ -38,6 +38,7 @@ import apex  # noqa: E402
 import alert_client  # noqa: E402
 import agent_sdk  # noqa: E402
 import backends  # noqa: E402
+import chat_html as chat_html_mod  # noqa: E402
 import dashboard as dashboard_mod  # noqa: E402
 import dashboard_html as dashboard_html_mod  # noqa: E402
 import db as db_mod  # noqa: E402
@@ -1873,6 +1874,10 @@ class SecurityFixTests(unittest.TestCase):
         self.assertIn('id="persona-tool-policy"></select>', dashboard_html_mod.DASHBOARD_HTML)
         self.assertIn('Workspace + Browser', dashboard_html_mod.DASHBOARD_HTML)
         self.assertIn('id="policy-level-detail"', dashboard_html_mod.DASHBOARD_HTML)
+
+    def test_new_chat_picker_includes_no_profile_option(self) -> None:
+        self.assertIn("Plain chat with no persona assigned", chat_html_mod.CHAT_HTML)
+        self.assertIn("Use chat model directly", chat_html_mod.CHAT_HTML)
 
     def test_sdk_pre_tool_hook_blocks_level_3_non_allowlisted_date(self) -> None:
         allowed, message = streaming_mod._sdk_pre_tool_use_decision(
