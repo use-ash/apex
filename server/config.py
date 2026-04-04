@@ -130,7 +130,9 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
             "type": "str",
             "default": "",
             "env": "APEX_WORKSPACE",
-            "description": "Agent workspace directory",
+            "description": "Agent workspace directories",
+            "multiline": True,
+            "placeholder": "/Users/you/project-a\n/Users/you/project-b",
         },
         "enable_whisper": {
             "type": "bool",

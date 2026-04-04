@@ -1753,6 +1753,20 @@ class SecurityFixTests(unittest.TestCase):
         )
         self.assertEqual(opts.permission_mode, "bypassPermissions")
 
+    def test_dashboard_workspace_path_normalizes_multiline_roots(self) -> None:
+        normalized = dashboard_mod._normalize_workspace_path_value(
+            "/Users/dana/project-a\n/Users/dana/project-b\n\n/Users/dana/project-a"
+        )
+        self.assertEqual(
+            normalized,
+            "/Users/dana/project-a:/Users/dana/project-b",
+        )
+
+    def test_config_schema_marks_workspace_path_multiline(self) -> None:
+        spec = dashboard_mod.SCHEMA["workspace"]["path"]
+        self.assertTrue(spec["multiline"])
+        self.assertIn("project-a", spec["placeholder"])
+
     def test_sdk_pre_tool_hook_blocks_level_3_non_allowlisted_date(self) -> None:
         allowed, message = streaming_mod._sdk_pre_tool_use_decision(
             "Bash",

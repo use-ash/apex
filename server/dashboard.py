@@ -145,6 +145,25 @@ _ssl_dir: Path | None = None
 _config: Config | None = None
 
 
+def _normalize_workspace_path_value(raw: object) -> str:
+    """Normalize UI-entered workspace paths into APEX_WORKSPACE format."""
+    if raw is None:
+        return ""
+    text = str(raw).replace("\r\n", "\n").replace("\r", "\n")
+    parts: list[str] = []
+    for line in text.split("\n"):
+        for chunk in str(line).split(":"):
+            item = chunk.strip()
+            if item and item not in parts:
+                parts.append(item)
+    return ":".join(parts)
+
+
+def _workspace_paths_list(raw: str | None = None) -> list[str]:
+    value = raw if raw is not None else str(env.WORKSPACE_PATHS)
+    return [part.strip() for part in str(value).split(":") if part.strip()]
+
+
 # ---------------------------------------------------------------------------
 # Security helpers
 # ---------------------------------------------------------------------------
@@ -827,6 +846,9 @@ async def api_config_update_workspace(request: Request):
 
     if not body:
         return _error("No fields to update", "EMPTY_UPDATE", status=400)
+
+    if "path" in body:
+        body["path"] = _normalize_workspace_path_value(body.get("path"))
 
     # permission_mode belongs in models, not workspace — route it there.
     perm = body.pop("permission_mode", None)
@@ -2797,6 +2819,7 @@ async def api_workspace():
 
     return JSONResponse({
         "workspace": str(WORKSPACE),
+        "workspace_paths": _workspace_paths_list(),
         "project_md_exists": project_md.exists(),
         "project_md_name": project_md.name,
         "memory_file_count": memory_count,

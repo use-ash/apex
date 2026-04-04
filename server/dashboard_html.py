@@ -3241,8 +3241,15 @@ function renderFormField(section, key, spec, value) {
                 (spec.min != null ? ' min="' + spec.min + '"' : '') +
                 (spec.max != null ? ' max="' + spec.max + '"' : '') +
                 ' data-config-field="1" data-section="' + esc(section) + '" data-key="' + esc(key) + '">';
+    } else if (spec.multiline) {
+        const textValue = String(value || "").split(":").join("\n");
+        html += '<textarea id="' + fieldId + '" rows="4" ' +
+                'data-config-field="1" data-section="' + esc(section) + '" data-key="' + esc(key) + '"' +
+                (spec.placeholder ? ' placeholder="' + esc(spec.placeholder) + '"' : '') +
+                '>' + esc(textValue) + '</textarea>';
     } else {
         html += '<input type="text" id="' + fieldId + '" value="' + esc(value) + '"' +
+                (spec.placeholder ? ' placeholder="' + esc(spec.placeholder) + '"' : '') +
                 ' data-config-field="1" data-section="' + esc(section) + '" data-key="' + esc(key) + '">';
     }
 
@@ -4585,15 +4592,19 @@ function renderWsSummary(result) {
 
     var d = result.value;
     var path = d.workspace || d.path || d.workspace_path || "Unknown";
+    var workspacePaths = Array.isArray(d.workspace_paths) && d.workspace_paths.length ? d.workspace_paths : [path];
     var projectMdExists = d.project_md_exists !== false;
     var memoryCount = d.memory_file_count != null ? d.memory_file_count : "—";
     var skillsCount = d.skills_count != null ? d.skills_count : "—";
+    var pathsHtml = workspacePaths.map(function(p) {
+        return '<div class="mono" style="font-size:13px; word-break:break-all;">' + esc(p) + '</div>';
+    }).join('');
 
     el.innerHTML =
         '<div class="ws-summary-grid">' +
             '<div class="ws-summary-item">' +
-                '<div class="ws-summary-value mono" style="font-size:13px; word-break:break-all;">' + esc(path) + '</div>' +
-                '<div class="ws-summary-label">Workspace Path</div>' +
+                '<div class="ws-summary-value" style="display:grid; gap:6px;">' + pathsHtml + '</div>' +
+                '<div class="ws-summary-label">Workspace Paths</div>' +
             '</div>' +
             '<div class="ws-summary-item">' +
                 '<div class="ws-summary-value">' +
