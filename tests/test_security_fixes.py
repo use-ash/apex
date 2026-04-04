@@ -636,6 +636,18 @@ class SecurityFixTests(unittest.TestCase):
                 allowed_commands=["sqlite3"],
             ) or "",
         )
+
+    def test_sdk_admin_bash_gate_honors_allowlist(self) -> None:
+        gate = streaming_mod._make_sdk_tool_gate(3, allowed_commands=["echo"])
+        result = asyncio.run(
+            gate(
+                "Bash",
+                {"command": 'echo "bash test"'},
+                None,
+            )
+        )
+
+        self.assertEqual(type(result).__name__, "PermissionResultAllow")
         self.assertIn(
             "protected path",
             local_safety.validate_path(str(env.APEX_ROOT / "state" / "config.json"), allow_write=True) or "",
