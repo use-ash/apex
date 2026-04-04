@@ -654,7 +654,7 @@ def _get_chat_tool_policy(chat_id: str, profile_id: str | None = None) -> dict:
     with _db_lock:
         conn = _get_db()
         row = conn.execute(
-            "SELECT c.profile_id, ap.tool_policy FROM chats c "
+            "SELECT c.profile_id, c.settings, ap.tool_policy FROM chats c "
             "LEFT JOIN agent_profiles ap ON ap.id = c.profile_id "
             "WHERE c.id = ?",
             (chat_id,),
@@ -664,8 +664,35 @@ def _get_chat_tool_policy(chat_id: str, profile_id: str | None = None) -> dict:
         return _normalize_tool_policy(None, default_level=LEGACY_TOOL_POLICY_LEVEL)
     profile_id = str(row[0] or "").strip()
     if not profile_id:
-        return _normalize_tool_policy(None, default_level=LEGACY_TOOL_POLICY_LEVEL)
-    return _normalize_tool_policy(row[1], default_level=DEFAULT_TOOL_POLICY_LEVEL)
+        settings_text = row[1] or ""
+        try:
+            settings = json.loads(settings_text) if settings_text else {}
+        except (json.JSONDecodeError, TypeError):
+            settings = {}
+        return _normalize_tool_policy(settings.get("tool_policy"), default_level=LEGACY_TOOL_POLICY_LEVEL)
+    return _normalize_tool_policy(row[2], default_level=DEFAULT_TOOL_POLICY_LEVEL)
+
+
+def _set_chat_tool_policy(
+    chat_id: str,
+    raw: str | dict | None,
+    *,
+    default_level: int = LEGACY_TOOL_POLICY_LEVEL,
+) -> dict:
+    policy = _normalize_tool_policy(raw, default_level=default_level)
+    settings = _get_chat_settings(chat_id)
+    settings["tool_policy"] = policy
+    with _db_lock:
+        conn = _get_db()
+        cur = conn.execute(
+            "UPDATE chats SET settings = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(settings), _now(), chat_id),
+        )
+        conn.commit()
+        conn.close()
+    if cur.rowcount == 0:
+        raise KeyError(chat_id)
+    return policy
 
 
 def _set_profile_tool_policy(

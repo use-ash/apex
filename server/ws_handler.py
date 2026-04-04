@@ -25,7 +25,7 @@ from license import get_license_manager
 from log import log
 from db import (
     _get_chat, _update_chat, _update_chat_settings,
-    _get_chat_tool_policy, _get_profile_tool_policy, _set_profile_tool_policy,
+    _get_chat_tool_policy, _get_profile_tool_policy, _set_chat_tool_policy, _set_profile_tool_policy,
     _get_recent_messages_text,
     _save_message,
     _get_latest_user_attachments,
@@ -117,7 +117,7 @@ def _resolve_effective_tool_policy(chat_id: str, chat: dict, group_agent: dict |
     policy = _get_profile_tool_policy(profile_id) if profile_id else _get_chat_tool_policy(chat_id)
     effective_policy = dict(policy)
     elevated_until = str(effective_policy.get("elevated_until") or "").strip()
-    if not profile_id or not elevated_until:
+    if not elevated_until:
         return effective_policy
     try:
         expires_at = datetime.fromisoformat(elevated_until)
@@ -130,11 +130,18 @@ def _resolve_effective_tool_policy(chat_id: str, chat: dict, group_agent: dict |
     effective_policy["level"] = int(effective_policy.get("default_level", effective_policy.get("level", 1)))
     effective_policy["elevated_until"] = None
     try:
-        _set_profile_tool_policy(
-            profile_id,
-            effective_policy,
-            default_level=int(effective_policy.get("default_level", effective_policy.get("level", 1))),
-        )
+        if profile_id:
+            _set_profile_tool_policy(
+                profile_id,
+                effective_policy,
+                default_level=int(effective_policy.get("default_level", effective_policy.get("level", 1))),
+            )
+        else:
+            _set_chat_tool_policy(
+                chat_id,
+                effective_policy,
+                default_level=int(effective_policy.get("default_level", effective_policy.get("level", 2))),
+            )
     except KeyError:
         pass
     return effective_policy
