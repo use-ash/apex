@@ -4,14 +4,14 @@ from pathlib import Path
 from ..safety import ensure_workspace_path, MAX_LIST_FILES
 
 
-def execute(args: dict, workspace: str | None = None) -> str:
+def execute(args: dict, workspace: str | None = None, *, permission_level: int = 2) -> str:
     """List files matching a glob pattern."""
     pattern = args.get("pattern", "").strip()
     if not pattern:
         return "Error: pattern is required"
 
     search_path = args.get("path", workspace or os.getcwd())
-    resolved_path, err = ensure_workspace_path(search_path, workspace)
+    resolved_path, err = ensure_workspace_path(search_path, workspace, permission_level=permission_level)
     if err:
         return err
     assert resolved_path is not None

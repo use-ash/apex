@@ -254,6 +254,8 @@ def prepare_command(
         return None, "Error: no command provided"
     if permission_level <= 0:
         return None, "Error: tools are disabled for this persona"
+    if permission_level >= 4:
+        return ["/bin/sh", "-lc", cmd], None
     if any(snippet in cmd for snippet in SHELL_META_SNIPPETS):
         return None, "Error: shell syntax is not allowed"
 
@@ -305,6 +307,7 @@ def ensure_workspace_path(
     workspace: str | None,
     *,
     allow_write: bool = False,
+    permission_level: int = 2,
 ) -> tuple[str | None, str | None]:
     """Resolve a path and enforce that it stays within one of the workspace roots.
 
@@ -312,6 +315,13 @@ def ensure_workspace_path(
     The first entry is the primary workspace used to resolve relative paths.
     A path is allowed if it falls under *any* of the listed roots.
     """
+    if permission_level >= 4:
+        resolved = _resolve_candidate_path(path, _primary_workspace(workspace))
+        err = validate_path(resolved, allow_write=allow_write, permission_level=permission_level)
+        if err:
+            return None, err
+        return resolved, None
+
     if not workspace:
         return None, "Error: workspace is required for file tools"
 
@@ -338,14 +348,16 @@ def ensure_workspace_path(
     if not inside:
         return None, f"Error: path is outside workspace: {path}"
 
-    err = validate_path(resolved, allow_write=allow_write)
+    err = validate_path(resolved, allow_write=allow_write, permission_level=permission_level)
     if err:
         return None, err
     return resolved, None
 
 
-def validate_path(path: str, allow_write: bool = False) -> str | None:
+def validate_path(path: str, allow_write: bool = False, *, permission_level: int = 2) -> str | None:
     """Returns error string if path is blocked, None if OK."""
+    if permission_level >= 4:
+        return None
     resolved = os.path.realpath(os.path.expanduser(path))
     protected = _protected_path_error(resolved)
     if protected:

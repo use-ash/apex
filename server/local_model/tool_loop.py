@@ -830,7 +830,12 @@ async def run_tool_loop(
                                     allowed_commands=allowed_commands,
                                 )
                             else:
-                                tool_result = await asyncio.to_thread(executor, tool_args, workspace)
+                                tool_result = await asyncio.to_thread(
+                                    executor,
+                                    tool_args,
+                                    workspace,
+                                    permission_level=permission_level,
+                                )
                         except Exception as e:
                             tool_result = f"Error executing {tool_name}: {type(e).__name__}: {e}"
                     elif is_mcp_tool(tool_name):

@@ -504,7 +504,7 @@ class SecurityFixTests(unittest.TestCase):
         self.assertTrue(deny_read.interrupt)
         self.assertIn("Restricted", deny_read.message)
 
-    def test_agent_sdk_pending_denied_tools_fail_closed(self) -> None:
+    def test_agent_sdk_pending_denied_tools_preserve_partial_response(self) -> None:
         fake_client = SimpleNamespace(receive_response=lambda: None)
         sent: list[dict] = []
 
@@ -513,7 +513,11 @@ class SecurityFixTests(unittest.TestCase):
 
         async def fake_stream():
             yield agent_sdk.AssistantMessage(
-                content=[agent_sdk.ToolUseBlock(id="toolu_1", name="Bash", input={"command": "pwd"})],
+                content=[
+                    agent_sdk.TextBlock(text="I found the likely rendering issue and started narrowing it down."),
+                    agent_sdk.ThinkingBlock(thinking="Need to inspect the live DOM after refresh.", signature="sig-1"),
+                    agent_sdk.ToolUseBlock(id="toolu_1", name="Bash", input={"command": "pwd"}),
+                ],
                 model="claude-haiku-4-5-20251001",
             )
             yield agent_sdk.ResultMessage(
@@ -534,8 +538,10 @@ class SecurityFixTests(unittest.TestCase):
             result = asyncio.run(agent_sdk._stream_response(fake_client, "deadbeef"))
 
         self.assertTrue(result["is_error"])
+        self.assertIn("I found the likely rendering issue", result["text"])
         self.assertIn("denied by host permissions", result["text"])
-        self.assertIn("discarded", result["text"])
+        self.assertIn("partial response was preserved", result["text"])
+        self.assertEqual(result["thinking"], "Need to inspect the live DOM after refresh.")
         tool_events = json.loads(result["tool_events"])
         self.assertEqual(len(tool_events), 1)
         self.assertEqual(tool_events[0]["name"], "Bash")
@@ -546,6 +552,33 @@ class SecurityFixTests(unittest.TestCase):
         self.assertIn("denied by host permissions", tool_result_event["content"])
         result_event = next(evt for evt in sent if evt.get("type") == "result")
         self.assertTrue(result_event["is_error"])
+
+    def test_local_full_admin_level_4_allows_shell_and_external_paths(self) -> None:
+        outside_root = Path(tempfile.mkdtemp(prefix="apex-admin4-outside-"))
+        target = outside_root / "admin4.txt"
+        write_result = write_file.execute(
+            {"file_path": str(target), "content": "full admin\n"},
+            str(TEST_ROOT),
+            permission_level=4,
+        )
+        self.assertIn("Wrote", write_result)
+
+        read_result = read_file.execute(
+            {"file_path": str(target)},
+            str(TEST_ROOT),
+            permission_level=4,
+        )
+        self.assertIn("full admin", read_result)
+
+        argv, err = local_safety.prepare_command(
+            "printf 'admin4\\n' | tr a-z A-Z",
+            str(TEST_ROOT),
+            permission_level=4,
+        )
+        self.assertIsNone(err)
+        self.assertEqual(argv, ["/bin/sh", "-lc", "printf 'admin4\\n' | tr a-z A-Z"])
+        shell_result = subprocess.run(argv, capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(shell_result, "ADMIN4")
 
     def test_ollama_chat_passes_standard_tool_allowlist(self) -> None:
         with apex._db_lock:
@@ -1510,6 +1543,34 @@ class SecurityFixTests(unittest.TestCase):
             self.assertEqual(revoked["tool_policy"]["level"], 2)
             self.assertIsNone(revoked["tool_policy"]["elevated_until"])
 
+    def test_direct_chat_tool_policy_api_accepts_level_4(self) -> None:
+        chat_id = self._create_direct_chat(model="claude-opus-4.6")
+
+        with self._client() as client:
+            update = client.put(
+                f"/api/chats/{chat_id}/tool-policy",
+                json={
+                    "level": 4,
+                    "default_level": 2,
+                    "allowed_commands": ["echo"],
+                    "elevated_until": "2030-01-01T00:00:00+00:00",
+                },
+            )
+            self.assertEqual(update.status_code, 200, update.text)
+            updated = update.json()
+            self.assertEqual(updated["tool_policy"]["level"], 4)
+            self.assertEqual(updated["tool_policy"]["default_level"], 2)
+            self.assertEqual(updated["tool_policy"]["allowed_commands"], ["echo"])
+
+            elevate = client.post(
+                f"/api/chats/{chat_id}/tool-policy/elevate",
+                json={"minutes": 10, "level": 4},
+            )
+            self.assertEqual(elevate.status_code, 200, elevate.text)
+            elevated = elevate.json()
+            self.assertEqual(elevated["tool_policy"]["level"], 4)
+            self.assertTrue(elevated["expires_at"])
+
     def test_sdk_client_reconnects_when_allowed_commands_change_at_same_level(self) -> None:
         chat_id = self._create_direct_chat(model="claude-opus-4.6")
 
@@ -1563,6 +1624,15 @@ class SecurityFixTests(unittest.TestCase):
             _client_permission_policies[chat_id],
             streaming_mod._permission_policy_signature(3, ["sqlite3"]),
         )
+
+    def test_sdk_level_4_uses_bypass_permissions(self) -> None:
+        opts = streaming_mod._make_options(
+            model="claude-sonnet-4-6",
+            client_key="chat-1",
+            chat_id="chat-1",
+            permission_level=4,
+        )
+        self.assertEqual(opts.permission_mode, "bypassPermissions")
 
     def test_group_multi_mentions_supplement_partial_premium_targets(self) -> None:
         chat_id = self._create_test_group_chat()

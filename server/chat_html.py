@@ -6197,11 +6197,36 @@ function updateTopbarProfile(profileName, profileAvatar) {
   }
 }
 
+const CHAT_PERMISSION_PRESETS = [
+  {
+    key: 'diagnostics',
+    label: 'Diagnostics',
+    commands: ['echo', 'grep', 'rg', 'find', 'ls', 'cat', 'head', 'tail', 'sed', 'awk', 'wc', 'ps', 'lsof', 'curl'],
+  },
+  {
+    key: 'repo',
+    label: 'Repo Ops',
+    commands: ['git status', 'git diff', 'git log', 'git show', 'git branch', 'git rev-parse', 'git grep'],
+  },
+  {
+    key: 'python-db',
+    label: 'Python + DB',
+    commands: ['python3 -m py_compile', 'pytest', 'sqlite3'],
+  },
+  {
+    key: 'system',
+    label: 'System',
+    commands: ['pgrep', 'kill', 'tmux', 'sleep'],
+  },
+];
+
 function describeChatToolPolicy(policy) {
   const level = Number((policy && policy.level) || 2);
   if (level <= 0) return 'Restricted';
   if (level === 1) return 'Standard Tools';
   if (level === 2) return 'Workspace Tools';
+  if (level === 3) return 'Admin Allowlist';
+  if (level >= 4) return 'Full Admin';
   return 'Admin Allowlist';
 }
 
@@ -6263,18 +6288,25 @@ async function showDirectChatPermissions() {
           <option value="1">Standard Tools</option>
           <option value="2">Workspace Tools</option>
           <option value="3">Admin Allowlist</option>
+          <option value="4">Full Admin</option>
         </select>
       </label>
+      <div style="display:grid;gap:8px">
+        <span style="font-size:12px;font-weight:600;color:var(--dim)">Preset Bundles</span>
+        <div id="chat-perm-presets" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+        <span style="font-size:12px;color:var(--dim)">Built from common debugging commands seen in prior Apex sessions. Presets append to the allowlist.</span>
+      </div>
       <label style="display:grid;gap:6px">
         <span style="font-size:12px;font-weight:600;color:var(--dim)">Allowed Commands</span>
         <textarea id="chat-perm-commands" class="gs-name-input" rows="5" placeholder="One command prefix per line, e.g.&#10;git push&#10;sqlite3"></textarea>
-        <span style="font-size:12px;color:var(--dim)">Used only for Admin Allowlist. Bash commands must start with one of these prefixes.</span>
+        <span id="chat-perm-help" style="font-size:12px;color:var(--dim)">Used only for Admin Allowlist. Bash commands must start with one of these prefixes.</span>
       </label>
       <label style="display:grid;gap:6px">
         <span style="font-size:12px;font-weight:600;color:var(--dim)">Temporary Admin Minutes</span>
         <input id="chat-perm-minutes" class="gs-name-input" type="number" min="1" max="1440" placeholder="15" />
         <span id="chat-perm-expiry" style="font-size:12px;color:var(--dim)"></span>
       </label>
+      <div id="chat-perm-status" style="font-size:12px;color:var(--dim);min-height:18px"></div>
       <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap">
         <button id="chat-perm-revoke" class="gs-inline-btn" type="button">Reset to Default</button>
         <button id="chat-perm-save" class="gs-add-btn" type="button" style="margin:0">Save</button>
@@ -6286,12 +6318,34 @@ async function showDirectChatPermissions() {
   document.body.appendChild(overlay);
 
   const levelEl = body.querySelector('#chat-perm-level');
+  const presetsEl = body.querySelector('#chat-perm-presets');
   const commandsEl = body.querySelector('#chat-perm-commands');
+  const helpEl = body.querySelector('#chat-perm-help');
   const minutesEl = body.querySelector('#chat-perm-minutes');
   const expiryEl = body.querySelector('#chat-perm-expiry');
+  const statusEl = body.querySelector('#chat-perm-status');
   const saveBtn = body.querySelector('#chat-perm-save');
   const revokeBtn = body.querySelector('#chat-perm-revoke');
   const defaultLevel = Number(policy.default_level || 2);
+  const presetButtons = [];
+
+  function setStatus(text, tone = 'dim') {
+    statusEl.textContent = text || '';
+    if (tone === 'success') statusEl.style.color = '#10b981';
+    else if (tone === 'error') statusEl.style.color = '#ef4444';
+    else if (tone === 'warning') statusEl.style.color = '#f59e0b';
+    else statusEl.style.color = 'var(--dim)';
+  }
+
+  function setBusy(busy, label = 'Save') {
+    saveBtn.disabled = !!busy;
+    revokeBtn.disabled = !!busy;
+    levelEl.disabled = !!busy;
+    commandsEl.disabled = !!busy;
+    minutesEl.disabled = !!busy;
+    presetButtons.forEach((btn) => { btn.disabled = !!busy; });
+    saveBtn.textContent = busy ? `${label}…` : 'Save';
+  }
 
   function syncExpiryText() {
     if (policy.elevated_until) {
@@ -6301,12 +6355,71 @@ async function showDirectChatPermissions() {
     }
   }
 
+  function currentCommandList() {
+    return commandsEl.value
+      .split('\\n')
+      .map(v => v.trim())
+      .filter(Boolean);
+  }
+
+  function setCommandList(items) {
+    const deduped = [];
+    const seen = new Set();
+    items.forEach((item) => {
+      const value = String(item || '').trim();
+      if (!value || seen.has(value)) return;
+      seen.add(value);
+      deduped.push(value);
+    });
+    commandsEl.value = deduped.join('\\n');
+  }
+
+  function syncPolicyUi() {
+    const level = Number(levelEl.value || defaultLevel);
+    const allowlistMode = level === 3;
+    const fullAdminMode = level >= 4;
+    commandsEl.disabled = fullAdminMode;
+    presetsEl.style.opacity = allowlistMode ? '1' : '0.6';
+    presetButtons.forEach((btn) => { btn.disabled = fullAdminMode; });
+    if (fullAdminMode) {
+      helpEl.textContent = 'Full Admin bypasses the command allowlist and file/path restrictions. Use a temporary expiry whenever possible.';
+    } else if (allowlistMode) {
+      helpEl.textContent = 'Used only for Admin Allowlist. Bash commands must start with one of these prefixes.';
+    } else {
+      helpEl.textContent = 'Allowed Commands are ignored unless Permission Level is Admin Allowlist.';
+    }
+  }
+
+  CHAT_PERMISSION_PRESETS.forEach((preset) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'gs-inline-btn';
+    btn.style.margin = '0';
+    btn.textContent = preset.label;
+    btn.onclick = () => {
+      const merged = [...currentCommandList(), ...preset.commands];
+      setCommandList(merged);
+      setStatus(`Added ${preset.label} preset`, 'success');
+    };
+    presetButtons.push(btn);
+    presetsEl.appendChild(btn);
+  });
+
   levelEl.value = String(Number(policy.level || defaultLevel));
   commandsEl.value = (policy.allowed_commands || []).join('\\n');
   minutesEl.value = '';
   syncExpiryText();
+  syncPolicyUi();
+  setStatus(`Current policy: ${describeChatToolPolicy(policy)}`);
+
+  levelEl.onchange = () => {
+    syncPolicyUi();
+    setStatus(`Editing ${describeChatToolPolicy({level: Number(levelEl.value || defaultLevel)})}`, 'dim');
+  };
 
   revokeBtn.onclick = async () => {
+    setBusy(true, 'Resetting');
+    setStatus('Resetting chat permissions…');
     try {
       const resp = await fetch(`/api/chats/${currentChat}/tool-policy/revoke`, {
         method: 'POST',
@@ -6317,12 +6430,19 @@ async function showDirectChatPermissions() {
       const data = await resp.json();
       policy = data.tool_policy || policy;
       levelEl.value = String(Number(policy.level || defaultLevel));
+      commandsEl.value = (policy.allowed_commands || []).join('\\n');
       minutesEl.value = '';
       syncExpiryText();
+      syncPolicyUi();
+      setStatus(`Reset to ${describeChatToolPolicy(policy)}`, 'success');
       showToast('Chat permissions reset');
     } catch (e) {
       reportError('revokeChatToolPolicy', e);
+      setStatus('Failed to reset chat permissions', 'error');
       showToast('Failed to reset chat permissions');
+    } finally {
+      setBusy(false);
+      syncPolicyUi();
     }
   };
 
@@ -6344,6 +6464,8 @@ async function showDirectChatPermissions() {
       invoke_policy: policy.invoke_policy || 'anyone',
       allowed_commands: allowedCommands,
     };
+    setBusy(true, 'Saving');
+    setStatus('Saving chat permissions…');
     try {
       const resp = await fetch(`/api/chats/${currentChat}/tool-policy`, {
         method: 'PUT',
@@ -6354,11 +6476,19 @@ async function showDirectChatPermissions() {
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
       policy = data.tool_policy || payload;
+      levelEl.value = String(Number(policy.level || defaultLevel));
+      commandsEl.value = (policy.allowed_commands || []).join('\\n');
       syncExpiryText();
+      syncPolicyUi();
+      setStatus(`Saved. Current policy: ${describeChatToolPolicy(policy)}`, 'success');
       showToast(`Chat permissions saved: ${describeChatToolPolicy(policy)}`);
     } catch (e) {
       reportError('saveChatToolPolicy', e);
+      setStatus('Failed to save chat permissions', 'error');
       showToast('Failed to save chat permissions');
+    } finally {
+      setBusy(false);
+      syncPolicyUi();
     }
   };
 }

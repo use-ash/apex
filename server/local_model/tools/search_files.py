@@ -3,7 +3,7 @@ import subprocess
 from ..safety import ensure_workspace_path, truncate_output, MAX_SEARCH_MATCHES
 
 
-def execute(args: dict, workspace: str | None = None) -> str:
+def execute(args: dict, workspace: str | None = None, *, permission_level: int = 2) -> str:
     """Search file contents for a pattern (grep-like)."""
     pattern = args.get("pattern", "").strip()
     if not pattern:
@@ -11,7 +11,7 @@ def execute(args: dict, workspace: str | None = None) -> str:
 
     search_path = args.get("path", workspace or ".")
     glob_filter = args.get("glob", "")
-    resolved_path, err = ensure_workspace_path(search_path, workspace)
+    resolved_path, err = ensure_workspace_path(search_path, workspace, permission_level=permission_level)
     if err:
         return err
     assert resolved_path is not None
