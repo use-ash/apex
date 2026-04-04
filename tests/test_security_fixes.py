@@ -991,6 +991,48 @@ class SecurityFixTests(unittest.TestCase):
 
         self.assertEqual(routed["ollama"], 1)
 
+    def test_websocket_attach_idle_chat_prompts_reload_from_db(self) -> None:
+        chat_id = self._create_direct_chat()
+
+        with self._client() as client:
+            with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                ws.send_json({
+                    "action": "attach",
+                    "chat_id": chat_id,
+                })
+                first = ws.receive_json()
+                second = ws.receive_json()
+
+        self.assertEqual(first["type"], "attach_ok")
+        self.assertEqual(first["chat_id"], chat_id)
+        self.assertEqual(second["type"], "stream_complete_reload")
+        self.assertEqual(second["chat_id"], chat_id)
+
+    def test_websocket_attach_active_chat_reattaches_without_reload_signal(self) -> None:
+        chat_id = self._create_direct_chat()
+        loop = asyncio.new_event_loop()
+        blocker = asyncio.Event()
+        task = loop.create_task(blocker.wait())
+        streaming_mod._set_active_send_task(chat_id, "stream-live", task)
+
+        try:
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "attach",
+                        "chat_id": chat_id,
+                    })
+                    msg = ws.receive_json()
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                loop.run_until_complete(task)
+            loop.close()
+
+        self.assertEqual(msg["type"], "stream_reattached")
+        self.assertEqual(msg["chat_id"], chat_id)
+        self.assertEqual(msg["stream_id"], "stream-live")
+
     def test_websocket_send_rejects_text_attachments_for_ollama_before_dispatch(self) -> None:
         chat_id = self._create_direct_chat(model="qwen3:latest")
         attachment = self._create_uploaded_attachment("txt", b"notes")
