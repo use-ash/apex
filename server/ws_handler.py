@@ -998,10 +998,14 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         if is_group_chat:
             await _send_active_streams(chat_id)
 
-        # --- Codex CLI path ---
+        # --- Codex path ---
         if backend == "codex":
             try:
-                if chat_model in {"codex:o3", "codex:o4-mini"} and env.OPENAI_API_KEY:
+                use_permission_aware_codex = (
+                    chat.get("type") == "chat"
+                    and not chat.get("profile_id")
+                )
+                if use_permission_aware_codex or (chat_model in {"codex:o3", "codex:o4-mini"} and env.OPENAI_API_KEY):
                     result = await _run_ollama_chat(
                         chat_id,
                         prompt,

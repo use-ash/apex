@@ -790,7 +790,7 @@ class SecurityFixTests(unittest.TestCase):
         chat_id = self._create_direct_chat(model="codex:o3")
         routed = {"ollama": 0}
 
-        async def fake_run_ollama_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+        async def fake_run_ollama_chat(chat_id_arg: str, prompt: str, model=None, attachments=None, permission_policy=None):
             self.assertEqual(chat_id_arg, chat_id)
             self.assertEqual(prompt, "show reasoning")
             self.assertEqual(model, "codex:o3")
@@ -809,6 +809,51 @@ class SecurityFixTests(unittest.TestCase):
 
         with (
             mock.patch.object(ws_handler.env, "OPENAI_API_KEY", "sk-test"),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=AssertionError("codex CLI path should not run")),
+            mock.patch.object(ws_handler, "_run_ollama_chat", side_effect=fake_run_ollama_chat),
+            self._client() as client,
+        ):
+            with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                ws.send_json({
+                    "action": "send",
+                    "chat_id": chat_id,
+                    "prompt": "show reasoning",
+                })
+                self._receive_until(ws, lambda msg: msg.get("type") == "stream_end")
+
+        self.assertEqual(routed["ollama"], 1)
+
+    def test_websocket_send_routes_codex_gpt5_direct_chat_through_permission_aware_backend(self) -> None:
+        chat_id = self._create_direct_chat(model="codex:gpt-5.4")
+        db_mod._set_chat_tool_policy(
+            chat_id,
+            {
+                "level": 3,
+                "default_level": 2,
+                "allowed_commands": [],
+            },
+        )
+        routed = {"ollama": 0}
+
+        async def fake_run_ollama_chat(chat_id_arg: str, prompt: str, model=None, attachments=None, permission_policy=None):
+            self.assertEqual(chat_id_arg, chat_id)
+            self.assertEqual(prompt, "show reasoning")
+            self.assertEqual(model, "codex:gpt-5.4")
+            self.assertEqual((permission_policy or {}).get("level"), 3)
+            routed["ollama"] += 1
+            return {
+                "text": "done",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "step by step",
+                "tool_events": "[]",
+            }
+
+        with (
             mock.patch.object(ws_handler, "_run_codex_chat", side_effect=AssertionError("codex CLI path should not run")),
             mock.patch.object(ws_handler, "_run_ollama_chat", side_effect=fake_run_ollama_chat),
             self._client() as client,
