@@ -54,6 +54,9 @@ from state import (  # noqa: E402
     _stream_buffers,
     _chat_locks,
     _chat_send_locks,
+    _client_permission_levels,
+    _client_permission_policies,
+    _clients,
     _session_context_sent,
 )
 from local_model import safety as local_safety  # noqa: E402
@@ -85,6 +88,9 @@ class SecurityFixTests(unittest.TestCase):
             _stream_buffers,
             _chat_locks,
             _chat_send_locks,
+            _client_permission_levels,
+            _client_permission_policies,
+            _clients,
             _session_context_sent,
         ):
             state.clear()
@@ -1491,6 +1497,60 @@ class SecurityFixTests(unittest.TestCase):
             revoked = revoke.json()
             self.assertEqual(revoked["tool_policy"]["level"], 2)
             self.assertIsNone(revoked["tool_policy"]["elevated_until"])
+
+    def test_sdk_client_reconnects_when_allowed_commands_change_at_same_level(self) -> None:
+        chat_id = self._create_direct_chat(model="claude-opus-4.6")
+
+        class _FakeClient:
+            def __init__(self, label: str) -> None:
+                self.label = label
+                self.connected = False
+                self.disconnected = False
+
+            async def connect(self) -> None:
+                self.connected = True
+
+            async def disconnect(self) -> None:
+                self.disconnected = True
+
+        existing = _FakeClient("existing")
+        _clients[chat_id] = existing
+        _client_permission_levels[chat_id] = 3
+        _client_permission_policies[chat_id] = streaming_mod._permission_policy_signature(3, ["git push"])
+
+        created: list[_FakeClient] = []
+
+        def _make_fake_client(_options):
+            client = _FakeClient("new")
+            created.append(client)
+            return client
+
+        async def _noop():
+            return None
+
+        with mock.patch.object(streaming_mod, "_client_is_alive", return_value=True), \
+            mock.patch.object(streaming_mod, "_evict_lru_client", side_effect=_noop), \
+            mock.patch.object(agent_sdk, "ensure_fresh_token", return_value=None), \
+            mock.patch.object(streaming_mod, "_make_options", return_value=object()), \
+            mock.patch.object(streaming_mod, "ClaudeSDKClient", side_effect=_make_fake_client):
+            client = asyncio.run(
+                streaming_mod._get_or_create_client(
+                    chat_id,
+                    model="claude-opus-4.6",
+                    permission_level=3,
+                    allowed_commands=["sqlite3"],
+                )
+            )
+
+        self.assertIsNot(client, existing)
+        self.assertTrue(existing.disconnected)
+        self.assertEqual(len(created), 1)
+        self.assertTrue(created[0].connected)
+        self.assertEqual(_client_permission_levels[chat_id], 3)
+        self.assertEqual(
+            _client_permission_policies[chat_id],
+            streaming_mod._permission_policy_signature(3, ["sqlite3"]),
+        )
 
     def test_group_multi_mentions_supplement_partial_premium_targets(self) -> None:
         chat_id = self._create_test_group_chat()

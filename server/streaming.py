@@ -26,7 +26,7 @@ from log import log
 from local_model.safety import validate_command, validate_path
 from memory_extract import _filter_stream_text_for_memory_tags, _clear_stream_text_filter
 from state import (
-    _clients, _client_sessions, _client_last_used, _client_permission_levels,
+    _clients, _client_sessions, _client_last_used, _client_permission_levels, _client_permission_policies,
     _chat_locks, _chat_ws, _ws_chat,
     _active_send_tasks, _stream_buffers, _stream_seq, _chat_send_locks,
     _ws_send_count, _ws_fail_count, _db_lock, _current_stream_id,
@@ -496,6 +496,14 @@ def _client_is_alive(client: ClaudeSDKClient) -> bool:
 _MAX_SDK_CLIENTS = int(os.environ.get("APEX_MAX_SDK_CLIENTS", "5"))
 
 
+def _permission_policy_signature(level: int | None, allowed_commands: list[str] | None) -> str:
+    payload = {
+        "level": int(level if level is not None else 2),
+        "allowed_commands": [str(cmd).strip() for cmd in (allowed_commands or []) if str(cmd).strip()],
+    }
+    return json.dumps(payload, separators=(",", ":"))
+
+
 async def _evict_lru_client() -> None:
     """Evict the least-recently-used idle SDK client to make room."""
     if len(_clients) < _MAX_SDK_CLIENTS:
@@ -535,9 +543,14 @@ async def _get_or_create_client(
     """
     if permission_level is None:
         permission_level = _resolve_sdk_permission_level(client_key)
+    policy_signature = _permission_policy_signature(permission_level, allowed_commands)
     if client_key in _clients:
         client = _clients[client_key]
-        if _client_is_alive(client) and _client_permission_levels.get(client_key) == permission_level:
+        if (
+            _client_is_alive(client)
+            and _client_permission_levels.get(client_key) == permission_level
+            and _client_permission_policies.get(client_key) == policy_signature
+        ):
             _client_last_used[client_key] = time.time()
             return client
         log(f"stale SDK client detected: key={client_key}, evicting")
@@ -576,10 +589,17 @@ async def _get_or_create_client(
     _clients[client_key] = client
     _client_last_used[client_key] = time.time()
     _client_permission_levels[client_key] = permission_level
+    _client_permission_policies[client_key] = policy_signature
     return client
 
 
-def _register_client(client_key: str, client: ClaudeSDKClient, permission_level: int | None = None) -> None:
+def _register_client(
+    client_key: str,
+    client: ClaudeSDKClient,
+    permission_level: int | None = None,
+    *,
+    allowed_commands: list[str] | None = None,
+) -> None:
     """Register an externally-created SDK client in the shared registry.
 
     Use this instead of writing to _clients directly.  The recovery path in
@@ -590,8 +610,10 @@ def _register_client(client_key: str, client: ClaudeSDKClient, permission_level:
     _client_last_used[client_key] = time.time()
     if permission_level is None:
         _client_permission_levels.pop(client_key, None)
+        _client_permission_policies.pop(client_key, None)
     else:
         _client_permission_levels[client_key] = permission_level
+        _client_permission_policies[client_key] = _permission_policy_signature(permission_level, allowed_commands)
 
 
 def store_client_session(client_key: str, session_id: str) -> None:
@@ -822,6 +844,7 @@ async def _disconnect_client(chat_id: str) -> None:
     client = _clients.pop(chat_id, None)
     _client_last_used.pop(chat_id, None)
     _client_permission_levels.pop(chat_id, None)
+    _client_permission_policies.pop(chat_id, None)
     # NOTE: _client_sessions is NOT cleared here — we want to preserve
     # the session_id so group agents can resume after eviction.
     if client is None:
