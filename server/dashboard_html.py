@@ -2015,21 +2015,6 @@ select {
                         <div class="loading-overlay"><div class="spinner"></div> Loading policy levels...</div>
                     </div>
                     <div id="policy-level-detail" class="card" style="margin-top:12px; padding:14px;"></div>
-                    <div class="card" style="margin-top:12px; padding:14px;">
-                        <div class="card-title" style="margin-bottom:8px;">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <rect x="3" y="5" width="18" height="14" rx="2"/>
-                                <path d="M7 9h10"/>
-                                <path d="M7 13h6"/>
-                            </svg>
-                            Workspace + Browser Tool Set
-                        </div>
-                        <div class="form-help" style="margin-bottom:10px;">Level 2 uses this normalized tool list. Toggle what Workspace + Browser includes, then save.</div>
-                        <div id="policy-workspace-tools-status" class="form-help" style="margin-bottom:10px;"></div>
-                        <div id="policy-workspace-tools-content">
-                            <div class="loading-overlay"><div class="spinner"></div> Loading workspace tool set...</div>
-                        </div>
-                    </div>
                 </div>
 
                 <div class="card">
@@ -2045,6 +2030,22 @@ select {
                     <div id="policy-page-content">
                         <div class="loading-overlay"><div class="spinner"></div> Loading persona policies...</div>
                     </div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-top:16px;">
+                <div class="card-title" style="margin-bottom:8px;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="5" width="18" height="14" rx="2"/>
+                        <path d="M7 9h10"/>
+                        <path d="M7 13h6"/>
+                    </svg>
+                    Workspace + Browser Tool Set
+                </div>
+                <div class="form-help" style="margin-bottom:10px;">Level 2 uses this normalized tool list. Groups are collapsible so read, write, browser, network, memory, and shell controls are easier to scan.</div>
+                <div id="policy-workspace-tools-status" class="form-help" style="margin-bottom:10px;"></div>
+                <div id="policy-workspace-tools-content">
+                    <div class="loading-overlay"><div class="spinner"></div> Loading workspace tool set...</div>
                 </div>
             </div>
         </div>
@@ -4275,14 +4276,33 @@ function renderWorkspaceToolsEditor() {
         return;
     }
     var enabledSet = new Set((policyWorkspaceTools || []).map(function(item) { return String(item); }));
-    var rows = policyToolCatalogData.slice().sort(function(a, b) {
-        var aEnabled = enabledSet.has(a.id) ? 1 : 0;
-        var bEnabled = enabledSet.has(b.id) ? 1 : 0;
-        if (aEnabled !== bEnabled) return bEnabled - aEnabled;
-        if (String(a.category) !== String(b.category)) return String(a.category).localeCompare(String(b.category));
-        return String(a.name).localeCompare(String(b.name));
-    }).map(function(tool) {
-        return '<label class="card" style="display:block; margin:0; padding:10px 12px;">' +
+    var groupOrder = ["read", "write", "browser", "network", "memory", "shell"];
+    var groupLabels = {
+        read: "Read Tools",
+        write: "Write Tools",
+        browser: "Browser",
+        network: "Network",
+        memory: "Memory",
+        shell: "Shell",
+    };
+    var grouped = {};
+    policyToolCatalogData.forEach(function(tool) {
+        var group = String(tool.group || tool.category || "other");
+        if (!grouped[group]) grouped[group] = [];
+        grouped[group].push(tool);
+    });
+    var rowsByGroup = groupOrder
+        .filter(function(group) { return Array.isArray(grouped[group]) && grouped[group].length; })
+        .map(function(group) {
+            var tools = grouped[group].slice().sort(function(a, b) {
+                var aEnabled = enabledSet.has(a.id) ? 1 : 0;
+                var bEnabled = enabledSet.has(b.id) ? 1 : 0;
+                if (aEnabled !== bEnabled) return bEnabled - aEnabled;
+                return String(a.name).localeCompare(String(b.name));
+            });
+            var selectedCount = tools.filter(function(tool) { return enabledSet.has(tool.id); }).length;
+            var rows = tools.map(function(tool) {
+                return '<label class="card" style="display:block; margin:0; padding:10px 12px;">' +
             '<div style="display:flex; gap:10px; align-items:flex-start;">' +
                 '<input type="checkbox" data-workspace-tool-id="' + esc(tool.id) + '"' + (enabledSet.has(tool.id) ? ' checked' : '') + ' style="margin-top:2px;">' +
                 '<div style="min-width:0;">' +
@@ -4292,7 +4312,16 @@ function renderWorkspaceToolsEditor() {
                 '</div>' +
             '</div>' +
         '</label>';
-    }).join('');
+            }).join('');
+            var isOpen = selectedCount > 0 || group === "read" || group === "browser";
+            return '<details class="card" style="margin:0; padding:0; overflow:hidden;"' + (isOpen ? ' open' : '') + '>' +
+                '<summary style="list-style:none; cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 14px; font-weight:600;">' +
+                    '<span>' + esc(groupLabels[group] || group) + '</span>' +
+                    '<span class="form-help">' + selectedCount + ' of ' + tools.length + ' enabled</span>' +
+                '</summary>' +
+                '<div style="display:grid; gap:8px; padding:0 12px 12px;">' + rows + '</div>' +
+            '</details>';
+        }).join('');
     el.innerHTML =
         '<div style="display:flex; gap:8px; align-items:center; justify-content:space-between; margin-bottom:12px; flex-wrap:wrap;">' +
             '<div class="form-help">Selected tools apply immediately to level 2 across SDK and tool-loop backends.</div>' +
@@ -4301,7 +4330,7 @@ function renderWorkspaceToolsEditor() {
                 '<button class="btn btn-primary" data-policy-workspace-save>Save Workspace Tool Set</button>' +
             '</div>' +
         '</div>' +
-        '<div style="display:grid; gap:8px;">' + rows + '</div>';
+        '<div style="display:grid; gap:10px;">' + rowsByGroup + '</div>';
 }
 window.renderWorkspaceToolsEditor = renderWorkspaceToolsEditor;
 

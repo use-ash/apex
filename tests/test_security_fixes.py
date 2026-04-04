@@ -721,6 +721,57 @@ class SecurityFixTests(unittest.TestCase):
         self.assertNotIn("filesystem__write_file", allowed)
         self.assertNotIn("memory__read_graph", allowed)
 
+    def test_env_rewrite_mcp_servers_appends_extra_roots_and_playwright_env(self) -> None:
+        servers = {
+            "filesystem": {
+                "type": "stdio",
+                "enabled": True,
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+            },
+            "playwright": {
+                "type": "stdio",
+                "enabled": True,
+                "command": "docker",
+                "args": ["run", "-i", "--rm", "mcp/playwright", "--ignore-https-errors"],
+            },
+        }
+        with (
+            mock.patch.object(env, "MCP_EXTRA_ROOTS_RAW", "/tmp"),
+            mock.patch.object(env, "PLAYWRIGHT_CLIENT_CERT", "/Users/dana/.apex-playwright-mtls/client-cert.pem"),
+            mock.patch.object(env, "PLAYWRIGHT_CLIENT_KEY", "/Users/dana/.apex-playwright-mtls/client-key.pem"),
+            mock.patch.object(env, "PLAYWRIGHT_CLIENT_ORIGIN", "https://192.168.86.214:8301"),
+        ):
+            rewritten = env.rewrite_mcp_servers_for_workspace(
+                servers,
+                ["/Users/dana/.openclaw/workspace", "/Users/dana/.openclaw/apex"],
+            )
+
+        self.assertEqual(
+            rewritten["filesystem"]["args"],
+            [
+                "-y",
+                "@modelcontextprotocol/server-filesystem",
+                "/Users/dana/.openclaw/workspace",
+                "/Users/dana/.openclaw/apex",
+                "/tmp",
+            ],
+        )
+        playwright_args = rewritten["playwright"]["args"]
+        self.assertIn("-v", playwright_args)
+        self.assertIn(
+            "/Users/dana/.apex-playwright-mtls/client-cert.pem:/apex-playwright/client-cert.pem:ro",
+            playwright_args,
+        )
+        self.assertIn(
+            "/Users/dana/.apex-playwright-mtls/client-key.pem:/apex-playwright/client-key.pem:ro",
+            playwright_args,
+        )
+        self.assertEqual(
+            rewritten["playwright"]["env"]["APEX_PLAYWRIGHT_CLIENT_ORIGIN"],
+            "https://192.168.86.214:8301",
+        )
+
     def test_tool_access_level_2_honors_configured_workspace_tool_patterns(self) -> None:
         dashboard_mod._config.update_section(
             "policy",
@@ -2006,6 +2057,9 @@ class SecurityFixTests(unittest.TestCase):
         self.assertIn('id="policy-level-detail"', dashboard_html_mod.DASHBOARD_HTML)
         self.assertIn('id="policy-workspace-tools-content"', dashboard_html_mod.DASHBOARD_HTML)
         self.assertIn('data-policy-workspace-save', dashboard_html_mod.DASHBOARD_HTML)
+        self.assertIn("Read Tools", dashboard_html_mod.DASHBOARD_HTML)
+        self.assertIn("Write Tools", dashboard_html_mod.DASHBOARD_HTML)
+        self.assertIn("<details class=\"card\"", dashboard_html_mod.DASHBOARD_HTML)
 
     def test_new_chat_picker_includes_no_profile_option(self) -> None:
         self.assertIn("Plain chat with no persona assigned", chat_html_mod.CHAT_HTML)
