@@ -554,6 +554,55 @@ class SecurityFixTests(unittest.TestCase):
         result_event = next(evt for evt in sent if evt.get("type") == "result")
         self.assertTrue(result_event["is_error"])
 
+    def test_agent_sdk_level_4_pending_tools_do_not_false_deny(self) -> None:
+        chat_id = self._create_direct_chat(model="claude-opus-4.6")
+        db_mod._set_chat_tool_policy(
+            chat_id,
+            {
+                "level": 4,
+                "default_level": 2,
+                "elevated_until": None,
+                "allowed_commands": [],
+            },
+        )
+        fake_client = SimpleNamespace(receive_response=lambda: None)
+        sent: list[dict] = []
+
+        async def fake_send_stream_event(_chat_id: str, payload: dict) -> None:
+            sent.append(payload)
+
+        async def fake_stream():
+            yield agent_sdk.AssistantMessage(
+                content=[agent_sdk.ToolUseBlock(id="toolu_1", name="Bash", input={"command": "date +%s"})],
+                model="claude-haiku-4-5-20251001",
+            )
+            yield agent_sdk.ResultMessage(
+                subtype="success",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=False,
+                num_turns=1,
+                session_id="sess-1",
+                usage={"input_tokens": 1, "output_tokens": 1},
+                result="1775331480",
+            )
+
+        with (
+            mock.patch.object(agent_sdk, "_send_stream_event", side_effect=fake_send_stream_event),
+            mock.patch.object(agent_sdk, "_normalize_response_stream", return_value=fake_stream()),
+        ):
+            result = asyncio.run(agent_sdk._stream_response(fake_client, chat_id))
+
+        self.assertFalse(result["is_error"])
+        self.assertEqual(result["text"], "1775331480")
+        self.assertNotIn("denied by host permissions", result["text"])
+        tool_events = json.loads(result["tool_events"])
+        self.assertEqual(len(tool_events), 1)
+        self.assertFalse(tool_events[0]["result"]["is_error"])
+        self.assertIn("omitted explicit result block", tool_events[0]["result"]["content"])
+        result_event = next(evt for evt in sent if evt.get("type") == "result")
+        self.assertFalse(result_event["is_error"])
+
     def test_local_full_admin_level_4_allows_shell_and_external_paths(self) -> None:
         outside_root = Path(tempfile.mkdtemp(prefix="apex-admin4-outside-"))
         target = outside_root / "admin4.txt"

@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import env
-from db import _get_chat, _get_messages
+from db import _get_chat, _get_chat_tool_policy, _get_messages
 from log import log
 from model_dispatch import MODEL_CONTEXT_WINDOWS, MODEL_CONTEXT_DEFAULT
 from state import _clients, _session_context_sent
@@ -720,6 +720,12 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
     async def _send(payload: dict) -> None:
         await _send_stream_event(chat_id, payload)
 
+    def _full_admin_mode() -> bool:
+        try:
+            return int(_get_chat_tool_policy(chat_id).get("level", 2)) >= 4
+        except Exception:
+            return False
+
     def _pending_tool_denial_message(items: list[dict]) -> str:
         names = [str(item.get("name") or "").strip() for item in items]
         names = [name for name in names if name]
@@ -837,10 +843,16 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
 
             elif isinstance(msg, ResultMessage):
                 log(f"ResultMessage usage dict: {msg.usage}")
-                blocked_tools = list(pending_tools.values())
+                full_admin_mode = _full_admin_mode()
+                pending_at_result = list(pending_tools.values())
+                blocked_tools = [] if full_admin_mode else pending_at_result
                 blocked_tool_message = _pending_tool_denial_message(blocked_tools) if blocked_tools else ""
                 await _flush_pending_tools(
-                    default_content=blocked_tool_message,
+                    default_content=(
+                        "[tool completed; SDK omitted explicit result block]"
+                        if full_admin_mode and pending_at_result
+                        else blocked_tool_message
+                    ),
                     default_is_error=bool(blocked_tools),
                 )
                 final_text = msg.result or result_text
@@ -851,6 +863,11 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
                     )
                     final_text = result_text or msg.result or ""
                     final_text = _merge_blocked_tool_result(final_text, blocked_tool_message)
+                elif full_admin_mode and pending_at_result:
+                    log(
+                        f"SDK result completed with implicit tool success: chat={chat_id} "
+                        f"tools={[item.get('name') for item in pending_at_result]}"
+                    )
                 result_info = {
                     "session_id": msg.session_id,
                     "text": final_text,
