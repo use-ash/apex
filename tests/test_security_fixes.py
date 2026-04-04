@@ -44,6 +44,7 @@ import env  # noqa: E402
 import memory_extract  # noqa: E402
 import context as context_mod  # noqa: E402
 import premium_loader  # noqa: E402
+import routes_chat as routes_chat_mod  # noqa: E402
 import streaming as streaming_mod  # noqa: E402
 import ws_handler  # noqa: E402
 from state import (  # noqa: E402
@@ -1570,6 +1571,30 @@ class SecurityFixTests(unittest.TestCase):
             elevated = elevate.json()
             self.assertEqual(elevated["tool_policy"]["level"], 4)
             self.assertTrue(elevated["expires_at"])
+
+    def test_direct_chat_tool_policy_update_clears_stale_session(self) -> None:
+        chat_id = self._create_direct_chat(model="claude-opus-4.6")
+        db_mod._update_chat(chat_id, claude_session_id="sess-stale")
+        _session_context_sent.add(chat_id)
+
+        async_disconnect = mock.AsyncMock()
+        with self._client() as client, \
+            mock.patch.object(routes_chat_mod, "_has_client", return_value=True), \
+            mock.patch.object(routes_chat_mod, "_disconnect_client", async_disconnect):
+            update = client.put(
+                f"/api/chats/{chat_id}/tool-policy",
+                json={
+                    "level": 4,
+                    "default_level": 2,
+                    "allowed_commands": [],
+                    "elevated_until": None,
+                },
+            )
+            self.assertEqual(update.status_code, 200, update.text)
+
+        async_disconnect.assert_awaited_once_with(chat_id)
+        self.assertIsNone(db_mod._get_chat(chat_id)["claude_session_id"])
+        self.assertNotIn(chat_id, _session_context_sent)
 
     def test_sdk_client_reconnects_when_allowed_commands_change_at_same_level(self) -> None:
         chat_id = self._create_direct_chat(model="claude-opus-4.6")
