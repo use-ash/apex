@@ -426,7 +426,7 @@ def _make_sdk_tool_gate(level: int, *, allowed_commands: list[str] | None = None
             command_err = validate_command(
                 command,
                 str(WORKSPACE),
-                permission_level=min(level, 2),
+                permission_level=level,
                 allowed_commands=allowed_commands,
             )
             if command_err:
