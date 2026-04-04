@@ -32,7 +32,7 @@ _CHAT_UPDATE_FIELDS = frozenset({"title", "model", "profile_id", "claude_session
 DEFAULT_TOOL_POLICY_LEVEL = 1
 LEGACY_TOOL_POLICY_LEVEL = 2
 MIN_TOOL_POLICY_LEVEL = 0
-MAX_TOOL_POLICY_LEVEL = 3
+MAX_TOOL_POLICY_LEVEL = 4
 _VALID_INVOKE_POLICIES = frozenset({"anyone", "owner_only"})
 
 # ---------------------------------------------------------------------------

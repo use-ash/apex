@@ -733,6 +733,19 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
             + ("." if len(names) <= 5 else ", ...")
         )
 
+    def _merge_blocked_tool_result(partial_text: str, blocked_tool_message: str) -> str:
+        denial_note = (
+            f"{blocked_tool_message}\n"
+            "The assistant's partial response was preserved, but any blocked tool work "
+            "did not run. Update permissions and continue the same task to resume."
+        ).strip()
+        partial = partial_text.strip()
+        if not partial:
+            return denial_note
+        if denial_note in partial:
+            return partial
+        return f"{partial}\n\n---\n{denial_note}"
+
     async def _flush_pending_tools(default_content: str = "", default_is_error: bool = False) -> None:
         if not pending_tools:
             return
@@ -836,11 +849,8 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
                         f"SDK pending tool flush forced deny: chat={chat_id} "
                         f"tools={[item.get('name') for item in blocked_tools]}"
                     )
-                    final_text = (
-                        f"{blocked_tool_message}\n\n"
-                        "The assistant attempted a blocked tool action, so the "
-                        "follow-up response was discarded."
-                    )
+                    final_text = result_text or msg.result or ""
+                    final_text = _merge_blocked_tool_result(final_text, blocked_tool_message)
                 result_info = {
                     "session_id": msg.session_id,
                     "text": final_text,

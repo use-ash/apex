@@ -434,13 +434,17 @@ async def api_elevate_chat_tool_policy(chat_id: str, request: Request):
         minutes = int(data.get("minutes", data.get("duration_minutes", 15)))
     except (TypeError, ValueError):
         return JSONResponse({"error": "minutes must be an integer"}, status_code=400)
+    try:
+        target_level = int(data.get("level", 3))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "level must be an integer"}, status_code=400)
     if minutes < 1 or minutes > 24 * 60:
         return JSONResponse({"error": "minutes must be between 1 and 1440"}, status_code=400)
     current = _get_chat_tool_policy(chat_id)
     default_level = int(current.get("default_level", current.get("level", 2)))
     expires_at = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat(timespec="seconds")
     current["default_level"] = default_level
-    current["level"] = 3
+    current["level"] = max(default_level, min(4, target_level))
     current["elevated_until"] = expires_at
     policy = _set_chat_tool_policy(chat_id, current, default_level=default_level)
     return JSONResponse({"ok": True, "chat_id": chat_id, "tool_policy": policy, "expires_at": expires_at})

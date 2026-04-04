@@ -381,6 +381,8 @@ def _resolve_sdk_permission_level(client_key: str | None, chat_id: str | None = 
 def _sdk_permission_mode_for_level(level: int) -> str:
     if level <= 1:
         return "plan"
+    if level >= 4:
+        return "bypassPermissions"
     return "acceptEdits"
 
 
@@ -402,10 +404,16 @@ def _sdk_resolve_path(path: str) -> str:
     return os.path.realpath(os.path.join(str(WORKSPACE), expanded))
 
 
-def _sdk_path_error(tool_name: str, tool_input: dict) -> str | None:
+def _sdk_path_error(tool_name: str, tool_input: dict, *, permission_level: int = 2) -> str | None:
+    if permission_level >= 4:
+        return None
     allow_write = tool_name in _SDK_WRITE_TOOLS
     for raw_path in _sdk_tool_input_paths(tool_input):
-        err = validate_path(_sdk_resolve_path(raw_path), allow_write=allow_write)
+        err = validate_path(
+            _sdk_resolve_path(raw_path),
+            allow_write=allow_write,
+            permission_level=permission_level,
+        )
         if err:
             return err
     return None
@@ -418,7 +426,9 @@ def _make_sdk_tool_gate(level: int, *, allowed_commands: list[str] | None = None
                 message="This agent is Restricted and cannot use tools or access files.",
                 interrupt=True,
             )
-        path_err = _sdk_path_error(tool_name, tool_input)
+        if level >= 4:
+            return PermissionResultAllow()
+        path_err = _sdk_path_error(tool_name, tool_input, permission_level=level)
         if path_err:
             return PermissionResultDeny(message=path_err, interrupt=True)
         if tool_name == "Bash":
