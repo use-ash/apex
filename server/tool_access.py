@@ -1,8 +1,10 @@
 """Shared tool-access policy for SDK and tool-loop backends."""
 from __future__ import annotations
 
+import json
 from typing import Iterable
 
+import env
 from local_model.safety import ensure_workspace_path, validate_command
 
 SDK_TOOL_NAME_MAP = {
@@ -23,21 +25,138 @@ STANDARD_LOCAL_TOOLS = frozenset({"read_file", "list_files", "search_files"})
 BUILTIN_LOCAL_TOOLS = frozenset(
     {"bash", "read_file", "write_file", "list_files", "search_files"}
 )
-LEVEL2_ALLOWED_MCP_PREFIXES = ("playwright__", "fetch__")
-LEVEL2_ALLOWED_MCP_EXACT = frozenset(
-    {
-        "filesystem__read_file",
-        "filesystem__read_text_file",
-        "filesystem__read_media_file",
-        "filesystem__read_multiple_files",
-        "filesystem__list_directory",
-        "filesystem__list_directory_with_sizes",
-        "filesystem__directory_tree",
-        "filesystem__search_files",
-        "filesystem__get_file_info",
-        "filesystem__list_allowed_directories",
-    }
+DEFAULT_LEVEL2_TOOL_PATTERNS = (
+    "bash",
+    "read_file",
+    "write_file",
+    "list_files",
+    "search_files",
+    "fetch__*",
+    "playwright__*",
+    "filesystem__read_file",
+    "filesystem__read_text_file",
+    "filesystem__read_media_file",
+    "filesystem__read_multiple_files",
+    "filesystem__list_directory",
+    "filesystem__list_directory_with_sizes",
+    "filesystem__directory_tree",
+    "filesystem__search_files",
+    "filesystem__get_file_info",
+    "filesystem__list_allowed_directories",
 )
+
+TOOL_POLICY_CATALOG = {
+    "bash": {
+        "name": "Shell Command",
+        "description": "Run tightly restricted shell commands using the level's command rules.",
+        "category": "built-in",
+    },
+    "read_file": {
+        "name": "Read File",
+        "description": "Read a single file from allowed workspace roots.",
+        "category": "built-in",
+    },
+    "write_file": {
+        "name": "Write File",
+        "description": "Create or edit files in allowed writable roots for the current level.",
+        "category": "built-in",
+    },
+    "list_files": {
+        "name": "List Files",
+        "description": "List directories and discover files inside allowed roots.",
+        "category": "built-in",
+    },
+    "search_files": {
+        "name": "Search Files",
+        "description": "Search file contents inside allowed workspace roots.",
+        "category": "built-in",
+    },
+    "fetch__*": {
+        "name": "Fetch MCP",
+        "description": "Fetch web content through the MCP fetch server.",
+        "category": "mcp",
+    },
+    "playwright__*": {
+        "name": "Playwright MCP",
+        "description": "Drive a browser for live UI validation and testing.",
+        "category": "mcp",
+    },
+    "filesystem__read_file": {
+        "name": "Filesystem: Read File",
+        "description": "Read a file through the filesystem MCP server.",
+        "category": "mcp",
+    },
+    "filesystem__read_text_file": {
+        "name": "Filesystem: Read Text File",
+        "description": "Read text content through the filesystem MCP server.",
+        "category": "mcp",
+    },
+    "filesystem__read_media_file": {
+        "name": "Filesystem: Read Media File",
+        "description": "Read image or media data through the filesystem MCP server.",
+        "category": "mcp",
+    },
+    "filesystem__read_multiple_files": {
+        "name": "Filesystem: Read Multiple Files",
+        "description": "Read a batch of files from allowed directories.",
+        "category": "mcp",
+    },
+    "filesystem__list_directory": {
+        "name": "Filesystem: List Directory",
+        "description": "List one directory through the filesystem MCP server.",
+        "category": "mcp",
+    },
+    "filesystem__list_directory_with_sizes": {
+        "name": "Filesystem: List Directory With Sizes",
+        "description": "List a directory with file size metadata.",
+        "category": "mcp",
+    },
+    "filesystem__directory_tree": {
+        "name": "Filesystem: Directory Tree",
+        "description": "Inspect a directory tree through the filesystem MCP server.",
+        "category": "mcp",
+    },
+    "filesystem__search_files": {
+        "name": "Filesystem: Search Files",
+        "description": "Search files by pattern through the filesystem MCP server.",
+        "category": "mcp",
+    },
+    "filesystem__get_file_info": {
+        "name": "Filesystem: File Info",
+        "description": "Read metadata for a file or directory.",
+        "category": "mcp",
+    },
+    "filesystem__list_allowed_directories": {
+        "name": "Filesystem: Allowed Directories",
+        "description": "Show the current filesystem MCP root directories.",
+        "category": "mcp",
+    },
+    "filesystem__write_file": {
+        "name": "Filesystem: Write File",
+        "description": "Write a file through the filesystem MCP server.",
+        "category": "mcp",
+    },
+    "filesystem__edit_file": {
+        "name": "Filesystem: Edit File",
+        "description": "Edit an existing file through the filesystem MCP server.",
+        "category": "mcp",
+    },
+    "filesystem__create_directory": {
+        "name": "Filesystem: Create Directory",
+        "description": "Create a directory through the filesystem MCP server.",
+        "category": "mcp",
+    },
+    "filesystem__move_file": {
+        "name": "Filesystem: Move File",
+        "description": "Move or rename a file through the filesystem MCP server.",
+        "category": "mcp",
+    },
+    "memory__*": {
+        "name": "Memory MCP",
+        "description": "Read or mutate the shared structured memory graph.",
+        "category": "mcp",
+    },
+}
 
 
 def canonical_tool_name(tool_name: str) -> str:
@@ -58,10 +177,72 @@ def _iter_mcp_tool_names() -> list[str]:
         return []
 
 
-def _allow_level2_mcp_tool(name: str) -> bool:
-    if name in LEVEL2_ALLOWED_MCP_EXACT:
-        return True
-    return any(name.startswith(prefix) for prefix in LEVEL2_ALLOWED_MCP_PREFIXES)
+def _normalize_tool_patterns(raw: Iterable[str]) -> list[str]:
+    seen: list[str] = []
+    for item in raw:
+        value = canonical_tool_name(str(item).strip())
+        if not value:
+            continue
+        if value not in TOOL_POLICY_CATALOG:
+            continue
+        if value not in seen:
+            seen.append(value)
+    return seen
+
+
+def _read_policy_config() -> dict:
+    config_path = env.APEX_ROOT / "state" / "config.json"
+    try:
+        if config_path.exists():
+            data = json.loads(config_path.read_text())
+            if isinstance(data, dict):
+                return data.get("policy", {}) or {}
+    except Exception:
+        pass
+    return {}
+
+
+def get_workspace_tool_patterns() -> list[str]:
+    policy = _read_policy_config()
+    raw = policy.get("workspace_tools", "")
+    if isinstance(raw, list):
+        patterns = _normalize_tool_patterns(raw)
+        return patterns or list(DEFAULT_LEVEL2_TOOL_PATTERNS)
+    text = str(raw or "").replace("\r\n", "\n").replace("\r", "\n")
+    items: list[str] = []
+    for line in text.split("\n"):
+        for chunk in line.split(","):
+            item = chunk.strip()
+            if item:
+                items.append(item)
+    patterns = _normalize_tool_patterns(items)
+    return patterns or list(DEFAULT_LEVEL2_TOOL_PATTERNS)
+
+
+def tool_matches_pattern(tool_name: str, pattern: str) -> bool:
+    canonical = canonical_tool_name(tool_name)
+    normalized = canonical_tool_name(pattern)
+    if normalized.endswith("*"):
+        return canonical.startswith(normalized[:-1])
+    return canonical == normalized
+
+
+def get_tool_catalog() -> list[dict[str, str | bool]]:
+    workspace_set = set(get_workspace_tool_patterns())
+    items: list[dict[str, str | bool]] = []
+    for tool_id, meta in TOOL_POLICY_CATALOG.items():
+        items.append(
+            {
+                "id": tool_id,
+                "name": str(meta["name"]),
+                "description": str(meta["description"]),
+                "category": str(meta["category"]),
+                "workspace_default": tool_id in DEFAULT_LEVEL2_TOOL_PATTERNS,
+                "workspace_enabled": tool_id in workspace_set,
+            }
+        )
+    items.sort(key=lambda item: (str(item["category"]), str(item["name"])))
+    return items
 
 
 def tool_allowed_for_level(name: str, level: int) -> bool:
@@ -70,12 +251,16 @@ def tool_allowed_for_level(name: str, level: int) -> bool:
         return False
     if level >= 4:
         return True
+    if level == 1:
+        return canonical in STANDARD_LOCAL_TOOLS
+    if level == 2:
+        return any(tool_matches_pattern(canonical, pattern) for pattern in get_workspace_tool_patterns())
     if canonical in BUILTIN_LOCAL_TOOLS:
-        return level >= 2 or canonical in STANDARD_LOCAL_TOOLS
+        return canonical in BUILTIN_LOCAL_TOOLS
     if canonical.startswith("filesystem__"):
-        return level >= 3 or _allow_level2_mcp_tool(canonical)
+        return True
     if canonical.startswith("playwright__") or canonical.startswith("fetch__"):
-        return level >= 2
+        return True
     if canonical.startswith("memory__"):
         return level >= 3
     return level >= 3

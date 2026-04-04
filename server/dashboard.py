@@ -123,6 +123,7 @@ from db import (
 import env
 from log import LOG_PATH
 from model_dispatch import get_available_model_ids
+from tool_access import get_tool_catalog, get_workspace_tool_patterns
 
 # ---------------------------------------------------------------------------
 # Module state — set by init_dashboard() at server startup
@@ -954,6 +955,50 @@ async def _update_config_section(section: str, request: Request) -> JSONResponse
     except Exception as e:
         _log.error(f"Config update failed: {e}")
         return _error("Configuration update failed", "CONFIG_WRITE_ERROR")
+
+
+@dashboard_app.get("/api/policy/tools")
+async def api_policy_tools():
+    """Return normalized tool catalog and current Workspace + Browser selection."""
+    if _config is None:
+        return _not_initialized()
+    return JSONResponse(
+        {
+            "workspace_tools": get_workspace_tool_patterns(),
+            "catalog": get_tool_catalog(),
+        }
+    )
+
+
+@dashboard_app.put("/api/policy/tools")
+async def api_policy_tools_update(request: Request):
+    """Update the normalized tool set for level 2 (Workspace + Browser)."""
+    if _config is None:
+        return _not_initialized()
+    try:
+        body = await request.json()
+    except Exception:
+        return _error("Invalid JSON", "INVALID_JSON", 400)
+    raw = body.get("workspace_tools", [])
+    if isinstance(raw, list):
+        text = "\n".join(str(item).strip() for item in raw if str(item).strip())
+    else:
+        text = str(raw or "")
+    try:
+        new_values, restart_required = _config.update_section("policy", {"workspace_tools": text})
+        return JSONResponse(
+            {
+                "status": "ok",
+                "section": "policy",
+                "config": new_values,
+                "workspace_tools": get_workspace_tool_patterns(),
+                "catalog": get_tool_catalog(),
+                "restart_required": restart_required,
+            }
+        )
+    except ValueError as e:
+        _log.warning("Policy tool config validation error: %s", e)
+        return _error("Invalid policy tool configuration", "VALIDATION_ERROR", 422)
 
 
 # ===========================================================================

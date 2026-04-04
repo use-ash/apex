@@ -80,6 +80,7 @@ class SecurityFixTests(unittest.TestCase):
             TEST_ROOT / "state" / env.DB_NAME,
             TEST_ROOT / "state" / "ssl",
         )
+        dashboard_mod._config.update_section("policy", {"workspace_tools": ""})
         mark_phase_completed(TEST_ROOT / "state", "setup_complete")
         with apex._db_lock:
             conn = apex._get_db()
@@ -719,6 +720,16 @@ class SecurityFixTests(unittest.TestCase):
         self.assertIn("filesystem__read_text_file", allowed)
         self.assertNotIn("filesystem__write_file", allowed)
         self.assertNotIn("memory__read_graph", allowed)
+
+    def test_tool_access_level_2_honors_configured_workspace_tool_patterns(self) -> None:
+        dashboard_mod._config.update_section(
+            "policy",
+            {"workspace_tools": "playwright__*\nfetch__*"},
+        )
+        self.assertTrue(tool_access.tool_allowed_for_level("playwright__browser_navigate", 2))
+        self.assertTrue(tool_access.tool_allowed_for_level("fetch__fetch", 2))
+        self.assertFalse(tool_access.tool_allowed_for_level("filesystem__read_text_file", 2))
+        self.assertFalse(tool_access.tool_allowed_for_level("bash", 2))
 
     def test_tool_access_level_2_denies_memory_and_filesystem_writes(self) -> None:
         allowed, message = tool_access.tool_access_decision(
@@ -1960,6 +1971,30 @@ class SecurityFixTests(unittest.TestCase):
         self.assertTrue(spec["multiline"])
         self.assertIn("project-a", spec["placeholder"])
 
+    def test_config_schema_marks_policy_workspace_tools_multiline(self) -> None:
+        spec = dashboard_mod.SCHEMA["policy"]["workspace_tools"]
+        self.assertTrue(spec["multiline"])
+        self.assertIn("playwright__*", spec["placeholder"])
+
+    def test_dashboard_policy_tools_round_trip(self) -> None:
+        with self._client() as client:
+            put_resp = client.put(
+                "/admin/api/policy/tools",
+                headers=self._admin_headers(),
+                json={"workspace_tools": ["playwright__*", "fetch__*"]},
+            )
+            self.assertEqual(put_resp.status_code, 200, put_resp.text)
+            payload = put_resp.json()
+            self.assertEqual(payload["workspace_tools"], ["playwright__*", "fetch__*"])
+
+            get_resp = client.get("/admin/api/policy/tools", headers=self._admin_headers())
+            self.assertEqual(get_resp.status_code, 200, get_resp.text)
+            catalog = get_resp.json()["catalog"]
+            play = next(item for item in catalog if item["id"] == "playwright__*")
+            self.assertEqual(play["name"], "Playwright MCP")
+            self.assertTrue(play["workspace_enabled"])
+            self.assertEqual(get_resp.json()["workspace_tools"], ["playwright__*", "fetch__*"])
+
     def test_dashboard_html_keeps_multiline_workspace_js_escaped(self) -> None:
         self.assertIn(
             'split(":").join("\\n")',
@@ -1969,6 +2004,8 @@ class SecurityFixTests(unittest.TestCase):
         self.assertIn('id="persona-tool-policy"></select>', dashboard_html_mod.DASHBOARD_HTML)
         self.assertIn('Workspace + Browser', dashboard_html_mod.DASHBOARD_HTML)
         self.assertIn('id="policy-level-detail"', dashboard_html_mod.DASHBOARD_HTML)
+        self.assertIn('id="policy-workspace-tools-content"', dashboard_html_mod.DASHBOARD_HTML)
+        self.assertIn('data-policy-workspace-save', dashboard_html_mod.DASHBOARD_HTML)
 
     def test_new_chat_picker_includes_no_profile_option(self) -> None:
         self.assertIn("Plain chat with no persona assigned", chat_html_mod.CHAT_HTML)

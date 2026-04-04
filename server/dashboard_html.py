@@ -2015,6 +2015,21 @@ select {
                         <div class="loading-overlay"><div class="spinner"></div> Loading policy levels...</div>
                     </div>
                     <div id="policy-level-detail" class="card" style="margin-top:12px; padding:14px;"></div>
+                    <div class="card" style="margin-top:12px; padding:14px;">
+                        <div class="card-title" style="margin-bottom:8px;">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="3" y="5" width="18" height="14" rx="2"/>
+                                <path d="M7 9h10"/>
+                                <path d="M7 13h6"/>
+                            </svg>
+                            Workspace + Browser Tool Set
+                        </div>
+                        <div class="form-help" style="margin-bottom:10px;">Level 2 uses this normalized tool list. Toggle what Workspace + Browser includes, then save.</div>
+                        <div id="policy-workspace-tools-status" class="form-help" style="margin-bottom:10px;"></div>
+                        <div id="policy-workspace-tools-content">
+                            <div class="loading-overlay"><div class="spinner"></div> Loading workspace tool set...</div>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="card">
@@ -4070,6 +4085,8 @@ let personaModelsData = [];
 let currentPersonaId = "";
 let currentPersonaToolPolicy = null;
 let policyProfilesData = [];
+let policyToolCatalogData = [];
+let policyWorkspaceTools = [];
 let selectedPolicyLevel = 2;
 
 const TOOL_POLICY_LABELS = {
@@ -4113,14 +4130,14 @@ const TOOL_POLICY_DETAILS = {
     2: {
         summary: "Workspace-safe tools plus browser testing.",
         allowed: [
-            "Built-in workspace tools",
-            "Playwright MCP",
-            "Fetch MCP",
-            "Read-only filesystem MCP",
+            "Configured Workspace + Browser tool set",
+            "Playwright MCP when enabled",
+            "Fetch MCP when enabled",
+            "Selected filesystem read tools",
         ],
         denied: [
-            "Filesystem MCP writes/edits",
-            "Memory MCP writes",
+            "Filesystem MCP writes/edits unless promoted to a higher level",
+            "Memory MCP unless promoted to a higher level",
             "Admin shell allowlist mode",
             "Full unrestricted access",
         ],
@@ -4231,6 +4248,7 @@ function renderPolicyLevelGuide() {
             (selectedPolicyLevel + ' · ' + esc(toolPolicyLabel(selectedPolicyLevel))) +
         '</div>' +
         '<div class="form-help" style="margin-bottom:10px;">' + esc(selected.summary) + '</div>' +
+        (selectedPolicyLevel === 2 ? '<div class="form-help" style="margin-bottom:10px;">The exact Workspace + Browser tool set is defined in the editor below.</div>' : '') +
         '<div class="card-grid" style="grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); margin:0;">' +
             '<div class="card" style="padding:12px; margin:0;">' +
                 '<strong>Allowed</strong>' + list(selected.allowed) +
@@ -4241,6 +4259,51 @@ function renderPolicyLevelGuide() {
         '</div>';
 }
 window.renderPolicyLevelGuide = renderPolicyLevelGuide;
+
+function setWorkspaceToolsStatus(message, type) {
+    var el = document.getElementById("policy-workspace-tools-status");
+    if (!el) return;
+    el.textContent = message || "";
+    el.style.color = type === "error" ? "var(--red)" : (type === "success" ? "var(--green)" : "var(--dim)");
+}
+
+function renderWorkspaceToolsEditor() {
+    var el = document.getElementById("policy-workspace-tools-content");
+    if (!el) return;
+    if (!policyToolCatalogData.length) {
+        el.innerHTML = '<div class="text-dim" style="padding:12px 0;">No tool catalog available.</div>';
+        return;
+    }
+    var enabledSet = new Set((policyWorkspaceTools || []).map(function(item) { return String(item); }));
+    var rows = policyToolCatalogData.slice().sort(function(a, b) {
+        var aEnabled = enabledSet.has(a.id) ? 1 : 0;
+        var bEnabled = enabledSet.has(b.id) ? 1 : 0;
+        if (aEnabled !== bEnabled) return bEnabled - aEnabled;
+        if (String(a.category) !== String(b.category)) return String(a.category).localeCompare(String(b.category));
+        return String(a.name).localeCompare(String(b.name));
+    }).map(function(tool) {
+        return '<label class="card" style="display:block; margin:0; padding:10px 12px;">' +
+            '<div style="display:flex; gap:10px; align-items:flex-start;">' +
+                '<input type="checkbox" data-workspace-tool-id="' + esc(tool.id) + '"' + (enabledSet.has(tool.id) ? ' checked' : '') + ' style="margin-top:2px;">' +
+                '<div style="min-width:0;">' +
+                    '<div style="font-weight:600;">' + esc(tool.name) + '</div>' +
+                    '<div class="form-help"><code>' + esc(tool.id) + '</code> · ' + esc(tool.category) + '</div>' +
+                    '<div class="form-help" style="margin-top:4px;">' + esc(tool.description) + '</div>' +
+                '</div>' +
+            '</div>' +
+        '</label>';
+    }).join('');
+    el.innerHTML =
+        '<div style="display:flex; gap:8px; align-items:center; justify-content:space-between; margin-bottom:12px; flex-wrap:wrap;">' +
+            '<div class="form-help">Selected tools apply immediately to level 2 across SDK and tool-loop backends.</div>' +
+            '<div style="display:flex; gap:8px; flex-wrap:wrap;">' +
+                '<button class="btn btn-ghost" data-policy-workspace-reset>Reset to Default</button>' +
+                '<button class="btn btn-primary" data-policy-workspace-save>Save Workspace Tool Set</button>' +
+            '</div>' +
+        '</div>' +
+        '<div style="display:grid; gap:8px;">' + rows + '</div>';
+}
+window.renderWorkspaceToolsEditor = renderWorkspaceToolsEditor;
 
 function personaModelOptions(selectedValue, includeBlank, blankLabel) {
     var options = includeBlank ? '<option value="">' + esc(blankLabel || 'None') + '</option>' : '';
@@ -4572,7 +4635,13 @@ async function loadPolicies() {
     if (btnRefresh) btnRefresh.disabled = true;
     renderPolicyLevelGuide();
     setPolicyPageStatus("Loading policies...");
+    setWorkspaceToolsStatus("Loading workspace tool set...");
     try {
+        var toolsResp = await apiFetch('/policy/tools');
+        policyToolCatalogData = toolsResp.catalog || [];
+        policyWorkspaceTools = toolsResp.workspace_tools || [];
+        renderWorkspaceToolsEditor();
+        setWorkspaceToolsStatus("Workspace tool set loaded.");
         var profilesResp = await rootApiFetch('/api/profiles');
         var profiles = profilesResp.profiles || [];
         var details = await Promise.all(profiles.map(function(profile) {
@@ -4586,6 +4655,7 @@ async function loadPolicies() {
         setPolicyPageStatus("Policies loaded.");
     } catch (err) {
         setPolicyPageStatus("Failed to load policies: " + err.message, "error");
+        setWorkspaceToolsStatus("Failed to load workspace tool set: " + err.message, "error");
         var el = document.getElementById("policy-page-content");
         if (el) el.innerHTML = renderError("Could not load policy data");
     } finally {
@@ -4593,6 +4663,41 @@ async function loadPolicies() {
     }
 }
 window.loadPolicies = loadPolicies;
+
+function _collectWorkspaceToolSelection() {
+    return Array.from(document.querySelectorAll('[data-workspace-tool-id]'))
+        .filter(function(el) { return el.checked; })
+        .map(function(el) { return el.dataset.workspaceToolId; });
+}
+
+async function saveWorkspaceToolPolicy() {
+    var selected = _collectWorkspaceToolSelection();
+    setWorkspaceToolsStatus("Saving workspace tool set...");
+    try {
+        var resp = await apiFetch('/policy/tools', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ workspace_tools: selected }),
+        });
+        policyToolCatalogData = resp.catalog || [];
+        policyWorkspaceTools = resp.workspace_tools || [];
+        renderWorkspaceToolsEditor();
+        renderPolicyLevelGuide();
+        setWorkspaceToolsStatus("Workspace tool set saved.", "success");
+    } catch (err) {
+        setWorkspaceToolsStatus("Failed to save workspace tool set: " + err.message, "error");
+    }
+}
+window.saveWorkspaceToolPolicy = saveWorkspaceToolPolicy;
+
+function resetWorkspaceToolPolicyDefaults() {
+    policyWorkspaceTools = policyToolCatalogData
+        .filter(function(tool) { return !!tool.workspace_default; })
+        .map(function(tool) { return tool.id; });
+    renderWorkspaceToolsEditor();
+    setWorkspaceToolsStatus("Reset to default workspace tool set. Save to apply.", "success");
+}
+window.resetWorkspaceToolPolicyDefaults = resetWorkspaceToolPolicyDefaults;
 
 async function savePersonaPolicyLevel(profileId) {
     var levelEl = document.querySelector('[data-policy-default-level="' + profileId + '"]');
@@ -6124,6 +6229,10 @@ document.addEventListener("click", function(e) {
         elevatePersonaPolicy(btn.dataset.policyElevate);
     } else if ((btn = e.target.closest("[data-policy-revoke]"))) {
         revokePersonaPolicy(btn.dataset.policyRevoke);
+    } else if ((btn = e.target.closest("[data-policy-workspace-save]"))) {
+        saveWorkspaceToolPolicy();
+    } else if ((btn = e.target.closest("[data-policy-workspace-reset]"))) {
+        resetWorkspaceToolPolicyDefaults();
     }
 });
 
