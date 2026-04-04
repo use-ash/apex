@@ -32,6 +32,7 @@ from model_dispatch import (
     MODEL_CONTEXT_WINDOWS, MODEL_CONTEXT_DEFAULT,
 )
 from state import _current_group_profile_id, _codex_threads, _codex_thread_turns
+from tool_access import allowed_tool_names_for_level
 
 _CODEX_MAX_THREAD_TURNS = int(os.environ.get("APEX_CODEX_MAX_TURNS", "8"))
 
@@ -237,9 +238,6 @@ _BACKEND_LABELS = {
     "mlx": "MLX",
 }
 _CODEX_RESPONSES_API_MODELS = {"o3", "o4-mini"}
-_STANDARD_LOCAL_TOOLS = frozenset({"read_file", "list_files", "search_files"})
-
-
 def validate_backend_attachments(backend: str, attachments: list[dict] | None) -> str | None:
     """Return a user-facing error when a backend cannot handle the attachment set."""
     if not attachments:
@@ -637,11 +635,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
     )
     permission_level = int(tool_policy.get("level", 2))
     allowed_commands = list(tool_policy.get("allowed_commands") or [])
-    allowed_local_tools: set[str] | None = None
-    if permission_level <= 0:
-        allowed_local_tools = set()
-    elif permission_level == 1:
-        allowed_local_tools = set(_STANDARD_LOCAL_TOOLS)
+    allowed_local_tools = allowed_tool_names_for_level(permission_level)
     if _TOOL_LOOP_AVAILABLE and ALLOW_LOCAL_TOOLS:
         sys_prompt = build_system_prompt(effective_model)
     else:

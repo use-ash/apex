@@ -46,6 +46,7 @@ import context as context_mod  # noqa: E402
 import premium_loader  # noqa: E402
 import routes_chat as routes_chat_mod  # noqa: E402
 import streaming as streaming_mod  # noqa: E402
+import tool_access  # noqa: E402
 import ws_handler  # noqa: E402
 from state import (  # noqa: E402
     _current_group_profile_id,
@@ -690,6 +691,58 @@ class SecurityFixTests(unittest.TestCase):
             {"read_file", "list_files", "search_files"},
         )
         self.assertEqual(run_tool_loop_mock.await_args.kwargs["permission_level"], 1)
+
+    def test_tool_access_level_2_allows_playwright_fetch_and_readonly_filesystem(self) -> None:
+        with mock.patch.object(
+            tool_access,
+            "_iter_mcp_tool_names",
+            return_value=[
+                "playwright__browser_navigate",
+                "fetch__fetch",
+                "filesystem__read_text_file",
+                "filesystem__write_file",
+                "memory__read_graph",
+            ],
+        ):
+            allowed = tool_access.allowed_tool_names_for_level(2)
+
+        self.assertIn("playwright__browser_navigate", allowed)
+        self.assertIn("fetch__fetch", allowed)
+        self.assertIn("filesystem__read_text_file", allowed)
+        self.assertNotIn("filesystem__write_file", allowed)
+        self.assertNotIn("memory__read_graph", allowed)
+
+    def test_tool_access_level_2_denies_memory_and_filesystem_writes(self) -> None:
+        allowed, message = tool_access.tool_access_decision(
+            "filesystem__write_file",
+            {"path": "/tmp/level2.txt", "content": "x"},
+            level=2,
+            allowed_commands=[],
+            workspace_paths=str(TEST_ROOT),
+        )
+        self.assertFalse(allowed)
+        self.assertIn("tool is not allowed", message)
+
+        allowed, message = tool_access.tool_access_decision(
+            "memory__read_graph",
+            {},
+            level=2,
+            allowed_commands=[],
+            workspace_paths=str(TEST_ROOT),
+        )
+        self.assertFalse(allowed)
+        self.assertIn("tool is not allowed", message)
+
+    def test_tool_access_level_2_allows_playwright(self) -> None:
+        allowed, message = tool_access.tool_access_decision(
+            "playwright__browser_navigate",
+            {"url": "https://example.com"},
+            level=2,
+            allowed_commands=[],
+            workspace_paths=str(TEST_ROOT),
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
 
     def test_local_model_admin_commands_use_prefix_match_and_protected_paths(self) -> None:
         workspace = str(TEST_ROOT)

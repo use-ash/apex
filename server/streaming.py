@@ -23,7 +23,7 @@ from fastapi import WebSocket
 
 from db import _get_db, _get_chat, _update_chat, _get_chat_tool_policy, _get_profile_tool_policy
 from log import log
-from local_model.safety import ensure_workspace_path, validate_command, validate_path
+from tool_access import tool_access_decision
 from memory_extract import _filter_stream_text_for_memory_tags, _clear_stream_text_filter
 from state import (
     _clients, _client_sessions, _client_last_used, _client_permission_levels, _client_permission_policies,
@@ -51,16 +51,6 @@ _STREAM_JOURNAL_DIR = APEX_ROOT / "state" / "streams"
 _STREAM_JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
 safe_chmod(_STREAM_JOURNAL_DIR, 0o700)
 _CHAT_ID_RE = re.compile(r"^[0-9a-f]{8,12}$")
-_STANDARD_SDK_TOOLS = frozenset({"Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch"})
-_SDK_WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
-_SDK_PATH_INPUT_KEYS = (
-    "path",
-    "file_path",
-    "new_path",
-    "old_path",
-    "notebook_path",
-)
-
 
 # ---------------------------------------------------------------------------
 # Stream ID
@@ -398,54 +388,18 @@ def _sdk_tool_input_paths(tool_input: dict) -> list[str]:
     return paths
 
 
-def _sdk_resolve_path(path: str) -> str:
-    expanded = os.path.expanduser(path)
-    if os.path.isabs(expanded):
-        return os.path.realpath(expanded)
-    return os.path.realpath(os.path.join(str(WORKSPACE), expanded))
-
-
-def _sdk_path_error(tool_name: str, tool_input: dict, *, permission_level: int = 2) -> str | None:
-    if permission_level >= 4:
-        return None
-    allow_write = tool_name in _SDK_WRITE_TOOLS
-    for raw_path in _sdk_tool_input_paths(tool_input):
-        _, err = ensure_workspace_path(
-            raw_path,
-            str(WORKSPACE_PATHS),
-            allow_write=allow_write,
-            permission_level=permission_level,
-        )
-        if err:
-            return err
-    return None
-
-
 def _make_sdk_tool_gate(level: int, *, allowed_commands: list[str] | None = None):
     async def _can_use_tool(tool_name: str, tool_input: dict, _context):
-        if level <= 0:
+        allowed, message = tool_access_decision(
+            tool_name,
+            tool_input if isinstance(tool_input, dict) else {},
+            level=level,
+            allowed_commands=allowed_commands,
+            workspace_paths=str(WORKSPACE_PATHS),
+        )
+        if not allowed:
             return PermissionResultDeny(
-                message="This agent is Restricted and cannot use tools or access files.",
-                interrupt=True,
-            )
-        if level >= 4:
-            return PermissionResultAllow()
-        path_err = _sdk_path_error(tool_name, tool_input, permission_level=level)
-        if path_err:
-            return PermissionResultDeny(message=path_err, interrupt=True)
-        if tool_name == "Bash":
-            command = str((tool_input or {}).get("command") or "").strip()
-            command_err = validate_command(
-                command,
-                str(WORKSPACE),
-                permission_level=level,
-                allowed_commands=allowed_commands,
-            )
-            if command_err:
-                return PermissionResultDeny(message=command_err, interrupt=True)
-        if level == 1 and tool_name not in _STANDARD_SDK_TOOLS:
-            return PermissionResultDeny(
-                message="This action requires Elevated or Admin permissions.",
+                message=message,
                 interrupt=True,
             )
         return PermissionResultAllow()
@@ -460,26 +414,13 @@ def _sdk_pre_tool_use_decision(
     level: int,
     allowed_commands: list[str] | None = None,
 ) -> tuple[bool, str]:
-    if level <= 0:
-        return False, "This agent is Restricted and cannot use tools or access files."
-    if level >= 4:
-        return True, ""
-    path_err = _sdk_path_error(tool_name, tool_input, permission_level=level)
-    if path_err:
-        return False, path_err
-    if tool_name == "Bash":
-        command = str((tool_input or {}).get("command") or "").strip()
-        command_err = validate_command(
-            command,
-            str(WORKSPACE),
-            permission_level=level,
-            allowed_commands=allowed_commands,
-        )
-        if command_err:
-            return False, command_err
-    if level == 1 and tool_name not in _STANDARD_SDK_TOOLS:
-        return False, "This action requires Elevated or Admin permissions."
-    return True, ""
+    return tool_access_decision(
+        tool_name,
+        tool_input if isinstance(tool_input, dict) else {},
+        level=level,
+        allowed_commands=allowed_commands,
+        workspace_paths=str(WORKSPACE_PATHS),
+    )
 
 
 def _make_sdk_pre_tool_use_hook(level: int, *, allowed_commands: list[str] | None = None):
@@ -544,7 +485,7 @@ def _make_options(
         hooks={
             "PreToolUse": [
                 HookMatcher(
-                    matcher="Bash|Read|Write|Edit|MultiEdit|NotebookEdit|Grep|Glob|LS|WebFetch|WebSearch",
+                    matcher=".*",
                     hooks=[_make_sdk_pre_tool_use_hook(permission_level, allowed_commands=allowed_commands)],
                 )
             ]
