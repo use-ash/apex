@@ -6197,6 +6197,172 @@ function updateTopbarProfile(profileName, profileAvatar) {
   }
 }
 
+function describeChatToolPolicy(policy) {
+  const level = Number((policy && policy.level) || 2);
+  if (level <= 0) return 'Restricted';
+  if (level === 1) return 'Standard Tools';
+  if (level === 2) return 'Workspace Tools';
+  return 'Admin Allowlist';
+}
+
+async function showDirectChatPermissions() {
+  if (!currentChat || currentChatType !== 'chat' || _currentChatProfileId) return;
+  document.querySelector('.profile-dropdown')?.remove();
+  document.querySelector('.profile-modal-overlay')?.remove();
+
+  let policy = {
+    level: 2,
+    default_level: 2,
+    elevated_until: null,
+    invoke_policy: 'anyone',
+    allowed_commands: [],
+  };
+  try {
+    const resp = await fetch(`/api/chats/${currentChat}/tool-policy`, {credentials: 'same-origin'});
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data && data.tool_policy) policy = data.tool_policy;
+    } else {
+      showToast('Failed to load chat permissions');
+      return;
+    }
+  } catch (e) {
+    reportError('showDirectChatPermissions', e);
+    showToast('Failed to load chat permissions');
+    return;
+  }
+
+  const overlay = document.createElement('div');
+  overlay.className = 'profile-modal-overlay';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+  const modal = document.createElement('div');
+  modal.className = 'profile-modal';
+  modal.style.maxWidth = '560px';
+
+  const header = document.createElement('div');
+  header.className = 'profile-modal-header';
+  header.innerHTML = '<h3>Chat Permissions</h3>';
+  const closeBtn = document.createElement('button');
+  closeBtn.innerHTML = '&times;';
+  closeBtn.onclick = () => overlay.remove();
+  header.appendChild(closeBtn);
+  modal.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'profile-modal-body';
+  body.innerHTML = `
+    <div style="display:grid;gap:14px">
+      <div style="font-size:13px;color:var(--dim);line-height:1.5">
+        Applies only to this direct chat while <strong>No Profile</strong> is selected.
+      </div>
+      <label style="display:grid;gap:6px">
+        <span style="font-size:12px;font-weight:600;color:var(--dim)">Permission Level</span>
+        <select id="chat-perm-level" class="gs-select">
+          <option value="0">Restricted</option>
+          <option value="1">Standard Tools</option>
+          <option value="2">Workspace Tools</option>
+          <option value="3">Admin Allowlist</option>
+        </select>
+      </label>
+      <label style="display:grid;gap:6px">
+        <span style="font-size:12px;font-weight:600;color:var(--dim)">Allowed Commands</span>
+        <textarea id="chat-perm-commands" class="gs-name-input" rows="5" placeholder="One command prefix per line, e.g.&#10;git push&#10;sqlite3"></textarea>
+        <span style="font-size:12px;color:var(--dim)">Used only for Admin Allowlist. Bash commands must start with one of these prefixes.</span>
+      </label>
+      <label style="display:grid;gap:6px">
+        <span style="font-size:12px;font-weight:600;color:var(--dim)">Temporary Admin Minutes</span>
+        <input id="chat-perm-minutes" class="gs-name-input" type="number" min="1" max="1440" placeholder="15" />
+        <span id="chat-perm-expiry" style="font-size:12px;color:var(--dim)"></span>
+      </label>
+      <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap">
+        <button id="chat-perm-revoke" class="gs-inline-btn" type="button">Reset to Default</button>
+        <button id="chat-perm-save" class="gs-add-btn" type="button" style="margin:0">Save</button>
+      </div>
+    </div>`;
+
+  modal.appendChild(body);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  const levelEl = body.querySelector('#chat-perm-level');
+  const commandsEl = body.querySelector('#chat-perm-commands');
+  const minutesEl = body.querySelector('#chat-perm-minutes');
+  const expiryEl = body.querySelector('#chat-perm-expiry');
+  const saveBtn = body.querySelector('#chat-perm-save');
+  const revokeBtn = body.querySelector('#chat-perm-revoke');
+  const defaultLevel = Number(policy.default_level || 2);
+
+  function syncExpiryText() {
+    if (policy.elevated_until) {
+      expiryEl.textContent = `Current expiry: ${new Date(policy.elevated_until).toLocaleString()}`;
+    } else {
+      expiryEl.textContent = `Default level: ${describeChatToolPolicy({level: defaultLevel})}`;
+    }
+  }
+
+  levelEl.value = String(Number(policy.level || defaultLevel));
+  commandsEl.value = (policy.allowed_commands || []).join('\n');
+  minutesEl.value = '';
+  syncExpiryText();
+
+  revokeBtn.onclick = async () => {
+    try {
+      const resp = await fetch(`/api/chats/${currentChat}/tool-policy/revoke`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json'},
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      policy = data.tool_policy || policy;
+      levelEl.value = String(Number(policy.level || defaultLevel));
+      minutesEl.value = '';
+      syncExpiryText();
+      showToast('Chat permissions reset');
+    } catch (e) {
+      reportError('revokeChatToolPolicy', e);
+      showToast('Failed to reset chat permissions');
+    }
+  };
+
+  saveBtn.onclick = async () => {
+    const level = Number(levelEl.value || defaultLevel);
+    const minutes = Number(minutesEl.value || 0);
+    const allowedCommands = commandsEl.value
+      .split('\n')
+      .map(v => v.trim())
+      .filter(Boolean);
+    let elevatedUntil = null;
+    if (level > defaultLevel && minutes > 0) {
+      elevatedUntil = new Date(Date.now() + minutes * 60 * 1000).toISOString();
+    }
+    const payload = {
+      level,
+      default_level: defaultLevel,
+      elevated_until: elevatedUntil,
+      invoke_policy: policy.invoke_policy || 'anyone',
+      allowed_commands: allowedCommands,
+    };
+    try {
+      const resp = await fetch(`/api/chats/${currentChat}/tool-policy`, {
+        method: 'PUT',
+        credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      policy = data.tool_policy || payload;
+      syncExpiryText();
+      showToast(`Chat permissions saved: ${describeChatToolPolicy(policy)}`);
+    } catch (e) {
+      reportError('saveChatToolPolicy', e);
+      showToast('Failed to save chat permissions');
+    }
+  };
+}
+
 function showProfileDropdown(event) {
   event.stopPropagation();
   if (currentChatType !== 'chat') return;
@@ -6219,6 +6385,14 @@ function showProfileDropdown(event) {
     (!_currentChatProfileId ? '<span class="pd-check">✓</span>' : '');
   noneItem.onclick = () => { dd.remove(); changeChatProfile(''); };
   dd.appendChild(noneItem);
+
+  if (!_currentChatProfileId) {
+    const permissionsItem = document.createElement('div');
+    permissionsItem.className = 'pd-item';
+    permissionsItem.innerHTML = '<span class="pd-avatar">🛡️</span><span class="pd-name">Chat Permissions…</span>';
+    permissionsItem.onclick = () => { dd.remove(); showDirectChatPermissions(); };
+    dd.appendChild(permissionsItem);
+  }
 
   _profilesCache.forEach(p => {
     const item = document.createElement('div');

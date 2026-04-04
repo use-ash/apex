@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 
 import env
 from fastapi import APIRouter, Request
@@ -14,10 +15,11 @@ from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
 from db import (
-    _get_db, _now,
+    _get_db,
     SYSTEM_PROFILE_ID,
     _create_chat, _get_chats, _get_chat, _update_chat, _delete_chat,
     _get_chat_settings, _update_chat_settings,
+    _get_chat_tool_policy, _normalize_tool_policy, _set_chat_tool_policy,
     _get_group_members,
     _add_group_member,
     _update_group_member,
@@ -48,6 +50,16 @@ APEX_ROOT = env.APEX_ROOT
 COMPACTION_THRESHOLD = env.COMPACTION_THRESHOLD
 
 _license_mgr = get_license_manager()
+
+
+def _direct_chat_tool_policy_error(chat: dict | None) -> JSONResponse | None:
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    if str(chat.get("type") or "chat").strip() != "chat":
+        return JSONResponse({"error": "Chat-level permissions only apply to direct chats"}, status_code=400)
+    if str(chat.get("profile_id") or "").strip():
+        return JSONResponse({"error": "This chat already inherits permissions from its assigned profile"}, status_code=400)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +391,73 @@ async def api_update_chat_settings(chat_id: str, request: Request):
         return JSONResponse({"error": f"No valid settings. Allowed: {', '.join(sorted(allowed))}"}, status_code=400)
     updated = _update_chat_settings(chat_id, filtered)
     return JSONResponse({"ok": True, "settings": updated})
+
+
+@chat_router.get("/api/chats/{chat_id}/tool-policy")
+async def api_get_chat_tool_policy(chat_id: str):
+    chat = _get_chat(chat_id)
+    err = _direct_chat_tool_policy_error(chat)
+    if err:
+        return err
+    return JSONResponse({"tool_policy": _get_chat_tool_policy(chat_id)})
+
+
+@chat_router.put("/api/chats/{chat_id}/tool-policy")
+async def api_set_chat_tool_policy(chat_id: str, request: Request):
+    chat = _get_chat(chat_id)
+    err = _direct_chat_tool_policy_error(chat)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse({"error": "Request body must be a JSON object"}, status_code=400)
+    default_level = int(_get_chat_tool_policy(chat_id).get("default_level", 2))
+    policy = _normalize_tool_policy(data, default_level=default_level)
+    policy = _set_chat_tool_policy(chat_id, policy, default_level=default_level)
+    return JSONResponse({"ok": True, "tool_policy": policy})
+
+
+@chat_router.post("/api/chats/{chat_id}/tool-policy/elevate")
+async def api_elevate_chat_tool_policy(chat_id: str, request: Request):
+    chat = _get_chat(chat_id)
+    err = _direct_chat_tool_policy_error(chat)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    try:
+        minutes = int(data.get("minutes", data.get("duration_minutes", 15)))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "minutes must be an integer"}, status_code=400)
+    if minutes < 1 or minutes > 24 * 60:
+        return JSONResponse({"error": "minutes must be between 1 and 1440"}, status_code=400)
+    current = _get_chat_tool_policy(chat_id)
+    default_level = int(current.get("default_level", current.get("level", 2)))
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat(timespec="seconds")
+    current["default_level"] = default_level
+    current["level"] = 3
+    current["elevated_until"] = expires_at
+    policy = _set_chat_tool_policy(chat_id, current, default_level=default_level)
+    return JSONResponse({"ok": True, "chat_id": chat_id, "tool_policy": policy, "expires_at": expires_at})
+
+
+@chat_router.post("/api/chats/{chat_id}/tool-policy/revoke")
+async def api_revoke_chat_tool_policy(chat_id: str):
+    chat = _get_chat(chat_id)
+    err = _direct_chat_tool_policy_error(chat)
+    if err:
+        return err
+    current = _get_chat_tool_policy(chat_id)
+    default_level = int(current.get("default_level", current.get("level", 2)))
+    current["level"] = default_level
+    current["elevated_until"] = None
+    policy = _set_chat_tool_policy(chat_id, current, default_level=default_level)
+    return JSONResponse({"ok": True, "chat_id": chat_id, "tool_policy": policy})
 
 
 @chat_router.delete("/api/threads/stale")

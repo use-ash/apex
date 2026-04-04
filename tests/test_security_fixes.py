@@ -1427,6 +1427,71 @@ class SecurityFixTests(unittest.TestCase):
             self.assertEqual(revoked["tool_policy"]["level"], 1)
             self.assertIsNone(revoked["tool_policy"]["elevated_until"])
 
+    def test_unassigned_direct_chat_uses_chat_level_tool_policy(self) -> None:
+        chat_id = self._create_direct_chat(model="claude-opus-4.6")
+        policy = db_mod._set_chat_tool_policy(
+            chat_id,
+            {
+                "level": 3,
+                "default_level": 2,
+                "elevated_until": None,
+                "allowed_commands": ["git push"],
+            },
+        )
+
+        self.assertEqual(policy["level"], 3)
+        self.assertEqual(db_mod._get_chat_tool_policy(chat_id)["level"], 3)
+        self.assertEqual(db_mod._get_chat_tool_policy(chat_id)["allowed_commands"], ["git push"])
+
+    def test_expired_chat_level_elevation_reverts_to_default_level_inline(self) -> None:
+        chat_id = self._create_direct_chat(model="claude-opus-4.6")
+        db_mod._set_chat_tool_policy(
+            chat_id,
+            {
+                "level": 3,
+                "default_level": 2,
+                "elevated_until": "2020-01-01T00:00:00+00:00",
+                "allowed_commands": ["git push"],
+            },
+        )
+
+        chat = db_mod._get_chat(chat_id)
+        policy = ws_handler._resolve_effective_tool_policy(chat_id, chat, None)
+
+        self.assertEqual(policy["level"], 2)
+        self.assertIsNone(policy["elevated_until"])
+        self.assertEqual(db_mod._get_chat_tool_policy(chat_id)["level"], 2)
+
+    def test_direct_chat_tool_policy_api_round_trip(self) -> None:
+        chat_id = self._create_direct_chat(model="claude-opus-4.6")
+
+        with self._client() as client:
+            update = client.put(
+                f"/api/chats/{chat_id}/tool-policy",
+                json={
+                    "level": 3,
+                    "default_level": 2,
+                    "allowed_commands": ["git push", "sqlite3"],
+                    "elevated_until": "2030-01-01T00:00:00+00:00",
+                },
+            )
+            self.assertEqual(update.status_code, 200, update.text)
+            updated = update.json()
+            self.assertTrue(updated["ok"])
+            self.assertEqual(updated["tool_policy"]["level"], 3)
+            self.assertEqual(updated["tool_policy"]["default_level"], 2)
+            self.assertEqual(updated["tool_policy"]["allowed_commands"], ["git push", "sqlite3"])
+
+            fetched = client.get(f"/api/chats/{chat_id}/tool-policy")
+            self.assertEqual(fetched.status_code, 200, fetched.text)
+            self.assertEqual(fetched.json()["tool_policy"]["level"], 3)
+
+            revoke = client.post(f"/api/chats/{chat_id}/tool-policy/revoke")
+            self.assertEqual(revoke.status_code, 200, revoke.text)
+            revoked = revoke.json()
+            self.assertEqual(revoked["tool_policy"]["level"], 2)
+            self.assertIsNone(revoked["tool_policy"]["elevated_until"])
+
     def test_group_multi_mentions_supplement_partial_premium_targets(self) -> None:
         chat_id = self._create_test_group_chat()
         primary = self._group_agent(chat_id, "queue-codeexpert")
