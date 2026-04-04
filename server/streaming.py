@@ -16,7 +16,8 @@ import uuid
 from collections import deque
 from pathlib import Path
 
-from env import APEX_ROOT, WORKSPACE, WORKSPACE_PATHS, MODEL, DEBUG, SDK_QUERY_TIMEOUT
+import env
+from env import APEX_ROOT, MODEL, DEBUG, SDK_QUERY_TIMEOUT
 from compat import safe_chmod
 
 from fastapi import WebSocket
@@ -347,11 +348,12 @@ def _load_mcp_servers() -> dict[str, dict]:
         servers = data.get("mcpServers", {})
         if not isinstance(servers, dict):
             return {}
-        return {
+        servers = {
             name: {k: v for k, v in cfg.items() if k != "enabled"}
             for name, cfg in servers.items()
             if isinstance(cfg, dict) and cfg.get("enabled", True)
         }
+        return env.rewrite_mcp_servers_for_workspace(servers)
     except (json.JSONDecodeError, OSError) as e:
         log(f"MCP config load failed: {e}")
         return {}
@@ -395,7 +397,7 @@ def _make_sdk_tool_gate(level: int, *, allowed_commands: list[str] | None = None
             tool_input if isinstance(tool_input, dict) else {},
             level=level,
             allowed_commands=allowed_commands,
-            workspace_paths=str(WORKSPACE_PATHS),
+            workspace_paths=env.get_runtime_workspace_paths(),
         )
         if not allowed:
             return PermissionResultDeny(
@@ -419,7 +421,7 @@ def _sdk_pre_tool_use_decision(
         tool_input if isinstance(tool_input, dict) else {},
         level=level,
         allowed_commands=allowed_commands,
-        workspace_paths=str(WORKSPACE_PATHS),
+        workspace_paths=env.get_runtime_workspace_paths(),
     )
 
 
@@ -468,14 +470,16 @@ def _make_options(
     """Build SDK options for a new or resumed session."""
     if permission_level is None:
         permission_level = _resolve_sdk_permission_level(client_key, chat_id)
+    workspace_root = env.get_runtime_workspace_root()
+    workspace_paths = env.get_runtime_workspace_paths_list()
     # Extra workspace roots beyond the primary (colon-separated APEX_WORKSPACE)
     extra_dirs = [
-        r.strip() for r in WORKSPACE_PATHS.split(":")[1:]
-        if r.strip() and r.strip() != str(WORKSPACE)
+        root for root in workspace_paths[1:]
+        if root and root != str(workspace_root)
     ]
     opts = ClaudeAgentOptions(
         model=model or MODEL,
-        cwd=str(WORKSPACE),
+        cwd=str(workspace_root),
         permission_mode=_sdk_permission_mode_for_level(permission_level),
         max_turns=50,
         resume=session_id,

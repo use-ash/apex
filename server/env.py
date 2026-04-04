@@ -20,6 +20,7 @@ Known default divergence (pre-existing, do not silently fix):
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from pathlib import Path
@@ -52,6 +53,103 @@ APEX_ROOT: Path = Path(
 _ws_raw: str = os.environ.get("APEX_WORKSPACE", os.getcwd())
 WORKSPACE: Path = Path(_ws_raw.split(":")[0].strip() or os.getcwd())
 WORKSPACE_PATHS: str = _ws_raw
+
+
+def _normalize_workspace_roots(raw: str | None) -> list[str]:
+    roots: list[str] = []
+    text = str(raw or "").replace("\r\n", "\n").replace("\r", "\n")
+    for line in text.split("\n"):
+        for chunk in line.split(":"):
+            item = chunk.strip()
+            if item and item not in roots:
+                roots.append(item)
+    return roots
+
+
+def get_runtime_workspace_paths_list() -> list[str]:
+    """Return workspace roots from config.json first, env fallback second."""
+    config_path = APEX_ROOT / "state" / "config.json"
+    try:
+        if config_path.exists():
+            data = json.loads(config_path.read_text())
+            raw = (
+                data.get("workspace", {}).get("path", "")
+                if isinstance(data, dict) else ""
+            )
+            roots = _normalize_workspace_roots(str(raw))
+            if roots:
+                return roots
+    except Exception:
+        pass
+    roots = _normalize_workspace_roots(WORKSPACE_PATHS)
+    return roots or [str(WORKSPACE)]
+
+
+def get_runtime_workspace_paths() -> str:
+    return ":".join(get_runtime_workspace_paths_list())
+
+
+def get_runtime_workspace_root() -> Path:
+    roots = get_runtime_workspace_paths_list()
+    return Path(roots[0] if roots else str(WORKSPACE))
+
+
+def rewrite_mcp_servers_for_workspace(
+    servers: dict[str, dict],
+    workspace_paths: str | list[str] | None = None,
+) -> dict[str, dict]:
+    """Rewrite filesystem MCP roots to the configured workspace roots."""
+    if isinstance(workspace_paths, str):
+        roots = _normalize_workspace_roots(workspace_paths)
+    elif isinstance(workspace_paths, list):
+        roots = [str(root).strip() for root in workspace_paths if str(root).strip()]
+    else:
+        roots = get_runtime_workspace_paths_list()
+    roots = roots or [str(WORKSPACE)]
+
+    rewritten: dict[str, dict] = {}
+    for name, cfg in servers.items():
+        if not isinstance(cfg, dict):
+            rewritten[name] = cfg
+            continue
+        command = str(cfg.get("command") or "")
+        args = list(cfg.get("args") or [])
+
+        # npx -y @modelcontextprotocol/server-filesystem <roots...>
+        if command == "npx" and "@modelcontextprotocol/server-filesystem" in args:
+            idx = args.index("@modelcontextprotocol/server-filesystem")
+            new_cfg = dict(cfg)
+            new_cfg["args"] = args[: idx + 1] + roots
+            rewritten[name] = new_cfg
+            continue
+
+        # docker run ... mcp/filesystem <roots...>
+        if command == "docker":
+            image_idx = next(
+                (i for i, arg in enumerate(args) if "mcp/filesystem" in str(arg)),
+                -1,
+            )
+            if image_idx >= 0:
+                prefix = args[:image_idx]
+                cleaned_prefix: list[str] = []
+                i = 0
+                while i < len(prefix):
+                    if prefix[i] == "-v" and (i + 1) < len(prefix):
+                        i += 2
+                        continue
+                    cleaned_prefix.append(prefix[i])
+                    i += 1
+                mounts: list[str] = []
+                for root in roots:
+                    mounts.extend(["-v", f"{root}:{root}"])
+                new_cfg = dict(cfg)
+                new_cfg["args"] = cleaned_prefix + mounts + [args[image_idx]] + roots
+                rewritten[name] = new_cfg
+                continue
+
+        rewritten[name] = cfg
+
+    return rewritten
 
 # ---------------------------------------------------------------------------
 # Models & SDK

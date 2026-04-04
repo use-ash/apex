@@ -13,8 +13,9 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+import env
 from env import (
-    WORKSPACE, WORKSPACE_PATHS, MODEL, DEBUG, CODEX_CLI, OPENAI_API_KEY, XAI_API_KEY,
+    MODEL, DEBUG, CODEX_CLI, OPENAI_API_KEY, XAI_API_KEY,
     MAX_TOOL_ITERATIONS, ALLOW_LOCAL_TOOLS,
 )
 
@@ -52,7 +53,7 @@ def _resolve_codex_profile_overrides(chat_id: str) -> tuple[str, str]:
     tool_policy format: {"workspace": "/path/to/repo", "sandbox": "suggest"}
     Returns (workspace_path, sandbox_mode) with safe defaults.
     """
-    codex_workspace = str(WORKSPACE)
+    codex_workspace = str(env.get_runtime_workspace_root())
     codex_sandbox = "read-only"
     try:
         from db import _get_db
@@ -681,6 +682,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
             await _send_stream_event(chat_id, event)
 
         backend = _get_model_backend(effective_model)
+        runtime_workspace_paths = env.get_runtime_workspace_paths()
 
         # Remote APIs (xai, codex) always use tool loop — they don't depend
         # on ALLOW_LOCAL_TOOLS which gates local Ollama/MLX tool calling.
@@ -690,7 +692,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 model=effective_model,
                 messages=messages,
                 emit_event=emit,
-                workspace=WORKSPACE_PATHS,
+                workspace=runtime_workspace_paths,
                 api_key=XAI_API_KEY,
                 api_url="https://api.x.ai/v1",
                 max_iterations=MAX_TOOL_ITERATIONS,
@@ -706,7 +708,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                     model=codex_model,
                     messages=messages,
                     emit_event=emit,
-                    workspace=WORKSPACE_PATHS,
+                    workspace=runtime_workspace_paths,
                     api_key=OPENAI_API_KEY,
                     api_url="https://api.openai.com/v1",
                     max_iterations=MAX_TOOL_ITERATIONS,
@@ -720,7 +722,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                     model=codex_model,
                     messages=messages,
                     emit_event=emit,
-                    workspace=WORKSPACE_PATHS,
+                    workspace=runtime_workspace_paths,
                     api_key="chatgpt-oauth",
                     api_url="chatgpt",
                     max_iterations=MAX_TOOL_ITERATIONS,
@@ -735,7 +737,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 model=mlx_model,
                 messages=messages,
                 emit_event=emit,
-                workspace=WORKSPACE_PATHS,
+                workspace=runtime_workspace_paths,
                 api_key="local",
                 api_url=f"{MLX_BASE_URL}/v1",
                 max_iterations=MAX_TOOL_ITERATIONS,
@@ -749,7 +751,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 model=effective_model,
                 messages=messages,
                 emit_event=emit,
-                workspace=WORKSPACE_PATHS,
+                workspace=runtime_workspace_paths,
                 max_iterations=MAX_TOOL_ITERATIONS,
                 permission_level=permission_level,
                 allowed_tools=allowed_local_tools,

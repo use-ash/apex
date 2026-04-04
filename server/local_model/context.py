@@ -11,10 +11,17 @@ from pathlib import Path
 # server package (server/ is in sys.path).  Fall back gracefully when this
 # module is executed standalone (e.g. local tests).
 try:
-    from env import WORKSPACE  # type: ignore[import]
+    import env as _env  # type: ignore[import]
 except ImportError:
     import os
-    WORKSPACE = Path(os.environ.get("APEX_WORKSPACE", os.getcwd()))
+    _env = None
+
+
+def _workspace_root() -> Path:
+    if _env is not None:
+        return _env.get_runtime_workspace_root()
+    import os
+    return Path(os.environ.get("APEX_WORKSPACE", os.getcwd()))
 
 
 def _read_safe(path: Path, max_chars: int = 0) -> str:
@@ -47,7 +54,8 @@ def build_system_prompt(model: str) -> str:
     parts.append("")
 
     # Workspace context
-    ws = str(WORKSPACE)
+    workspace = _workspace_root()
+    ws = str(workspace)
     python_exe = sys.executable or "python3"
     parts.append("## Workspace")
     parts.append(f"- Root: {ws}")
@@ -55,8 +63,8 @@ def build_system_prompt(model: str) -> str:
     parts.append("")
 
     # Inject APEX.md (or CLAUDE.md fallback) summary if available
-    apex_md = WORKSPACE / "APEX.md"
-    claude_md = WORKSPACE / "CLAUDE.md"
+    apex_md = workspace / "APEX.md"
+    claude_md = workspace / "CLAUDE.md"
     project_md = apex_md if apex_md.exists() else claude_md
     project_text = _read_safe(project_md, max_chars=3000)
     if project_text:
@@ -75,7 +83,7 @@ def build_system_prompt(model: str) -> str:
     parts.append("")
 
     # Available scripts (if workspace has skills or tools)
-    skills_dir = WORKSPACE / "skills"
+    skills_dir = workspace / "skills"
     skill_entries = []
     if skills_dir.is_dir():
         # Scan for Python scripts with docstrings in skills/
@@ -97,7 +105,7 @@ def build_system_prompt(model: str) -> str:
                 continue
     # Also check for standalone tool scripts in workspace root
     for name in ("fetch_x.py",):
-        script = WORKSPACE / name
+        script = workspace / name
         if script.exists():
             try:
                 first_lines = script.read_text()[:800]
@@ -126,7 +134,7 @@ def build_system_prompt(model: str) -> str:
     parts.append("")
 
     # Load active project list from MEMORY.md if available
-    memory_md = WORKSPACE / "memory" / "MEMORY.md"
+    memory_md = workspace / "memory" / "MEMORY.md"
     memory_text = _read_safe(memory_md)
     if memory_text:
         next_idx = memory_text.find("## NEXT STEPS")

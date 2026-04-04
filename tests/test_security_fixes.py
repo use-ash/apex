@@ -63,6 +63,7 @@ from state import (  # noqa: E402
     _clients,
     _session_context_sent,
 )
+from local_model import mcp_bridge as mcp_bridge_mod  # noqa: E402
 from local_model import safety as local_safety  # noqa: E402
 from local_model import tool_loop  # noqa: E402
 from local_model.tools import list_files, read_file, search_files, write_file  # noqa: E402
@@ -74,6 +75,11 @@ class SecurityFixTests(unittest.TestCase):
         dashboard_mod._set_live_alert_token("initial-alert-token")
         apex.MODEL = env.MODEL
         apex._init_db()
+        dashboard_mod.init_dashboard(
+            TEST_ROOT / "state",
+            TEST_ROOT / "state" / env.DB_NAME,
+            TEST_ROOT / "state" / "ssl",
+        )
         mark_phase_completed(TEST_ROOT / "state", "setup_complete")
         with apex._db_lock:
             conn = apex._get_db()
@@ -1859,6 +1865,95 @@ class SecurityFixTests(unittest.TestCase):
             normalized,
             "/Users/dana/project-a:/Users/dana/project-b",
         )
+
+    def test_dashboard_workspace_api_uses_runtime_workspace_config(self) -> None:
+        primary = TEST_ROOT / "runtime-workspace"
+        secondary = TEST_ROOT / "runtime-apex"
+        (primary / "memory").mkdir(parents=True, exist_ok=True)
+        (primary / "skills" / "demo").mkdir(parents=True, exist_ok=True)
+        (primary / "APEX.md").write_text("# Runtime Workspace\n", encoding="utf-8")
+        (primary / "memory" / "MEMORY.md").write_text("memory", encoding="utf-8")
+        (primary / "skills" / "demo" / "SKILL.md").write_text("---\nname: Demo\n---\n", encoding="utf-8")
+        secondary.mkdir(parents=True, exist_ok=True)
+        dashboard_mod._config.update_section(
+            "workspace",
+            {"path": f"{primary}:{secondary}"},
+        )
+
+        response = asyncio.run(dashboard_mod.api_workspace())
+        payload = json.loads(response.body)
+
+        self.assertEqual(payload["workspace"], str(primary))
+        self.assertEqual(payload["workspace_paths"], [str(primary), str(secondary)])
+        self.assertTrue(payload["project_md_exists"])
+        self.assertEqual(payload["memory_file_count"], 1)
+        self.assertEqual(payload["skills_count"], 1)
+
+    def test_dashboard_workspace_update_syncs_filesystem_mcp_roots(self) -> None:
+        primary = TEST_ROOT / "sync-one"
+        secondary = TEST_ROOT / "sync-two"
+        primary.mkdir(parents=True, exist_ok=True)
+        secondary.mkdir(parents=True, exist_ok=True)
+        dashboard_mod._write_mcp_config(
+            {
+                "mcpServers": {
+                    "filesystem": {
+                        "type": "stdio",
+                        "enabled": True,
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                    }
+                }
+            }
+        )
+
+        with self._client() as client:
+            response = client.put(
+                "/admin/api/config/workspace",
+                headers=self._admin_headers(),
+                json={"path": f"{primary}\n{secondary}"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        data = dashboard_mod._read_mcp_config()
+        self.assertEqual(
+            data["mcpServers"]["filesystem"]["args"],
+            ["-y", "@modelcontextprotocol/server-filesystem", str(primary), str(secondary)],
+        )
+
+    def test_runtime_mcp_load_rewrites_stale_filesystem_roots_from_config(self) -> None:
+        primary = TEST_ROOT / "stale-one"
+        secondary = TEST_ROOT / "stale-two"
+        primary.mkdir(parents=True, exist_ok=True)
+        secondary.mkdir(parents=True, exist_ok=True)
+        dashboard_mod._config.update_section(
+            "workspace",
+            {"path": f"{primary}:{secondary}"},
+        )
+        dashboard_mod._write_mcp_config(
+            {
+                "mcpServers": {
+                    "filesystem": {
+                        "type": "stdio",
+                        "enabled": True,
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                    }
+                }
+            }
+        )
+
+        sdk_servers = streaming_mod._load_mcp_servers()
+        loop_servers = mcp_bridge_mod._load_mcp_config()
+
+        expected_args = [
+            "-y",
+            "@modelcontextprotocol/server-filesystem",
+            str(primary),
+            str(secondary),
+        ]
+        self.assertEqual(sdk_servers["filesystem"]["args"], expected_args)
+        self.assertEqual(loop_servers["filesystem"]["args"], expected_args)
 
     def test_config_schema_marks_workspace_path_multiline(self) -> None:
         spec = dashboard_mod.SCHEMA["workspace"]["path"]
