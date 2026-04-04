@@ -6235,6 +6235,19 @@ async function showDirectChatPermissions() {
   document.querySelector('.profile-dropdown')?.remove();
   document.querySelector('.profile-modal-overlay')?.remove();
 
+  const toast = (msg) => {
+    let t = document.querySelector('.gs-toast');
+    if (!t) {
+      t = document.createElement('div');
+      t.className = 'gs-toast';
+      document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(t._timer);
+    t._timer = setTimeout(() => t.classList.remove('show'), 2000);
+  };
+
   let policy = {
     level: 2,
     default_level: 2,
@@ -6248,12 +6261,12 @@ async function showDirectChatPermissions() {
       const data = await resp.json();
       if (data && data.tool_policy) policy = data.tool_policy;
     } else {
-      showToast('Failed to load chat permissions');
+      toast('Failed to load chat permissions');
       return;
     }
   } catch (e) {
     reportError('showDirectChatPermissions', e);
-    showToast('Failed to load chat permissions');
+    toast('Failed to load chat permissions');
     return;
   }
 
@@ -6435,11 +6448,11 @@ async function showDirectChatPermissions() {
       syncExpiryText();
       syncPolicyUi();
       setStatus(`Reset to ${describeChatToolPolicy(policy)}`, 'success');
-      showToast('Chat permissions reset');
+      toast('Chat permissions reset');
     } catch (e) {
       reportError('revokeChatToolPolicy', e);
       setStatus('Failed to reset chat permissions', 'error');
-      showToast('Failed to reset chat permissions');
+      toast('Failed to reset chat permissions');
     } finally {
       setBusy(false);
       syncPolicyUi();
@@ -6481,11 +6494,11 @@ async function showDirectChatPermissions() {
       syncExpiryText();
       syncPolicyUi();
       setStatus(`Saved. Current policy: ${describeChatToolPolicy(policy)}`, 'success');
-      showToast(`Chat permissions saved: ${describeChatToolPolicy(policy)}`);
+      toast(`Chat permissions saved: ${describeChatToolPolicy(policy)}`);
     } catch (e) {
       reportError('saveChatToolPolicy', e);
       setStatus('Failed to save chat permissions', 'error');
-      showToast('Failed to save chat permissions');
+      toast('Failed to save chat permissions');
     } finally {
       setBusy(false);
       syncPolicyUi();
