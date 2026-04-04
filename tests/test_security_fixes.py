@@ -39,6 +39,7 @@ import alert_client  # noqa: E402
 import agent_sdk  # noqa: E402
 import backends  # noqa: E402
 import dashboard as dashboard_mod  # noqa: E402
+import dashboard_html as dashboard_html_mod  # noqa: E402
 import db as db_mod  # noqa: E402
 import env  # noqa: E402
 import memory_extract  # noqa: E402
@@ -1819,6 +1820,12 @@ class SecurityFixTests(unittest.TestCase):
         spec = dashboard_mod.SCHEMA["workspace"]["path"]
         self.assertTrue(spec["multiline"])
         self.assertIn("project-a", spec["placeholder"])
+
+    def test_dashboard_html_keeps_multiline_workspace_js_escaped(self) -> None:
+        self.assertIn(
+            'split(":").join("\\\\n")',
+            dashboard_html_mod.DASHBOARD_HTML,
+        )
 
     def test_sdk_pre_tool_hook_blocks_level_3_non_allowlisted_date(self) -> None:
         allowed, message = streaming_mod._sdk_pre_tool_use_decision(

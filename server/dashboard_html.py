@@ -3242,7 +3242,7 @@ function renderFormField(section, key, spec, value) {
                 (spec.max != null ? ' max="' + spec.max + '"' : '') +
                 ' data-config-field="1" data-section="' + esc(section) + '" data-key="' + esc(key) + '">';
     } else if (spec.multiline) {
-        const textValue = String(value || "").split(":").join("\n");
+        const textValue = String(value || "").split(":").join("\\n");
         html += '<textarea id="' + fieldId + '" rows="4" ' +
                 'data-config-field="1" data-section="' + esc(section) + '" data-key="' + esc(key) + '"' +
                 (spec.placeholder ? ' placeholder="' + esc(spec.placeholder) + '"' : '') +
