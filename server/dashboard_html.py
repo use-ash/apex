@@ -2012,12 +2012,9 @@ select {
                     </div>
                     <div class="form-help" style="margin-bottom:12px;">Default persona levels and temporary elevation live here. Direct-chat overrides still belong in the chat UI.</div>
                     <div id="policy-level-guide" style="display:grid; gap:8px;">
-                        <div class="card" style="padding:10px 12px; margin:0;"><strong>0 · Chat Only</strong><div class="form-help">No tools. Pure conversation.</div></div>
-                        <div class="card" style="padding:10px 12px; margin:0;"><strong>1 · Safe Read Tools</strong><div class="form-help">Basic repo inspection only.</div></div>
-                        <div class="card" style="padding:10px 12px; margin:0;"><strong>2 · Workspace Tools</strong><div class="form-help">Workspace tools plus approved MCP readers and Playwright.</div></div>
-                        <div class="card" style="padding:10px 12px; margin:0;"><strong>3 · Admin Allowlist</strong><div class="form-help">Trusted diagnostics with command/MCP policy controls.</div></div>
-                        <div class="card" style="padding:10px 12px; margin:0;"><strong>4 · Full Admin</strong><div class="form-help">Unrestricted timeboxed admin. Use sparingly.</div></div>
+                        <div class="loading-overlay"><div class="spinner"></div> Loading policy levels...</div>
                     </div>
+                    <div id="policy-level-detail" class="card" style="margin-top:12px; padding:14px;"></div>
                 </div>
 
                 <div class="card">
@@ -4073,13 +4070,87 @@ let personaModelsData = [];
 let currentPersonaId = "";
 let currentPersonaToolPolicy = null;
 let policyProfilesData = [];
+let selectedPolicyLevel = 2;
 
 const TOOL_POLICY_LABELS = {
     0: "Chat Only",
-    1: "Safe Read Tools",
-    2: "Workspace Tools",
+    1: "Read Only",
+    2: "Workspace + Browser",
     3: "Admin Allowlist",
     4: "Full Admin",
+};
+
+const TOOL_POLICY_DETAILS = {
+    0: {
+        summary: "Conversation only. No tools or MCP access.",
+        allowed: [
+            "Plain chat responses only",
+            "No shell commands",
+            "No file reads or writes",
+            "No MCP tools",
+        ],
+        denied: [
+            "Bash / command execution",
+            "Filesystem access",
+            "Playwright browser automation",
+            "Memory MCP",
+        ],
+    },
+    1: {
+        summary: "Minimal inspection tools for low-risk reading.",
+        allowed: [
+            "Built-in read tools",
+            "Repo/file discovery",
+            "Search and list operations",
+        ],
+        denied: [
+            "Writes or edits",
+            "Shell commands",
+            "Playwright",
+            "Memory MCP",
+        ],
+    },
+    2: {
+        summary: "Workspace-safe tools plus browser testing.",
+        allowed: [
+            "Built-in workspace tools",
+            "Playwright MCP",
+            "Fetch MCP",
+            "Read-only filesystem MCP",
+        ],
+        denied: [
+            "Filesystem MCP writes/edits",
+            "Memory MCP writes",
+            "Admin shell allowlist mode",
+            "Full unrestricted access",
+        ],
+    },
+    3: {
+        summary: "Trusted diagnostics with explicit command and MCP policy controls.",
+        allowed: [
+            "Allowlisted shell commands",
+            "Writable filesystem MCP",
+            "Memory MCP",
+            "Workspace plus /tmp writes",
+        ],
+        denied: [
+            "Unrestricted shell by default",
+            "Automatic access to every command",
+            "Unsafe escalation without configuration",
+        ],
+    },
+    4: {
+        summary: "Timeboxed unrestricted admin for trusted sessions.",
+        allowed: [
+            "All shell commands",
+            "All filesystem access",
+            "All MCP tools",
+            "Bypass command/path restrictions",
+        ],
+        denied: [
+            "Nothing by policy; rely on expiry and operator judgment",
+        ],
+    },
 };
 
 function toolPolicyLabel(level) {
@@ -4130,6 +4201,46 @@ function serializeToolPolicyLevel(existingPolicy, level) {
     if (!base.elevated_until) base.level = nextLevel;
     return JSON.stringify(base);
 }
+
+function renderPolicyLevelGuide() {
+    var el = document.getElementById("policy-level-guide");
+    var detailEl = document.getElementById("policy-level-detail");
+    if (!el || !detailEl) return;
+    var cards = [0, 1, 2, 3, 4].map(function(level) {
+        var active = level === selectedPolicyLevel;
+        var detail = TOOL_POLICY_DETAILS[level];
+        return '<button type="button" class="card" data-policy-level-card="' + level + '" style="padding:10px 12px; margin:0; text-align:left; border:' +
+            (active ? '1px solid var(--accent); box-shadow:0 0 0 1px rgba(14,165,233,0.25) inset;' : '1px solid var(--card);') + '">' +
+            '<strong>' + level + ' · ' + esc(toolPolicyLabel(level)) + '</strong>' +
+            '<div class="form-help">' + esc(detail.summary) + '</div>' +
+            '</button>';
+    }).join('');
+    el.innerHTML = cards;
+
+    var selected = TOOL_POLICY_DETAILS[selectedPolicyLevel];
+    function list(items) {
+        return '<ul style="margin:8px 0 0 18px; display:grid; gap:4px;">' +
+            items.map(function(item) { return '<li>' + esc(item) + '</li>'; }).join('') +
+            '</ul>';
+    }
+    detailEl.innerHTML =
+        '<div class="card-title" style="margin-bottom:8px;">' +
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+                '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>' +
+            '</svg>' +
+            (selectedPolicyLevel + ' · ' + esc(toolPolicyLabel(selectedPolicyLevel))) +
+        '</div>' +
+        '<div class="form-help" style="margin-bottom:10px;">' + esc(selected.summary) + '</div>' +
+        '<div class="card-grid" style="grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); margin:0;">' +
+            '<div class="card" style="padding:12px; margin:0;">' +
+                '<strong>Allowed</strong>' + list(selected.allowed) +
+            '</div>' +
+            '<div class="card" style="padding:12px; margin:0;">' +
+                '<strong>Blocked / Not Included</strong>' + list(selected.denied) +
+            '</div>' +
+        '</div>';
+}
+window.renderPolicyLevelGuide = renderPolicyLevelGuide;
 
 function personaModelOptions(selectedValue, includeBlank, blankLabel) {
     var options = includeBlank ? '<option value="">' + esc(blankLabel || 'None') + '</option>' : '';
@@ -4459,6 +4570,7 @@ function renderPolicyTable() {
 async function loadPolicies() {
     var btnRefresh = document.getElementById("btn-policy-refresh");
     if (btnRefresh) btnRefresh.disabled = true;
+    renderPolicyLevelGuide();
     setPolicyPageStatus("Loading policies...");
     try {
         var profilesResp = await rootApiFetch('/api/profiles');
@@ -5965,6 +6077,9 @@ document.addEventListener("click", function(e) {
     var btn;
     if ((btn = e.target.closest(".nav-item[data-page]"))) {
         if (!btn.classList.contains("nav-disabled")) navigateTo(btn.dataset.page);
+    } else if ((btn = e.target.closest("[data-policy-level-card]"))) {
+        selectedPolicyLevel = Number(btn.dataset.policyLevelCard);
+        renderPolicyLevelGuide();
     } else if ((btn = e.target.closest("#btn-menu-hamburger"))) {
         toggleSidebar();
     } else if ((btn = e.target.closest("#sidebar-overlay"))) {

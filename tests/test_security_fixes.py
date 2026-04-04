@@ -1871,6 +1871,8 @@ class SecurityFixTests(unittest.TestCase):
         )
         self.assertIn('data-page="policy"', dashboard_html_mod.DASHBOARD_HTML)
         self.assertIn('id="persona-tool-policy"></select>', dashboard_html_mod.DASHBOARD_HTML)
+        self.assertIn('Workspace + Browser', dashboard_html_mod.DASHBOARD_HTML)
+        self.assertIn('id="policy-level-detail"', dashboard_html_mod.DASHBOARD_HTML)
 
     def test_sdk_pre_tool_hook_blocks_level_3_non_allowlisted_date(self) -> None:
         allowed, message = streaming_mod._sdk_pre_tool_use_decision(
