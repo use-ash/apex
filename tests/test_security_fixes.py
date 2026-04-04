@@ -1627,6 +1627,49 @@ class SecurityFixTests(unittest.TestCase):
             self.assertEqual(revoked["tool_policy"]["level"], 1)
             self.assertIsNone(revoked["tool_policy"]["elevated_until"])
 
+    def test_dashboard_persona_elevate_accepts_level_4(self) -> None:
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO agent_profiles (
+                    id, name, slug, avatar, role_description, backend, model,
+                    system_prompt, tool_policy, is_default, is_system, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, datetime('now'), datetime('now'))
+                """,
+                (
+                    "persona-admin-4",
+                    "Persona Admin 4",
+                    "persona-admin-4",
+                    "P",
+                    "persona admin test",
+                    "ollama",
+                    "qwen3:latest",
+                    "persona admin test",
+                    json.dumps({
+                        "level": 2,
+                        "default_level": 2,
+                        "elevated_until": None,
+                        "invoke_policy": "anyone",
+                        "allowed_commands": [],
+                    }),
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+        with self._client() as client:
+            elevate = client.post(
+                "/admin/api/personas/persona-admin-4/elevate",
+                json={"minutes": 10, "level": 4},
+                headers=self._admin_headers(),
+            )
+            self.assertEqual(elevate.status_code, 200, elevate.text)
+            elevated = elevate.json()
+            self.assertEqual(elevated["tool_policy"]["level"], 4)
+            self.assertEqual(elevated["tool_policy"]["default_level"], 2)
+            self.assertTrue(elevated["expires_at"])
+
     def test_unassigned_direct_chat_uses_chat_level_tool_policy(self) -> None:
         chat_id = self._create_direct_chat(model="claude-opus-4.6")
         policy = db_mod._set_chat_tool_policy(
@@ -1823,9 +1866,11 @@ class SecurityFixTests(unittest.TestCase):
 
     def test_dashboard_html_keeps_multiline_workspace_js_escaped(self) -> None:
         self.assertIn(
-            'split(":").join("\\\\n")',
+            'split(":").join("\\n")',
             dashboard_html_mod.DASHBOARD_HTML,
         )
+        self.assertIn('data-page="policy"', dashboard_html_mod.DASHBOARD_HTML)
+        self.assertIn('id="persona-tool-policy"></select>', dashboard_html_mod.DASHBOARD_HTML)
 
     def test_sdk_pre_tool_hook_blocks_level_3_non_allowlisted_date(self) -> None:
         allowed, message = streaming_mod._sdk_pre_tool_use_decision(

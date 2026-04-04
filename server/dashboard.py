@@ -362,12 +362,18 @@ async def api_persona_elevate(profile_id: str, request: Request):
         return _error("minutes must be an integer", "INVALID_DURATION", status=400)
     if minutes < 1 or minutes > 24 * 60:
         return _error("minutes must be between 1 and 1440", "INVALID_DURATION", status=400)
+    try:
+        target_level = int(body.get("level", 3))
+    except (TypeError, ValueError):
+        return _error("level must be an integer", "INVALID_LEVEL", status=400)
+    if target_level not in (3, 4):
+        return _error("level must be 3 or 4", "INVALID_LEVEL", status=400)
 
     policy = _normalize_tool_policy(row[2])
     default_level = int(policy.get("default_level", policy.get("level", 1)))
     expires_at = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat(timespec="seconds")
     policy["default_level"] = default_level
-    policy["level"] = 3
+    policy["level"] = target_level
     policy["elevated_until"] = expires_at
     policy = _set_profile_tool_policy(profile_id, policy, default_level=default_level)
     return JSONResponse({

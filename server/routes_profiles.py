@@ -281,11 +281,11 @@ async def api_update_profile(profile_id: str, request: Request):
 
         fields = []
         values = []
-        # System personas: only allow avatar, role_description, and model override changes.
-        # model and tool_policy are locked to prevent tampering with built-in personas.
+        # System personas keep their shipped identity/model defaults, but tool policy
+        # and descriptive metadata are still admin-editable.
         allowed_keys = ("name", "avatar", "role_description", "model", "tool_policy")
         if is_system:
-            allowed_keys = ("avatar", "role_description")
+            allowed_keys = ("avatar", "role_description", "tool_policy")
         for key in allowed_keys:
             if key in data:
                 if key == "tool_policy":
