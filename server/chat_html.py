@@ -6302,7 +6302,7 @@ async function showDirectChatPermissions() {
   }
 
   levelEl.value = String(Number(policy.level || defaultLevel));
-  commandsEl.value = (policy.allowed_commands || []).join('\n');
+  commandsEl.value = (policy.allowed_commands || []).join('\\n');
   minutesEl.value = '';
   syncExpiryText();
 
@@ -6330,7 +6330,7 @@ async function showDirectChatPermissions() {
     const level = Number(levelEl.value || defaultLevel);
     const minutes = Number(minutesEl.value || 0);
     const allowedCommands = commandsEl.value
-      .split('\n')
+      .split('\\n')
       .map(v => v.trim())
       .filter(Boolean);
     let elevatedUntil = null;
