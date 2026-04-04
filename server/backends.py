@@ -13,8 +13,9 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+import env
 from env import (
-    WORKSPACE, WORKSPACE_PATHS, MODEL, DEBUG, CODEX_CLI, OPENAI_API_KEY, XAI_API_KEY,
+    MODEL, DEBUG, CODEX_CLI, OPENAI_API_KEY, XAI_API_KEY,
     MAX_TOOL_ITERATIONS, ALLOW_LOCAL_TOOLS,
 )
 
@@ -32,6 +33,7 @@ from model_dispatch import (
     MODEL_CONTEXT_WINDOWS, MODEL_CONTEXT_DEFAULT,
 )
 from state import _current_group_profile_id, _codex_threads, _codex_thread_turns
+from tool_access import allowed_tool_names_for_level
 
 _CODEX_MAX_THREAD_TURNS = int(os.environ.get("APEX_CODEX_MAX_TURNS", "8"))
 
@@ -51,7 +53,7 @@ def _resolve_codex_profile_overrides(chat_id: str) -> tuple[str, str]:
     tool_policy format: {"workspace": "/path/to/repo", "sandbox": "suggest"}
     Returns (workspace_path, sandbox_mode) with safe defaults.
     """
-    codex_workspace = str(WORKSPACE)
+    codex_workspace = str(env.get_runtime_workspace_root())
     codex_sandbox = "read-only"
     try:
         from db import _get_db
@@ -237,9 +239,6 @@ _BACKEND_LABELS = {
     "mlx": "MLX",
 }
 _CODEX_RESPONSES_API_MODELS = {"o3", "o4-mini"}
-_STANDARD_LOCAL_TOOLS = frozenset({"read_file", "list_files", "search_files"})
-
-
 def validate_backend_attachments(backend: str, attachments: list[dict] | None) -> str | None:
     """Return a user-facing error when a backend cannot handle the attachment set."""
     if not attachments:
@@ -637,11 +636,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
     )
     permission_level = int(tool_policy.get("level", 2))
     allowed_commands = list(tool_policy.get("allowed_commands") or [])
-    allowed_local_tools: set[str] | None = None
-    if permission_level <= 0:
-        allowed_local_tools = set()
-    elif permission_level == 1:
-        allowed_local_tools = set(_STANDARD_LOCAL_TOOLS)
+    allowed_local_tools = allowed_tool_names_for_level(permission_level)
     if _TOOL_LOOP_AVAILABLE and ALLOW_LOCAL_TOOLS:
         sys_prompt = build_system_prompt(effective_model)
     else:
@@ -687,6 +682,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
             await _send_stream_event(chat_id, event)
 
         backend = _get_model_backend(effective_model)
+        runtime_workspace_paths = env.get_runtime_workspace_paths()
 
         # Remote APIs (xai, codex) always use tool loop — they don't depend
         # on ALLOW_LOCAL_TOOLS which gates local Ollama/MLX tool calling.
@@ -696,7 +692,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 model=effective_model,
                 messages=messages,
                 emit_event=emit,
-                workspace=WORKSPACE_PATHS,
+                workspace=runtime_workspace_paths,
                 api_key=XAI_API_KEY,
                 api_url="https://api.x.ai/v1",
                 max_iterations=MAX_TOOL_ITERATIONS,
@@ -712,7 +708,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                     model=codex_model,
                     messages=messages,
                     emit_event=emit,
-                    workspace=WORKSPACE_PATHS,
+                    workspace=runtime_workspace_paths,
                     api_key=OPENAI_API_KEY,
                     api_url="https://api.openai.com/v1",
                     max_iterations=MAX_TOOL_ITERATIONS,
@@ -726,7 +722,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                     model=codex_model,
                     messages=messages,
                     emit_event=emit,
-                    workspace=WORKSPACE_PATHS,
+                    workspace=runtime_workspace_paths,
                     api_key="chatgpt-oauth",
                     api_url="chatgpt",
                     max_iterations=MAX_TOOL_ITERATIONS,
@@ -741,7 +737,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 model=mlx_model,
                 messages=messages,
                 emit_event=emit,
-                workspace=WORKSPACE_PATHS,
+                workspace=runtime_workspace_paths,
                 api_key="local",
                 api_url=f"{MLX_BASE_URL}/v1",
                 max_iterations=MAX_TOOL_ITERATIONS,
@@ -755,7 +751,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 model=effective_model,
                 messages=messages,
                 emit_event=emit,
-                workspace=WORKSPACE_PATHS,
+                workspace=runtime_workspace_paths,
                 max_iterations=MAX_TOOL_ITERATIONS,
                 permission_level=permission_level,
                 allowed_tools=allowed_local_tools,

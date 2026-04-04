@@ -130,7 +130,9 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
             "type": "str",
             "default": "",
             "env": "APEX_WORKSPACE",
-            "description": "Agent workspace directory",
+            "description": "Agent workspace directories",
+            "multiline": True,
+            "placeholder": "/Users/you/project-a\n/Users/you/project-b",
         },
         "enable_whisper": {
             "type": "bool",
@@ -155,6 +157,15 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
             "type": "str",
             "default": "",
             "description": "JSON-encoded sources found during setup (read-only reference)",
+        },
+    },
+    "policy": {
+        "workspace_tools": {
+            "type": "str",
+            "default": "",
+            "description": "Normalized tool ids allowed at level 2 (Workspace + Browser), one per line",
+            "multiline": True,
+            "placeholder": "bash\nread_file\nwrite_file\nplaywright__*\nfetch__*",
         },
     },
     "alerts": {
@@ -364,7 +375,10 @@ class Config:
                     value = bool(value)
             else:
                 value = str(value)
-                if any(ord(c) < 32 and c not in (' ', '\t') for c in value):
+                allowed_controls = {' ', '\t'}
+                if spec.get("multiline"):
+                    allowed_controls.update({'\n', '\r'})
+                if any(ord(c) < 32 and c not in allowed_controls for c in value):
                     raise ValueError(f"{key}: contains control characters")
         except (ValueError, TypeError) as e:
             raise ValueError(f"{key}: invalid {target} value: {e}") from e

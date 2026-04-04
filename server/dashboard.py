@@ -123,6 +123,7 @@ from db import (
 import env
 from log import LOG_PATH
 from model_dispatch import get_available_model_ids
+from tool_access import get_tool_catalog, get_workspace_tool_patterns
 
 # ---------------------------------------------------------------------------
 # Module state — set by init_dashboard() at server startup
@@ -143,6 +144,39 @@ _state_dir: Path | None = None
 _db_path: Path | None = None
 _ssl_dir: Path | None = None
 _config: Config | None = None
+
+
+def _normalize_workspace_path_value(raw: object) -> str:
+    """Normalize UI-entered workspace paths into APEX_WORKSPACE format."""
+    if raw is None:
+        return ""
+    text = str(raw).replace("\r\n", "\n").replace("\r", "\n")
+    parts: list[str] = []
+    for line in text.split("\n"):
+        for chunk in str(line).split(":"):
+            item = chunk.strip()
+            if item and item not in parts:
+                parts.append(item)
+    return ":".join(parts)
+
+
+def _workspace_paths_list(raw: str | None = None) -> list[str]:
+    value = raw if raw is not None else env.get_runtime_workspace_paths()
+    return [part.strip() for part in str(value).split(":") if part.strip()]
+
+
+def _workspace_root() -> Path:
+    return env.get_runtime_workspace_root()
+
+
+def _sync_filesystem_mcp_workspace_roots(workspace_value: str) -> None:
+    """Keep filesystem MCP roots aligned with the configured workspace."""
+    data = _read_mcp_config()
+    servers = data.get("mcpServers", {})
+    rewritten = env.rewrite_mcp_servers_for_workspace(servers, workspace_value)
+    if rewritten != servers:
+        data["mcpServers"] = rewritten
+        _write_mcp_config(data)
 
 
 # ---------------------------------------------------------------------------
@@ -343,12 +377,18 @@ async def api_persona_elevate(profile_id: str, request: Request):
         return _error("minutes must be an integer", "INVALID_DURATION", status=400)
     if minutes < 1 or minutes > 24 * 60:
         return _error("minutes must be between 1 and 1440", "INVALID_DURATION", status=400)
+    try:
+        target_level = int(body.get("level", 3))
+    except (TypeError, ValueError):
+        return _error("level must be an integer", "INVALID_LEVEL", status=400)
+    if target_level not in (3, 4):
+        return _error("level must be 3 or 4", "INVALID_LEVEL", status=400)
 
     policy = _normalize_tool_policy(row[2])
     default_level = int(policy.get("default_level", policy.get("level", 1)))
     expires_at = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat(timespec="seconds")
     policy["default_level"] = default_level
-    policy["level"] = 3
+    policy["level"] = target_level
     policy["elevated_until"] = expires_at
     policy = _set_profile_tool_policy(profile_id, policy, default_level=default_level)
     return JSONResponse({
@@ -828,6 +868,9 @@ async def api_config_update_workspace(request: Request):
     if not body:
         return _error("No fields to update", "EMPTY_UPDATE", status=400)
 
+    if "path" in body:
+        body["path"] = _normalize_workspace_path_value(body.get("path"))
+
     # permission_mode belongs in models, not workspace — route it there.
     perm = body.pop("permission_mode", None)
     if perm:
@@ -847,6 +890,7 @@ async def api_config_update_workspace(request: Request):
 
     try:
         new_values, restart_required = _config.update_section("workspace", body)
+        _sync_filesystem_mcp_workspace_roots(str(new_values.get("path", "")))
         if perm:
             new_values["permission_mode"] = perm
         return JSONResponse({
@@ -911,6 +955,50 @@ async def _update_config_section(section: str, request: Request) -> JSONResponse
     except Exception as e:
         _log.error(f"Config update failed: {e}")
         return _error("Configuration update failed", "CONFIG_WRITE_ERROR")
+
+
+@dashboard_app.get("/api/policy/tools")
+async def api_policy_tools():
+    """Return normalized tool catalog and current Workspace + Browser selection."""
+    if _config is None:
+        return _not_initialized()
+    return JSONResponse(
+        {
+            "workspace_tools": get_workspace_tool_patterns(),
+            "catalog": get_tool_catalog(),
+        }
+    )
+
+
+@dashboard_app.put("/api/policy/tools")
+async def api_policy_tools_update(request: Request):
+    """Update the normalized tool set for level 2 (Workspace + Browser)."""
+    if _config is None:
+        return _not_initialized()
+    try:
+        body = await request.json()
+    except Exception:
+        return _error("Invalid JSON", "INVALID_JSON", 400)
+    raw = body.get("workspace_tools", [])
+    if isinstance(raw, list):
+        text = "\n".join(str(item).strip() for item in raw if str(item).strip())
+    else:
+        text = str(raw or "")
+    try:
+        new_values, restart_required = _config.update_section("policy", {"workspace_tools": text})
+        return JSONResponse(
+            {
+                "status": "ok",
+                "section": "policy",
+                "config": new_values,
+                "workspace_tools": get_workspace_tool_patterns(),
+                "catalog": get_tool_catalog(),
+                "restart_required": restart_required,
+            }
+        )
+    except ValueError as e:
+        _log.warning("Policy tool config validation error: %s", e)
+        return _error("Invalid policy tool configuration", "VALIDATION_ERROR", 422)
 
 
 # ===========================================================================
@@ -1032,6 +1120,7 @@ async def api_mcp_servers():
     if _state_dir is None:
         return _not_initialized()
     data = _read_mcp_config()
+    data["mcpServers"] = env.rewrite_mcp_servers_for_workspace(data.get("mcpServers", {}))
     return JSONResponse({
         "mcpServers": data.get("mcpServers", {}),
         "count": len(data.get("mcpServers", {})),
@@ -2773,9 +2862,6 @@ async def api_alerts_test():
 # Phase 4 — Workspace, Skills, Guardrails, Sessions
 # ===========================================================================
 
-WORKSPACE = env.WORKSPACE
-
-
 # ---------------------------------------------------------------------------
 # GET /api/workspace — Workspace summary
 # ---------------------------------------------------------------------------
@@ -2783,12 +2869,13 @@ WORKSPACE = env.WORKSPACE
 @dashboard_app.get("/api/workspace")
 async def api_workspace():
     """Workspace overview: path, project md exists, memory count, skills count."""
+    workspace = _workspace_root()
     # Prefer APEX.md (model-agnostic), fall back to CLAUDE.md for backward compat
-    apex_md = WORKSPACE / "APEX.md"
-    claude_md = WORKSPACE / "CLAUDE.md"
+    apex_md = workspace / "APEX.md"
+    claude_md = workspace / "CLAUDE.md"
     project_md = apex_md if apex_md.exists() else claude_md
-    memory_dir = WORKSPACE / "memory"
-    skills_dir = WORKSPACE / "skills"
+    memory_dir = workspace / "memory"
+    skills_dir = workspace / "skills"
 
     memory_count = len(list(memory_dir.glob("*.md"))) if memory_dir.is_dir() else 0
     skills_count = len(
@@ -2796,7 +2883,8 @@ async def api_workspace():
     ) if skills_dir.is_dir() else 0
 
     return JSONResponse({
-        "workspace": str(WORKSPACE),
+        "workspace": str(workspace),
+        "workspace_paths": _workspace_paths_list(),
         "project_md_exists": project_md.exists(),
         "project_md_name": project_md.name,
         "memory_file_count": memory_count,
@@ -2811,9 +2899,10 @@ async def api_workspace():
 @dashboard_app.get("/api/workspace/project-md")
 async def api_workspace_project_md_get():
     """Return the contents of APEX.md (or CLAUDE.md fallback)."""
+    workspace = _workspace_root()
     # Prefer APEX.md (model-agnostic), fall back to CLAUDE.md for backward compat
-    apex_md = WORKSPACE / "APEX.md"
-    claude_md = WORKSPACE / "CLAUDE.md"
+    apex_md = workspace / "APEX.md"
+    claude_md = workspace / "CLAUDE.md"
     project_md = apex_md if apex_md.exists() else claude_md
     if not project_md.exists():
         return _error("Project instructions file not found (tried APEX.md and CLAUDE.md)", "NOT_FOUND", status=404)
@@ -2836,16 +2925,17 @@ async def api_workspace_project_md_get():
 @dashboard_app.put("/api/workspace/project-md")
 async def api_workspace_project_md_put(request: Request):
     """Write APEX.md (or CLAUDE.md fallback) after backing up."""
+    workspace = _workspace_root()
     body = await request.json()
     content = body.get("content")
     if content is None:
         return _error("Missing 'content' field", "BAD_REQUEST", status=400)
 
     # Prefer APEX.md (model-agnostic), fall back to CLAUDE.md for backward compat
-    apex_md = WORKSPACE / "APEX.md"
-    claude_md = WORKSPACE / "CLAUDE.md"
+    apex_md = workspace / "APEX.md"
+    claude_md = workspace / "CLAUDE.md"
     project_md = apex_md if apex_md.exists() else claude_md
-    bak = WORKSPACE / f"{project_md.name}.bak"
+    bak = workspace / f"{project_md.name}.bak"
 
     try:
         if project_md.exists():
@@ -2869,7 +2959,7 @@ async def api_workspace_project_md_put(request: Request):
 @dashboard_app.get("/api/workspace/memory")
 async def api_workspace_memory():
     """List all memory/*.md files with name, size, and modified time."""
-    memory_dir = WORKSPACE / "memory"
+    memory_dir = _workspace_root() / "memory"
     if not memory_dir.is_dir():
         return JSONResponse({"files": []})
 
@@ -2900,7 +2990,7 @@ async def api_workspace_memory_read(name: str):
     if not _MEMORY_NAME_RE.match(name):
         return _error("Invalid memory file name", "INVALID_NAME", 400)
 
-    memory_dir = WORKSPACE / "memory"
+    memory_dir = _workspace_root() / "memory"
     path = memory_dir / name
     # Prevent path traversal
     try:
@@ -2938,7 +3028,7 @@ async def api_workspace_memory_write(name: str, request: Request):
     if not _MEMORY_NAME_RE.match(name):
         return _error("Invalid memory file name", "INVALID_NAME", 400)
 
-    memory_dir = WORKSPACE / "memory"
+    memory_dir = _workspace_root() / "memory"
     path = memory_dir / name
     try:
         path.resolve().relative_to(memory_dir.resolve())
@@ -3026,7 +3116,7 @@ def _parse_skill_frontmatter(skill_path: Path) -> dict[str, str]:
 @dashboard_app.get("/api/skills")
 async def api_skills():
     """List installed skills by scanning skills/*/SKILL.md."""
-    skills_dir = WORKSPACE / "skills"
+    skills_dir = _workspace_root() / "skills"
     if not skills_dir.is_dir():
         return JSONResponse({"skills": [], "count": 0})
 
@@ -3967,11 +4057,7 @@ _security_audit_sync_state: dict[str, int | None] = {
 
 def _workspace_root() -> Path:
     """Return the configured Apex workspace path."""
-    if _config is not None:
-        configured = _config.get("workspace", "path")
-        if configured:
-            return Path(str(configured)).expanduser()
-    return Path(__file__).resolve().parents[2] / "workspace"
+    return env.get_runtime_workspace_root()
 
 
 def _security_audit_log_path() -> Path:

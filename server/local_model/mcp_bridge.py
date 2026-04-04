@@ -17,6 +17,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import env
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -52,10 +53,11 @@ def _load_mcp_config() -> dict[str, dict]:
         servers = data.get("mcpServers", {})
         if not isinstance(servers, dict):
             return {}
-        return {
+        enabled = {
             name: cfg for name, cfg in servers.items()
             if isinstance(cfg, dict) and cfg.get("enabled", True)
         }
+        return env.rewrite_mcp_servers_for_workspace(enabled)
     except (json.JSONDecodeError, OSError) as e:
         log.warning("MCP config load failed: %s", e)
         return {}

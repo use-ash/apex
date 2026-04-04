@@ -42,7 +42,6 @@ from state import (
 # ---------------------------------------------------------------------------
 # Config (from env)
 # ---------------------------------------------------------------------------
-WORKSPACE = env.WORKSPACE
 MODEL = env.MODEL
 DEBUG = env.DEBUG
 
@@ -63,10 +62,16 @@ _MENTION_RE = re.compile(r"@(\w+)")
 
 # Transcript tail injection — raw JSONL entries for recovery context
 _TRANSCRIPT_TAIL_CHARS = int(os.environ.get("APEX_TRANSCRIPT_TAIL_CHARS", "1500"))
-_TRANSCRIPT_DIRS = [
-    APEX_ROOT / "state" / "apex_transcripts",
-    WORKSPACE / "state" / "apex_transcripts",
-]
+def _workspace_root() -> Path:
+    return env.get_runtime_workspace_root()
+
+
+def _transcript_dirs() -> list[Path]:
+    workspace = _workspace_root()
+    return [
+        APEX_ROOT / "state" / "apex_transcripts",
+        workspace / "state" / "apex_transcripts",
+    ]
 
 # ---------------------------------------------------------------------------
 # Memory scoring constants
@@ -798,7 +803,7 @@ def _get_transcript_tail_from_jsonl(chat_id: str, max_chars: int) -> str:
     """Read recent messages from JSONL export files (fallback)."""
     jsonl_name = f"apex_{chat_id}.jsonl"
     jsonl_path = None
-    for d in _TRANSCRIPT_DIRS:
+    for d in _transcript_dirs():
         candidate = d / jsonl_name
         if candidate.exists():
             jsonl_path = candidate
@@ -923,11 +928,12 @@ def _get_workspace_context(chat_id: str) -> str:
     summary = _try_consume_recovery(chat_id)
     if summary is not None:
         parts.append(_build_recovery_block(chat_id, summary))
-    apex_md = WORKSPACE / "APEX.md"
-    claude_md = WORKSPACE / "CLAUDE.md"
+    workspace = _workspace_root()
+    apex_md = workspace / "APEX.md"
+    claude_md = workspace / "CLAUDE.md"
     project_md = apex_md if apex_md.exists() else claude_md
-    memory_md = WORKSPACE / "memory" / "MEMORY.md"
-    skills_dir = WORKSPACE / "skills"
+    memory_md = workspace / "memory" / "MEMORY.md"
+    skills_dir = workspace / "skills"
     if project_md.exists():
         parts.append(f"<system-reminder>\n# Project Instructions\n{project_md.read_text()[:8000]}\n</system-reminder>")
     if memory_md.exists():
@@ -1018,7 +1024,7 @@ def _get_whisper_text(chat_id: str, current_prompt: str = "") -> str:
                 _whisper_last[chat_id] = now
                 return ""
 
-        embed_path = str(WORKSPACE / "skills" / "embedding")
+        embed_path = str(_workspace_root() / "skills" / "embedding")
         if embed_path not in sys.path:
             sys.path.insert(0, embed_path)
         import importlib

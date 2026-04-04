@@ -62,6 +62,14 @@ def _direct_chat_tool_policy_error(chat: dict | None) -> JSONResponse | None:
     return None
 
 
+async def _refresh_direct_chat_runtime(chat_id: str) -> None:
+    """Force direct-chat SDK/tool state to pick up a new chat-level policy."""
+    if _has_client(chat_id):
+        await _disconnect_client(chat_id)
+    _update_chat(chat_id, claude_session_id=None)
+    _clear_session_context(chat_id)
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -417,6 +425,7 @@ async def api_set_chat_tool_policy(chat_id: str, request: Request):
     default_level = int(_get_chat_tool_policy(chat_id).get("default_level", 2))
     policy = _normalize_tool_policy(data, default_level=default_level)
     policy = _set_chat_tool_policy(chat_id, policy, default_level=default_level)
+    await _refresh_direct_chat_runtime(chat_id)
     return JSONResponse({"ok": True, "tool_policy": policy})
 
 
@@ -447,6 +456,7 @@ async def api_elevate_chat_tool_policy(chat_id: str, request: Request):
     current["level"] = max(default_level, min(4, target_level))
     current["elevated_until"] = expires_at
     policy = _set_chat_tool_policy(chat_id, current, default_level=default_level)
+    await _refresh_direct_chat_runtime(chat_id)
     return JSONResponse({"ok": True, "chat_id": chat_id, "tool_policy": policy, "expires_at": expires_at})
 
 
@@ -461,6 +471,7 @@ async def api_revoke_chat_tool_policy(chat_id: str):
     current["level"] = default_level
     current["elevated_until"] = None
     policy = _set_chat_tool_policy(chat_id, current, default_level=default_level)
+    await _refresh_direct_chat_runtime(chat_id)
     return JSONResponse({"ok": True, "chat_id": chat_id, "tool_policy": policy})
 
 

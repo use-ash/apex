@@ -16,14 +16,15 @@ import uuid
 from collections import deque
 from pathlib import Path
 
-from env import APEX_ROOT, WORKSPACE, WORKSPACE_PATHS, MODEL, DEBUG, SDK_QUERY_TIMEOUT
+import env
+from env import APEX_ROOT, MODEL, DEBUG, SDK_QUERY_TIMEOUT
 from compat import safe_chmod
 
 from fastapi import WebSocket
 
 from db import _get_db, _get_chat, _update_chat, _get_chat_tool_policy, _get_profile_tool_policy
 from log import log
-from local_model.safety import validate_command, validate_path
+from tool_access import tool_access_decision
 from memory_extract import _filter_stream_text_for_memory_tags, _clear_stream_text_filter
 from state import (
     _clients, _client_sessions, _client_last_used, _client_permission_levels, _client_permission_policies,
@@ -36,6 +37,7 @@ try:
     from claude_agent_sdk import (
         ClaudeSDKClient,
         ClaudeAgentOptions,
+        HookMatcher,
         PermissionResultAllow,
         PermissionResultDeny,
     )
@@ -50,16 +52,6 @@ _STREAM_JOURNAL_DIR = APEX_ROOT / "state" / "streams"
 _STREAM_JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
 safe_chmod(_STREAM_JOURNAL_DIR, 0o700)
 _CHAT_ID_RE = re.compile(r"^[0-9a-f]{8,12}$")
-_STANDARD_SDK_TOOLS = frozenset({"Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch"})
-_SDK_WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
-_SDK_PATH_INPUT_KEYS = (
-    "path",
-    "file_path",
-    "new_path",
-    "old_path",
-    "notebook_path",
-)
-
 
 # ---------------------------------------------------------------------------
 # Stream ID
@@ -356,11 +348,12 @@ def _load_mcp_servers() -> dict[str, dict]:
         servers = data.get("mcpServers", {})
         if not isinstance(servers, dict):
             return {}
-        return {
+        servers = {
             name: {k: v for k, v in cfg.items() if k != "enabled"}
             for name, cfg in servers.items()
             if isinstance(cfg, dict) and cfg.get("enabled", True)
         }
+        return env.rewrite_mcp_servers_for_workspace(servers)
     except (json.JSONDecodeError, OSError) as e:
         log(f"MCP config load failed: {e}")
         return {}
@@ -397,58 +390,72 @@ def _sdk_tool_input_paths(tool_input: dict) -> list[str]:
     return paths
 
 
-def _sdk_resolve_path(path: str) -> str:
-    expanded = os.path.expanduser(path)
-    if os.path.isabs(expanded):
-        return os.path.realpath(expanded)
-    return os.path.realpath(os.path.join(str(WORKSPACE), expanded))
-
-
-def _sdk_path_error(tool_name: str, tool_input: dict, *, permission_level: int = 2) -> str | None:
-    if permission_level >= 4:
-        return None
-    allow_write = tool_name in _SDK_WRITE_TOOLS
-    for raw_path in _sdk_tool_input_paths(tool_input):
-        err = validate_path(
-            _sdk_resolve_path(raw_path),
-            allow_write=allow_write,
-            permission_level=permission_level,
-        )
-        if err:
-            return err
-    return None
-
-
 def _make_sdk_tool_gate(level: int, *, allowed_commands: list[str] | None = None):
     async def _can_use_tool(tool_name: str, tool_input: dict, _context):
-        if level <= 0:
+        allowed, message = tool_access_decision(
+            tool_name,
+            tool_input if isinstance(tool_input, dict) else {},
+            level=level,
+            allowed_commands=allowed_commands,
+            workspace_paths=env.get_runtime_workspace_paths(),
+        )
+        if not allowed:
             return PermissionResultDeny(
-                message="This agent is Restricted and cannot use tools or access files.",
-                interrupt=True,
-            )
-        if level >= 4:
-            return PermissionResultAllow()
-        path_err = _sdk_path_error(tool_name, tool_input, permission_level=level)
-        if path_err:
-            return PermissionResultDeny(message=path_err, interrupt=True)
-        if tool_name == "Bash":
-            command = str((tool_input or {}).get("command") or "").strip()
-            command_err = validate_command(
-                command,
-                str(WORKSPACE),
-                permission_level=level,
-                allowed_commands=allowed_commands,
-            )
-            if command_err:
-                return PermissionResultDeny(message=command_err, interrupt=True)
-        if level == 1 and tool_name not in _STANDARD_SDK_TOOLS:
-            return PermissionResultDeny(
-                message="This action requires Elevated or Admin permissions.",
+                message=message,
                 interrupt=True,
             )
         return PermissionResultAllow()
 
     return _can_use_tool
+
+
+def _sdk_pre_tool_use_decision(
+    tool_name: str,
+    tool_input: dict,
+    *,
+    level: int,
+    allowed_commands: list[str] | None = None,
+) -> tuple[bool, str]:
+    return tool_access_decision(
+        tool_name,
+        tool_input if isinstance(tool_input, dict) else {},
+        level=level,
+        allowed_commands=allowed_commands,
+        workspace_paths=env.get_runtime_workspace_paths(),
+    )
+
+
+def _make_sdk_pre_tool_use_hook(level: int, *, allowed_commands: list[str] | None = None):
+    async def _hook(hook_input, _tool_use_id, _context):
+        tool_name = str((hook_input or {}).get("tool_name") or "")
+        tool_input = hook_input.get("tool_input") if isinstance(hook_input, dict) else {}
+        if not isinstance(tool_input, dict):
+            tool_input = {}
+        allowed, message = _sdk_pre_tool_use_decision(
+            tool_name,
+            tool_input,
+            level=level,
+            allowed_commands=allowed_commands,
+        )
+        if allowed:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                }
+            }
+        return {
+            "decision": "block",
+            "systemMessage": message,
+            "reason": message,
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": message,
+            },
+        }
+
+    return _hook
 
 
 def _make_options(
@@ -463,20 +470,30 @@ def _make_options(
     """Build SDK options for a new or resumed session."""
     if permission_level is None:
         permission_level = _resolve_sdk_permission_level(client_key, chat_id)
+    workspace_root = env.get_runtime_workspace_root()
+    workspace_paths = env.get_runtime_workspace_paths_list()
     # Extra workspace roots beyond the primary (colon-separated APEX_WORKSPACE)
     extra_dirs = [
-        r.strip() for r in WORKSPACE_PATHS.split(":")[1:]
-        if r.strip() and r.strip() != str(WORKSPACE)
+        root for root in workspace_paths[1:]
+        if root and root != str(workspace_root)
     ]
     opts = ClaudeAgentOptions(
         model=model or MODEL,
-        cwd=str(WORKSPACE),
+        cwd=str(workspace_root),
         permission_mode=_sdk_permission_mode_for_level(permission_level),
         max_turns=50,
         resume=session_id,
         setting_sources=["user"],
         add_dirs=extra_dirs,
         can_use_tool=_make_sdk_tool_gate(permission_level, allowed_commands=allowed_commands),
+        hooks={
+            "PreToolUse": [
+                HookMatcher(
+                    matcher=".*",
+                    hooks=[_make_sdk_pre_tool_use_hook(permission_level, allowed_commands=allowed_commands)],
+                )
+            ]
+        },
     )
     mcp_servers = _load_mcp_servers()
     if mcp_servers:

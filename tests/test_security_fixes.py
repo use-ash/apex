@@ -38,13 +38,17 @@ import apex  # noqa: E402
 import alert_client  # noqa: E402
 import agent_sdk  # noqa: E402
 import backends  # noqa: E402
+import chat_html as chat_html_mod  # noqa: E402
 import dashboard as dashboard_mod  # noqa: E402
+import dashboard_html as dashboard_html_mod  # noqa: E402
 import db as db_mod  # noqa: E402
 import env  # noqa: E402
 import memory_extract  # noqa: E402
 import context as context_mod  # noqa: E402
 import premium_loader  # noqa: E402
+import routes_chat as routes_chat_mod  # noqa: E402
 import streaming as streaming_mod  # noqa: E402
+import tool_access  # noqa: E402
 import ws_handler  # noqa: E402
 from state import (  # noqa: E402
     _current_group_profile_id,
@@ -59,6 +63,7 @@ from state import (  # noqa: E402
     _clients,
     _session_context_sent,
 )
+from local_model import mcp_bridge as mcp_bridge_mod  # noqa: E402
 from local_model import safety as local_safety  # noqa: E402
 from local_model import tool_loop  # noqa: E402
 from local_model.tools import list_files, read_file, search_files, write_file  # noqa: E402
@@ -70,6 +75,12 @@ class SecurityFixTests(unittest.TestCase):
         dashboard_mod._set_live_alert_token("initial-alert-token")
         apex.MODEL = env.MODEL
         apex._init_db()
+        dashboard_mod.init_dashboard(
+            TEST_ROOT / "state",
+            TEST_ROOT / "state" / env.DB_NAME,
+            TEST_ROOT / "state" / "ssl",
+        )
+        dashboard_mod._config.update_section("policy", {"workspace_tools": ""})
         mark_phase_completed(TEST_ROOT / "state", "setup_complete")
         with apex._db_lock:
             conn = apex._get_db()
@@ -553,6 +564,55 @@ class SecurityFixTests(unittest.TestCase):
         result_event = next(evt for evt in sent if evt.get("type") == "result")
         self.assertTrue(result_event["is_error"])
 
+    def test_agent_sdk_level_4_pending_tools_do_not_false_deny(self) -> None:
+        chat_id = self._create_direct_chat(model="claude-opus-4.6")
+        db_mod._set_chat_tool_policy(
+            chat_id,
+            {
+                "level": 4,
+                "default_level": 2,
+                "elevated_until": None,
+                "allowed_commands": [],
+            },
+        )
+        fake_client = SimpleNamespace(receive_response=lambda: None)
+        sent: list[dict] = []
+
+        async def fake_send_stream_event(_chat_id: str, payload: dict) -> None:
+            sent.append(payload)
+
+        async def fake_stream():
+            yield agent_sdk.AssistantMessage(
+                content=[agent_sdk.ToolUseBlock(id="toolu_1", name="Bash", input={"command": "date +%s"})],
+                model="claude-haiku-4-5-20251001",
+            )
+            yield agent_sdk.ResultMessage(
+                subtype="success",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=False,
+                num_turns=1,
+                session_id="sess-1",
+                usage={"input_tokens": 1, "output_tokens": 1},
+                result="1775331480",
+            )
+
+        with (
+            mock.patch.object(agent_sdk, "_send_stream_event", side_effect=fake_send_stream_event),
+            mock.patch.object(agent_sdk, "_normalize_response_stream", return_value=fake_stream()),
+        ):
+            result = asyncio.run(agent_sdk._stream_response(fake_client, chat_id))
+
+        self.assertFalse(result["is_error"])
+        self.assertEqual(result["text"], "1775331480")
+        self.assertNotIn("denied by host permissions", result["text"])
+        tool_events = json.loads(result["tool_events"])
+        self.assertEqual(len(tool_events), 1)
+        self.assertFalse(tool_events[0]["result"]["is_error"])
+        self.assertIn("omitted explicit result block", tool_events[0]["result"]["content"])
+        result_event = next(evt for evt in sent if evt.get("type") == "result")
+        self.assertFalse(result_event["is_error"])
+
     def test_local_full_admin_level_4_allows_shell_and_external_paths(self) -> None:
         outside_root = Path(tempfile.mkdtemp(prefix="apex-admin4-outside-"))
         target = outside_root / "admin4.txt"
@@ -640,6 +700,119 @@ class SecurityFixTests(unittest.TestCase):
             {"read_file", "list_files", "search_files"},
         )
         self.assertEqual(run_tool_loop_mock.await_args.kwargs["permission_level"], 1)
+
+    def test_tool_access_level_2_allows_playwright_fetch_and_readonly_filesystem(self) -> None:
+        with mock.patch.object(
+            tool_access,
+            "_iter_mcp_tool_names",
+            return_value=[
+                "playwright__browser_navigate",
+                "fetch__fetch",
+                "filesystem__read_text_file",
+                "filesystem__write_file",
+                "memory__read_graph",
+            ],
+        ):
+            allowed = tool_access.allowed_tool_names_for_level(2)
+
+        self.assertIn("playwright__browser_navigate", allowed)
+        self.assertIn("fetch__fetch", allowed)
+        self.assertIn("filesystem__read_text_file", allowed)
+        self.assertNotIn("filesystem__write_file", allowed)
+        self.assertNotIn("memory__read_graph", allowed)
+
+    def test_env_rewrite_mcp_servers_appends_extra_roots_and_playwright_env(self) -> None:
+        servers = {
+            "filesystem": {
+                "type": "stdio",
+                "enabled": True,
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+            },
+            "playwright": {
+                "type": "stdio",
+                "enabled": True,
+                "command": "docker",
+                "args": ["run", "-i", "--rm", "mcp/playwright", "--ignore-https-errors"],
+            },
+        }
+        with (
+            mock.patch.object(env, "MCP_EXTRA_ROOTS_RAW", "/tmp"),
+            mock.patch.object(env, "PLAYWRIGHT_CLIENT_CERT", "/Users/dana/.apex-playwright-mtls/client-cert.pem"),
+            mock.patch.object(env, "PLAYWRIGHT_CLIENT_KEY", "/Users/dana/.apex-playwright-mtls/client-key.pem"),
+            mock.patch.object(env, "PLAYWRIGHT_CLIENT_ORIGIN", "https://192.168.86.214:8301"),
+        ):
+            rewritten = env.rewrite_mcp_servers_for_workspace(
+                servers,
+                ["/Users/dana/.openclaw/workspace", "/Users/dana/.openclaw/apex"],
+            )
+
+        self.assertEqual(
+            rewritten["filesystem"]["args"],
+            [
+                "-y",
+                "@modelcontextprotocol/server-filesystem",
+                "/Users/dana/.openclaw/workspace",
+                "/Users/dana/.openclaw/apex",
+                "/tmp",
+            ],
+        )
+        playwright_args = rewritten["playwright"]["args"]
+        self.assertIn("-v", playwright_args)
+        self.assertIn(
+            "/Users/dana/.apex-playwright-mtls/client-cert.pem:/apex-playwright/client-cert.pem:ro",
+            playwright_args,
+        )
+        self.assertIn(
+            "/Users/dana/.apex-playwright-mtls/client-key.pem:/apex-playwright/client-key.pem:ro",
+            playwright_args,
+        )
+        self.assertEqual(
+            rewritten["playwright"]["env"]["APEX_PLAYWRIGHT_CLIENT_ORIGIN"],
+            "https://192.168.86.214:8301",
+        )
+
+    def test_tool_access_level_2_honors_configured_workspace_tool_patterns(self) -> None:
+        dashboard_mod._config.update_section(
+            "policy",
+            {"workspace_tools": "playwright__*\nfetch__*"},
+        )
+        self.assertTrue(tool_access.tool_allowed_for_level("playwright__browser_navigate", 2))
+        self.assertTrue(tool_access.tool_allowed_for_level("fetch__fetch", 2))
+        self.assertFalse(tool_access.tool_allowed_for_level("filesystem__read_text_file", 2))
+        self.assertFalse(tool_access.tool_allowed_for_level("bash", 2))
+
+    def test_tool_access_level_2_denies_memory_and_filesystem_writes(self) -> None:
+        allowed, message = tool_access.tool_access_decision(
+            "filesystem__write_file",
+            {"path": "/tmp/level2.txt", "content": "x"},
+            level=2,
+            allowed_commands=[],
+            workspace_paths=str(TEST_ROOT),
+        )
+        self.assertFalse(allowed)
+        self.assertIn("tool is not allowed", message)
+
+        allowed, message = tool_access.tool_access_decision(
+            "memory__read_graph",
+            {},
+            level=2,
+            allowed_commands=[],
+            workspace_paths=str(TEST_ROOT),
+        )
+        self.assertFalse(allowed)
+        self.assertIn("tool is not allowed", message)
+
+    def test_tool_access_level_2_allows_playwright(self) -> None:
+        allowed, message = tool_access.tool_access_decision(
+            "playwright__browser_navigate",
+            {"url": "https://example.com"},
+            level=2,
+            allowed_commands=[],
+            workspace_paths=str(TEST_ROOT),
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
 
     def test_local_model_admin_commands_use_prefix_match_and_protected_paths(self) -> None:
         workspace = str(TEST_ROOT)
@@ -740,7 +913,7 @@ class SecurityFixTests(unittest.TestCase):
         chat_id = self._create_direct_chat(model="codex:o3")
         routed = {"ollama": 0}
 
-        async def fake_run_ollama_chat(chat_id_arg: str, prompt: str, model=None, attachments=None):
+        async def fake_run_ollama_chat(chat_id_arg: str, prompt: str, model=None, attachments=None, permission_policy=None):
             self.assertEqual(chat_id_arg, chat_id)
             self.assertEqual(prompt, "show reasoning")
             self.assertEqual(model, "codex:o3")
@@ -759,6 +932,51 @@ class SecurityFixTests(unittest.TestCase):
 
         with (
             mock.patch.object(ws_handler.env, "OPENAI_API_KEY", "sk-test"),
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=AssertionError("codex CLI path should not run")),
+            mock.patch.object(ws_handler, "_run_ollama_chat", side_effect=fake_run_ollama_chat),
+            self._client() as client,
+        ):
+            with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                ws.send_json({
+                    "action": "send",
+                    "chat_id": chat_id,
+                    "prompt": "show reasoning",
+                })
+                self._receive_until(ws, lambda msg: msg.get("type") == "stream_end")
+
+        self.assertEqual(routed["ollama"], 1)
+
+    def test_websocket_send_routes_codex_gpt5_direct_chat_through_permission_aware_backend(self) -> None:
+        chat_id = self._create_direct_chat(model="codex:gpt-5.4")
+        db_mod._set_chat_tool_policy(
+            chat_id,
+            {
+                "level": 3,
+                "default_level": 2,
+                "allowed_commands": [],
+            },
+        )
+        routed = {"ollama": 0}
+
+        async def fake_run_ollama_chat(chat_id_arg: str, prompt: str, model=None, attachments=None, permission_policy=None):
+            self.assertEqual(chat_id_arg, chat_id)
+            self.assertEqual(prompt, "show reasoning")
+            self.assertEqual(model, "codex:gpt-5.4")
+            self.assertEqual((permission_policy or {}).get("level"), 3)
+            routed["ollama"] += 1
+            return {
+                "text": "done",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "step by step",
+                "tool_events": "[]",
+            }
+
+        with (
             mock.patch.object(ws_handler, "_run_codex_chat", side_effect=AssertionError("codex CLI path should not run")),
             mock.patch.object(ws_handler, "_run_ollama_chat", side_effect=fake_run_ollama_chat),
             self._client() as client,
@@ -1478,6 +1696,49 @@ class SecurityFixTests(unittest.TestCase):
             self.assertEqual(revoked["tool_policy"]["level"], 1)
             self.assertIsNone(revoked["tool_policy"]["elevated_until"])
 
+    def test_dashboard_persona_elevate_accepts_level_4(self) -> None:
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO agent_profiles (
+                    id, name, slug, avatar, role_description, backend, model,
+                    system_prompt, tool_policy, is_default, is_system, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, datetime('now'), datetime('now'))
+                """,
+                (
+                    "persona-admin-4",
+                    "Persona Admin 4",
+                    "persona-admin-4",
+                    "P",
+                    "persona admin test",
+                    "ollama",
+                    "qwen3:latest",
+                    "persona admin test",
+                    json.dumps({
+                        "level": 2,
+                        "default_level": 2,
+                        "elevated_until": None,
+                        "invoke_policy": "anyone",
+                        "allowed_commands": [],
+                    }),
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+        with self._client() as client:
+            elevate = client.post(
+                "/admin/api/personas/persona-admin-4/elevate",
+                json={"minutes": 10, "level": 4},
+                headers=self._admin_headers(),
+            )
+            self.assertEqual(elevate.status_code, 200, elevate.text)
+            elevated = elevate.json()
+            self.assertEqual(elevated["tool_policy"]["level"], 4)
+            self.assertEqual(elevated["tool_policy"]["default_level"], 2)
+            self.assertTrue(elevated["expires_at"])
+
     def test_unassigned_direct_chat_uses_chat_level_tool_policy(self) -> None:
         chat_id = self._create_direct_chat(model="claude-opus-4.6")
         policy = db_mod._set_chat_tool_policy(
@@ -1571,6 +1832,30 @@ class SecurityFixTests(unittest.TestCase):
             self.assertEqual(elevated["tool_policy"]["level"], 4)
             self.assertTrue(elevated["expires_at"])
 
+    def test_direct_chat_tool_policy_update_clears_stale_session(self) -> None:
+        chat_id = self._create_direct_chat(model="claude-opus-4.6")
+        db_mod._update_chat(chat_id, claude_session_id="sess-stale")
+        _session_context_sent.add(chat_id)
+
+        async_disconnect = mock.AsyncMock()
+        with self._client() as client, \
+            mock.patch.object(routes_chat_mod, "_has_client", return_value=True), \
+            mock.patch.object(routes_chat_mod, "_disconnect_client", async_disconnect):
+            update = client.put(
+                f"/api/chats/{chat_id}/tool-policy",
+                json={
+                    "level": 4,
+                    "default_level": 2,
+                    "allowed_commands": [],
+                    "elevated_until": None,
+                },
+            )
+            self.assertEqual(update.status_code, 200, update.text)
+
+        async_disconnect.assert_awaited_once_with(chat_id)
+        self.assertIsNone(db_mod._get_chat(chat_id)["claude_session_id"])
+        self.assertNotIn(chat_id, _session_context_sent)
+
     def test_sdk_client_reconnects_when_allowed_commands_change_at_same_level(self) -> None:
         chat_id = self._create_direct_chat(model="claude-opus-4.6")
 
@@ -1633,6 +1918,237 @@ class SecurityFixTests(unittest.TestCase):
             permission_level=4,
         )
         self.assertEqual(opts.permission_mode, "bypassPermissions")
+
+    def test_dashboard_workspace_path_normalizes_multiline_roots(self) -> None:
+        normalized = dashboard_mod._normalize_workspace_path_value(
+            "/Users/dana/project-a\n/Users/dana/project-b\n\n/Users/dana/project-a"
+        )
+        self.assertEqual(
+            normalized,
+            "/Users/dana/project-a:/Users/dana/project-b",
+        )
+
+    def test_dashboard_workspace_api_uses_runtime_workspace_config(self) -> None:
+        primary = TEST_ROOT / "runtime-workspace"
+        secondary = TEST_ROOT / "runtime-apex"
+        (primary / "memory").mkdir(parents=True, exist_ok=True)
+        (primary / "skills" / "demo").mkdir(parents=True, exist_ok=True)
+        (primary / "APEX.md").write_text("# Runtime Workspace\n", encoding="utf-8")
+        (primary / "memory" / "MEMORY.md").write_text("memory", encoding="utf-8")
+        (primary / "skills" / "demo" / "SKILL.md").write_text("---\nname: Demo\n---\n", encoding="utf-8")
+        secondary.mkdir(parents=True, exist_ok=True)
+        dashboard_mod._config.update_section(
+            "workspace",
+            {"path": f"{primary}:{secondary}"},
+        )
+
+        response = asyncio.run(dashboard_mod.api_workspace())
+        payload = json.loads(response.body)
+
+        self.assertEqual(payload["workspace"], str(primary))
+        self.assertEqual(payload["workspace_paths"], [str(primary), str(secondary)])
+        self.assertTrue(payload["project_md_exists"])
+        self.assertEqual(payload["memory_file_count"], 1)
+        self.assertEqual(payload["skills_count"], 1)
+
+    def test_dashboard_workspace_update_syncs_filesystem_mcp_roots(self) -> None:
+        primary = TEST_ROOT / "sync-one"
+        secondary = TEST_ROOT / "sync-two"
+        primary.mkdir(parents=True, exist_ok=True)
+        secondary.mkdir(parents=True, exist_ok=True)
+        dashboard_mod._write_mcp_config(
+            {
+                "mcpServers": {
+                    "filesystem": {
+                        "type": "stdio",
+                        "enabled": True,
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                    }
+                }
+            }
+        )
+
+        with self._client() as client:
+            response = client.put(
+                "/admin/api/config/workspace",
+                headers=self._admin_headers(),
+                json={"path": f"{primary}\n{secondary}"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        data = dashboard_mod._read_mcp_config()
+        self.assertEqual(
+            data["mcpServers"]["filesystem"]["args"],
+            ["-y", "@modelcontextprotocol/server-filesystem", str(primary), str(secondary)],
+        )
+
+    def test_runtime_mcp_load_rewrites_stale_filesystem_roots_from_config(self) -> None:
+        primary = TEST_ROOT / "stale-one"
+        secondary = TEST_ROOT / "stale-two"
+        primary.mkdir(parents=True, exist_ok=True)
+        secondary.mkdir(parents=True, exist_ok=True)
+        dashboard_mod._config.update_section(
+            "workspace",
+            {"path": f"{primary}:{secondary}"},
+        )
+        dashboard_mod._write_mcp_config(
+            {
+                "mcpServers": {
+                    "filesystem": {
+                        "type": "stdio",
+                        "enabled": True,
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                    }
+                }
+            }
+        )
+
+        sdk_servers = streaming_mod._load_mcp_servers()
+        loop_servers = mcp_bridge_mod._load_mcp_config()
+
+        expected_args = [
+            "-y",
+            "@modelcontextprotocol/server-filesystem",
+            str(primary),
+            str(secondary),
+        ]
+        self.assertEqual(sdk_servers["filesystem"]["args"], expected_args)
+        self.assertEqual(loop_servers["filesystem"]["args"], expected_args)
+
+    def test_config_schema_marks_workspace_path_multiline(self) -> None:
+        spec = dashboard_mod.SCHEMA["workspace"]["path"]
+        self.assertTrue(spec["multiline"])
+        self.assertIn("project-a", spec["placeholder"])
+
+    def test_config_schema_marks_policy_workspace_tools_multiline(self) -> None:
+        spec = dashboard_mod.SCHEMA["policy"]["workspace_tools"]
+        self.assertTrue(spec["multiline"])
+        self.assertIn("playwright__*", spec["placeholder"])
+
+    def test_dashboard_policy_tools_round_trip(self) -> None:
+        with self._client() as client:
+            put_resp = client.put(
+                "/admin/api/policy/tools",
+                headers=self._admin_headers(),
+                json={"workspace_tools": ["playwright__*", "fetch__*"]},
+            )
+            self.assertEqual(put_resp.status_code, 200, put_resp.text)
+            payload = put_resp.json()
+            self.assertEqual(payload["workspace_tools"], ["playwright__*", "fetch__*"])
+
+            get_resp = client.get("/admin/api/policy/tools", headers=self._admin_headers())
+            self.assertEqual(get_resp.status_code, 200, get_resp.text)
+            catalog = get_resp.json()["catalog"]
+            play = next(item for item in catalog if item["id"] == "playwright__*")
+            self.assertEqual(play["name"], "Playwright MCP")
+            self.assertTrue(play["workspace_enabled"])
+            self.assertEqual(get_resp.json()["workspace_tools"], ["playwright__*", "fetch__*"])
+
+    def test_dashboard_html_keeps_multiline_workspace_js_escaped(self) -> None:
+        self.assertIn(
+            'split(":").join("\\n")',
+            dashboard_html_mod.DASHBOARD_HTML,
+        )
+        self.assertIn('data-page="policy"', dashboard_html_mod.DASHBOARD_HTML)
+        self.assertIn('id="persona-tool-policy"></select>', dashboard_html_mod.DASHBOARD_HTML)
+        self.assertIn('Workspace + Browser', dashboard_html_mod.DASHBOARD_HTML)
+        self.assertIn('id="policy-level-detail"', dashboard_html_mod.DASHBOARD_HTML)
+        self.assertIn('id="policy-workspace-tools-content"', dashboard_html_mod.DASHBOARD_HTML)
+        self.assertIn('data-policy-workspace-save', dashboard_html_mod.DASHBOARD_HTML)
+        self.assertIn("Read Tools", dashboard_html_mod.DASHBOARD_HTML)
+        self.assertIn("Write Tools", dashboard_html_mod.DASHBOARD_HTML)
+        self.assertIn("<details class=\"card\"", dashboard_html_mod.DASHBOARD_HTML)
+
+    def test_new_chat_picker_includes_no_profile_option(self) -> None:
+        self.assertIn("Plain chat with no persona assigned", chat_html_mod.CHAT_HTML)
+        self.assertIn("Use chat model directly", chat_html_mod.CHAT_HTML)
+        self.assertIn('id="newChatModelSelect"', chat_html_mod.CHAT_HTML)
+        self.assertIn('Pick the model before creating the chat.', chat_html_mod.CHAT_HTML)
+
+    def test_sdk_pre_tool_hook_blocks_level_3_non_allowlisted_date(self) -> None:
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Bash",
+            {"command": "date +%s"},
+            level=3,
+            allowed_commands=["echo", "grep"],
+        )
+        self.assertFalse(allowed)
+        self.assertIn("command is not allowed", message)
+
+    def test_sdk_pre_tool_hook_level_3_allows_allowlisted_date_and_tmp_write(self) -> None:
+        diagnostics = [
+            "echo", "date", "grep", "rg", "find", "ls", "cat", "head", "tail",
+            "sed", "awk", "cut", "sort", "uniq", "tr", "wc", "ps", "lsof",
+            "curl", "stat", "file", "realpath", "basename", "dirname",
+            "printenv", "env",
+        ]
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Bash",
+            {"command": "date +%s"},
+            level=3,
+            allowed_commands=diagnostics,
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
+
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Write",
+            {"file_path": "/tmp/apex_level4_check2.txt", "content": "1775331902"},
+            level=3,
+            allowed_commands=diagnostics,
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
+
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Read",
+            {"file_path": "/tmp/apex_level4_check2.txt"},
+            level=3,
+            allowed_commands=diagnostics,
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
+
+    def test_sdk_pre_tool_hook_level_3_allows_allowlisted_shell_pipelines(self) -> None:
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Bash",
+            {"command": "ps aux | grep apex"},
+            level=3,
+            allowed_commands=["ps", "grep"],
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
+
+    def test_sdk_pre_tool_hook_level_3_still_blocks_write_outside_workspace_and_tmp(self) -> None:
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Write",
+            {"file_path": "/var/root/apex_level4_check2.txt", "content": "1775331902"},
+            level=3,
+            allowed_commands=["echo"],
+        )
+        self.assertFalse(allowed)
+        self.assertIn("outside allowed admin paths", message)
+
+    def test_sdk_pre_tool_hook_allows_level_4_any_path_and_command(self) -> None:
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Bash",
+            {"command": "date +%s"},
+            level=4,
+            allowed_commands=[],
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
+
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Write",
+            {"file_path": "/tmp/apex_level4_check2.txt", "content": "1775331902"},
+            level=4,
+            allowed_commands=[],
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
 
     def test_group_multi_mentions_supplement_partial_premium_targets(self) -> None:
         chat_id = self._create_test_group_chat()

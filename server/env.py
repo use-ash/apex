@@ -20,6 +20,7 @@ Known default divergence (pre-existing, do not silently fix):
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from pathlib import Path
@@ -52,6 +53,159 @@ APEX_ROOT: Path = Path(
 _ws_raw: str = os.environ.get("APEX_WORKSPACE", os.getcwd())
 WORKSPACE: Path = Path(_ws_raw.split(":")[0].strip() or os.getcwd())
 WORKSPACE_PATHS: str = _ws_raw
+MCP_EXTRA_ROOTS_RAW: str = os.environ.get("APEX_MCP_EXTRA_ROOTS", "")
+PLAYWRIGHT_CLIENT_CERT: str = os.environ.get("APEX_PLAYWRIGHT_CLIENT_CERT", "")
+PLAYWRIGHT_CLIENT_KEY: str = os.environ.get("APEX_PLAYWRIGHT_CLIENT_KEY", "")
+PLAYWRIGHT_CLIENT_ORIGIN: str = os.environ.get("APEX_PLAYWRIGHT_CLIENT_ORIGIN", "")
+
+
+def _normalize_workspace_roots(raw: str | None) -> list[str]:
+    roots: list[str] = []
+    text = str(raw or "").replace("\r\n", "\n").replace("\r", "\n")
+    for line in text.split("\n"):
+        for chunk in line.split(":"):
+            item = chunk.strip()
+            if item and item not in roots:
+                roots.append(item)
+    return roots
+
+
+def get_runtime_workspace_paths_list() -> list[str]:
+    """Return workspace roots from config.json first, env fallback second."""
+    config_path = APEX_ROOT / "state" / "config.json"
+    try:
+        if config_path.exists():
+            data = json.loads(config_path.read_text())
+            raw = (
+                data.get("workspace", {}).get("path", "")
+                if isinstance(data, dict) else ""
+            )
+            roots = _normalize_workspace_roots(str(raw))
+            if roots:
+                return roots
+    except Exception:
+        pass
+    roots = _normalize_workspace_roots(WORKSPACE_PATHS)
+    return roots or [str(WORKSPACE)]
+
+
+def get_runtime_mcp_roots_list() -> list[str]:
+    roots = list(get_runtime_workspace_paths_list())
+    for extra in _normalize_workspace_roots(MCP_EXTRA_ROOTS_RAW):
+        if extra not in roots:
+            roots.append(extra)
+    return roots or [str(WORKSPACE)]
+
+
+def get_runtime_workspace_paths() -> str:
+    return ":".join(get_runtime_workspace_paths_list())
+
+
+def get_runtime_workspace_root() -> Path:
+    roots = get_runtime_workspace_paths_list()
+    return Path(roots[0] if roots else str(WORKSPACE))
+
+
+def rewrite_mcp_servers_for_workspace(
+    servers: dict[str, dict],
+    workspace_paths: str | list[str] | None = None,
+) -> dict[str, dict]:
+    """Rewrite filesystem MCP roots to the configured workspace roots."""
+    if isinstance(workspace_paths, str):
+        roots = _normalize_workspace_roots(workspace_paths)
+    elif isinstance(workspace_paths, list):
+        roots = [str(root).strip() for root in workspace_paths if str(root).strip()]
+    else:
+        roots = get_runtime_workspace_paths_list()
+    roots = roots or [str(WORKSPACE)]
+    mcp_roots = list(roots)
+    for extra in _normalize_workspace_roots(MCP_EXTRA_ROOTS_RAW):
+        if extra not in mcp_roots:
+            mcp_roots.append(extra)
+
+    rewritten: dict[str, dict] = {}
+    for name, cfg in servers.items():
+        if not isinstance(cfg, dict):
+            rewritten[name] = cfg
+            continue
+        command = str(cfg.get("command") or "")
+        args = list(cfg.get("args") or [])
+
+        # npx -y @modelcontextprotocol/server-filesystem <roots...>
+        if command == "npx" and "@modelcontextprotocol/server-filesystem" in args:
+            idx = args.index("@modelcontextprotocol/server-filesystem")
+            new_cfg = dict(cfg)
+            new_cfg["args"] = args[: idx + 1] + mcp_roots
+            rewritten[name] = new_cfg
+            continue
+
+        # docker run ... mcp/filesystem <roots...>
+        if command == "docker":
+            image_idx = next(
+                (i for i, arg in enumerate(args) if "mcp/filesystem" in str(arg)),
+                -1,
+            )
+            if image_idx >= 0:
+                prefix = args[:image_idx]
+                cleaned_prefix: list[str] = []
+                i = 0
+                while i < len(prefix):
+                    if prefix[i] == "-v" and (i + 1) < len(prefix):
+                        i += 2
+                        continue
+                    cleaned_prefix.append(prefix[i])
+                    i += 1
+                mounts: list[str] = []
+                for root in roots:
+                    mounts.extend(["-v", f"{root}:{root}"])
+                for root in mcp_roots:
+                    if root in roots:
+                        continue
+                    mounts.extend(["-v", f"{root}:{root}"])
+                new_cfg = dict(cfg)
+                new_cfg["args"] = cleaned_prefix + mounts + [args[image_idx]] + mcp_roots
+                rewritten[name] = new_cfg
+                continue
+
+        if "playwright" in command or any("playwright" in str(arg) for arg in args):
+            new_cfg = dict(cfg)
+            new_env = dict(cfg.get("env") or {})
+            new_args = list(args)
+            if command == "docker":
+                cert_mount_target = "/apex-playwright/client-cert.pem"
+                key_mount_target = "/apex-playwright/client-key.pem"
+                prefix = list(new_args)
+                image_idx = next(
+                    (i for i, arg in enumerate(prefix) if "playwright" in str(arg)),
+                    -1,
+                )
+                insert_idx = image_idx if image_idx >= 0 else len(prefix)
+                docker_mounts: list[str] = []
+                if PLAYWRIGHT_CLIENT_CERT:
+                    docker_mounts.extend(["-v", f"{PLAYWRIGHT_CLIENT_CERT}:{cert_mount_target}:ro"])
+                    new_env["APEX_PLAYWRIGHT_CLIENT_CERT"] = cert_mount_target
+                if PLAYWRIGHT_CLIENT_KEY:
+                    docker_mounts.extend(["-v", f"{PLAYWRIGHT_CLIENT_KEY}:{key_mount_target}:ro"])
+                    new_env["APEX_PLAYWRIGHT_CLIENT_KEY"] = key_mount_target
+                if docker_mounts:
+                    new_args = prefix[:insert_idx] + docker_mounts + prefix[insert_idx:]
+            else:
+                if PLAYWRIGHT_CLIENT_CERT:
+                    new_env["APEX_PLAYWRIGHT_CLIENT_CERT"] = PLAYWRIGHT_CLIENT_CERT
+                if PLAYWRIGHT_CLIENT_KEY:
+                    new_env["APEX_PLAYWRIGHT_CLIENT_KEY"] = PLAYWRIGHT_CLIENT_KEY
+            if PLAYWRIGHT_CLIENT_ORIGIN:
+                new_env["APEX_PLAYWRIGHT_CLIENT_ORIGIN"] = PLAYWRIGHT_CLIENT_ORIGIN
+            if new_env:
+                new_cfg["env"] = new_env
+            if new_args != args:
+                new_cfg["args"] = new_args
+                rewritten[name] = new_cfg
+                continue
+
+        rewritten[name] = cfg
+
+    return rewritten
 
 # ---------------------------------------------------------------------------
 # Models & SDK

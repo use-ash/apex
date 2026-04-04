@@ -257,6 +257,27 @@ class ProfileSystemTests(unittest.TestCase):
                 },
             )
 
+    def test_update_system_profile_allows_tool_policy_changes(self) -> None:
+        with self._client() as client:
+            update = client.put(
+                "/api/profiles/architect",
+                json={"tool_policy": json.dumps({"level": 4, "default_level": 4})},
+            )
+            self.assertEqual(update.status_code, 200)
+
+            detail = client.get("/api/profiles/architect")
+            self.assertEqual(detail.status_code, 200)
+            self.assertEqual(
+                json.loads(detail.json()["tool_policy"]),
+                {
+                    "level": 4,
+                    "default_level": 4,
+                    "elevated_until": None,
+                    "invoke_policy": "anyone",
+                    "allowed_commands": [],
+                },
+            )
+
     def test_duplicate_slug_on_update_returns_409(self) -> None:
         with self._client() as client:
             status, body = self._create_profile(client, name="Alpha Profile", slug="alpha-profile")
