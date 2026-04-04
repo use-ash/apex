@@ -1,6 +1,7 @@
 """Safety constraints for local model tool execution."""
 import os
 import shlex
+import tempfile
 from pathlib import Path
 
 from env import APEX_ROOT
@@ -50,6 +51,8 @@ SENSITIVE_BASENAMES = {
 }
 
 SHELL_META_SNIPPETS = ("`", "$(", "${", "&&", "||", "|", ";", ">", "<", "\n", "\r", "\x00")
+LEVEL3_ALLOWED_SHELL_META_SNIPPETS = ("&&", "||", "|", ";", "\n")
+LEVEL3_BLOCKED_SHELL_META_SNIPPETS = ("`", "$(", "${", ">", "<", "\r", "\x00")
 
 READ_ONLY_GIT_SUBCOMMANDS = {
     "status",
@@ -91,6 +94,16 @@ PROTECTED_PATHS = {
     os.path.realpath(str(APEX_ROOT / "state" / "ssl")),
     os.path.realpath(str(APEX_ROOT / "server")),
 }
+ADMIN_TEMP_ROOTS = tuple(
+    dict.fromkeys(
+        os.path.realpath(path)
+        for path in (
+            tempfile.gettempdir(),
+            "/tmp",
+            "/private/tmp",
+        )
+    )
+)
 
 
 def _is_env_path(path: str) -> bool:
@@ -241,6 +254,24 @@ def _command_matches_allowed_prefix(command: str, allowed_commands: list[str] | 
     return False
 
 
+def _contains_disallowed_shell_syntax(
+    command: str,
+    *,
+    permission_level: int,
+    allowed_commands: list[str] | None = None,
+) -> bool:
+    if permission_level >= 3 and _command_matches_allowed_prefix(command, allowed_commands):
+        return any(snippet in command for snippet in LEVEL3_BLOCKED_SHELL_META_SNIPPETS)
+    return any(snippet in command for snippet in SHELL_META_SNIPPETS)
+
+
+def _path_is_within_root(path: str, root: str) -> bool:
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+
 def prepare_command(
     command: str,
     workspace: str | None = None,
@@ -256,8 +287,18 @@ def prepare_command(
         return None, "Error: tools are disabled for this persona"
     if permission_level >= 4:
         return ["/bin/sh", "-lc", cmd], None
-    if any(snippet in cmd for snippet in SHELL_META_SNIPPETS):
+    if _contains_disallowed_shell_syntax(
+        cmd,
+        permission_level=permission_level,
+        allowed_commands=allowed_commands,
+    ):
         return None, "Error: shell syntax is not allowed"
+    if (
+        permission_level >= 3
+        and _command_matches_allowed_prefix(cmd, allowed_commands)
+        and any(snippet in cmd for snippet in LEVEL3_ALLOWED_SHELL_META_SNIPPETS)
+    ):
+        return ["/bin/sh", "-lc", cmd], None
 
     try:
         argv = shlex.split(cmd, posix=True)
@@ -279,7 +320,12 @@ def prepare_command(
             return argv, _validate_write_capable_arg_paths(argv[1:], workspace)
         return None, git_err
     if exe in PYTHON_COMMANDS or base in PYTHON_COMMANDS:
-        return argv, _validate_python_command(argv, workspace)
+        py_err = _validate_python_command(argv, workspace)
+        if not py_err:
+            return argv, None
+        if permission_level >= 3 and _command_matches_allowed_prefix(cmd, allowed_commands):
+            return argv, _validate_write_capable_arg_paths(argv[1:], workspace)
+        return argv, py_err
     if permission_level >= 3 and _command_matches_allowed_prefix(cmd, allowed_commands):
         return argv, _validate_write_capable_arg_paths(argv[1:], workspace)
     return None, f"Error: command is not allowed: {exe}"
@@ -317,6 +363,22 @@ def ensure_workspace_path(
     """
     if permission_level >= 4:
         resolved = _resolve_candidate_path(path, _primary_workspace(workspace))
+        err = validate_path(resolved, allow_write=allow_write, permission_level=permission_level)
+        if err:
+            return None, err
+        return resolved, None
+
+    if permission_level >= 3:
+        resolved = _resolve_candidate_path(path, _primary_workspace(workspace))
+        if allow_write:
+            roots = [
+                os.path.realpath(os.path.expanduser(r))
+                for r in (workspace or "").split(":") if r.strip()
+            ]
+            inside_workspace = any(_path_is_within_root(resolved, root) for root in roots)
+            inside_tmp = any(_path_is_within_root(resolved, root) for root in ADMIN_TEMP_ROOTS)
+            if not inside_workspace and not inside_tmp:
+                return None, f"Error: write path is outside allowed admin paths: {path}"
         err = validate_path(resolved, allow_write=allow_write, permission_level=permission_level)
         if err:
             return None, err

@@ -1708,24 +1708,69 @@ class SecurityFixTests(unittest.TestCase):
         )
         self.assertEqual(opts.permission_mode, "bypassPermissions")
 
-    def test_sdk_pre_tool_hook_blocks_level_3_date_and_tmp_write(self) -> None:
+    def test_sdk_pre_tool_hook_blocks_level_3_non_allowlisted_date(self) -> None:
         allowed, message = streaming_mod._sdk_pre_tool_use_decision(
             "Bash",
             {"command": "date +%s"},
             level=3,
-            allowed_commands=["echo", "grep", "rg", "find", "ls", "cat", "head", "tail", "sed", "awk", "wc", "ps", "lsof", "curl"],
+            allowed_commands=["echo", "grep"],
         )
         self.assertFalse(allowed)
         self.assertIn("command is not allowed", message)
+
+    def test_sdk_pre_tool_hook_level_3_allows_allowlisted_date_and_tmp_write(self) -> None:
+        diagnostics = [
+            "echo", "date", "grep", "rg", "find", "ls", "cat", "head", "tail",
+            "sed", "awk", "cut", "sort", "uniq", "tr", "wc", "ps", "lsof",
+            "curl", "stat", "file", "realpath", "basename", "dirname",
+            "printenv", "env",
+        ]
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Bash",
+            {"command": "date +%s"},
+            level=3,
+            allowed_commands=diagnostics,
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
 
         allowed, message = streaming_mod._sdk_pre_tool_use_decision(
             "Write",
             {"file_path": "/tmp/apex_level4_check2.txt", "content": "1775331902"},
             level=3,
+            allowed_commands=diagnostics,
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
+
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Read",
+            {"file_path": "/tmp/apex_level4_check2.txt"},
+            level=3,
+            allowed_commands=diagnostics,
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
+
+    def test_sdk_pre_tool_hook_level_3_allows_allowlisted_shell_pipelines(self) -> None:
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Bash",
+            {"command": "ps aux | grep apex"},
+            level=3,
+            allowed_commands=["ps", "grep"],
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
+
+    def test_sdk_pre_tool_hook_level_3_still_blocks_write_outside_workspace_and_tmp(self) -> None:
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Write",
+            {"file_path": "/var/root/apex_level4_check2.txt", "content": "1775331902"},
+            level=3,
             allowed_commands=["echo"],
         )
         self.assertFalse(allowed)
-        self.assertIn("outside workspace", message)
+        self.assertIn("outside allowed admin paths", message)
 
     def test_sdk_pre_tool_hook_allows_level_4_any_path_and_command(self) -> None:
         allowed, message = streaming_mod._sdk_pre_tool_use_decision(

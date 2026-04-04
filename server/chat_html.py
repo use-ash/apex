@@ -6201,22 +6201,22 @@ const CHAT_PERMISSION_PRESETS = [
   {
     key: 'diagnostics',
     label: 'Diagnostics',
-    commands: ['echo', 'grep', 'rg', 'find', 'ls', 'cat', 'head', 'tail', 'sed', 'awk', 'wc', 'ps', 'lsof', 'curl'],
+    commands: ['echo', 'date', 'grep', 'rg', 'find', 'ls', 'cat', 'head', 'tail', 'sed', 'awk', 'cut', 'sort', 'uniq', 'tr', 'wc', 'ps', 'lsof', 'curl', 'stat', 'file', 'realpath', 'basename', 'dirname', 'printenv', 'env'],
   },
   {
     key: 'repo',
     label: 'Repo Ops',
-    commands: ['git status', 'git diff', 'git log', 'git show', 'git branch', 'git rev-parse', 'git grep'],
+    commands: ['git status', 'git diff', 'git log', 'git show', 'git branch', 'git rev-parse', 'git grep', 'git ls-files', 'git remote', 'git describe', 'git blame'],
   },
   {
     key: 'python-db',
     label: 'Python + DB',
-    commands: ['python3 -m py_compile', 'pytest', 'sqlite3'],
+    commands: ['python3', 'python3 -m py_compile', 'pytest', 'sqlite3'],
   },
   {
     key: 'system',
     label: 'System',
-    commands: ['pgrep', 'kill', 'tmux', 'sleep'],
+    commands: ['pgrep', 'kill', 'tmux', 'sleep', 'uname', 'whoami', 'id', 'df', 'du', 'ss', 'netstat'],
   },
 ];
 
