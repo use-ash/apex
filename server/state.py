@@ -93,6 +93,7 @@ _clients: dict[str, Any] = {}                            # client_key -> ClaudeS
 _client_sessions: dict[str, str] = {}                    # client_key -> session_id (group agents)
 _client_last_used: dict[str, float] = {}                 # client_key -> timestamp (for LRU eviction)
 _client_permission_levels: dict[str, int] = {}          # client_key -> effective SDK permission level
+_client_permission_policies: dict[str, str] = {}        # client_key -> cached permission policy signature
 _codex_threads: dict[str, str] = {}                      # session_key -> codex thread_id (for resume)
 _codex_thread_turns: dict[str, int] = {}                 # session_key -> turn count (for thread rotation)
 _chat_locks: dict[str, asyncio.Lock] = {}                # chat_id -> processing lock

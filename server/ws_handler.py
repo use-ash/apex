@@ -1092,7 +1092,12 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                     )
                     client = ClaudeSDKClient(options)
                     await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
-                    _register_client(client_key, client, permission_level=permission_level)
+                    _register_client(
+                        client_key,
+                        client,
+                        permission_level=permission_level,
+                        allowed_commands=allowed_commands,
+                    )
                     result = await _run_query_turn(client, _make_retry_input, chat_id)
                     if DEBUG: log(f"DBG RECOVERY: resume OK client_key={client_key} session={existing_session or 'new'}")
                 except Exception as resume_error:
@@ -1112,7 +1117,12 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                         )
                         client = ClaudeSDKClient(options)
                         await asyncio.wait_for(client.connect(), timeout=SDK_QUERY_TIMEOUT)
-                        _register_client(client_key, client, permission_level=permission_level)
+                        _register_client(
+                            client_key,
+                            client,
+                            permission_level=permission_level,
+                            allowed_commands=allowed_commands,
+                        )
                         result = await _run_query_turn(client, _make_retry_input, chat_id)
                         if DEBUG: log(f"DBG RECOVERY: fresh session OK client_key={client_key}")
                     except Exception as fresh_error:
