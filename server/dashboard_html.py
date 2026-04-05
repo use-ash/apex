@@ -358,6 +358,18 @@ select {
     margin-top: 16px;
 }
 
+.policy-shell {
+    display: grid;
+    grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+    gap: 16px;
+    align-items: start;
+}
+
+.policy-stack {
+    display: grid;
+    gap: 16px;
+}
+
 .card {
     background: var(--surface);
     border: 1px solid var(--card);
@@ -389,6 +401,23 @@ select {
 
 .policy-panel {
     margin: 0;
+}
+
+.policy-sidebar {
+    position: sticky;
+    top: 24px;
+}
+
+.policy-section-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
 }
 
 .policy-level-card {
@@ -450,6 +479,24 @@ select {
     border: 1px solid var(--soft-border);
     border-radius: var(--radius);
     background: rgba(15, 23, 42, 0.14);
+}
+
+.policy-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.policy-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: rgba(15, 23, 42, 0.98);
+    backdrop-filter: blur(4px);
+}
+
+.policy-table tbody tr:hover {
+    background: rgba(148, 163, 184, 0.04);
 }
 
 .stat-row {
@@ -946,6 +993,14 @@ select {
 
     .card-grid {
         grid-template-columns: 1fr;
+    }
+
+    .policy-shell {
+        grid-template-columns: 1fr;
+    }
+
+    .policy-sidebar {
+        position: static;
     }
 
     .policy-secondary-grid {
@@ -2079,8 +2134,9 @@ select {
                 </button>
             </div>
 
-            <div class="card-grid" style="grid-template-columns:minmax(260px, 340px) minmax(0, 1fr); align-items:start;">
-                <div class="card">
+            <div class="policy-shell">
+                <div class="card policy-sidebar">
+                    <div class="policy-section-label">Levels</div>
                     <div class="card-title">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M9 12l2 2 4-4"/>
@@ -2095,51 +2151,56 @@ select {
                     <div id="policy-level-detail" class="card" style="margin-top:12px; padding:14px;"></div>
                 </div>
 
-                <div class="card">
-                    <div class="card-title">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-                            <circle cx="12" cy="7" r="4"/>
-                        </svg>
-                        Persona Policies
+                <div class="policy-stack">
+                    <div class="card policy-panel">
+                        <div class="policy-section-label">Persona Defaults</div>
+                        <div class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                                <circle cx="12" cy="7" r="4"/>
+                            </svg>
+                            Persona Policies
+                        </div>
+                        <div class="form-help" style="margin-bottom:12px;">Set default permission levels per persona and issue temporary elevations when needed.</div>
+                        <div id="policy-page-status" class="form-help" style="margin-bottom:12px;"></div>
+                        <div id="policy-page-content">
+                            <div class="loading-overlay"><div class="spinner"></div> Loading persona policies...</div>
+                        </div>
                     </div>
-                    <div class="form-help" style="margin-bottom:12px;">Set default permission levels per persona and issue temporary elevations when needed.</div>
-                    <div id="policy-page-status" class="form-help" style="margin-bottom:12px;"></div>
-                    <div id="policy-page-content">
-                        <div class="loading-overlay"><div class="spinner"></div> Loading persona policies...</div>
-                    </div>
-                </div>
-            </div>
 
-            <div class="policy-secondary-grid">
-                <div class="card policy-panel">
-                    <div class="card-title" style="margin-bottom:8px;">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6l8-4z"/>
-                            <path d="M9 12l2 2 4-4"/>
-                        </svg>
-                        System Guardrails
-                    </div>
-                    <div class="form-help" style="margin-bottom:10px;">These rules sit above persona and chat permissions. Use them for commands or directories the system should never touch.</div>
-                    <div id="policy-guardrails-status" class="form-help" style="margin-bottom:10px;"></div>
-                    <div id="policy-guardrails-content">
-                        <div class="loading-overlay"><div class="spinner"></div> Loading guardrails...</div>
-                    </div>
-                </div>
+                    <div class="policy-secondary-grid">
+                        <div class="card policy-panel">
+                            <div class="policy-section-label">System Floor</div>
+                            <div class="card-title" style="margin-bottom:8px;">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6l8-4z"/>
+                                    <path d="M9 12l2 2 4-4"/>
+                                </svg>
+                                System Guardrails
+                            </div>
+                            <div class="form-help" style="margin-bottom:10px;">These rules sit above persona and chat permissions. Use them for commands or directories the system should never touch.</div>
+                            <div id="policy-guardrails-status" class="form-help" style="margin-bottom:10px;"></div>
+                            <div id="policy-guardrails-content">
+                                <div class="loading-overlay"><div class="spinner"></div> Loading guardrails...</div>
+                            </div>
+                        </div>
 
-                <div class="card policy-panel">
-                    <div class="card-title" style="margin-bottom:8px;">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <rect x="3" y="5" width="18" height="14" rx="2"/>
-                            <path d="M7 9h10"/>
-                            <path d="M7 13h6"/>
-                        </svg>
-                        Workspace + Browser Tool Set
-                    </div>
-                    <div class="form-help" style="margin-bottom:10px;">Level 2 uses this normalized tool list. Groups are collapsible so read, write, browser, network, memory, and shell controls are easier to scan.</div>
-                    <div id="policy-workspace-tools-status" class="form-help" style="margin-bottom:10px;"></div>
-                    <div id="policy-workspace-tools-content">
-                        <div class="loading-overlay"><div class="spinner"></div> Loading workspace tool set...</div>
+                        <div class="card policy-panel">
+                            <div class="policy-section-label">Level 2 Set</div>
+                            <div class="card-title" style="margin-bottom:8px;">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <rect x="3" y="5" width="18" height="14" rx="2"/>
+                                    <path d="M7 9h10"/>
+                                    <path d="M7 13h6"/>
+                                </svg>
+                                Workspace + Browser Tool Set
+                            </div>
+                            <div class="form-help" style="margin-bottom:10px;">Level 2 uses this normalized tool list. Groups are collapsible so read, write, browser, network, memory, and shell controls are easier to scan.</div>
+                            <div id="policy-workspace-tools-status" class="form-help" style="margin-bottom:10px;"></div>
+                            <div id="policy-workspace-tools-content">
+                                <div class="loading-overlay"><div class="spinner"></div> Loading workspace tool set...</div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -4776,7 +4837,7 @@ function renderPolicyTable() {
     }).join('');
     el.innerHTML =
         '<div class="policy-table-wrap">' +
-            '<table style="width:100%; border-collapse:collapse; font-size:13px;">' +
+            '<table class="policy-table">' +
                 '<thead><tr style="border-bottom:1px solid var(--card); color:var(--dim); font-size:11px; text-transform:uppercase;">' +
                     '<th style="text-align:left; padding:8px;">Persona</th>' +
                     '<th style="text-align:left; padding:8px;">Effective</th>' +
