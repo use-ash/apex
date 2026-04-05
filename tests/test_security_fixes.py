@@ -1020,6 +1020,11 @@ class SecurityFixTests(unittest.TestCase):
     def test_tool_access_level_3_denies_uncatalogued_tools(self) -> None:
         self.assertFalse(tool_access.tool_allowed_for_level("customdanger__wipe", 3))
 
+    def test_tool_access_level_3_allows_sdk_coordination_tools(self) -> None:
+        self.assertTrue(tool_access.tool_allowed_for_level("Skill", 3))
+        self.assertTrue(tool_access.tool_allowed_for_level("ToolSearch", 3))
+        self.assertTrue(tool_access.tool_allowed_for_level("Agent", 3))
+
     def test_tool_access_level_3_blocks_reads_outside_workspace_and_tmp(self) -> None:
         allowed, message = tool_access.tool_access_decision(
             "read_file",
@@ -2372,6 +2377,43 @@ class SecurityFixTests(unittest.TestCase):
         )
         self.assertFalse(allowed)
         self.assertIn("command is not allowed", message)
+
+    def test_sdk_pre_tool_hook_level_3_defaults_allow_war_room_investigation_tools(self) -> None:
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Bash",
+            {"command": "git log --oneline -5"},
+            level=3,
+            allowed_commands=[],
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
+
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Bash",
+            {"command": "curl -s https://example.com | jq '.'"},
+            level=3,
+            allowed_commands=[],
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
+
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Skill",
+            {"skill": "apex-regression-tester", "args": "check admin page"},
+            level=3,
+            allowed_commands=[],
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
+
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "ToolSearch",
+            {"query": "playwright browser", "max_results": 3},
+            level=3,
+            allowed_commands=[],
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
 
     def test_sdk_pre_tool_hook_level_3_allows_allowlisted_date_and_tmp_write(self) -> None:
         diagnostics = [

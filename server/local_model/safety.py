@@ -89,6 +89,73 @@ READ_ONLY_COMMANDS = {
 }
 
 PYTHON_COMMANDS = {"python", "python3", "/opt/homebrew/bin/python3"}
+DEFAULT_LEVEL3_ALLOWED_COMMANDS = frozenset(
+    {
+        "awk",
+        "basename",
+        "cat",
+        "cd",
+        "chmod",
+        "comm",
+        "cp",
+        "curl",
+        "cut",
+        "date",
+        "df",
+        "diff",
+        "dirname",
+        "du",
+        "echo",
+        "env",
+        "file",
+        "find",
+        "git",
+        "grep",
+        "head",
+        "jq",
+        "kill",
+        "ln",
+        "ls",
+        "lsof",
+        "make",
+        "mkdir",
+        "mv",
+        "npm",
+        "npx",
+        "open",
+        "pgrep",
+        "pip",
+        "pip3",
+        "pkill",
+        "pnpm",
+        "printenv",
+        "ps",
+        "pwd",
+        "pytest",
+        "python",
+        "python3",
+        "realpath",
+        "rg",
+        "rm",
+        "sed",
+        "sort",
+        "sqlite3",
+        "stat",
+        "tail",
+        "tar",
+        "touch",
+        "tr",
+        "uniq",
+        "unzip",
+        "uv",
+        "uvx",
+        "wc",
+        "which",
+        "xargs",
+        "yarn",
+        "zip",
+    }
+)
 PROTECTED_PATHS = {
     os.path.realpath(str(APEX_ROOT / "state" / "apex.db")),
     os.path.realpath(str(APEX_ROOT / "state" / "config.json")),
@@ -340,6 +407,18 @@ def _normalize_command_text(command: str) -> str:
         return " ".join(command.strip().split())
 
 
+def _effective_allowed_commands(
+    permission_level: int,
+    allowed_commands: list[str] | None,
+) -> list[str]:
+    cleaned = [str(entry).strip() for entry in (allowed_commands or []) if str(entry).strip()]
+    if cleaned:
+        return cleaned
+    if permission_level >= 3:
+        return sorted(DEFAULT_LEVEL3_ALLOWED_COMMANDS)
+    return cleaned
+
+
 def _command_matches_allowed_prefix(command: str, allowed_commands: list[str] | None) -> bool:
     normalized = _normalize_command_text(command)
     for entry in allowed_commands or []:
@@ -368,11 +447,12 @@ def _contains_disallowed_shell_syntax(
     permission_level: int,
     allowed_commands: list[str] | None = None,
 ) -> bool:
+    effective_allowed = _effective_allowed_commands(permission_level, allowed_commands)
     if permission_level >= 3 and any(
         snippet in command for snippet in LEVEL3_ALLOWED_SHELL_META_SNIPPETS
     ):
         return any(snippet in command for snippet in LEVEL3_BLOCKED_SHELL_META_SNIPPETS)
-    if permission_level >= 3 and _command_matches_allowed_prefix(command, allowed_commands):
+    if permission_level >= 3 and _command_matches_allowed_prefix(command, effective_allowed):
         return any(snippet in command for snippet in LEVEL3_BLOCKED_SHELL_META_SNIPPETS)
     return any(snippet in command for snippet in SHELL_META_SNIPPETS)
 
@@ -404,7 +484,8 @@ def _validate_allowlisted_command_segment(
     workspace: str | None,
     allowed_commands: list[str] | None,
 ) -> str | None:
-    if not _command_matches_allowed_prefix(segment, allowed_commands):
+    effective_allowed = _effective_allowed_commands(3, allowed_commands)
+    if not _command_matches_allowed_prefix(segment, effective_allowed):
         try:
             argv = shlex.split(segment, posix=True)
         except ValueError as e:
@@ -510,6 +591,7 @@ def prepare_command(
     cmd = command.strip()
     if not cmd:
         return None, "Error: no command provided"
+    effective_allowed = _effective_allowed_commands(permission_level, allowed_commands)
     if permission_level <= 0:
         return None, "Error: tools are disabled for this persona"
     blocked_command_err = _validate_system_blocked_command(cmd)
@@ -523,14 +605,14 @@ def prepare_command(
     if _contains_disallowed_shell_syntax(
         cmd,
         permission_level=permission_level,
-        allowed_commands=allowed_commands,
+        allowed_commands=effective_allowed,
     ):
         return None, "Error: shell syntax is not allowed"
     if (
         permission_level >= 3
         and any(snippet in cmd for snippet in LEVEL3_ALLOWED_SHELL_META_SNIPPETS)
     ):
-        err = _validate_level3_shell_command(cmd, workspace, allowed_commands)
+        err = _validate_level3_shell_command(cmd, workspace, effective_allowed)
         if err:
             return None, err
         return ["/bin/sh", "-lc", cmd], None
@@ -551,17 +633,17 @@ def prepare_command(
         git_err = _validate_git_command(argv, workspace)
         if not git_err:
             return argv, None
-        if permission_level >= 3 and _command_matches_allowed_prefix(cmd, allowed_commands):
+        if permission_level >= 3 and _command_matches_allowed_prefix(cmd, effective_allowed):
             return argv, _validate_write_capable_arg_paths(argv[1:], workspace)
         return None, git_err
     if exe in PYTHON_COMMANDS or base in PYTHON_COMMANDS:
         py_err = _validate_python_command(argv, workspace)
         if not py_err:
             return argv, None
-        if permission_level >= 3 and _command_matches_allowed_prefix(cmd, allowed_commands):
+        if permission_level >= 3 and _command_matches_allowed_prefix(cmd, effective_allowed):
             return argv, _validate_write_capable_arg_paths(argv[1:], workspace)
         return argv, py_err
-    if permission_level >= 3 and _command_matches_allowed_prefix(cmd, allowed_commands):
+    if permission_level >= 3 and _command_matches_allowed_prefix(cmd, effective_allowed):
         return argv, _validate_write_capable_arg_paths(argv[1:], workspace)
     return None, f"Error: command is not allowed: {exe}"
 

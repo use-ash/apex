@@ -20,6 +20,9 @@ SDK_TOOL_NAME_MAP = {
     "Grep": "search_files",
     "WebFetch": "fetch__fetch",
     "WebSearch": "fetch__fetch",
+    "ToolSearch": "tool_search",
+    "Skill": "skill",
+    "Agent": "agent",
 }
 
 STANDARD_LOCAL_TOOLS = frozenset({"read_file", "list_files", "search_files"})
@@ -178,6 +181,24 @@ TOOL_POLICY_CATALOG = {
         "description": "Read or mutate the shared structured memory graph.",
         "category": "mcp",
         "group": "memory",
+    },
+    "tool_search": {
+        "name": "Tool Search",
+        "description": "Search available tools and capabilities before choosing a next action.",
+        "category": "sdk",
+        "group": "coordination",
+    },
+    "skill": {
+        "name": "Skill",
+        "description": "Invoke a registered skill workflow inside Apex.",
+        "category": "sdk",
+        "group": "coordination",
+    },
+    "agent": {
+        "name": "Agent",
+        "description": "Delegate work to another agent as part of a collaborative workflow.",
+        "category": "sdk",
+        "group": "coordination",
     },
 }
 
