@@ -1245,6 +1245,46 @@ class SecurityFixTests(unittest.TestCase):
             )
         )
 
+    def test_level_3_allows_git_add_and_noninteractive_commit(self) -> None:
+        workspace = str(TEST_ROOT)
+        target = TEST_ROOT / "notes.txt"
+        target.write_text("hello\n", encoding="utf-8")
+
+        self.assertIsNone(
+            local_safety.validate_command(
+                f"git add {target}",
+                workspace,
+                permission_level=3,
+                allowed_commands=[],
+            )
+        )
+        self.assertIsNone(
+            local_safety.validate_command(
+                'git commit -m "checkpoint"',
+                workspace,
+                permission_level=3,
+                allowed_commands=[],
+            )
+        )
+        self.assertIn(
+            "requires -m/--message",
+            local_safety.validate_command(
+                "git commit",
+                workspace,
+                permission_level=3,
+                allowed_commands=[],
+            ) or "",
+        )
+        self.assertIn(
+            "flag is not allowed",
+            local_safety.validate_command(
+                "git commit --amend -m test",
+                workspace,
+                permission_level=3,
+                allowed_commands=[],
+            ) or "",
+        )
+
     def test_level_3_allows_repo_server_reads_but_keeps_state_ssl_blocked(self) -> None:
         server_dir = TEST_ROOT / "server"
         ssl_dir = TEST_ROOT / "state" / "ssl"

@@ -72,6 +72,28 @@ READ_ONLY_GIT_SUBCOMMANDS = {
     "describe",
 }
 
+LEVEL3_WRITE_GIT_SUBCOMMANDS = {
+    "add",
+    "commit",
+}
+
+LEVEL3_ALLOWED_GIT_ADD_FLAGS = {
+    "-A",
+    "--all",
+    "-u",
+    "--update",
+    "-N",
+    "--intent-to-add",
+    "--",
+}
+
+LEVEL3_ALLOWED_GIT_COMMIT_FLAGS = {
+    "-a",
+    "--all",
+    "-m",
+    "--message",
+}
+
 READ_ONLY_COMMANDS = {
     "pwd",
     "uname",
@@ -375,6 +397,38 @@ def _validate_git_command(argv: list[str], workspace: str | None) -> str | None:
 
     subcommand = argv[i]
     if subcommand not in READ_ONLY_GIT_SUBCOMMANDS:
+        if subcommand == "add":
+            path_args: list[str] = []
+            for token in argv[i + 1 :]:
+                if token in LEVEL3_ALLOWED_GIT_ADD_FLAGS:
+                    continue
+                if token.startswith("-"):
+                    return f"Error: git add flag is not allowed: {token}"
+                path_args.append(token)
+            return _validate_write_capable_arg_paths(path_args, workspace)
+
+        if subcommand == "commit":
+            args = argv[i + 1 :]
+            if not args:
+                return "Error: git commit requires -m/--message"
+            saw_message = False
+            idx = 0
+            while idx < len(args):
+                token = args[idx]
+                if token in {"-a", "--all"}:
+                    idx += 1
+                    continue
+                if token in {"-m", "--message"}:
+                    if idx + 1 >= len(args):
+                        return "Error: git commit requires a message"
+                    saw_message = True
+                    idx += 2
+                    continue
+                return f"Error: git commit flag is not allowed: {token}"
+            if not saw_message:
+                return "Error: git commit requires -m/--message"
+            return None
+
         return f"Error: git subcommand is not allowed: {subcommand}"
 
     return _validate_arg_paths(argv[i + 1 :], workspace)
@@ -679,9 +733,9 @@ def prepare_command(
         git_err = _validate_git_command(argv, workspace)
         if not git_err:
             return argv, None
-        if permission_level >= 3 and _command_matches_allowed_prefix(cmd, effective_allowed):
+        if permission_level >= 3 and allowed_commands and _command_matches_allowed_prefix(cmd, allowed_commands):
             return argv, _validate_write_capable_arg_paths(argv[1:], workspace)
-        return None, git_err
+        return argv, git_err
     if exe in PYTHON_COMMANDS or base in PYTHON_COMMANDS:
         py_err = _validate_python_command(argv, workspace)
         if not py_err:
