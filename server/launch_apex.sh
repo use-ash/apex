@@ -36,6 +36,21 @@ else
     done
 fi
 
+# Reassert prod runtime after sourcing shared env files so local defaults
+# cannot override the external prod listener or DB selection.
+export APEX_PORT="8300"
+export APEX_HOST="0.0.0.0"
+export APEX_DB_NAME="apex.db"
+export APEX_ROOT="$APEX_ROOT"
+if [ -f "$LE_CERT" ] && [ -f "$LE_KEY" ]; then
+    export APEX_SSL_CERT="$LE_CERT"
+    export APEX_SSL_KEY="$LE_KEY"
+else
+    export APEX_SSL_CERT="$SSL_DIR/apex.crt"
+    export APEX_SSL_KEY="$SSL_DIR/apex.key"
+fi
+export APEX_SSL_CA="$SSL_DIR/ca.crt"
+
 # First-run detection — run setup wizard if no CA cert exists
 if [ ! -f "$SSL_DIR/ca.crt" ]; then
     echo ""

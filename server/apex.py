@@ -343,13 +343,31 @@ async def verify_client_cert(request: Request, call_next):
     if request.method == "GET" and path.startswith("/api/uploads/"):
         return await call_next(request)
 
+    # Bearer token bypass — allows access without client certificate when
+    # ADMIN_TOKEN or ALERT_TOKEN is configured.  Used by Docker-based tools
+    # (Playwright MCP) that cannot present mTLS client certs.
+    auth = request.headers.get("authorization", "")
+
     current_alert_token = env.ALERT_TOKEN
     if path == "/api/alerts" and request.method == "POST" and current_alert_token:
-        auth = request.headers.get("authorization", "")
         expected = f"Bearer {current_alert_token}"
         if not hmac.compare_digest(auth.encode(), expected.encode()):
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
         return await call_next(request)
+
+    # General bearer token bypass using ADMIN_TOKEN — same token used by
+    # the admin dashboard.  Allows non-mTLS clients (e.g. Playwright in
+    # Docker) to access all routes when they present a valid token.
+    # Accepts either Authorization header OR _token query parameter (the
+    # latter is needed for Playwright MCP browser_navigate which cannot
+    # set custom headers).
+    admin_token = env.ADMIN_TOKEN
+    if admin_token:
+        if auth and hmac.compare_digest(auth.encode(), f"Bearer {admin_token}".encode()):
+            return await call_next(request)
+        qt = request.query_params.get("_token", "")
+        if qt and hmac.compare_digest(qt.encode(), admin_token.encode()):
+            return await call_next(request)
 
     if mtls_required(SSL_CERT, SSL_CA) and not has_verified_peer_cert(request.scope):
         return JSONResponse({"error": "Client certificate required"}, status_code=401)
@@ -511,5 +529,6 @@ if __name__ == "__main__":
         ssl_certfile=SSL_CERT,
         ssl_keyfile=_ssl_key_path,
         ssl_ca_certs=SSL_CA,
-        ssl_cert_reqs=ssl.CERT_REQUIRED,
+        ssl_cert_reqs=(ssl.CERT_OPTIONAL if env.MTLS_MODE == "optional"
+                       else ssl.CERT_REQUIRED),
     )
