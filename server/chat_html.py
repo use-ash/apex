@@ -6804,8 +6804,16 @@ document.addEventListener('visibilitychange', () => {
     updateLastAlertCheck(new Date().toISOString());
     lastAlertFetchSince = '';
   } else if (document.visibilityState === 'visible') {
-    dbg('app resumed from background');
-    resumeConnection('visibilitychange');
+    // Only reconnect if the ws is actually dead. Safari keeps ws alive
+    // through brief background periods; forcing reconnect every tab switch
+    // tears down in-flight streams and loses buffered events.
+    const wsDead = !ws || ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED;
+    if (wsDead) {
+      dbg('app resumed from background, ws dead, reconnecting');
+      resumeConnection('visibilitychange');
+    } else {
+      dbg('app resumed from background, ws alive, keeping it');
+    }
   }
 });
 
