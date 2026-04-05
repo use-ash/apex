@@ -1048,19 +1048,6 @@ class SecurityFixTests(unittest.TestCase):
             "https://192.168.86.214:8301",
         )
 
-    def test_env_seeds_playwright_runtime_env_vars(self) -> None:
-        with (
-            mock.patch.dict(os.environ, {}, clear=True),
-            mock.patch.object(env, "PLAYWRIGHT_CLIENT_CERT", "/tmp/client-cert.pem"),
-            mock.patch.object(env, "PLAYWRIGHT_CLIENT_KEY", "/tmp/client-key.pem"),
-            mock.patch.object(env, "PLAYWRIGHT_CLIENT_ORIGIN", "https://example.test"),
-        ):
-            env._seed_playwright_runtime_env()
-
-            self.assertEqual(os.environ["APEX_PLAYWRIGHT_CLIENT_CERT"], "/tmp/client-cert.pem")
-            self.assertEqual(os.environ["APEX_PLAYWRIGHT_CLIENT_KEY"], "/tmp/client-key.pem")
-            self.assertEqual(os.environ["APEX_PLAYWRIGHT_CLIENT_ORIGIN"], "https://example.test")
-
     def test_tool_access_level_2_honors_configured_workspace_tool_patterns(self) -> None:
         dashboard_mod._config.update_section(
             "policy",

@@ -36,12 +36,6 @@ export APEX_SSL_CA="$SSL_DIR/ca.crt"
 # Keep dev-side alert senders scoped to dev even if shared env files target prod.
 export APEX_SERVER="https://localhost:${APEX_PORT}"
 
-# Dev uses CERT_OPTIONAL so Docker-based tooling (Playwright MCP) can connect
-# without a client certificate.  The middleware enforces bearer token auth
-# for all non-public routes when MTLS_MODE=optional.
-export APEX_ADMIN_TOKEN="${APEX_ADMIN_TOKEN:-apex-dev-token}"
-export APEX_MTLS_MODE=optional
-
 PYTHON="$APEX_ROOT/.venv/bin/python3"
 [ -x "$PYTHON" ] || PYTHON="python3"
 
