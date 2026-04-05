@@ -674,9 +674,13 @@ async def run_tool_loop(
         dict with: text, is_error, error, cost_usd, tokens_in, tokens_out,
                    session_id, thinking, tool_events (JSON string)
     """
-    # Remote APIs (xAI, Codex) bypass the local tools gate — they don't
-    # execute tools locally, they just need the chat completion loop.
-    is_remote = bool(api_key and api_url and api_url.startswith("http"))
+    # Remote APIs (xAI, OpenAI, ChatGPT OAuth) bypass the local tools gate —
+    # they don't execute local-model tools, they just use the chat completion loop.
+    is_remote = bool(
+        api_key
+        and api_url
+        and (api_url.startswith("http") or api_url == "chatgpt")
+    )
     if not ALLOW_LOCAL_TOOLS and not is_remote:
         raise RuntimeError("Local model tools are disabled (set APEX_ALLOW_LOCAL_TOOLS=1 to enable)")
 

@@ -396,6 +396,35 @@ class SecurityFixTests(unittest.TestCase):
                     )
                 )
 
+    def test_tool_loop_allows_chatgpt_remote_when_local_tools_disabled(self) -> None:
+        async def emit(_event: dict) -> None:
+            return None
+
+        with (
+            mock.patch.object(tool_loop, "ALLOW_LOCAL_TOOLS", False),
+            mock.patch.object(tool_loop, "get_tool_schemas", return_value=[]),
+            mock.patch.object(tool_loop, "_call_chatgpt_backend", return_value={
+                "message": {"content": "ok"},
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "reasoning": "",
+            }),
+        ):
+            result = asyncio.run(
+                tool_loop.run_tool_loop(
+                    ollama_url="http://localhost:11434",
+                    model="gpt-5.4",
+                    messages=[{"role": "user", "content": "hi"}],
+                    emit_event=emit,
+                    api_key="chatgpt-oauth",
+                    api_url="chatgpt",
+                )
+            )
+
+        self.assertEqual(result["text"], "ok")
+        self.assertFalse(result["is_error"])
+
     def test_backend_falls_back_to_plain_chat_when_local_tools_disabled(self) -> None:
         chat_id = self._create_direct_chat()
 
