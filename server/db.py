@@ -217,6 +217,7 @@ def _init_db() -> None:
             tokens_in INTEGER DEFAULT 0,
             tokens_out INTEGER DEFAULT 0,
             attachments TEXT DEFAULT '[]',
+            duration_ms INTEGER DEFAULT 0,
             created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS alerts (
@@ -292,6 +293,9 @@ def _init_db() -> None:
     # Migration: structured attachment refs on messages
     with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("ALTER TABLE messages ADD COLUMN attachments TEXT DEFAULT '[]'")
+    # Migration: turn wall-clock duration
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.execute("ALTER TABLE messages ADD COLUMN duration_ms INTEGER DEFAULT 0")
     # Migration: add role column to channel_agent_memberships (owner/member)
     with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("ALTER TABLE channel_agent_memberships ADD COLUMN role TEXT DEFAULT 'member'")
@@ -1252,16 +1256,18 @@ def _save_message(chat_id: str, role: str, content: str, tool_events: str = "[]"
                   thinking: str = "", cost_usd: float = 0, tokens_in: int = 0,
                   tokens_out: int = 0, speaker_id: str = "", speaker_name: str = "",
                   speaker_avatar: str = "", visibility: str = "public",
-                  group_turn_id: str = "", attachments: str = "[]") -> str:
+                  group_turn_id: str = "", attachments: str = "[]",
+                  duration_ms: int = 0) -> str:
     mid = str(uuid.uuid4())[:12]
     with _db_lock:
         conn = _get_db()
         conn.execute(
             "INSERT INTO messages (id, chat_id, role, content, tool_events, thinking, cost_usd, "
             "tokens_in, tokens_out, speaker_id, speaker_name, speaker_avatar, visibility, "
-            "group_turn_id, attachments, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "group_turn_id, attachments, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (mid, chat_id, role, content, tool_events, thinking, cost_usd, tokens_in, tokens_out,
-             speaker_id, speaker_name, speaker_avatar, visibility, group_turn_id, attachments, _now()))
+             speaker_id, speaker_name, speaker_avatar, visibility, group_turn_id, attachments,
+             duration_ms, _now()))
         conn.commit()
         conn.close()
     return mid
@@ -1311,7 +1317,7 @@ def _get_messages(
     """
     vis_clause = "" if include_internal else " AND (visibility = 'public' OR visibility = '' OR visibility IS NULL)"
     cols = ("id, role, content, tool_events, thinking, cost_usd, tokens_in, tokens_out, "
-            "created_at, speaker_id, speaker_name, speaker_avatar, visibility, group_turn_id, attachments")
+            "created_at, speaker_id, speaker_name, speaker_avatar, visibility, group_turn_id, attachments, duration_ms")
 
     with _db_lock:
         conn = _get_db()
@@ -1362,7 +1368,8 @@ def _get_messages(
          "speaker_id": r[9] or "", "speaker_name": r[10] or "",
          "speaker_avatar": r[11] or "", "visibility": r[12] or "public",
          "group_turn_id": r[13] or "",
-         "attachments": _parse_message_attachments(r[14])}
+         "attachments": _parse_message_attachments(r[14]),
+         "duration_ms": r[15] or 0}
         for r in rows
     ]
     return {"messages": messages, "has_more": has_more}

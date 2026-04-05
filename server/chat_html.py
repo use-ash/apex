@@ -2166,7 +2166,7 @@ function _finalizeThinking(ctx) {
   ctx.thinkingBlock = null;
   if (ctx.thinkingText) {
     _thinkingPill(ctx, {
-      durationMs: ctx.thinkingStart ? (Date.now() - ctx.thinkingStart) : 0,
+      durationMs: ctx.turnDurationMs || (ctx.thinkingStart ? (Date.now() - ctx.thinkingStart) : 0),
     });
   }
 }
@@ -2219,6 +2219,7 @@ function _restoreThinkingFromPill(streamId) {
 
 function _finalizeStreamUi(ctx, resultMsg = null) {
   if (!ctx || !ctx.bubble) return;
+  if (resultMsg?.duration_ms) ctx.turnDurationMs = resultMsg.duration_ms;
   _finalizeThinking(ctx);
   _renderWatchdogPills();
   ctx.awaitingAck = false;
@@ -2732,6 +2733,21 @@ function handleEvent(msg) {
       if (_reattachBubble) _reattachBubble.innerHTML = '';
       _clearQueuedState(ctx);
       ctx.awaitingAck = false;
+      if (msg.elapsed_ms) {
+        const _correctedStart = Date.now() - msg.elapsed_ms;
+        ctx.thinkingStart = _correctedStart;
+        // Pre-seed activeStreams so the replayed stream_start at line ~2494
+        // picks up the corrected startedAt instead of falling back to Date.now().
+        const _prevEntry = activeStreams.get(sid) || {};
+        activeStreams.set(sid, {
+          ..._prevEntry,
+          stream_id: sid,
+          name: msg.speaker_name || _prevEntry.name || '',
+          avatar: msg.speaker_avatar || _prevEntry.avatar || '',
+          profile_id: msg.speaker_id || _prevEntry.profile_id || '',
+          startedAt: _correctedStart,
+        });
+      }
       _activateStream(ctx, {chatId: msg.chat_id || currentChat || ''});
       markStreamActivity(ctx, 'stream-reattached');
       updateSendBtn();
@@ -4726,7 +4742,7 @@ async function selectChat(id, title, chatType, category) {
       }
       if (m.thinking && m.thinking.trim()) {
         historyCtx.thinkingText = m.thinking;
-        _thinkingPill(historyCtx, {durationMs: 0});
+        _thinkingPill(historyCtx, {durationMs: m.duration_ms || 0});
       }
       div.querySelectorAll('.bubble').forEach(el => renderMarkdown(el));
     }
