@@ -124,6 +124,10 @@ import env
 from log import LOG_PATH
 from model_dispatch import get_available_model_ids
 from tool_access import get_tool_catalog, get_workspace_tool_patterns
+from local_model.safety import (
+    get_policy_blocked_path_prefixes,
+    get_policy_never_allowed_commands,
+)
 
 # ---------------------------------------------------------------------------
 # Module state — set by init_dashboard() at server startup
@@ -965,6 +969,8 @@ async def api_policy_tools():
     return JSONResponse(
         {
             "workspace_tools": get_workspace_tool_patterns(),
+            "never_allowed_commands": get_policy_never_allowed_commands(),
+            "blocked_path_prefixes": get_policy_blocked_path_prefixes(),
             "catalog": get_tool_catalog(),
         }
     )
@@ -972,26 +978,35 @@ async def api_policy_tools():
 
 @dashboard_app.put("/api/policy/tools")
 async def api_policy_tools_update(request: Request):
-    """Update the normalized tool set for level 2 (Workspace + Browser)."""
+    """Update policy-controlled tool and guardrail settings."""
     if _config is None:
         return _not_initialized()
     try:
         body = await request.json()
     except Exception:
         return _error("Invalid JSON", "INVALID_JSON", 400)
-    raw = body.get("workspace_tools", [])
-    if isinstance(raw, list):
-        text = "\n".join(str(item).strip() for item in raw if str(item).strip())
-    else:
-        text = str(raw or "")
+    updates: dict[str, str] = {}
+    for key in ("workspace_tools", "never_allowed_commands", "blocked_path_prefixes"):
+        if key not in body:
+            continue
+        raw = body.get(key, [])
+        if isinstance(raw, list):
+            text = "\n".join(str(item).strip() for item in raw if str(item).strip())
+        else:
+            text = str(raw or "")
+        updates[key] = text
+    if not updates:
+        return _error("No policy fields provided", "MISSING_POLICY_FIELDS", 400)
     try:
-        new_values, restart_required = _config.update_section("policy", {"workspace_tools": text})
+        new_values, restart_required = _config.update_section("policy", updates)
         return JSONResponse(
             {
                 "status": "ok",
                 "section": "policy",
                 "config": new_values,
                 "workspace_tools": get_workspace_tool_patterns(),
+                "never_allowed_commands": get_policy_never_allowed_commands(),
+                "blocked_path_prefixes": get_policy_blocked_path_prefixes(),
                 "catalog": get_tool_catalog(),
                 "restart_required": restart_required,
             }

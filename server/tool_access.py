@@ -6,6 +6,7 @@ from typing import Iterable
 
 import env
 from local_model.safety import ensure_workspace_path, validate_command
+from log import log
 
 SDK_TOOL_NAME_MAP = {
     "Bash": "bash",
@@ -269,6 +270,62 @@ def _iter_tool_input_paths(tool_input: dict, keys: tuple[str, ...]) -> list[str]
     return paths
 
 
+def _is_dangerous_policy_error(message: str) -> bool:
+    text = message or ""
+    return (
+        "access to live Apex database is blocked" in text
+        or "access to blocked path is denied by system policy" in text
+        or "command is denied by system policy" in text
+    )
+
+
+def _summarize_dangerous_intent(tool_name: str, tool_input: dict) -> str:
+    canonical = canonical_tool_name(tool_name)
+    if canonical == "bash":
+        command = str((tool_input or {}).get("command") or "").strip()
+        return command[:240]
+
+    paths = _iter_tool_input_paths(
+        tool_input,
+        ("path", "file_path", "new_path", "old_path", "paths", "notebook_path"),
+    )
+    if paths:
+        joined = ", ".join(paths[:4])
+        if len(paths) > 4:
+            joined += ", ..."
+        return joined[:240]
+
+    try:
+        return json.dumps(tool_input, sort_keys=True)[:240]
+    except Exception:
+        return str(tool_input)[:240]
+
+
+def _log_dangerous_tool_intent(
+    tool_name: str,
+    tool_input: dict,
+    *,
+    level: int,
+    message: str,
+    audit_context: dict | None = None,
+) -> None:
+    if not _is_dangerous_policy_error(message):
+        return
+    summary = _summarize_dangerous_intent(tool_name, tool_input)
+    context = {
+        str(k): str(v)
+        for k, v in (audit_context or {}).items()
+        if v not in (None, "")
+    }
+    context_text = " ".join(f"{k}={context[k]!r}" for k in sorted(context))
+    log(
+        "dangerous tool intent blocked: "
+        f"level={level} tool={canonical_tool_name(tool_name)} "
+        f"{context_text + ' ' if context_text else ''}"
+        f"detail={summary!r} reason={message}"
+    )
+
+
 def get_tool_catalog() -> list[dict[str, str | bool]]:
     workspace_set = set(get_workspace_tool_patterns())
     items: list[dict[str, str | bool]] = []
@@ -325,7 +382,18 @@ def tool_access_decision(
     level: int,
     allowed_commands: list[str] | None,
     workspace_paths: str,
+    audit_context: dict | None = None,
 ) -> tuple[bool, str]:
+    def _deny(message: str) -> tuple[bool, str]:
+        _log_dangerous_tool_intent(
+            tool_name,
+            tool_input,
+            level=level,
+            message=message,
+            audit_context=audit_context,
+        )
+        return False, message
+
     if level <= 0:
         return False, "This agent is Restricted and cannot use tools or access files."
 
@@ -344,7 +412,7 @@ def tool_access_decision(
             allowed_commands=allowed_commands,
         )
         if command_err:
-            return False, command_err
+            return _deny(command_err)
         return True, ""
 
     if canonical in {"read_file", "list_files", "search_files"}:
@@ -381,5 +449,5 @@ def tool_access_decision(
                 permission_level=level,
             )
             if err:
-                return False, err
+                return _deny(err)
     return True, ""

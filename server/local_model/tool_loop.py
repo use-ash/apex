@@ -653,6 +653,7 @@ async def run_tool_loop(
     permission_level: int = 2,
     allowed_tools: set[str] | None = None,
     allowed_commands: list[str] | None = None,
+    audit_context: dict | None = None,
 ) -> dict:
     """
     Run the tool-calling agent loop (Ollama or OpenAI-compatible API).
@@ -829,6 +830,7 @@ async def run_tool_loop(
                         level=permission_level,
                         allowed_commands=allowed_commands,
                         workspace_paths=workspace or "",
+                        audit_context=audit_context,
                     )
                     if not allowed:
                         tool_result = message

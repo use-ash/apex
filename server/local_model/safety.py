@@ -1,4 +1,5 @@
 """Safety constraints for local model tool execution."""
+import json
 import os
 import shlex
 import tempfile
@@ -95,6 +96,10 @@ PROTECTED_PATHS = {
     os.path.realpath(str(APEX_ROOT / "state" / "ssl")),
     os.path.realpath(str(APEX_ROOT / "server")),
 }
+LIVE_APEX_DB_PATHS = tuple(
+    os.path.realpath(str(APEX_ROOT / "state" / name))
+    for name in ("apex.db", "apex.db-wal", "apex.db-shm", "apex.db-journal")
+)
 ADMIN_TEMP_ROOTS = tuple(
     dict.fromkeys(
         os.path.realpath(path)
@@ -112,7 +117,56 @@ def _is_env_path(path: str) -> bool:
     return base == ".env" or base.startswith(".env.")
 
 
+def _live_db_path_error(path: str) -> str | None:
+    for blocked in LIVE_APEX_DB_PATHS:
+        if path == blocked:
+            return f"Error: access to live Apex database is blocked: {path}"
+    return None
+
+
+def _read_policy_config() -> dict:
+    config_path = APEX_ROOT / "state" / "config.json"
+    try:
+        if config_path.exists():
+            data = json.loads(config_path.read_text())
+            if isinstance(data, dict):
+                return data.get("policy", {}) or {}
+    except Exception:
+        pass
+    return {}
+
+
+def _parse_multiline_policy_list(raw: object) -> list[str]:
+    text = str(raw or "").replace("\r\n", "\n").replace("\r", "\n")
+    values: list[str] = []
+    for line in text.split("\n"):
+        item = line.strip()
+        if item and item not in values:
+            values.append(item)
+    return values
+
+
+def get_policy_never_allowed_commands() -> list[str]:
+    return _parse_multiline_policy_list(_read_policy_config().get("never_allowed_commands", ""))
+
+
+def get_policy_blocked_path_prefixes() -> list[str]:
+    raw = _parse_multiline_policy_list(_read_policy_config().get("blocked_path_prefixes", ""))
+    normalized: list[str] = []
+    for item in raw:
+        resolved = os.path.realpath(os.path.expanduser(item))
+        if resolved not in normalized:
+            normalized.append(resolved)
+    return normalized
+
+
 def _protected_path_error(path: str) -> str | None:
+    live_db_err = _live_db_path_error(path)
+    if live_db_err:
+        return live_db_err
+    for blocked_prefix in get_policy_blocked_path_prefixes():
+        if path == blocked_prefix or path.startswith(blocked_prefix + os.sep):
+            return f"Error: access to blocked path is denied by system policy: {path}"
     for protected in PROTECTED_PATHS:
         if path == protected or path.startswith(protected + os.sep):
             return f"Error: access to protected path is blocked: {path}"
@@ -237,6 +291,48 @@ def _validate_python_command(argv: list[str], workspace: str | None) -> str | No
     return "Error: python is limited to version checks and -m py_compile"
 
 
+def _tokenize_shell_command(command: str) -> list[str]:
+    lexer = shlex.shlex(command.replace("\n", " ; "), posix=True, punctuation_chars="|&;<>")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    return list(lexer)
+
+
+def _validate_live_db_command_paths(command: str, workspace: str | None) -> str | None:
+    primary = _primary_workspace(workspace)
+    normalized_command = command.replace('"', " ").replace("'", " ")
+    for blocked in LIVE_APEX_DB_PATHS:
+        if blocked in normalized_command:
+            return _live_db_path_error(blocked)
+    for blocked_prefix in get_policy_blocked_path_prefixes():
+        if blocked_prefix in normalized_command:
+            return f"Error: access to blocked path is denied by system policy: {blocked_prefix}"
+    try:
+        tokens = _tokenize_shell_command(command)
+    except ValueError:
+        return None
+
+    for token in tokens:
+        if token in {"|", "||", "&&", ";", "<", ">", "<<", ">>", "&"}:
+            continue
+        candidates = [token.strip()]
+        if "=" in token and not token.startswith("="):
+            _, _, rhs = token.partition("=")
+            if rhs:
+                candidates.append(rhs.strip())
+        for candidate in candidates:
+            if not _looks_like_path(candidate):
+                continue
+            resolved = _resolve_candidate_path(candidate, primary)
+            err = _live_db_path_error(resolved)
+            if err:
+                return err
+            blocked = _protected_path_error(resolved)
+            if blocked and "system policy" in blocked:
+                return blocked
+    return None
+
+
 def _normalize_command_text(command: str) -> str:
     try:
         return " ".join(shlex.split(command, posix=True))
@@ -253,6 +349,17 @@ def _command_matches_allowed_prefix(command: str, allowed_commands: list[str] | 
         if normalized == prefix or normalized.startswith(prefix + " "):
             return True
     return False
+
+
+def _command_matches_blocked_prefix(command: str, blocked_commands: list[str] | None) -> str | None:
+    normalized = _normalize_command_text(command)
+    for entry in blocked_commands or []:
+        prefix = _normalize_command_text(entry)
+        if not prefix:
+            continue
+        if normalized == prefix or normalized.startswith(prefix + " "):
+            return entry
+    return None
 
 
 def _contains_disallowed_shell_syntax(
@@ -373,6 +480,25 @@ def _validate_level3_shell_command(
     return None
 
 
+def _validate_system_blocked_command(command: str) -> str | None:
+    blocked_commands = get_policy_never_allowed_commands()
+    if not blocked_commands:
+        return None
+    segments, err = _split_level3_shell_segments(command)
+    if err:
+        normalized = _normalize_command_text(command)
+        for entry in blocked_commands:
+            prefix = _normalize_command_text(entry)
+            if prefix and (normalized == prefix or normalized.startswith(prefix + " ")):
+                return f"Error: command is denied by system policy: {entry}"
+        return None
+    for segment in segments or []:
+        match = _command_matches_blocked_prefix(segment, blocked_commands)
+        if match:
+            return f"Error: command is denied by system policy: {match}"
+    return None
+
+
 def prepare_command(
     command: str,
     workspace: str | None = None,
@@ -386,6 +512,12 @@ def prepare_command(
         return None, "Error: no command provided"
     if permission_level <= 0:
         return None, "Error: tools are disabled for this persona"
+    blocked_command_err = _validate_system_blocked_command(cmd)
+    if blocked_command_err:
+        return None, blocked_command_err
+    live_db_err = _validate_live_db_command_paths(cmd, workspace)
+    if live_db_err:
+        return None, live_db_err
     if permission_level >= 4:
         return ["/bin/sh", "-lc", cmd], None
     if _contains_disallowed_shell_syntax(
@@ -515,9 +647,15 @@ def ensure_workspace_path(
 
 def validate_path(path: str, allow_write: bool = False, *, permission_level: int = 2) -> str | None:
     """Returns error string if path is blocked, None if OK."""
+    resolved = os.path.realpath(os.path.expanduser(path))
+    live_db_err = _live_db_path_error(resolved)
+    if live_db_err:
+        return live_db_err
+    for blocked_prefix in get_policy_blocked_path_prefixes():
+        if resolved == blocked_prefix or resolved.startswith(blocked_prefix + os.sep):
+            return f"Error: access to blocked path is denied by system policy: {resolved}"
     if permission_level >= 4:
         return None
-    resolved = os.path.realpath(os.path.expanduser(path))
     protected = _protected_path_error(resolved)
     if protected:
         return protected

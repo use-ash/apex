@@ -80,7 +80,14 @@ class SecurityFixTests(unittest.TestCase):
             TEST_ROOT / "state" / env.DB_NAME,
             TEST_ROOT / "state" / "ssl",
         )
-        dashboard_mod._config.update_section("policy", {"workspace_tools": ""})
+        dashboard_mod._config.update_section(
+            "policy",
+            {
+                "workspace_tools": "",
+                "never_allowed_commands": "",
+                "blocked_path_prefixes": "",
+            },
+        )
         mark_phase_completed(TEST_ROOT / "state", "setup_complete")
         with apex._db_lock:
             conn = apex._get_db()
@@ -889,6 +896,54 @@ class SecurityFixTests(unittest.TestCase):
         self.assertFalse(allowed)
         self.assertIn("tool is not allowed", message)
 
+    def test_validate_command_blocks_system_denied_command_prefix(self) -> None:
+        dashboard_mod._config.update_section(
+            "policy",
+            {"never_allowed_commands": "sqlite3\nrm -rf"},
+        )
+        err = local_safety.validate_command(
+            "sqlite3 /tmp/test.db '.tables'",
+            str(TEST_ROOT),
+            permission_level=4,
+            allowed_commands=["sqlite3"],
+        )
+        self.assertIn("denied by system policy", err or "")
+
+    def test_validate_path_blocks_system_denied_path_prefix_even_at_level_4(self) -> None:
+        blocked_dir = TEST_ROOT / "blocked-area"
+        blocked_dir.mkdir(parents=True, exist_ok=True)
+        dashboard_mod._config.update_section(
+            "policy",
+            {"blocked_path_prefixes": str(blocked_dir)},
+        )
+        err = local_safety.validate_path(
+            str(blocked_dir / "secret.txt"),
+            allow_write=False,
+            permission_level=4,
+        )
+        self.assertIn("denied by system policy", err or "")
+
+    def test_policy_tools_api_round_trip_for_guardrails(self) -> None:
+        with self._client() as client:
+            resp = client.put(
+                "/admin/api/policy/tools",
+                headers=self._admin_headers(),
+                json={
+                    "never_allowed_commands": ["sqlite3", "rm -rf"],
+                    "blocked_path_prefixes": [str(TEST_ROOT / "state"), str(TEST_ROOT / ".ssh")],
+                },
+            )
+            self.assertEqual(resp.status_code, 200)
+            body = resp.json()
+            self.assertEqual(body["never_allowed_commands"], ["sqlite3", "rm -rf"])
+            self.assertEqual(
+                body["blocked_path_prefixes"],
+                [
+                    str((TEST_ROOT / "state").resolve()),
+                    str((TEST_ROOT / ".ssh").resolve()),
+                ],
+            )
+
     def test_tool_access_level_2_allows_playwright(self) -> None:
         allowed, message = tool_access.tool_access_decision(
             "playwright__browser_navigate",
@@ -920,7 +975,7 @@ class SecurityFixTests(unittest.TestCase):
             ) or "",
         )
         self.assertIn(
-            "protected path",
+            "live Apex database",
             local_safety.validate_command(
                 f"sqlite3 {env.APEX_ROOT / 'state' / 'apex.db'} .schema",
                 workspace,
@@ -1001,6 +1056,62 @@ class SecurityFixTests(unittest.TestCase):
             "protected path",
             local_safety.validate_path(str(env.APEX_ROOT / "state" / "config.json"), allow_write=True) or "",
         )
+
+    def test_validate_command_blocks_live_apex_db_even_at_level_4(self) -> None:
+        workspace = str(TEST_ROOT)
+        for suffix in ("apex.db", "apex.db-wal", "apex.db-shm"):
+            err = local_safety.validate_command(
+                f"sqlite3 {env.APEX_ROOT / 'state' / suffix} .schema",
+                workspace,
+                permission_level=4,
+                allowed_commands=["sqlite3"],
+            )
+            self.assertIn("live Apex database", err or "")
+
+    def test_validate_command_blocks_live_apex_db_copy_via_shell_variable(self) -> None:
+        err = local_safety.validate_command(
+            "\n".join(
+                [
+                    "set -euo pipefail",
+                    f"src='{env.APEX_ROOT / 'state' / 'apex.db'}'",
+                    'dst="/tmp/apex.db.$$"',
+                    'cp "$src" "$dst"',
+                    'sqlite3 "$dst" ".tables"',
+                ]
+            ),
+            str(TEST_ROOT),
+            permission_level=4,
+            allowed_commands=["cp", "sqlite3"],
+        )
+        self.assertIn("live Apex database", err or "")
+
+    def test_validate_path_blocks_live_apex_db_even_at_level_4(self) -> None:
+        for suffix in ("apex.db", "apex.db-wal", "apex.db-shm"):
+            err = local_safety.validate_path(
+                str(env.APEX_ROOT / "state" / suffix),
+                allow_write=False,
+                permission_level=4,
+            )
+            self.assertIn("live Apex database", err or "")
+
+    def test_tool_access_logs_dangerous_live_db_intent(self) -> None:
+        with mock.patch.object(tool_access, "log") as log_mock:
+            allowed, message = tool_access.tool_access_decision(
+                "read_file",
+                {"file_path": str(env.APEX_ROOT / "state" / "apex.db")},
+                level=4,
+                allowed_commands=[],
+                workspace_paths=str(TEST_ROOT),
+                audit_context={"source": "tool_loop", "chat_id": "abcd1234", "backend": "codex"},
+            )
+
+        self.assertFalse(allowed)
+        self.assertIn("live Apex database", message)
+        log_mock.assert_called_once()
+        log_line = log_mock.call_args.args[0]
+        self.assertIn("dangerous tool intent blocked", log_line)
+        self.assertIn("chat_id='abcd1234'", log_line)
+        self.assertIn("source='tool_loop'", log_line)
 
     def test_validate_backend_attachments_rejects_codex_attachments(self) -> None:
         attachment = self._create_uploaded_attachment("txt", b"notes")

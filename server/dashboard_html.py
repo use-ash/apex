@@ -85,6 +85,8 @@ button {
     font-size: inherit;
     border: none;
     border-radius: var(--radius);
+    color: inherit;
+    background: transparent;
     transition: background var(--transition), opacity var(--transition);
 }
 
@@ -349,6 +351,25 @@ select {
     margin-bottom: 24px;
 }
 
+.policy-secondary-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+    margin-top: 16px;
+}
+
+.policy-shell {
+    display: grid;
+    grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+    gap: 16px;
+    align-items: start;
+}
+
+.policy-stack {
+    display: grid;
+    gap: 16px;
+}
+
 .card {
     background: var(--surface);
     border: 1px solid var(--card);
@@ -376,6 +397,106 @@ select {
 .card-title svg {
     width: 16px;
     height: 16px;
+}
+
+.policy-panel {
+    margin: 0;
+}
+
+.policy-sidebar {
+    position: sticky;
+    top: 24px;
+}
+
+.policy-section-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+}
+
+.policy-level-card {
+    width: 100%;
+    margin: 0;
+    padding: 11px 12px;
+    text-align: left;
+    border: 1px solid var(--card);
+    background: linear-gradient(180deg, rgba(148, 163, 184, 0.04), rgba(148, 163, 184, 0.02));
+    color: var(--text);
+    box-shadow: none;
+}
+
+.policy-level-card:hover {
+    border-color: rgba(14, 165, 233, 0.45);
+    background: linear-gradient(180deg, rgba(14, 165, 233, 0.12), rgba(14, 165, 233, 0.06));
+}
+
+.policy-level-card.active {
+    border-color: var(--accent);
+    background: linear-gradient(180deg, rgba(14, 165, 233, 0.24), rgba(14, 165, 233, 0.12));
+    box-shadow: 0 0 0 1px rgba(14,165,233,0.25) inset;
+}
+
+.policy-level-card strong {
+    display: block;
+    color: var(--text);
+}
+
+.policy-level-card .form-help {
+    margin-top: 4px;
+    color: var(--dim);
+}
+
+.policy-editor-shell {
+    display: grid;
+    gap: 12px;
+}
+
+.policy-editor-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}
+
+.policy-mini-card {
+    margin: 0;
+    padding: 14px;
+}
+
+.policy-mini-card textarea {
+    min-height: 160px;
+}
+
+.policy-table-wrap {
+    overflow: auto;
+    border: 1px solid var(--soft-border);
+    border-radius: var(--radius);
+    background: rgba(15, 23, 42, 0.14);
+}
+
+.policy-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.policy-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: rgba(15, 23, 42, 0.98);
+    backdrop-filter: blur(4px);
+}
+
+.policy-table tbody tr:hover {
+    background: rgba(148, 163, 184, 0.04);
 }
 
 .stat-row {
@@ -871,6 +992,18 @@ select {
     }
 
     .card-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .policy-shell {
+        grid-template-columns: 1fr;
+    }
+
+    .policy-sidebar {
+        position: static;
+    }
+
+    .policy-secondary-grid {
         grid-template-columns: 1fr;
     }
 
@@ -2001,8 +2134,9 @@ select {
                 </button>
             </div>
 
-            <div class="card-grid" style="grid-template-columns:minmax(260px, 340px) minmax(0, 1fr); align-items:start;">
-                <div class="card">
+            <div class="policy-shell">
+                <div class="card policy-sidebar">
+                    <div class="policy-section-label">Levels</div>
                     <div class="card-title">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M9 12l2 2 4-4"/>
@@ -2017,35 +2151,57 @@ select {
                     <div id="policy-level-detail" class="card" style="margin-top:12px; padding:14px;"></div>
                 </div>
 
-                <div class="card">
-                    <div class="card-title">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-                            <circle cx="12" cy="7" r="4"/>
-                        </svg>
-                        Persona Policies
+                <div class="policy-stack">
+                    <div class="card policy-panel">
+                        <div class="policy-section-label">Persona Defaults</div>
+                        <div class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                                <circle cx="12" cy="7" r="4"/>
+                            </svg>
+                            Persona Policies
+                        </div>
+                        <div class="form-help" style="margin-bottom:12px;">Set default permission levels per persona and issue temporary elevations when needed.</div>
+                        <div id="policy-page-status" class="form-help" style="margin-bottom:12px;"></div>
+                        <div id="policy-page-content">
+                            <div class="loading-overlay"><div class="spinner"></div> Loading persona policies...</div>
+                        </div>
                     </div>
-                    <div class="form-help" style="margin-bottom:12px;">Set default permission levels per persona and issue temporary elevations when needed.</div>
-                    <div id="policy-page-status" class="form-help" style="margin-bottom:12px;"></div>
-                    <div id="policy-page-content">
-                        <div class="loading-overlay"><div class="spinner"></div> Loading persona policies...</div>
-                    </div>
-                </div>
-            </div>
 
-            <div class="card" style="margin-top:16px;">
-                <div class="card-title" style="margin-bottom:8px;">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <rect x="3" y="5" width="18" height="14" rx="2"/>
-                        <path d="M7 9h10"/>
-                        <path d="M7 13h6"/>
-                    </svg>
-                    Workspace + Browser Tool Set
-                </div>
-                <div class="form-help" style="margin-bottom:10px;">Level 2 uses this normalized tool list. Groups are collapsible so read, write, browser, network, memory, and shell controls are easier to scan.</div>
-                <div id="policy-workspace-tools-status" class="form-help" style="margin-bottom:10px;"></div>
-                <div id="policy-workspace-tools-content">
-                    <div class="loading-overlay"><div class="spinner"></div> Loading workspace tool set...</div>
+                    <div class="policy-secondary-grid">
+                        <div class="card policy-panel">
+                            <div class="policy-section-label">System Floor</div>
+                            <div class="card-title" style="margin-bottom:8px;">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6l8-4z"/>
+                                    <path d="M9 12l2 2 4-4"/>
+                                </svg>
+                                System Guardrails
+                            </div>
+                            <div class="form-help" style="margin-bottom:10px;">These rules sit above persona and chat permissions. Use them for commands or directories the system should never touch.</div>
+                            <div id="policy-guardrails-status" class="form-help" style="margin-bottom:10px;"></div>
+                            <div id="policy-guardrails-content">
+                                <div class="loading-overlay"><div class="spinner"></div> Loading guardrails...</div>
+                            </div>
+                        </div>
+
+                        <div class="card policy-panel">
+                            <div class="policy-section-label">Level 2 Set</div>
+                            <div class="card-title" style="margin-bottom:8px;">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <rect x="3" y="5" width="18" height="14" rx="2"/>
+                                    <path d="M7 9h10"/>
+                                    <path d="M7 13h6"/>
+                                </svg>
+                                Workspace + Browser Tool Set
+                            </div>
+                            <div class="form-help" style="margin-bottom:10px;">Level 2 uses this normalized tool list. Groups are collapsible so read, write, browser, network, memory, and shell controls are easier to scan.</div>
+                            <div id="policy-workspace-tools-status" class="form-help" style="margin-bottom:10px;"></div>
+                            <div id="policy-workspace-tools-content">
+                                <div class="loading-overlay"><div class="spinner"></div> Loading workspace tool set...</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -4088,6 +4244,8 @@ let currentPersonaToolPolicy = null;
 let policyProfilesData = [];
 let policyToolCatalogData = [];
 let policyWorkspaceTools = [];
+let policyNeverAllowedCommands = [];
+let policyBlockedPathPrefixes = [];
 let selectedPolicyLevel = 2;
 
 const TOOL_POLICY_LABELS = {
@@ -4227,8 +4385,7 @@ function renderPolicyLevelGuide() {
     var cards = [0, 1, 2, 3, 4].map(function(level) {
         var active = level === selectedPolicyLevel;
         var detail = TOOL_POLICY_DETAILS[level];
-        return '<button type="button" class="card" data-policy-level-card="' + level + '" style="padding:10px 12px; margin:0; text-align:left; border:' +
-            (active ? '1px solid var(--accent); box-shadow:0 0 0 1px rgba(14,165,233,0.25) inset;' : '1px solid var(--card);') + '">' +
+        return '<button type="button" class="policy-level-card' + (active ? ' active' : '') + '" data-policy-level-card="' + level + '">' +
             '<strong>' + level + ' · ' + esc(toolPolicyLabel(level)) + '</strong>' +
             '<div class="form-help">' + esc(detail.summary) + '</div>' +
             '</button>';
@@ -4251,10 +4408,10 @@ function renderPolicyLevelGuide() {
         '<div class="form-help" style="margin-bottom:10px;">' + esc(selected.summary) + '</div>' +
         (selectedPolicyLevel === 2 ? '<div class="form-help" style="margin-bottom:10px;">The exact Workspace + Browser tool set is defined in the editor below.</div>' : '') +
         '<div class="card-grid" style="grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); margin:0;">' +
-            '<div class="card" style="padding:12px; margin:0;">' +
+            '<div class="card policy-mini-card">' +
                 '<strong>Allowed</strong>' + list(selected.allowed) +
             '</div>' +
-            '<div class="card" style="padding:12px; margin:0;">' +
+            '<div class="card policy-mini-card">' +
                 '<strong>Blocked / Not Included</strong>' + list(selected.denied) +
             '</div>' +
         '</div>';
@@ -4268,6 +4425,38 @@ function setWorkspaceToolsStatus(message, type) {
     el.style.color = type === "error" ? "var(--red)" : (type === "success" ? "var(--green)" : "var(--dim)");
 }
 
+function setPolicyGuardrailsStatus(message, type) {
+    var el = document.getElementById("policy-guardrails-status");
+    if (!el) return;
+    el.textContent = message || "";
+    el.style.color = type === "error" ? "var(--red)" : (type === "success" ? "var(--green)" : "var(--dim)");
+}
+
+function renderPolicyGuardrailsEditor() {
+    var el = document.getElementById("policy-guardrails-content");
+    if (!el) return;
+    el.innerHTML =
+        '<div class="policy-editor-shell">' +
+        '<div class="card-grid" style="grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); margin:0;">' +
+            '<div class="card policy-mini-card">' +
+                '<div class="card-title" style="margin-bottom:8px;">Never Allowed Commands</div>' +
+                '<div class="form-help" style="margin-bottom:8px;">One command prefix per line. Each shell segment is checked, so entries like <code>sqlite3</code> or <code>rm -rf</code> are blocked everywhere.</div>' +
+                '<textarea id="policy-never-allowed-commands" rows="8" placeholder="sqlite3&#10;rm -rf&#10;launchctl">' + esc((policyNeverAllowedCommands || []).join('\\n')) + '</textarea>' +
+            '</div>' +
+            '<div class="card policy-mini-card">' +
+                '<div class="card-title" style="margin-bottom:8px;">Blocked Path Prefixes</div>' +
+                '<div class="form-help" style="margin-bottom:8px;">One absolute path prefix per line. File tools and shell commands touching these locations are denied, even at Full Admin.</div>' +
+                '<textarea id="policy-blocked-path-prefixes" rows="8" placeholder="/Users/you/project/state&#10;/Users/you/.ssh">' + esc((policyBlockedPathPrefixes || []).join('\\n')) + '</textarea>' +
+            '</div>' +
+        '</div>' +
+        '<div class="policy-editor-actions">' +
+            '<button class="btn btn-ghost" data-policy-guardrails-reset>Reset</button>' +
+            '<button class="btn btn-primary" data-policy-guardrails-save>Save Guardrails</button>' +
+        '</div>' +
+        '</div>';
+}
+window.renderPolicyGuardrailsEditor = renderPolicyGuardrailsEditor;
+
 function renderWorkspaceToolsEditor() {
     var el = document.getElementById("policy-workspace-tools-content");
     if (!el) return;
@@ -4276,6 +4465,10 @@ function renderWorkspaceToolsEditor() {
         return;
     }
     var enabledSet = new Set((policyWorkspaceTools || []).map(function(item) { return String(item); }));
+    var defaultSet = new Set(policyToolCatalogData.filter(function(tool) { return !!tool.workspace_default; }).map(function(tool) { return tool.id; }));
+    var enabledCount = enabledSet.size;
+    var defaultCount = defaultSet.size;
+    var matchesDefault = enabledCount === defaultCount && Array.from(enabledSet).every(function(id) { return defaultSet.has(id); });
     var groupOrder = ["read", "write", "browser", "network", "memory", "shell"];
     var groupLabels = {
         read: "Read Tools",
@@ -4323,14 +4516,20 @@ function renderWorkspaceToolsEditor() {
             '</details>';
         }).join('');
     el.innerHTML =
+        '<div class="policy-editor-shell">' +
         '<div style="display:flex; gap:8px; align-items:center; justify-content:space-between; margin-bottom:12px; flex-wrap:wrap;">' +
-            '<div class="form-help">Selected tools apply immediately to level 2 across SDK and tool-loop backends.</div>' +
-            '<div style="display:flex; gap:8px; flex-wrap:wrap;">' +
+            '<div class="form-help">' +
+                'Selected tools apply immediately to level 2 across SDK and tool-loop backends. ' +
+                '<strong style="color:var(--text);">' + enabledCount + ' enabled</strong> · ' +
+                (matchesDefault ? 'Using system default set' : 'Using custom tool set') +
+            '</div>' +
+            '<div class="policy-editor-actions">' +
                 '<button class="btn btn-ghost" data-policy-workspace-reset>Reset to Default</button>' +
                 '<button class="btn btn-primary" data-policy-workspace-save>Save Workspace Tool Set</button>' +
             '</div>' +
         '</div>' +
-        '<div style="display:grid; gap:10px;">' + rowsByGroup + '</div>';
+        '<div style="display:grid; gap:10px;">' + rowsByGroup + '</div>' +
+        '</div>';
 }
 window.renderWorkspaceToolsEditor = renderWorkspaceToolsEditor;
 
@@ -4645,8 +4844,8 @@ function renderPolicyTable() {
         '</tr>';
     }).join('');
     el.innerHTML =
-        '<div style="overflow:auto;">' +
-            '<table style="width:100%; border-collapse:collapse; font-size:13px;">' +
+        '<div class="policy-table-wrap">' +
+            '<table class="policy-table">' +
                 '<thead><tr style="border-bottom:1px solid var(--card); color:var(--dim); font-size:11px; text-transform:uppercase;">' +
                     '<th style="text-align:left; padding:8px;">Persona</th>' +
                     '<th style="text-align:left; padding:8px;">Effective</th>' +
@@ -4664,11 +4863,16 @@ async function loadPolicies() {
     if (btnRefresh) btnRefresh.disabled = true;
     renderPolicyLevelGuide();
     setPolicyPageStatus("Loading policies...");
+    setPolicyGuardrailsStatus("Loading guardrails...");
     setWorkspaceToolsStatus("Loading workspace tool set...");
     try {
         var toolsResp = await apiFetch('/policy/tools');
         policyToolCatalogData = toolsResp.catalog || [];
         policyWorkspaceTools = toolsResp.workspace_tools || [];
+        policyNeverAllowedCommands = toolsResp.never_allowed_commands || [];
+        policyBlockedPathPrefixes = toolsResp.blocked_path_prefixes || [];
+        renderPolicyGuardrailsEditor();
+        setPolicyGuardrailsStatus("Guardrails loaded.");
         renderWorkspaceToolsEditor();
         setWorkspaceToolsStatus("Workspace tool set loaded.");
         var profilesResp = await rootApiFetch('/api/profiles');
@@ -4684,6 +4888,7 @@ async function loadPolicies() {
         setPolicyPageStatus("Policies loaded.");
     } catch (err) {
         setPolicyPageStatus("Failed to load policies: " + err.message, "error");
+        setPolicyGuardrailsStatus("Failed to load guardrails: " + err.message, "error");
         setWorkspaceToolsStatus("Failed to load workspace tool set: " + err.message, "error");
         var el = document.getElementById("policy-page-content");
         if (el) el.innerHTML = renderError("Could not load policy data");
@@ -4718,6 +4923,44 @@ async function saveWorkspaceToolPolicy() {
     }
 }
 window.saveWorkspaceToolPolicy = saveWorkspaceToolPolicy;
+
+function _collectMultilineValues(elementId) {
+    var el = document.getElementById(elementId);
+    if (!el) return [];
+    return String(el.value || '')
+        .split(/\\r?\\n/)
+        .map(function(line) { return line.trim(); })
+        .filter(Boolean);
+}
+
+async function savePolicyGuardrails() {
+    setPolicyGuardrailsStatus("Saving guardrails...");
+    try {
+        var resp = await apiFetch('/policy/tools', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                never_allowed_commands: _collectMultilineValues('policy-never-allowed-commands'),
+                blocked_path_prefixes: _collectMultilineValues('policy-blocked-path-prefixes'),
+            }),
+        });
+        policyNeverAllowedCommands = resp.never_allowed_commands || [];
+        policyBlockedPathPrefixes = resp.blocked_path_prefixes || [];
+        renderPolicyGuardrailsEditor();
+        setPolicyGuardrailsStatus("Guardrails saved.", "success");
+    } catch (err) {
+        setPolicyGuardrailsStatus("Failed to save guardrails: " + err.message, "error");
+    }
+}
+window.savePolicyGuardrails = savePolicyGuardrails;
+
+function resetPolicyGuardrails() {
+    policyNeverAllowedCommands = [];
+    policyBlockedPathPrefixes = [];
+    renderPolicyGuardrailsEditor();
+    setPolicyGuardrailsStatus("Reset guardrails in the editor. Save to apply.", "success");
+}
+window.resetPolicyGuardrails = resetPolicyGuardrails;
 
 function resetWorkspaceToolPolicyDefaults() {
     policyWorkspaceTools = policyToolCatalogData
@@ -6258,6 +6501,10 @@ document.addEventListener("click", function(e) {
         elevatePersonaPolicy(btn.dataset.policyElevate);
     } else if ((btn = e.target.closest("[data-policy-revoke]"))) {
         revokePersonaPolicy(btn.dataset.policyRevoke);
+    } else if ((btn = e.target.closest("[data-policy-guardrails-save]"))) {
+        savePolicyGuardrails();
+    } else if ((btn = e.target.closest("[data-policy-guardrails-reset]"))) {
+        resetPolicyGuardrails();
     } else if ((btn = e.target.closest("[data-policy-workspace-save]"))) {
         saveWorkspaceToolPolicy();
     } else if ((btn = e.target.closest("[data-policy-workspace-reset]"))) {
