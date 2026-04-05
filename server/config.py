@@ -167,6 +167,20 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
             "multiline": True,
             "placeholder": "bash\nread_file\nwrite_file\nplaywright__*\nfetch__*",
         },
+        "never_allowed_commands": {
+            "type": "str",
+            "default": "",
+            "description": "Shell command prefixes blocked at every level, one per line",
+            "multiline": True,
+            "placeholder": "sqlite3\nrm -rf\nlaunchctl",
+        },
+        "blocked_path_prefixes": {
+            "type": "str",
+            "default": "",
+            "description": "Path prefixes blocked at every level, one per line",
+            "multiline": True,
+            "placeholder": "/Users/you/.openclaw/apex/state\n/Users/you/.ssh",
+        },
     },
     "alerts": {
         "telegram_configured": {

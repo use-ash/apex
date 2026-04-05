@@ -270,8 +270,13 @@ def _iter_tool_input_paths(tool_input: dict, keys: tuple[str, ...]) -> list[str]
     return paths
 
 
-def _is_live_db_access_error(message: str) -> bool:
-    return "access to live Apex database is blocked" in (message or "")
+def _is_dangerous_policy_error(message: str) -> bool:
+    text = message or ""
+    return (
+        "access to live Apex database is blocked" in text
+        or "access to blocked path is denied by system policy" in text
+        or "command is denied by system policy" in text
+    )
 
 
 def _summarize_dangerous_intent(tool_name: str, tool_input: dict) -> str:
@@ -304,7 +309,7 @@ def _log_dangerous_tool_intent(
     message: str,
     audit_context: dict | None = None,
 ) -> None:
-    if not _is_live_db_access_error(message):
+    if not _is_dangerous_policy_error(message):
         return
     summary = _summarize_dangerous_intent(tool_name, tool_input)
     context = {

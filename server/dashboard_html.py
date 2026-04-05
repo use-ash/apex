@@ -2036,6 +2036,21 @@ select {
             <div class="card" style="margin-top:16px;">
                 <div class="card-title" style="margin-bottom:8px;">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6l8-4z"/>
+                        <path d="M9 12l2 2 4-4"/>
+                    </svg>
+                    System Guardrails
+                </div>
+                <div class="form-help" style="margin-bottom:10px;">These rules sit above persona and chat permissions. Use them for commands or directories the system should never touch.</div>
+                <div id="policy-guardrails-status" class="form-help" style="margin-bottom:10px;"></div>
+                <div id="policy-guardrails-content">
+                    <div class="loading-overlay"><div class="spinner"></div> Loading guardrails...</div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-top:16px;">
+                <div class="card-title" style="margin-bottom:8px;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <rect x="3" y="5" width="18" height="14" rx="2"/>
                         <path d="M7 9h10"/>
                         <path d="M7 13h6"/>
@@ -4088,6 +4103,8 @@ let currentPersonaToolPolicy = null;
 let policyProfilesData = [];
 let policyToolCatalogData = [];
 let policyWorkspaceTools = [];
+let policyNeverAllowedCommands = [];
+let policyBlockedPathPrefixes = [];
 let selectedPolicyLevel = 2;
 
 const TOOL_POLICY_LABELS = {
@@ -4267,6 +4284,36 @@ function setWorkspaceToolsStatus(message, type) {
     el.textContent = message || "";
     el.style.color = type === "error" ? "var(--red)" : (type === "success" ? "var(--green)" : "var(--dim)");
 }
+
+function setPolicyGuardrailsStatus(message, type) {
+    var el = document.getElementById("policy-guardrails-status");
+    if (!el) return;
+    el.textContent = message || "";
+    el.style.color = type === "error" ? "var(--red)" : (type === "success" ? "var(--green)" : "var(--dim)");
+}
+
+function renderPolicyGuardrailsEditor() {
+    var el = document.getElementById("policy-guardrails-content");
+    if (!el) return;
+    el.innerHTML =
+        '<div class="card-grid" style="grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); margin:0;">' +
+            '<div class="card" style="margin:0; padding:14px;">' +
+                '<div class="card-title" style="margin-bottom:8px;">Never Allowed Commands</div>' +
+                '<div class="form-help" style="margin-bottom:8px;">One command prefix per line. Each shell segment is checked, so entries like <code>sqlite3</code> or <code>rm -rf</code> are blocked everywhere.</div>' +
+                '<textarea id="policy-never-allowed-commands" rows="8" placeholder="sqlite3&#10;rm -rf&#10;launchctl">' + esc((policyNeverAllowedCommands || []).join('\n')) + '</textarea>' +
+            '</div>' +
+            '<div class="card" style="margin:0; padding:14px;">' +
+                '<div class="card-title" style="margin-bottom:8px;">Blocked Path Prefixes</div>' +
+                '<div class="form-help" style="margin-bottom:8px;">One absolute path prefix per line. File tools and shell commands touching these locations are denied, even at Full Admin.</div>' +
+                '<textarea id="policy-blocked-path-prefixes" rows="8" placeholder="/Users/you/.openclaw/apex/state&#10;/Users/you/.ssh">' + esc((policyBlockedPathPrefixes || []).join('\n')) + '</textarea>' +
+            '</div>' +
+        '</div>' +
+        '<div style="display:flex; gap:8px; align-items:center; justify-content:flex-end; flex-wrap:wrap; margin-top:12px;">' +
+            '<button class="btn btn-ghost" data-policy-guardrails-reset>Reset</button>' +
+            '<button class="btn btn-primary" data-policy-guardrails-save>Save Guardrails</button>' +
+        '</div>';
+}
+window.renderPolicyGuardrailsEditor = renderPolicyGuardrailsEditor;
 
 function renderWorkspaceToolsEditor() {
     var el = document.getElementById("policy-workspace-tools-content");
@@ -4664,11 +4711,16 @@ async function loadPolicies() {
     if (btnRefresh) btnRefresh.disabled = true;
     renderPolicyLevelGuide();
     setPolicyPageStatus("Loading policies...");
+    setPolicyGuardrailsStatus("Loading guardrails...");
     setWorkspaceToolsStatus("Loading workspace tool set...");
     try {
         var toolsResp = await apiFetch('/policy/tools');
         policyToolCatalogData = toolsResp.catalog || [];
         policyWorkspaceTools = toolsResp.workspace_tools || [];
+        policyNeverAllowedCommands = toolsResp.never_allowed_commands || [];
+        policyBlockedPathPrefixes = toolsResp.blocked_path_prefixes || [];
+        renderPolicyGuardrailsEditor();
+        setPolicyGuardrailsStatus("Guardrails loaded.");
         renderWorkspaceToolsEditor();
         setWorkspaceToolsStatus("Workspace tool set loaded.");
         var profilesResp = await rootApiFetch('/api/profiles');
@@ -4684,6 +4736,7 @@ async function loadPolicies() {
         setPolicyPageStatus("Policies loaded.");
     } catch (err) {
         setPolicyPageStatus("Failed to load policies: " + err.message, "error");
+        setPolicyGuardrailsStatus("Failed to load guardrails: " + err.message, "error");
         setWorkspaceToolsStatus("Failed to load workspace tool set: " + err.message, "error");
         var el = document.getElementById("policy-page-content");
         if (el) el.innerHTML = renderError("Could not load policy data");
@@ -4718,6 +4771,44 @@ async function saveWorkspaceToolPolicy() {
     }
 }
 window.saveWorkspaceToolPolicy = saveWorkspaceToolPolicy;
+
+function _collectMultilineValues(elementId) {
+    var el = document.getElementById(elementId);
+    if (!el) return [];
+    return String(el.value || '')
+        .split(/\r?\n/)
+        .map(function(line) { return line.trim(); })
+        .filter(Boolean);
+}
+
+async function savePolicyGuardrails() {
+    setPolicyGuardrailsStatus("Saving guardrails...");
+    try {
+        var resp = await apiFetch('/policy/tools', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                never_allowed_commands: _collectMultilineValues('policy-never-allowed-commands'),
+                blocked_path_prefixes: _collectMultilineValues('policy-blocked-path-prefixes'),
+            }),
+        });
+        policyNeverAllowedCommands = resp.never_allowed_commands || [];
+        policyBlockedPathPrefixes = resp.blocked_path_prefixes || [];
+        renderPolicyGuardrailsEditor();
+        setPolicyGuardrailsStatus("Guardrails saved.", "success");
+    } catch (err) {
+        setPolicyGuardrailsStatus("Failed to save guardrails: " + err.message, "error");
+    }
+}
+window.savePolicyGuardrails = savePolicyGuardrails;
+
+function resetPolicyGuardrails() {
+    policyNeverAllowedCommands = [];
+    policyBlockedPathPrefixes = [];
+    renderPolicyGuardrailsEditor();
+    setPolicyGuardrailsStatus("Reset guardrails in the editor. Save to apply.", "success");
+}
+window.resetPolicyGuardrails = resetPolicyGuardrails;
 
 function resetWorkspaceToolPolicyDefaults() {
     policyWorkspaceTools = policyToolCatalogData
@@ -6258,6 +6349,10 @@ document.addEventListener("click", function(e) {
         elevatePersonaPolicy(btn.dataset.policyElevate);
     } else if ((btn = e.target.closest("[data-policy-revoke]"))) {
         revokePersonaPolicy(btn.dataset.policyRevoke);
+    } else if ((btn = e.target.closest("[data-policy-guardrails-save]"))) {
+        savePolicyGuardrails();
+    } else if ((btn = e.target.closest("[data-policy-guardrails-reset]"))) {
+        resetPolicyGuardrails();
     } else if ((btn = e.target.closest("[data-policy-workspace-save]"))) {
         saveWorkspaceToolPolicy();
     } else if ((btn = e.target.closest("[data-policy-workspace-reset]"))) {
