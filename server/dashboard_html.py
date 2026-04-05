@@ -5362,7 +5362,7 @@ function renderWsSummary(result) {
                     '<div class="ws-summary-label" style="margin:0;">Workspace Paths</div>' +
                     '<button class="btn btn-ghost" id="btn-ws-paths-save">Save Paths</button>' +
                 '</div>' +
-                '<textarea id="ws-paths-editor" rows="3" class="ws-textarea" style="min-height:96px; margin-bottom:8px;" placeholder="/Users/dana/project-a&#10;/Users/dana/project-b">' + esc(pathsText) + '</textarea>' +
+                '<textarea id="ws-paths-editor" rows="3" class="ws-textarea" style="min-height:96px; margin-bottom:8px;" placeholder="/path/to/workspace&#10;/path/to/project-b">' + esc(pathsText) + '</textarea>' +
                 '<div id="ws-paths-status" class="form-help">One workspace directory per line.</div>' +
             '</div>' +
             '<div class="ws-summary-item">' +

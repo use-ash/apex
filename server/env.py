@@ -54,19 +54,6 @@ _ws_raw: str = os.environ.get("APEX_WORKSPACE", os.getcwd())
 WORKSPACE: Path = Path(_ws_raw.split(":")[0].strip() or os.getcwd())
 WORKSPACE_PATHS: str = _ws_raw
 MCP_EXTRA_ROOTS_RAW: str = os.environ.get("APEX_MCP_EXTRA_ROOTS", "")
-PLAYWRIGHT_CLIENT_CERT: str = os.environ.get("APEX_PLAYWRIGHT_CLIENT_CERT", "")
-PLAYWRIGHT_CLIENT_KEY: str = os.environ.get("APEX_PLAYWRIGHT_CLIENT_KEY", "")
-PLAYWRIGHT_CLIENT_ORIGIN: str = os.environ.get("APEX_PLAYWRIGHT_CLIENT_ORIGIN", "")
-
-if not PLAYWRIGHT_CLIENT_CERT:
-    _default_playwright_cert = APEX_ROOT / "state" / "ssl" / "client_new.crt"
-    if _default_playwright_cert.exists():
-        PLAYWRIGHT_CLIENT_CERT = str(_default_playwright_cert)
-if not PLAYWRIGHT_CLIENT_KEY:
-    _default_playwright_key = APEX_ROOT / "state" / "ssl" / "client_new.key"
-    if _default_playwright_key.exists():
-        PLAYWRIGHT_CLIENT_KEY = str(_default_playwright_key)
-
 
 def _normalize_workspace_roots(raw: str | None) -> list[str]:
     roots: list[str] = []
@@ -173,42 +160,6 @@ def rewrite_mcp_servers_for_workspace(
                     mounts.extend(["-v", f"{root}:{root}"])
                 new_cfg = dict(cfg)
                 new_cfg["args"] = cleaned_prefix + mounts + [args[image_idx]] + mcp_roots
-                rewritten[name] = new_cfg
-                continue
-
-        if "playwright" in command or any("playwright" in str(arg) for arg in args):
-            new_cfg = dict(cfg)
-            new_env = dict(cfg.get("env") or {})
-            new_args = list(args)
-            if command == "docker":
-                cert_mount_target = "/apex-playwright/client-cert.pem"
-                key_mount_target = "/apex-playwright/client-key.pem"
-                prefix = list(new_args)
-                image_idx = next(
-                    (i for i, arg in enumerate(prefix) if "playwright" in str(arg)),
-                    -1,
-                )
-                insert_idx = image_idx if image_idx >= 0 else len(prefix)
-                docker_mounts: list[str] = []
-                if PLAYWRIGHT_CLIENT_CERT:
-                    docker_mounts.extend(["-v", f"{PLAYWRIGHT_CLIENT_CERT}:{cert_mount_target}:ro"])
-                    new_env["APEX_PLAYWRIGHT_CLIENT_CERT"] = cert_mount_target
-                if PLAYWRIGHT_CLIENT_KEY:
-                    docker_mounts.extend(["-v", f"{PLAYWRIGHT_CLIENT_KEY}:{key_mount_target}:ro"])
-                    new_env["APEX_PLAYWRIGHT_CLIENT_KEY"] = key_mount_target
-                if docker_mounts:
-                    new_args = prefix[:insert_idx] + docker_mounts + prefix[insert_idx:]
-            else:
-                if PLAYWRIGHT_CLIENT_CERT:
-                    new_env["APEX_PLAYWRIGHT_CLIENT_CERT"] = PLAYWRIGHT_CLIENT_CERT
-                if PLAYWRIGHT_CLIENT_KEY:
-                    new_env["APEX_PLAYWRIGHT_CLIENT_KEY"] = PLAYWRIGHT_CLIENT_KEY
-            if PLAYWRIGHT_CLIENT_ORIGIN:
-                new_env["APEX_PLAYWRIGHT_CLIENT_ORIGIN"] = PLAYWRIGHT_CLIENT_ORIGIN
-            if new_env:
-                new_cfg["env"] = new_env
-            if new_args != args:
-                new_cfg["args"] = new_args
                 rewritten[name] = new_cfg
                 continue
 
