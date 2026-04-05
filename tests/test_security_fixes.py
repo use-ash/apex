@@ -709,6 +709,129 @@ class SecurityFixTests(unittest.TestCase):
         result_event = next(evt for evt in sent if evt.get("type") == "result")
         self.assertFalse(result_event["is_error"])
 
+    def test_agent_sdk_mixed_pending_tools_only_marks_blocked_tool(self) -> None:
+        fake_client = SimpleNamespace(receive_response=lambda: None)
+        sent: list[dict] = []
+
+        async def fake_send_stream_event(_chat_id: str, payload: dict) -> None:
+            sent.append(payload)
+
+        async def fake_stream():
+            yield agent_sdk.AssistantMessage(
+                content=[
+                    agent_sdk.ToolUseBlock(
+                        id="toolu_ok",
+                        name="ToolSearch",
+                        input={"query": "playwright browser", "max_results": 5},
+                    ),
+                    agent_sdk.ToolUseBlock(
+                        id="toolu_blocked",
+                        name="Read",
+                        input={"file_path": "/Users/dana/.openclaw/apex/state/ssl/client.crt", "limit": 5},
+                    ),
+                ],
+                model="claude-haiku-4-5-20251001",
+            )
+            yield agent_sdk.ResultMessage(
+                subtype="success",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=False,
+                num_turns=1,
+                session_id="sess-1",
+                usage={"input_tokens": 1, "output_tokens": 1},
+                result="Tool preflight completed.",
+            )
+
+        with (
+            mock.patch.object(agent_sdk, "_send_stream_event", side_effect=fake_send_stream_event),
+            mock.patch.object(agent_sdk, "_normalize_response_stream", return_value=fake_stream()),
+        ):
+            result = asyncio.run(
+                agent_sdk._stream_response(
+                    fake_client,
+                    "deadbeef",
+                    permission_level=3,
+                    allowed_commands=[],
+                    client_key="deadbeef:qa",
+                )
+            )
+
+        self.assertTrue(result["is_error"])
+        self.assertIn("Tool execution was denied by host permissions: Read.", result["text"])
+        tool_events = json.loads(result["tool_events"])
+        self.assertEqual(len(tool_events), 2)
+        by_name = {evt["name"]: evt for evt in tool_events}
+        self.assertFalse(by_name["ToolSearch"]["result"]["is_error"])
+        self.assertIn("omitted explicit result block", by_name["ToolSearch"]["result"]["content"])
+        self.assertTrue(by_name["Read"]["result"]["is_error"])
+        self.assertEqual(
+            by_name["Read"]["result"]["content"],
+            "Tool execution was denied by host permissions: Read.",
+        )
+
+    def test_websocket_send_routes_codex_group_chat_through_permission_aware_backend(self) -> None:
+        profile_id = "perm-codex-group"
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO agent_profiles (
+                    id, name, slug, avatar, role_description, backend, model,
+                    system_prompt, tool_policy, is_default, is_system, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, datetime('now'), datetime('now'))
+                """,
+                (
+                    profile_id,
+                    "Perm Codex Group",
+                    "perm-codex-group",
+                    "D",
+                    "codex group test",
+                    "codex",
+                    "codex:gpt-5.4",
+                    "codex group test",
+                    json.dumps({"level": 3, "allowed_commands": []}),
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+        chat_id = db_mod._create_chat(title="Perm Codex Group Chat", model="codex:gpt-5.4", chat_type="group")
+        db_mod._add_group_member(chat_id, profile_id, routing_mode="primary", is_primary=True, display_order=0)
+        routed = {"ollama": 0}
+
+        async def fake_run_ollama_chat(chat_id_arg: str, prompt: str, model=None, attachments=None, permission_policy=None):
+            self.assertEqual(chat_id_arg, chat_id)
+            self.assertEqual(model, "codex:gpt-5.4")
+            self.assertEqual((permission_policy or {}).get("level"), 3)
+            routed["ollama"] += 1
+            return {
+                "text": "done",
+                "is_error": False,
+                "error": None,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+
+        with (
+            mock.patch.object(ws_handler, "_run_codex_chat", side_effect=AssertionError("codex CLI path should not run")),
+            mock.patch.object(ws_handler, "_run_ollama_chat", side_effect=fake_run_ollama_chat),
+            self._client() as client,
+        ):
+            with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                ws.send_json({
+                    "action": "send",
+                    "chat_id": chat_id,
+                    "prompt": "inspect permissions",
+                })
+                self._receive_until(ws, lambda msg: msg.get("type") == "stream_end")
+
+        self.assertEqual(routed["ollama"], 1)
+
     def test_local_full_admin_level_4_allows_shell_and_external_paths(self) -> None:
         outside_root = Path(tempfile.mkdtemp(prefix="apex-admin4-outside-"))
         target = outside_root / "admin4.txt"

@@ -58,6 +58,15 @@ PLAYWRIGHT_CLIENT_CERT: str = os.environ.get("APEX_PLAYWRIGHT_CLIENT_CERT", "")
 PLAYWRIGHT_CLIENT_KEY: str = os.environ.get("APEX_PLAYWRIGHT_CLIENT_KEY", "")
 PLAYWRIGHT_CLIENT_ORIGIN: str = os.environ.get("APEX_PLAYWRIGHT_CLIENT_ORIGIN", "")
 
+if not PLAYWRIGHT_CLIENT_CERT:
+    _default_playwright_cert = APEX_ROOT / "state" / "ssl" / "client_new.crt"
+    if _default_playwright_cert.exists():
+        PLAYWRIGHT_CLIENT_CERT = str(_default_playwright_cert)
+if not PLAYWRIGHT_CLIENT_KEY:
+    _default_playwright_key = APEX_ROOT / "state" / "ssl" / "client_new.key"
+    if _default_playwright_key.exists():
+        PLAYWRIGHT_CLIENT_KEY = str(_default_playwright_key)
+
 
 def _normalize_workspace_roots(raw: str | None) -> list[str]:
     roots: list[str] = []

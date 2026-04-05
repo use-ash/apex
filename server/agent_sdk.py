@@ -787,6 +787,12 @@ async def _stream_response(
             + ("." if len(names) <= 5 else ", ...")
         )
 
+    def _single_tool_denial_message(item: dict) -> str:
+        name = str(item.get("name") or "").strip()
+        if not name:
+            return "Tool execution was denied by host permissions."
+        return f"Tool execution was denied by host permissions: {name}."
+
     def _merge_blocked_tool_result(partial_text: str, blocked_tool_message: str) -> str:
         denial_note = (
             f"{blocked_tool_message}\n"
@@ -800,7 +806,12 @@ async def _stream_response(
             return partial
         return f"{partial}\n\n---\n{denial_note}"
 
-    async def _flush_pending_tools(default_content: str = "", default_is_error: bool = False) -> None:
+    async def _flush_pending_tools(
+        default_content: str = "",
+        default_is_error: bool = False,
+        *,
+        per_tool_results: dict[str, tuple[str, bool]] | None = None,
+    ) -> None:
         if not pending_tools:
             return
         pending_items = list(pending_tools.items())
@@ -808,19 +819,23 @@ async def _stream_response(
         if DEBUG:
             log(f"DBG flush pending Claude tools: chat={chat_id} count={len(pending_items)} error={default_is_error}")
         for tool_use_id, current_tool in pending_items:
+            content = default_content
+            is_error = default_is_error
+            if per_tool_results and tool_use_id in per_tool_results:
+                content, is_error = per_tool_results[tool_use_id]
             tool_events.append({
                 **current_tool,
                 "result": {
                     "tool_use_id": tool_use_id,
-                    "content": default_content,
-                    "is_error": default_is_error,
+                    "content": content,
+                    "is_error": is_error,
                 },
             })
             await _send({
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
-                "content": default_content[:2000],
-                "is_error": default_is_error,
+                "content": content[:2000],
+                "is_error": is_error,
             })
 
     _stream_event_count = 0
@@ -894,15 +909,29 @@ async def _stream_response(
                 full_admin_mode = _full_admin_mode()
                 pending_at_result = list(pending_tools.values())
                 blocked_tools = [] if full_admin_mode else _host_denied_pending_tools(pending_at_result)
-                implicit_success_tools = [] if blocked_tools else pending_at_result
+                blocked_ids = {
+                    str(item.get("id") or "")
+                    for item in blocked_tools
+                    if str(item.get("id") or "")
+                }
+                implicit_success_tools = [
+                    item for item in pending_at_result
+                    if str(item.get("id") or "") not in blocked_ids
+                ]
                 blocked_tool_message = _pending_tool_denial_message(blocked_tools) if blocked_tools else ""
+                per_tool_results: dict[str, tuple[str, bool]] = {}
+                for item in blocked_tools:
+                    tool_id = str(item.get("id") or "")
+                    if tool_id:
+                        per_tool_results[tool_id] = (_single_tool_denial_message(item), True)
+                for item in implicit_success_tools:
+                    tool_id = str(item.get("id") or "")
+                    if tool_id:
+                        per_tool_results[tool_id] = ("[tool completed; SDK omitted explicit result block]", False)
                 await _flush_pending_tools(
-                    default_content=(
-                        "[tool completed; SDK omitted explicit result block]"
-                        if implicit_success_tools
-                        else blocked_tool_message
-                    ),
+                    default_content=blocked_tool_message if blocked_tools else "[tool completed; SDK omitted explicit result block]",
                     default_is_error=bool(blocked_tools),
+                    per_tool_results=per_tool_results,
                 )
                 final_text = msg.result or result_text
                 if blocked_tools:
