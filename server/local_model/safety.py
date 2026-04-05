@@ -95,6 +95,10 @@ PROTECTED_PATHS = {
     os.path.realpath(str(APEX_ROOT / "state" / "ssl")),
     os.path.realpath(str(APEX_ROOT / "server")),
 }
+LIVE_APEX_DB_PATHS = tuple(
+    os.path.realpath(str(APEX_ROOT / "state" / name))
+    for name in ("apex.db", "apex.db-wal", "apex.db-shm", "apex.db-journal")
+)
 ADMIN_TEMP_ROOTS = tuple(
     dict.fromkeys(
         os.path.realpath(path)
@@ -112,7 +116,17 @@ def _is_env_path(path: str) -> bool:
     return base == ".env" or base.startswith(".env.")
 
 
+def _live_db_path_error(path: str) -> str | None:
+    for blocked in LIVE_APEX_DB_PATHS:
+        if path == blocked:
+            return f"Error: access to live Apex database is blocked: {path}"
+    return None
+
+
 def _protected_path_error(path: str) -> str | None:
+    live_db_err = _live_db_path_error(path)
+    if live_db_err:
+        return live_db_err
     for protected in PROTECTED_PATHS:
         if path == protected or path.startswith(protected + os.sep):
             return f"Error: access to protected path is blocked: {path}"
@@ -235,6 +249,33 @@ def _validate_python_command(argv: list[str], workspace: str | None) -> str | No
     if len(argv) >= 4 and argv[1] == "-m" and argv[2] == "py_compile":
         return _validate_arg_paths(argv[3:], workspace)
     return "Error: python is limited to version checks and -m py_compile"
+
+
+def _tokenize_shell_command(command: str) -> list[str]:
+    lexer = shlex.shlex(command.replace("\n", " ; "), posix=True, punctuation_chars="|&;<>")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    return list(lexer)
+
+
+def _validate_live_db_command_paths(command: str, workspace: str | None) -> str | None:
+    primary = _primary_workspace(workspace)
+    try:
+        tokens = _tokenize_shell_command(command)
+    except ValueError:
+        return None
+
+    for token in tokens:
+        if token in {"|", "||", "&&", ";", "<", ">", "<<", ">>", "&"}:
+            continue
+        candidate = token.strip()
+        if not _looks_like_path(candidate):
+            continue
+        resolved = _resolve_candidate_path(candidate, primary)
+        err = _live_db_path_error(resolved)
+        if err:
+            return err
+    return None
 
 
 def _normalize_command_text(command: str) -> str:
@@ -386,6 +427,9 @@ def prepare_command(
         return None, "Error: no command provided"
     if permission_level <= 0:
         return None, "Error: tools are disabled for this persona"
+    live_db_err = _validate_live_db_command_paths(cmd, workspace)
+    if live_db_err:
+        return None, live_db_err
     if permission_level >= 4:
         return ["/bin/sh", "-lc", cmd], None
     if _contains_disallowed_shell_syntax(
@@ -515,9 +559,12 @@ def ensure_workspace_path(
 
 def validate_path(path: str, allow_write: bool = False, *, permission_level: int = 2) -> str | None:
     """Returns error string if path is blocked, None if OK."""
+    resolved = os.path.realpath(os.path.expanduser(path))
+    live_db_err = _live_db_path_error(resolved)
+    if live_db_err:
+        return live_db_err
     if permission_level >= 4:
         return None
-    resolved = os.path.realpath(os.path.expanduser(path))
     protected = _protected_path_error(resolved)
     if protected:
         return protected
