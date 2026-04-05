@@ -202,6 +202,8 @@ def rewrite_mcp_servers_for_workspace(
             if command == "docker":
                 cert_mount_target = "/apex-playwright/client-cert.pem"
                 key_mount_target = "/apex-playwright/client-key.pem"
+                # Idempotency: skip if mounts already present in args
+                _existing = set(new_args)
                 prefix = list(new_args)
                 image_idx = next(
                     (i for i, arg in enumerate(prefix) if "playwright" in str(arg)),
@@ -210,10 +212,14 @@ def rewrite_mcp_servers_for_workspace(
                 insert_idx = image_idx if image_idx >= 0 else len(prefix)
                 docker_mounts: list[str] = []
                 if PLAYWRIGHT_CLIENT_CERT:
-                    docker_mounts.extend(["-v", f"{PLAYWRIGHT_CLIENT_CERT}:{cert_mount_target}:ro"])
+                    _mount = f"{PLAYWRIGHT_CLIENT_CERT}:{cert_mount_target}:ro"
+                    if _mount not in _existing:
+                        docker_mounts.extend(["-v", _mount])
                     new_env["APEX_PLAYWRIGHT_CLIENT_CERT"] = cert_mount_target
                 if PLAYWRIGHT_CLIENT_KEY:
-                    docker_mounts.extend(["-v", f"{PLAYWRIGHT_CLIENT_KEY}:{key_mount_target}:ro"])
+                    _mount = f"{PLAYWRIGHT_CLIENT_KEY}:{key_mount_target}:ro"
+                    if _mount not in _existing:
+                        docker_mounts.extend(["-v", _mount])
                     new_env["APEX_PLAYWRIGHT_CLIENT_KEY"] = key_mount_target
                 if docker_mounts:
                     new_args = prefix[:insert_idx] + docker_mounts + prefix[insert_idx:]
@@ -224,6 +230,10 @@ def rewrite_mcp_servers_for_workspace(
                     new_env["APEX_PLAYWRIGHT_CLIENT_KEY"] = PLAYWRIGHT_CLIENT_KEY
             if PLAYWRIGHT_CLIENT_ORIGIN:
                 new_env["APEX_PLAYWRIGHT_CLIENT_ORIGIN"] = PLAYWRIGHT_CLIENT_ORIGIN
+            # NOTE: --client-certificates is NOT supported by the mcp/playwright
+            # Docker image and will cause container startup to fail.  mTLS
+            # bypass for Playwright is handled via bearer token (ADMIN_TOKEN)
+            # in the verify_client_cert middleware instead.
             if new_env:
                 new_cfg["env"] = new_env
             if new_args != args:
@@ -350,6 +360,10 @@ ENV_FILE: Path = Path(
 
 # Optional bearer token for defense-in-depth on /admin routes (mTLS is primary).
 ADMIN_TOKEN: str = os.environ.get("APEX_ADMIN_TOKEN", "")
+
+# mTLS mode: "required" (default, prod) or "optional" (dev — allows bearer
+# token bypass for Docker tools like Playwright MCP that can't present certs).
+MTLS_MODE: str = os.environ.get("APEX_MTLS_MODE", "required")
 
 # ---------------------------------------------------------------------------
 # Licensing
