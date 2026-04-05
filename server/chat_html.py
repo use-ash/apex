@@ -2166,7 +2166,7 @@ function _finalizeThinking(ctx) {
   ctx.thinkingBlock = null;
   if (ctx.thinkingText) {
     _thinkingPill(ctx, {
-      durationMs: ctx.thinkingStart ? (Date.now() - ctx.thinkingStart) : 0,
+      durationMs: ctx.turnDurationMs || (ctx.thinkingStart ? (Date.now() - ctx.thinkingStart) : 0),
     });
   }
 }
@@ -2219,6 +2219,7 @@ function _restoreThinkingFromPill(streamId) {
 
 function _finalizeStreamUi(ctx, resultMsg = null) {
   if (!ctx || !ctx.bubble) return;
+  if (resultMsg?.duration_ms) ctx.turnDurationMs = resultMsg.duration_ms;
   _finalizeThinking(ctx);
   _renderWatchdogPills();
   ctx.awaitingAck = false;
@@ -4726,7 +4727,7 @@ async function selectChat(id, title, chatType, category) {
       }
       if (m.thinking && m.thinking.trim()) {
         historyCtx.thinkingText = m.thinking;
-        _thinkingPill(historyCtx, {durationMs: 0});
+        _thinkingPill(historyCtx, {durationMs: m.duration_ms || 0});
       }
       div.querySelectorAll('.bubble').forEach(el => renderMarkdown(el));
     }

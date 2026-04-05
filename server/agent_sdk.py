@@ -946,6 +946,7 @@ async def _stream_response(
                         f"SDK result completed with implicit tool success: chat={chat_id} "
                         f"tools={[item.get('name') for item in implicit_success_tools]}"
                     )
+                elapsed = time.monotonic() - _stream_start
                 result_info = {
                     "session_id": msg.session_id,
                     "text": final_text,
@@ -954,6 +955,7 @@ async def _stream_response(
                     "cost_usd": msg.total_cost_usd or 0,
                     "tokens_in": (msg.usage or {}).get("input_tokens", 0),
                     "tokens_out": (msg.usage or {}).get("output_tokens", 0),
+                    "duration_ms": int(elapsed * 1000),
                     "error": None,
                     "stream_failed": False,
                     "is_error": bool(msg.is_error or blocked_tools),
@@ -969,12 +971,12 @@ async def _stream_response(
                     "cost_usd": result_info["cost_usd"],
                     "tokens_in": result_info["tokens_in"],
                     "tokens_out": result_info["tokens_out"],
+                    "duration_ms": result_info["duration_ms"],
                     "session_id": msg.session_id,
                     "context_tokens_in": _ctx_in,
                     "context_window": _ctx_window,
                     "thinking": thinking_text,
                 })
-                elapsed = time.monotonic() - _stream_start
                 if DEBUG: log(f"DBG stream COMPLETE: chat={chat_id} events={_stream_event_count} time={elapsed:.0f}s session={msg.session_id[:8] if msg.session_id else '?'} cost=${result_info['cost_usd']:.4f}")
 
     except asyncio.TimeoutError:
