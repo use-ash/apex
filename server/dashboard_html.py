@@ -4441,12 +4441,12 @@ function renderPolicyGuardrailsEditor() {
             '<div class="card policy-mini-card">' +
                 '<div class="card-title" style="margin-bottom:8px;">Never Allowed Commands</div>' +
                 '<div class="form-help" style="margin-bottom:8px;">One command prefix per line. Each shell segment is checked, so entries like <code>sqlite3</code> or <code>rm -rf</code> are blocked everywhere.</div>' +
-                '<textarea id="policy-never-allowed-commands" rows="8" placeholder="sqlite3&#10;rm -rf&#10;launchctl">' + esc((policyNeverAllowedCommands || []).join('\n')) + '</textarea>' +
+                '<textarea id="policy-never-allowed-commands" rows="8" placeholder="sqlite3&#10;rm -rf&#10;launchctl">' + esc((policyNeverAllowedCommands || []).join('\\n')) + '</textarea>' +
             '</div>' +
             '<div class="card policy-mini-card">' +
                 '<div class="card-title" style="margin-bottom:8px;">Blocked Path Prefixes</div>' +
                 '<div class="form-help" style="margin-bottom:8px;">One absolute path prefix per line. File tools and shell commands touching these locations are denied, even at Full Admin.</div>' +
-                '<textarea id="policy-blocked-path-prefixes" rows="8" placeholder="/Users/you/.openclaw/apex/state&#10;/Users/you/.ssh">' + esc((policyBlockedPathPrefixes || []).join('\n')) + '</textarea>' +
+                '<textarea id="policy-blocked-path-prefixes" rows="8" placeholder="/Users/you/.openclaw/apex/state&#10;/Users/you/.ssh">' + esc((policyBlockedPathPrefixes || []).join('\\n')) + '</textarea>' +
             '</div>' +
         '</div>' +
         '<div class="policy-editor-actions">' +
@@ -4920,7 +4920,7 @@ function _collectMultilineValues(elementId) {
     var el = document.getElementById(elementId);
     if (!el) return [];
     return String(el.value || '')
-        .split(/\r?\n/)
+        .split(/\\r?\\n/)
         .map(function(line) { return line.trim(); })
         .filter(Boolean);
 }
