@@ -26,7 +26,19 @@ main  = production (port 8300)   ← merge target only
 dev   = feature work (port 8301) ← develop here
 ```
 
-Workflow: `dev` → test on :8301 → merge to `main` → operator restarts prod.
+Full workflow — **read `REPO_CONVENTIONS.md` for the complete three-repo layout:**
+
+```
+dev (feature work)
+  → git push origin dev          (drm-collab/apex — private)
+  → merge to main
+  → git push origin main         (drm-collab/apex — private)
+  → Dana validates in prod (~/.apex-prod/, port 8300)
+  → git push upstream main       (use-ash/apex — OSS) ← Dana only
+```
+
+`origin` = drm-collab/apex (private development home)
+`upstream` = use-ash/apex (public OSS — never push directly)
 
 ## Upstreaming Private Patches
 
