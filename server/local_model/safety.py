@@ -261,6 +261,10 @@ def _contains_disallowed_shell_syntax(
     permission_level: int,
     allowed_commands: list[str] | None = None,
 ) -> bool:
+    if permission_level >= 3 and any(
+        snippet in command for snippet in LEVEL3_ALLOWED_SHELL_META_SNIPPETS
+    ):
+        return any(snippet in command for snippet in LEVEL3_BLOCKED_SHELL_META_SNIPPETS)
     if permission_level >= 3 and _command_matches_allowed_prefix(command, allowed_commands):
         return any(snippet in command for snippet in LEVEL3_BLOCKED_SHELL_META_SNIPPETS)
     return any(snippet in command for snippet in SHELL_META_SNIPPETS)
@@ -392,7 +396,6 @@ def prepare_command(
         return None, "Error: shell syntax is not allowed"
     if (
         permission_level >= 3
-        and _command_matches_allowed_prefix(cmd, allowed_commands)
         and any(snippet in cmd for snippet in LEVEL3_ALLOWED_SHELL_META_SNIPPETS)
     ):
         err = _validate_level3_shell_command(cmd, workspace, allowed_commands)

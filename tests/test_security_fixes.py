@@ -907,6 +907,22 @@ class SecurityFixTests(unittest.TestCase):
                 allowed_commands=["ps", "grep"],
             )
         )
+        self.assertIsNone(
+            local_safety.validate_command(
+                "pwd; echo ok",
+                workspace,
+                permission_level=3,
+                allowed_commands=["pwd", "echo"],
+            )
+        )
+        self.assertIsNone(
+            local_safety.validate_command(
+                "date|wc -l",
+                workspace,
+                permission_level=3,
+                allowed_commands=["date", "wc"],
+            )
+        )
         self.assertIn(
             "command is not allowed: echo",
             local_safety.validate_command(
@@ -2257,6 +2273,15 @@ class SecurityFixTests(unittest.TestCase):
             {"command": "ps aux | grep apex"},
             level=3,
             allowed_commands=["ps", "grep"],
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
+
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Bash",
+            {"command": "pwd; echo ok"},
+            level=3,
+            allowed_commands=["pwd", "echo"],
         )
         self.assertTrue(allowed)
         self.assertEqual(message, "")
