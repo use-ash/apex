@@ -68,6 +68,25 @@ if not PLAYWRIGHT_CLIENT_KEY:
         PLAYWRIGHT_CLIENT_KEY = str(_default_playwright_key)
 
 
+def _seed_playwright_runtime_env() -> None:
+    """Expose configured Playwright mTLS paths to child processes.
+
+    The files remain blocked by path policy, but trusted tools can reference the
+    mounted cert/key indirectly via environment variables such as
+    ``$APEX_PLAYWRIGHT_CLIENT_CERT``.
+    """
+
+    if PLAYWRIGHT_CLIENT_CERT:
+        os.environ.setdefault("APEX_PLAYWRIGHT_CLIENT_CERT", PLAYWRIGHT_CLIENT_CERT)
+    if PLAYWRIGHT_CLIENT_KEY:
+        os.environ.setdefault("APEX_PLAYWRIGHT_CLIENT_KEY", PLAYWRIGHT_CLIENT_KEY)
+    if PLAYWRIGHT_CLIENT_ORIGIN:
+        os.environ.setdefault("APEX_PLAYWRIGHT_CLIENT_ORIGIN", PLAYWRIGHT_CLIENT_ORIGIN)
+
+
+_seed_playwright_runtime_env()
+
+
 def _normalize_workspace_roots(raw: str | None) -> list[str]:
     roots: list[str] = []
     text = str(raw or "").replace("\r\n", "\n").replace("\r", "\n")
