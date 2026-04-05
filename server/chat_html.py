@@ -1006,6 +1006,10 @@ let lastSubmittedPrompt = '';
 const activeStreams = new Map(); // stream_id -> {name, avatar, profile_id}
 // Per-stream context: supports concurrent agent streams without clobbering
 const _streamCtx = {};  // stream_id -> {bubble, speaker, toolPill, toolCalls, ...}
+// Per-chat last-seen event seq — dedupes events that arrive via both live-send
+// and attach-replay paths. Server attaches {seq, epoch} to every stream event.
+// Reset on epoch mismatch (server restart) or new ws connection.
+const _lastSeenSeq = {};  // chat_id -> {epoch, seq}
 function _newStreamCtx(streamId, speaker) {
   return {
     id: streamId,
@@ -2445,6 +2449,17 @@ function handleEvent(msg) {
   if (_B42_STREAM.has(msg.type) && msg.chat_id && currentChat && msg.chat_id !== currentChat) {
     dbg('B42: drop cross-chat', msg.type, msg.chat_id);
     return;
+  }
+  // Seq-based dedup: server stamps every stream event with {seq, epoch}.
+  // Drop events we've already processed. Reset on epoch mismatch (server restart).
+  if (typeof msg.seq === 'number' && msg.chat_id) {
+    const epoch = String(msg.epoch || '');
+    const prev = _lastSeenSeq[msg.chat_id];
+    if (prev && prev.epoch === epoch && msg.seq <= prev.seq) {
+      dbg('dedup skip', msg.chat_id, 'seq', msg.seq, 'type', msg.type);
+      return;
+    }
+    _lastSeenSeq[msg.chat_id] = {epoch, seq: msg.seq};
   }
   switch(msg.type) {
     case 'active_streams':

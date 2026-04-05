@@ -47,7 +47,11 @@ except ImportError:
 
 # Config imported from env.py
 
-_STREAM_BUFFER_MAX = 200
+_STREAM_BUFFER_MAX = 2000
+# Server epoch — monotonic-ish ID stamped on every stream event so clients can
+# detect server restart and reset their seq dedup state. Generated fresh each
+# time this module loads (i.e., each server process).
+_SERVER_EPOCH = str(int(time.time() * 1000))
 _STREAM_JOURNAL_DIR = APEX_ROOT / "state" / "streams"
 _STREAM_JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
 safe_chmod(_STREAM_JOURNAL_DIR, 0o700)
@@ -823,6 +827,10 @@ def _buffer_stream_event(chat_id: str, payload: dict) -> None:
         _reset_stream_buffer(chat_id)
     seq = _stream_seq.get(chat_id, 0) + 1
     _stream_seq[chat_id] = seq
+    # Attach seq + server_epoch to payload so client can dedupe events
+    # that arrive via both live-send and attach-replay paths.
+    payload["seq"] = seq
+    payload["epoch"] = _SERVER_EPOCH
     _stream_buffers[chat_id].append((seq, dict(payload)))
     try:
         with open(_stream_journal_path(chat_id), "a") as f:
