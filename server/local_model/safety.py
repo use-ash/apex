@@ -53,6 +53,7 @@ SENSITIVE_BASENAMES = {
 SHELL_META_SNIPPETS = ("`", "$(", "${", "&&", "||", "|", ";", ">", "<", "\n", "\r", "\x00")
 LEVEL3_ALLOWED_SHELL_META_SNIPPETS = ("&&", "||", "|", ";", "\n")
 LEVEL3_BLOCKED_SHELL_META_SNIPPETS = ("`", "$(", "${", ">", "<", "\r", "\x00")
+LEVEL3_ALLOWED_SHELL_OPERATORS = frozenset({"&&", "||", "|", ";"})
 
 READ_ONLY_GIT_SUBCOMMANDS = {
     "status",
@@ -272,6 +273,102 @@ def _path_is_within_root(path: str, root: str) -> bool:
         return False
 
 
+def _workspace_roots(workspace: str | None) -> list[str]:
+    return [
+        os.path.realpath(os.path.expanduser(root))
+        for root in (workspace or "").split(":")
+        if root.strip()
+    ]
+
+
+def _path_is_within_admin_roots(path: str, workspace: str | None) -> bool:
+    roots = _workspace_roots(workspace)
+    inside_workspace = any(_path_is_within_root(path, root) for root in roots)
+    inside_tmp = any(_path_is_within_root(path, root) for root in ADMIN_TEMP_ROOTS)
+    return inside_workspace or inside_tmp
+
+
+def _validate_allowlisted_command_segment(
+    segment: str,
+    workspace: str | None,
+    allowed_commands: list[str] | None,
+) -> str | None:
+    if not _command_matches_allowed_prefix(segment, allowed_commands):
+        try:
+            argv = shlex.split(segment, posix=True)
+        except ValueError as e:
+            return f"Error: invalid command syntax: {e}"
+        exe = argv[0] if argv else ""
+        return f"Error: command is not allowed: {exe}"
+
+    try:
+        argv = shlex.split(segment, posix=True)
+    except ValueError as e:
+        return f"Error: invalid command syntax: {e}"
+
+    if not argv:
+        return "Error: invalid command syntax"
+
+    exe = argv[0]
+    base = os.path.basename(exe)
+    if base in READ_ONLY_COMMANDS:
+        return _validate_read_only_command(argv, workspace)
+    if base == "git":
+        git_err = _validate_git_command(argv, workspace)
+        if not git_err:
+            return None
+        return _validate_write_capable_arg_paths(argv[1:], workspace)
+    if exe in PYTHON_COMMANDS or base in PYTHON_COMMANDS:
+        py_err = _validate_python_command(argv, workspace)
+        if not py_err:
+            return None
+        return _validate_write_capable_arg_paths(argv[1:], workspace)
+    return _validate_write_capable_arg_paths(argv[1:], workspace)
+
+
+def _split_level3_shell_segments(command: str) -> tuple[list[str] | None, str | None]:
+    try:
+        lexer = shlex.shlex(command.replace("\n", " ; "), posix=True, punctuation_chars="|&;")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError as e:
+        return None, f"Error: invalid command syntax: {e}"
+
+    segments: list[str] = []
+    current: list[str] = []
+    for token in tokens:
+        if token in LEVEL3_ALLOWED_SHELL_OPERATORS:
+            if not current:
+                return None, "Error: invalid command syntax"
+            segments.append(shlex.join(current))
+            current = []
+            continue
+        if token == "&":
+            return None, "Error: shell syntax is not allowed"
+        current.append(token)
+
+    if not current:
+        return None, "Error: invalid command syntax"
+    segments.append(shlex.join(current))
+    return segments, None
+
+
+def _validate_level3_shell_command(
+    command: str,
+    workspace: str | None,
+    allowed_commands: list[str] | None,
+) -> str | None:
+    segments, err = _split_level3_shell_segments(command)
+    if err:
+        return err
+    for segment in segments or []:
+        err = _validate_allowlisted_command_segment(segment, workspace, allowed_commands)
+        if err:
+            return err
+    return None
+
+
 def prepare_command(
     command: str,
     workspace: str | None = None,
@@ -298,6 +395,9 @@ def prepare_command(
         and _command_matches_allowed_prefix(cmd, allowed_commands)
         and any(snippet in cmd for snippet in LEVEL3_ALLOWED_SHELL_META_SNIPPETS)
     ):
+        err = _validate_level3_shell_command(cmd, workspace, allowed_commands)
+        if err:
+            return None, err
         return ["/bin/sh", "-lc", cmd], None
 
     try:
@@ -370,15 +470,9 @@ def ensure_workspace_path(
 
     if permission_level >= 3:
         resolved = _resolve_candidate_path(path, _primary_workspace(workspace))
-        if allow_write:
-            roots = [
-                os.path.realpath(os.path.expanduser(r))
-                for r in (workspace or "").split(":") if r.strip()
-            ]
-            inside_workspace = any(_path_is_within_root(resolved, root) for root in roots)
-            inside_tmp = any(_path_is_within_root(resolved, root) for root in ADMIN_TEMP_ROOTS)
-            if not inside_workspace and not inside_tmp:
-                return None, f"Error: write path is outside allowed admin paths: {path}"
+        if not _path_is_within_admin_roots(resolved, workspace):
+            detail = "write path is outside allowed admin paths" if allow_write else "path is outside allowed admin paths"
+            return None, f"Error: {detail}: {path}"
         err = validate_path(resolved, allow_write=allow_write, permission_level=permission_level)
         if err:
             return None, err

@@ -249,6 +249,26 @@ def tool_matches_pattern(tool_name: str, pattern: str) -> bool:
     return canonical == normalized
 
 
+def _tool_is_catalogued(tool_name: str) -> bool:
+    canonical = canonical_tool_name(tool_name)
+    return any(tool_matches_pattern(canonical, pattern) for pattern in TOOL_POLICY_CATALOG)
+
+
+def _iter_tool_input_paths(tool_input: dict, keys: tuple[str, ...]) -> list[str]:
+    if not isinstance(tool_input, dict):
+        return []
+
+    paths: list[str] = []
+    for key in keys:
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            paths.append(value.strip())
+            continue
+        if isinstance(value, list):
+            paths.extend(str(item).strip() for item in value if str(item).strip())
+    return paths
+
+
 def get_tool_catalog() -> list[dict[str, str | bool]]:
     workspace_set = set(get_workspace_tool_patterns())
     items: list[dict[str, str | bool]] = []
@@ -278,15 +298,7 @@ def tool_allowed_for_level(name: str, level: int) -> bool:
         return canonical in STANDARD_LOCAL_TOOLS
     if level == 2:
         return any(tool_matches_pattern(canonical, pattern) for pattern in get_workspace_tool_patterns())
-    if canonical in BUILTIN_LOCAL_TOOLS:
-        return canonical in BUILTIN_LOCAL_TOOLS
-    if canonical.startswith("filesystem__"):
-        return True
-    if canonical.startswith("playwright__") or canonical.startswith("fetch__"):
-        return True
-    if canonical.startswith("memory__"):
-        return level >= 3
-    return level >= 3
+    return _tool_is_catalogued(canonical)
 
 
 def allowed_tool_names_for_level(level: int) -> set[str] | None:
@@ -357,11 +369,11 @@ def tool_access_decision(
         elif canonical != "filesystem__list_allowed_directories":
             path_keys = ("path", "file_path")
 
+    if canonical == "filesystem__read_multiple_files":
+        path_keys = ("paths",)
+
     if path_keys:
-        for key in path_keys:
-            raw_path = str((tool_input or {}).get(key) or "").strip()
-            if not raw_path:
-                continue
+        for raw_path in _iter_tool_input_paths(tool_input, path_keys):
             _, err = ensure_workspace_path(
                 raw_path,
                 workspace_paths,
