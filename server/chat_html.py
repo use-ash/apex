@@ -2733,6 +2733,7 @@ function handleEvent(msg) {
       if (_reattachBubble) _reattachBubble.innerHTML = '';
       _clearQueuedState(ctx);
       ctx.awaitingAck = false;
+      if (msg.elapsed_ms) ctx.thinkingStart = Date.now() - msg.elapsed_ms;
       _activateStream(ctx, {chatId: msg.chat_id || currentChat || ''});
       markStreamActivity(ctx, 'stream-reattached');
       updateSendBtn();

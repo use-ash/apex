@@ -383,9 +383,12 @@ async def websocket_endpoint(websocket: WebSocket):
                             replay_ok = True
                             active_entries = _get_active_stream_entries(attach_id)
                             active_stream_id = active_entries[0][0] if active_entries else ""
+                            _stream_info = active_entries[0][1] if active_entries else {}
+                            _started_at = float(_stream_info.get("started_at") or 0.0)
+                            _elapsed_ms = int((time.monotonic() - _started_at) * 1000) if _started_at > 0 else 0
                             replay_ok = await _safe_ws_send_json(
                                 websocket,
-                                {"type": "stream_reattached", "chat_id": attach_id, "stream_id": active_stream_id},
+                                {"type": "stream_reattached", "chat_id": attach_id, "stream_id": active_stream_id, "elapsed_ms": _elapsed_ms},
                                 chat_id=attach_id,
                             )
                             if replay_ok:
