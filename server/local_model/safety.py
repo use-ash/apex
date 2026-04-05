@@ -1,6 +1,7 @@
 """Safety constraints for local model tool execution."""
 import json
 import os
+import re
 import shlex
 import tempfile
 from pathlib import Path
@@ -55,6 +56,7 @@ SHELL_META_SNIPPETS = ("`", "$(", "${", "&&", "||", "|", ";", ">", "<", "\n", "\
 LEVEL3_ALLOWED_SHELL_META_SNIPPETS = ("&&", "||", "|", ";", "\n")
 LEVEL3_BLOCKED_SHELL_META_SNIPPETS = ("`", "$(", "${", ">", "<", "\r", "\x00")
 LEVEL3_ALLOWED_SHELL_OPERATORS = frozenset({"&&", "||", "|", ";"})
+LEVEL3_FIND_EXEC_SENTINEL = "__APEX_FIND_EXEC_SEMI__"
 
 READ_ONLY_GIT_SUBCOMMANDS = {
     "status",
@@ -161,7 +163,6 @@ PROTECTED_PATHS = {
     os.path.realpath(str(APEX_ROOT / "state" / "config.json")),
     os.path.realpath(str(APEX_ROOT / "ssl")),
     os.path.realpath(str(APEX_ROOT / "state" / "ssl")),
-    os.path.realpath(str(APEX_ROOT / "server")),
 }
 LIVE_APEX_DB_PATHS = tuple(
     os.path.realpath(str(APEX_ROOT / "state" / name))
@@ -177,6 +178,7 @@ ADMIN_TEMP_ROOTS = tuple(
         )
     )
 )
+LEVEL3_SAFE_STDERR_REDIRECT_RE = re.compile(r"(?<!\\)(?<!\S)2\s*>>?\s*/dev/null\b")
 
 
 def _is_env_path(path: str) -> bool:
@@ -316,10 +318,38 @@ def _validate_read_only_command(argv: list[str], workspace: str | None) -> str |
 
     exe = os.path.basename(argv[0])
     if exe == "find":
-        blocked_args = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprintf", "-fprint", "-fls"}
+        blocked_args = {"-delete", "-execdir", "-ok", "-okdir", "-fprintf", "-fprint", "-fls"}
         for arg in argv[1:]:
             if arg in blocked_args:
                 return f"Error: find argument is blocked: {arg}"
+        if "-exec" in argv[1:]:
+            exec_positions = [idx for idx, arg in enumerate(argv) if arg == "-exec"]
+            if len(exec_positions) != 1:
+                return "Error: find argument is blocked: -exec"
+            exec_idx = exec_positions[0]
+            try:
+                term_idx = argv.index(";", exec_idx + 1)
+            except ValueError:
+                return "Error: find argument is blocked: -exec"
+            exec_cmd = argv[exec_idx + 1 : term_idx]
+            if not exec_cmd or exec_cmd[0] != "grep" or exec_cmd[-1] != "{}":
+                return "Error: find argument is blocked: -exec"
+            allowed_grep_flags = {
+                "-l",
+                "-i",
+                "-n",
+                "-E",
+                "-F",
+                "-e",
+                "--line-number",
+                "--files-with-matches",
+                "--ignore-case",
+                "--extended-regexp",
+                "--fixed-strings",
+            }
+            for token in exec_cmd[1:-1]:
+                if token.startswith("-") and token not in allowed_grep_flags:
+                    return "Error: find argument is blocked: -exec"
     if exe == "sed":
         for arg in argv[1:]:
             if arg == "--in-place" or arg.startswith("-i"):
@@ -407,6 +437,18 @@ def _normalize_command_text(command: str) -> str:
         return " ".join(command.strip().split())
 
 
+def _strip_level3_safe_stderr_redirects(command: str) -> str:
+    return LEVEL3_SAFE_STDERR_REDIRECT_RE.sub("", command)
+
+
+def _normalize_level3_command_for_shell_split(command: str) -> str:
+    return _strip_level3_safe_stderr_redirects(command).replace(r"\;", LEVEL3_FIND_EXEC_SENTINEL)
+
+
+def _restore_level3_command_tokens(command: str) -> str:
+    return command.replace(LEVEL3_FIND_EXEC_SENTINEL, ";")
+
+
 def _effective_allowed_commands(
     permission_level: int,
     allowed_commands: list[str] | None,
@@ -447,6 +489,8 @@ def _contains_disallowed_shell_syntax(
     permission_level: int,
     allowed_commands: list[str] | None = None,
 ) -> bool:
+    if permission_level >= 3:
+        command = _strip_level3_safe_stderr_redirects(command)
     effective_allowed = _effective_allowed_commands(permission_level, allowed_commands)
     if permission_level >= 3 and any(
         snippet in command for snippet in LEVEL3_ALLOWED_SHELL_META_SNIPPETS
@@ -484,6 +528,7 @@ def _validate_allowlisted_command_segment(
     workspace: str | None,
     allowed_commands: list[str] | None,
 ) -> str | None:
+    segment = _restore_level3_command_tokens(segment)
     effective_allowed = _effective_allowed_commands(3, allowed_commands)
     if not _command_matches_allowed_prefix(segment, effective_allowed):
         try:
@@ -520,7 +565,8 @@ def _validate_allowlisted_command_segment(
 
 def _split_level3_shell_segments(command: str) -> tuple[list[str] | None, str | None]:
     try:
-        lexer = shlex.shlex(command.replace("\n", " ; "), posix=True, punctuation_chars="|&;")
+        sanitized = _normalize_level3_command_for_shell_split(command)
+        lexer = shlex.shlex(sanitized.replace("\n", " ; "), posix=True, punctuation_chars="|&;")
         lexer.whitespace_split = True
         lexer.commenters = ""
         tokens = list(lexer)

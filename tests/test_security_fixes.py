@@ -1210,6 +1210,49 @@ class SecurityFixTests(unittest.TestCase):
     def test_tool_access_level_3_denies_uncatalogued_tools(self) -> None:
         self.assertFalse(tool_access.tool_allowed_for_level("customdanger__wipe", 3))
 
+    def test_level_3_allows_safe_stderr_redirect_and_fallback(self) -> None:
+        workspace = str(TEST_ROOT)
+        self.assertIsNone(
+            local_safety.validate_command(
+                "ls -la /missing 2>/dev/null || echo missing",
+                workspace,
+                permission_level=3,
+                allowed_commands=["ls", "echo"],
+            )
+        )
+
+    def test_level_3_allows_read_only_find_exec_grep(self) -> None:
+        workspace = str(TEST_ROOT)
+        self.assertIsNone(
+            local_safety.validate_command(
+                f'find {workspace} -name "*.md" -type f -exec grep -l "v3|V3|version 3" {{}} \\; 2>/dev/null | sort',
+                workspace,
+                permission_level=3,
+                allowed_commands=["find", "sort"],
+            )
+        )
+
+    def test_level_3_allows_repo_server_reads_but_keeps_state_ssl_blocked(self) -> None:
+        server_dir = TEST_ROOT / "server"
+        ssl_dir = TEST_ROOT / "state" / "ssl"
+        server_dir.mkdir(parents=True, exist_ok=True)
+        ssl_dir.mkdir(parents=True, exist_ok=True)
+        target = server_dir / "tool_access.py"
+        target.write_text("print('ok')\n", encoding="utf-8")
+        blocked = ssl_dir / "client_new.crt"
+        blocked.write_text("secret\n", encoding="utf-8")
+
+        resolved, err = local_safety.ensure_workspace_path(
+            str(target),
+            str(TEST_ROOT),
+            permission_level=3,
+        )
+        self.assertIsNone(err)
+        self.assertEqual(resolved, str(target.resolve()))
+
+        blocked_err = local_safety.validate_path(str(blocked), permission_level=3)
+        self.assertIn("protected path", blocked_err or "")
+
     def test_tool_access_level_3_allows_sdk_coordination_tools(self) -> None:
         self.assertTrue(tool_access.tool_allowed_for_level("Skill", 3))
         self.assertTrue(tool_access.tool_allowed_for_level("ToolSearch", 3))
