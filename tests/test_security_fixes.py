@@ -563,7 +563,11 @@ class SecurityFixTests(unittest.TestCase):
                 content=[
                     agent_sdk.TextBlock(text="I found the likely rendering issue and started narrowing it down."),
                     agent_sdk.ThinkingBlock(thinking="Need to inspect the live DOM after refresh.", signature="sig-1"),
-                    agent_sdk.ToolUseBlock(id="toolu_1", name="Bash", input={"command": "pwd"}),
+                    agent_sdk.ToolUseBlock(
+                        id="toolu_1",
+                        name="Write",
+                        input={"file_path": "/var/root/blocked.txt", "content": "x"},
+                    ),
                 ],
                 model="claude-haiku-4-5-20251001",
             )
@@ -591,7 +595,7 @@ class SecurityFixTests(unittest.TestCase):
         self.assertEqual(result["thinking"], "Need to inspect the live DOM after refresh.")
         tool_events = json.loads(result["tool_events"])
         self.assertEqual(len(tool_events), 1)
-        self.assertEqual(tool_events[0]["name"], "Bash")
+        self.assertEqual(tool_events[0]["name"], "Write")
         self.assertTrue(tool_events[0]["result"]["is_error"])
         self.assertIn("denied by host permissions", tool_events[0]["result"]["content"])
         tool_result_event = next(evt for evt in sent if evt.get("type") == "tool_result")
@@ -646,6 +650,62 @@ class SecurityFixTests(unittest.TestCase):
         self.assertEqual(len(tool_events), 1)
         self.assertFalse(tool_events[0]["result"]["is_error"])
         self.assertIn("omitted explicit result block", tool_events[0]["result"]["content"])
+        result_event = next(evt for evt in sent if evt.get("type") == "result")
+        self.assertFalse(result_event["is_error"])
+
+    def test_agent_sdk_level_3_allowed_pending_tools_do_not_false_deny(self) -> None:
+        fake_client = SimpleNamespace(receive_response=lambda: None)
+        sent: list[dict] = []
+
+        async def fake_send_stream_event(_chat_id: str, payload: dict) -> None:
+            sent.append(payload)
+
+        async def fake_stream():
+            yield agent_sdk.AssistantMessage(
+                content=[
+                    agent_sdk.ToolUseBlock(id="toolu_1", name="ToolSearch", input={"query": "playwright browser", "max_results": 5}),
+                    agent_sdk.ToolUseBlock(
+                        id="toolu_2",
+                        name="mcp__playwright__browser_run_code",
+                        input={"code": "async (page) => ({ ok: true })"},
+                    ),
+                ],
+                model="claude-haiku-4-5-20251001",
+            )
+            yield agent_sdk.ResultMessage(
+                subtype="success",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=False,
+                num_turns=1,
+                session_id="sess-1",
+                usage={"input_tokens": 1, "output_tokens": 1},
+                result="Playwright setup inspected.",
+            )
+
+        with (
+            mock.patch.object(agent_sdk, "_send_stream_event", side_effect=fake_send_stream_event),
+            mock.patch.object(agent_sdk, "_normalize_response_stream", return_value=fake_stream()),
+        ):
+            result = asyncio.run(
+                agent_sdk._stream_response(
+                    fake_client,
+                    "deadbeef",
+                    permission_level=3,
+                    allowed_commands=[],
+                    client_key="deadbeef:qa",
+                )
+            )
+
+        self.assertFalse(result["is_error"])
+        self.assertEqual(result["text"], "Playwright setup inspected.")
+        self.assertNotIn("denied by host permissions", result["text"])
+        tool_events = json.loads(result["tool_events"])
+        self.assertEqual(len(tool_events), 2)
+        self.assertFalse(tool_events[0]["result"]["is_error"])
+        self.assertFalse(tool_events[1]["result"]["is_error"])
+        self.assertIn("omitted explicit result block", tool_events[0]["result"]["content"])
+        self.assertIn("omitted explicit result block", tool_events[1]["result"]["content"])
         result_event = next(evt for evt in sent if evt.get("type") == "result")
         self.assertFalse(result_event["is_error"])
 

@@ -1083,7 +1083,14 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                     permission_level=permission_level,
                     allowed_commands=allowed_commands,
                 )
-                result = await _run_query_turn(client, make_query_input, chat_id)
+                result = await _run_query_turn(
+                    client,
+                    make_query_input,
+                    chat_id,
+                    permission_level=permission_level,
+                    allowed_commands=allowed_commands,
+                    client_key=client_key,
+                )
             except Exception as first_error:
                 if DEBUG: log(f"DBG RECOVERY: chat={chat_id} client_key={client_key} first error: {type(first_error).__name__}: {first_error}")
                 await _disconnect_client(client_key)
@@ -1114,7 +1121,14 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                         permission_level=permission_level,
                         allowed_commands=allowed_commands,
                     )
-                    result = await _run_query_turn(client, _make_retry_input, chat_id)
+                    result = await _run_query_turn(
+                        client,
+                        _make_retry_input,
+                        chat_id,
+                        permission_level=permission_level,
+                        allowed_commands=allowed_commands,
+                        client_key=client_key,
+                    )
                     if DEBUG: log(f"DBG RECOVERY: resume OK client_key={client_key} session={existing_session or 'new'}")
                 except Exception as resume_error:
                     if DEBUG: log(f"DBG RECOVERY: resume FAILED: {type(resume_error).__name__}: {resume_error}")
@@ -1139,7 +1153,14 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                             permission_level=permission_level,
                             allowed_commands=allowed_commands,
                         )
-                        result = await _run_query_turn(client, _make_retry_input, chat_id)
+                        result = await _run_query_turn(
+                            client,
+                            _make_retry_input,
+                            chat_id,
+                            permission_level=permission_level,
+                            allowed_commands=allowed_commands,
+                            client_key=client_key,
+                        )
                         if DEBUG: log(f"DBG RECOVERY: fresh session OK client_key={client_key}")
                     except Exception as fresh_error:
                         if DEBUG: log(f"DBG RECOVERY: fresh ALSO FAILED: {type(fresh_error).__name__}: {fresh_error}")

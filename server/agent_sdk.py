@@ -19,6 +19,7 @@ from db import _get_chat, _get_chat_tool_policy, _get_messages
 from log import log
 from model_dispatch import MODEL_CONTEXT_WINDOWS, MODEL_CONTEXT_DEFAULT
 from state import _clients, _session_context_sent
+from tool_access import tool_access_decision
 from streaming import (
     _send_stream_event, _disconnect_client,
     _normalize_response_stream,
@@ -672,12 +673,28 @@ def _websocket_origin_allowed(websocket) -> bool:
 # Query turn execution with retry + auth recovery
 # ---------------------------------------------------------------------------
 
-async def _run_query_turn(client: ClaudeSDKClient, make_query_input,
-                          chat_id: str) -> dict:
+async def _run_query_turn(
+    client: ClaudeSDKClient,
+    make_query_input,
+    chat_id: str,
+    *,
+    permission_level: int | None = None,
+    allowed_commands: list[str] | None = None,
+    client_key: str | None = None,
+) -> dict:
     if DEBUG: log(f"DBG query_turn: chat={chat_id} sending query...")
     await asyncio.wait_for(client.query(make_query_input()), timeout=SDK_QUERY_TIMEOUT)
     if DEBUG: log(f"DBG query_turn: chat={chat_id} query sent, streaming response...")
-    result = await asyncio.wait_for(_stream_response(client, chat_id), timeout=SDK_STREAM_TIMEOUT)
+    result = await asyncio.wait_for(
+        _stream_response(
+            client,
+            chat_id,
+            permission_level=permission_level,
+            allowed_commands=allowed_commands,
+            client_key=client_key,
+        ),
+        timeout=SDK_STREAM_TIMEOUT,
+    )
     if result.get("stream_failed"):
         if DEBUG: log(f"DBG query_turn: chat={chat_id} STREAM FAILED: {result.get('error')}")
         raise RuntimeError(result.get("error") or "SDK stream failed")
@@ -704,7 +721,14 @@ async def _run_query_turn(client: ClaudeSDKClient, make_query_input,
 # Response stream processor
 # ---------------------------------------------------------------------------
 
-async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
+async def _stream_response(
+    client: ClaudeSDKClient,
+    chat_id: str,
+    *,
+    permission_level: int | None = None,
+    allowed_commands: list[str] | None = None,
+    client_key: str | None = None,
+) -> dict:
     """Stream SDK response events to WebSocket. Returns turn result."""
     result_text = ""
     thinking_text = ""
@@ -721,10 +745,34 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
         await _send_stream_event(chat_id, payload)
 
     def _full_admin_mode() -> bool:
-        try:
-            return int(_get_chat_tool_policy(chat_id).get("level", 2)) >= 4
-        except Exception:
-            return False
+        effective_level = permission_level
+        if effective_level is None:
+            try:
+                effective_level = int(_get_chat_tool_policy(chat_id).get("level", 2))
+            except Exception:
+                effective_level = 2
+        return int(effective_level) >= 4
+
+    def _host_denied_pending_tools(items: list[dict]) -> list[dict]:
+        effective_level = int(permission_level if permission_level is not None else _get_chat_tool_policy(chat_id).get("level", 2))
+        effective_allowed_commands = list(allowed_commands or [])
+        denied: list[dict] = []
+        for item in items:
+            allowed, _message = tool_access_decision(
+                str(item.get("name") or ""),
+                item.get("input") if isinstance(item.get("input"), dict) else {},
+                level=effective_level,
+                allowed_commands=effective_allowed_commands,
+                workspace_paths=env.get_runtime_workspace_paths(),
+                audit_context={
+                    "source": "sdk_pending",
+                    "client_key": client_key or "",
+                    "chat_id": chat_id,
+                },
+            )
+            if not allowed:
+                denied.append(item)
+        return denied
 
     def _pending_tool_denial_message(items: list[dict]) -> str:
         names = [str(item.get("name") or "").strip() for item in items]
@@ -845,12 +893,13 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
                 log(f"ResultMessage usage dict: {msg.usage}")
                 full_admin_mode = _full_admin_mode()
                 pending_at_result = list(pending_tools.values())
-                blocked_tools = [] if full_admin_mode else pending_at_result
+                blocked_tools = [] if full_admin_mode else _host_denied_pending_tools(pending_at_result)
+                implicit_success_tools = [] if blocked_tools else pending_at_result
                 blocked_tool_message = _pending_tool_denial_message(blocked_tools) if blocked_tools else ""
                 await _flush_pending_tools(
                     default_content=(
                         "[tool completed; SDK omitted explicit result block]"
-                        if full_admin_mode and pending_at_result
+                        if implicit_success_tools
                         else blocked_tool_message
                     ),
                     default_is_error=bool(blocked_tools),
@@ -863,10 +912,10 @@ async def _stream_response(client: ClaudeSDKClient, chat_id: str) -> dict:
                     )
                     final_text = result_text or msg.result or ""
                     final_text = _merge_blocked_tool_result(final_text, blocked_tool_message)
-                elif full_admin_mode and pending_at_result:
+                elif implicit_success_tools:
                     log(
                         f"SDK result completed with implicit tool success: chat={chat_id} "
-                        f"tools={[item.get('name') for item in pending_at_result]}"
+                        f"tools={[item.get('name') for item in implicit_success_tools]}"
                     )
                 result_info = {
                     "session_id": msg.session_id,
