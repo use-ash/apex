@@ -9,9 +9,6 @@ SSL_DIR="$APEX_ROOT/state/ssl"
 # Client cert generation removed — use setup.py or dashboard UI instead.
 # The CA key is now encrypted at rest; inline openssl cannot read it.
 
-kill $(pgrep -f apex.py) 2>/dev/null
-sleep 1
-
 # Prefer Let's Encrypt certs if available, fall back to self-signed
 LE_CERT="$SSL_DIR/le_fullchain.pem"
 LE_KEY="$SSL_DIR/le_privkey.pem"
@@ -54,6 +51,11 @@ fi
 PYTHON="$APEX_ROOT/.venv/bin/python3"
 if [ ! -x "$PYTHON" ]; then
     PYTHON="python3"
+fi
+
+if [ -n "${APEX_PIDFILE:-}" ]; then
+    mkdir -p "$(dirname "$APEX_PIDFILE")"
+    echo "$$" > "$APEX_PIDFILE"
 fi
 
 echo "Starting Apex with mTLS..."
