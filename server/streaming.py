@@ -851,6 +851,7 @@ async def _send_stream_event(chat_id: str, payload: dict) -> None:
     async with send_lock:
         ws_set = _chat_ws.get(chat_id)
         if not ws_set:
+            log(f"stream event DROPPED: chat={chat_id[:8]} type={payload.get('type')} sid={str(payload.get('stream_id',''))[:8]} (no viewers)")
             return
         dead: list[WebSocket] = []
         for ws in list(ws_set):
@@ -859,6 +860,7 @@ async def _send_stream_event(chat_id: str, payload: dict) -> None:
                 dead.append(ws)
         for ws in dead:
             ws_set.discard(ws)
+            log(f"ws evicted from chat={chat_id[:8]} after send failure (remaining viewers={len(ws_set)})")
         if not ws_set:
             _chat_ws.pop(chat_id, None)
 
@@ -966,5 +968,5 @@ async def _safe_ws_send_json(ws: WebSocket, payload: dict, *, chat_id: str) -> b
         _ws_fail_count[chat_id] = _ws_fail_count.get(chat_id, 0) + 1
         fc = _ws_fail_count[chat_id]
         sc = _ws_send_count.get(chat_id, 0)
-        if DEBUG: log(f"DBG ws_send FAIL #{fc} (ok={sc}): chat={chat_id} type={payload.get('type')} {type(e).__name__}: {e}")
+        log(f"ws_send FAIL #{fc} (ok={sc}): chat={chat_id[:8]} type={payload.get('type')} sid={str(payload.get('stream_id',''))[:8]} {type(e).__name__}: {e}")
         return False
