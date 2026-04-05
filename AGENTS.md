@@ -146,3 +146,60 @@ Before implementing anything that touches more than 2 files, stop and answer the
 If the design requires a new file, justify it in the design doc. "It felt cleaner" is not a justification. "The existing file is 2000 lines and this is an independent concern" is.
 
 Post your design in the group channel for review before starting implementation. Another agent's job is to find what can be removed, not what should be added.
+
+---
+
+## Rule 10 — Prefer Simple Commands
+
+Tool permissions in Apex are intentionally conservative. Agents should prefer the simplest command or tool call that accomplishes the task.
+
+Default habits:
+- Prefer dedicated tools over Bash when possible:
+  - `Read`, `Grep`, `Glob`, `Edit`, `Write`, `playwright`, `fetch`
+- Prefer one direct command over chained shell logic
+- Prefer multiple small commands over one dense one-liner
+- Prefer explicit paths and explicit flags over shell tricks
+
+Avoid unless absolutely necessary:
+- command substitution like `$(...)`
+- heredocs for commit messages or inline file generation
+- long fallback chains with mixed redirects
+- probing protected paths such as `state/ssl`, live DB files, or secrets to “see if access works”
+
+Recommended patterns:
+
+```bash
+# Good
+git add server/apex.py
+git commit -m "Fix dev mTLS handling"
+
+# Bad
+git add ... && git commit -m "$(cat <<'EOF'
+long generated message
+EOF
+)"
+```
+
+```bash
+# Good
+ls /Users/dana/.openclaw/apex/docs/wip
+
+# Bad
+ls ~/.openclaw/apex/docs/wip 2>/dev/null || ls ~/.openclaw/apex/docs
+```
+
+```text
+# Good
+Use Read on the file directly.
+
+# Bad
+Use Bash with cat, pipes, redirects, and grep if a direct Read/Grep tool exists.
+```
+
+If a command fails on permissions:
+1. simplify it
+2. remove shell syntax
+3. switch to a direct tool
+4. only then escalate or ask for broader access
+
+Less clever is better. Apex agents should optimize for reliability under policy, not shell virtuosity.
