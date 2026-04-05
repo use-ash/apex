@@ -390,7 +390,13 @@ def _sdk_tool_input_paths(tool_input: dict) -> list[str]:
     return paths
 
 
-def _make_sdk_tool_gate(level: int, *, allowed_commands: list[str] | None = None):
+def _make_sdk_tool_gate(
+    level: int,
+    *,
+    allowed_commands: list[str] | None = None,
+    client_key: str | None = None,
+    chat_id: str | None = None,
+):
     async def _can_use_tool(tool_name: str, tool_input: dict, _context):
         allowed, message = tool_access_decision(
             tool_name,
@@ -398,6 +404,11 @@ def _make_sdk_tool_gate(level: int, *, allowed_commands: list[str] | None = None
             level=level,
             allowed_commands=allowed_commands,
             workspace_paths=env.get_runtime_workspace_paths(),
+            audit_context={
+                "source": "sdk",
+                "client_key": client_key or "",
+                "chat_id": chat_id or "",
+            },
         )
         if not allowed:
             return PermissionResultDeny(
@@ -415,6 +426,8 @@ def _sdk_pre_tool_use_decision(
     *,
     level: int,
     allowed_commands: list[str] | None = None,
+    client_key: str | None = None,
+    chat_id: str | None = None,
 ) -> tuple[bool, str]:
     return tool_access_decision(
         tool_name,
@@ -422,10 +435,21 @@ def _sdk_pre_tool_use_decision(
         level=level,
         allowed_commands=allowed_commands,
         workspace_paths=env.get_runtime_workspace_paths(),
+        audit_context={
+            "source": "sdk",
+            "client_key": client_key or "",
+            "chat_id": chat_id or "",
+        },
     )
 
 
-def _make_sdk_pre_tool_use_hook(level: int, *, allowed_commands: list[str] | None = None):
+def _make_sdk_pre_tool_use_hook(
+    level: int,
+    *,
+    allowed_commands: list[str] | None = None,
+    client_key: str | None = None,
+    chat_id: str | None = None,
+):
     async def _hook(hook_input, _tool_use_id, _context):
         tool_name = str((hook_input or {}).get("tool_name") or "")
         tool_input = hook_input.get("tool_input") if isinstance(hook_input, dict) else {}
@@ -436,6 +460,8 @@ def _make_sdk_pre_tool_use_hook(level: int, *, allowed_commands: list[str] | Non
             tool_input,
             level=level,
             allowed_commands=allowed_commands,
+            client_key=client_key,
+            chat_id=chat_id,
         )
         if allowed:
             return {
@@ -485,12 +511,24 @@ def _make_options(
         resume=session_id,
         setting_sources=["user"],
         add_dirs=extra_dirs,
-        can_use_tool=_make_sdk_tool_gate(permission_level, allowed_commands=allowed_commands),
+        can_use_tool=_make_sdk_tool_gate(
+            permission_level,
+            allowed_commands=allowed_commands,
+            client_key=client_key,
+            chat_id=chat_id,
+        ),
         hooks={
             "PreToolUse": [
                 HookMatcher(
                     matcher=".*",
-                    hooks=[_make_sdk_pre_tool_use_hook(permission_level, allowed_commands=allowed_commands)],
+                    hooks=[
+                        _make_sdk_pre_tool_use_hook(
+                            permission_level,
+                            allowed_commands=allowed_commands,
+                            client_key=client_key,
+                            chat_id=chat_id,
+                        )
+                    ],
                 )
             ]
         },

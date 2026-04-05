@@ -296,13 +296,27 @@ def _summarize_dangerous_intent(tool_name: str, tool_input: dict) -> str:
         return str(tool_input)[:240]
 
 
-def _log_dangerous_tool_intent(tool_name: str, tool_input: dict, *, level: int, message: str) -> None:
+def _log_dangerous_tool_intent(
+    tool_name: str,
+    tool_input: dict,
+    *,
+    level: int,
+    message: str,
+    audit_context: dict | None = None,
+) -> None:
     if not _is_live_db_access_error(message):
         return
     summary = _summarize_dangerous_intent(tool_name, tool_input)
+    context = {
+        str(k): str(v)
+        for k, v in (audit_context or {}).items()
+        if v not in (None, "")
+    }
+    context_text = " ".join(f"{k}={context[k]!r}" for k in sorted(context))
     log(
         "dangerous tool intent blocked: "
         f"level={level} tool={canonical_tool_name(tool_name)} "
+        f"{context_text + ' ' if context_text else ''}"
         f"detail={summary!r} reason={message}"
     )
 
@@ -363,9 +377,16 @@ def tool_access_decision(
     level: int,
     allowed_commands: list[str] | None,
     workspace_paths: str,
+    audit_context: dict | None = None,
 ) -> tuple[bool, str]:
     def _deny(message: str) -> tuple[bool, str]:
-        _log_dangerous_tool_intent(tool_name, tool_input, level=level, message=message)
+        _log_dangerous_tool_intent(
+            tool_name,
+            tool_input,
+            level=level,
+            message=message,
+            audit_context=audit_context,
+        )
         return False, message
 
     if level <= 0:

@@ -683,6 +683,12 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
 
         backend = _get_model_backend(effective_model)
         runtime_workspace_paths = env.get_runtime_workspace_paths()
+        audit_context = {
+            "source": "tool_loop",
+            "chat_id": chat_id,
+            "backend": backend,
+            "model": effective_model,
+        }
 
         # Remote APIs (xai, codex) always use tool loop — they don't depend
         # on ALLOW_LOCAL_TOOLS which gates local Ollama/MLX tool calling.
@@ -699,6 +705,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 permission_level=permission_level,
                 allowed_tools=allowed_local_tools,
                 allowed_commands=allowed_commands,
+                audit_context=audit_context,
             )
         elif backend == "codex":
             codex_model = effective_model[6:]
@@ -715,6 +722,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                     permission_level=permission_level,
                     allowed_tools=allowed_local_tools,
                     allowed_commands=allowed_commands,
+                    audit_context=audit_context,
                 )
             else:
                 result = await run_tool_loop(
@@ -729,6 +737,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                     permission_level=permission_level,
                     allowed_tools=allowed_local_tools,
                     allowed_commands=allowed_commands,
+                    audit_context=audit_context,
                 )
         elif ALLOW_LOCAL_TOOLS and backend == "mlx":
             mlx_model = effective_model[4:]
@@ -744,6 +753,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 permission_level=permission_level,
                 allowed_tools=allowed_local_tools,
                 allowed_commands=allowed_commands,
+                audit_context=audit_context,
             )
         elif ALLOW_LOCAL_TOOLS:
             result = await run_tool_loop(
@@ -756,6 +766,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 permission_level=permission_level,
                 allowed_tools=allowed_local_tools,
                 allowed_commands=allowed_commands,
+                audit_context=audit_context,
             )
         else:
             result = None  # fall through to plain streaming below

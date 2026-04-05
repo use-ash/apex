@@ -1030,12 +1030,16 @@ class SecurityFixTests(unittest.TestCase):
                 level=4,
                 allowed_commands=[],
                 workspace_paths=str(TEST_ROOT),
+                audit_context={"source": "tool_loop", "chat_id": "abcd1234", "backend": "codex"},
             )
 
         self.assertFalse(allowed)
         self.assertIn("live Apex database", message)
         log_mock.assert_called_once()
-        self.assertIn("dangerous tool intent blocked", log_mock.call_args.args[0])
+        log_line = log_mock.call_args.args[0]
+        self.assertIn("dangerous tool intent blocked", log_line)
+        self.assertIn("chat_id='abcd1234'", log_line)
+        self.assertIn("source='tool_loop'", log_line)
 
     def test_validate_backend_attachments_rejects_codex_attachments(self) -> None:
         attachment = self._create_uploaded_attachment("txt", b"notes")
