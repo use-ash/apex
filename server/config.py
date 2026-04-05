@@ -179,7 +179,7 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
             "default": "",
             "description": "Path prefixes blocked at every level, one per line",
             "multiline": True,
-            "placeholder": "/Users/you/.openclaw/apex/state\n/Users/you/.ssh",
+            "placeholder": "/Users/you/project/state\n/Users/you/.ssh",
         },
     },
     "alerts": {

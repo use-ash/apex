@@ -4446,7 +4446,7 @@ function renderPolicyGuardrailsEditor() {
             '<div class="card policy-mini-card">' +
                 '<div class="card-title" style="margin-bottom:8px;">Blocked Path Prefixes</div>' +
                 '<div class="form-help" style="margin-bottom:8px;">One absolute path prefix per line. File tools and shell commands touching these locations are denied, even at Full Admin.</div>' +
-                '<textarea id="policy-blocked-path-prefixes" rows="8" placeholder="/Users/you/.openclaw/apex/state&#10;/Users/you/.ssh">' + esc((policyBlockedPathPrefixes || []).join('\\n')) + '</textarea>' +
+                '<textarea id="policy-blocked-path-prefixes" rows="8" placeholder="/Users/you/project/state&#10;/Users/you/.ssh">' + esc((policyBlockedPathPrefixes || []).join('\\n')) + '</textarea>' +
             '</div>' +
         '</div>' +
         '<div class="policy-editor-actions">' +
@@ -4465,6 +4465,10 @@ function renderWorkspaceToolsEditor() {
         return;
     }
     var enabledSet = new Set((policyWorkspaceTools || []).map(function(item) { return String(item); }));
+    var defaultSet = new Set(policyToolCatalogData.filter(function(tool) { return !!tool.workspace_default; }).map(function(tool) { return tool.id; }));
+    var enabledCount = enabledSet.size;
+    var defaultCount = defaultSet.size;
+    var matchesDefault = enabledCount === defaultCount && Array.from(enabledSet).every(function(id) { return defaultSet.has(id); });
     var groupOrder = ["read", "write", "browser", "network", "memory", "shell"];
     var groupLabels = {
         read: "Read Tools",
@@ -4514,7 +4518,11 @@ function renderWorkspaceToolsEditor() {
     el.innerHTML =
         '<div class="policy-editor-shell">' +
         '<div style="display:flex; gap:8px; align-items:center; justify-content:space-between; margin-bottom:12px; flex-wrap:wrap;">' +
-            '<div class="form-help">Selected tools apply immediately to level 2 across SDK and tool-loop backends.</div>' +
+            '<div class="form-help">' +
+                'Selected tools apply immediately to level 2 across SDK and tool-loop backends. ' +
+                '<strong style="color:var(--text);">' + enabledCount + ' enabled</strong> · ' +
+                (matchesDefault ? 'Using system default set' : 'Using custom tool set') +
+            '</div>' +
             '<div class="policy-editor-actions">' +
                 '<button class="btn btn-ghost" data-policy-workspace-reset>Reset to Default</button>' +
                 '<button class="btn btn-primary" data-policy-workspace-save>Save Workspace Tool Set</button>' +
