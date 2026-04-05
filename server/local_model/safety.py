@@ -117,6 +117,7 @@ DEFAULT_LEVEL3_ALLOWED_COMMANDS = frozenset(
     {
         "awk",
         "basename",
+        "bun",
         "cat",
         "cd",
         "chmod",
