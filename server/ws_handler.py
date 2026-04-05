@@ -482,6 +482,18 @@ async def websocket_endpoint(websocket: WebSocket):
                             {"type": "attach_ok", "chat_id": attach_id},
                             chat_id=attach_id,
                         )
+                        # B-53: Prompt client to reload chat from DB on reconnect.
+                        # If a stream completed while the client was disconnected,
+                        # the journal is already cleaned up and we have no buffered
+                        # events to replay.  Send stream_complete_reload so the
+                        # client calls selectChat() and fetches the latest messages
+                        # from the history endpoint.
+                        if not stream_running:
+                            await _safe_ws_send_json(
+                                websocket,
+                                {"type": "stream_complete_reload", "chat_id": attach_id},
+                                chat_id=attach_id,
+                            )
                 continue
 
             if action == "set_model":

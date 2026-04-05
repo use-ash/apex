@@ -640,6 +640,63 @@ class SecurityFixTests(unittest.TestCase):
         shell_result = subprocess.run(argv, capture_output=True, text=True, check=True).stdout.strip()
         self.assertEqual(shell_result, "ADMIN4")
 
+    def test_tool_loop_rechecks_mcp_permissions_before_dispatch(self) -> None:
+        responses = iter([
+            {
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "toolu_1",
+                            "function": {
+                                "name": "filesystem__read_text_file",
+                                "arguments": {"path": "/etc/hosts"},
+                            },
+                        }
+                    ],
+                }
+            },
+            {"message": {"content": "done"}},
+        ])
+        emitted: list[dict] = []
+
+        async def emit(event: dict) -> None:
+            emitted.append(event)
+
+        call_mcp_tool = mock.AsyncMock(return_value="should not run")
+
+        with (
+            mock.patch.object(tool_loop, "ALLOW_LOCAL_TOOLS", True),
+            mock.patch.object(tool_loop, "_check_native_tool_support", return_value=True),
+            mock.patch.object(tool_loop, "get_tool_schemas", return_value=[]),
+            mock.patch.object(tool_loop, "_call_ollama", side_effect=lambda *args, **kwargs: next(responses)),
+            mock.patch.object(tool_loop, "get_executor", return_value=None),
+            mock.patch.object(tool_loop, "is_mcp_tool", return_value=True),
+            mock.patch("local_model.mcp_bridge.call_mcp_tool", new=call_mcp_tool),
+        ):
+            result = asyncio.run(
+                tool_loop.run_tool_loop(
+                    ollama_url="http://localhost:11434",
+                    model="qwen3:latest",
+                    messages=[{"role": "user", "content": "read hosts"}],
+                    emit_event=emit,
+                    workspace=str(TEST_ROOT),
+                    permission_level=3,
+                    allowed_tools={"filesystem__read_text_file"},
+                    allowed_commands=[],
+                )
+            )
+
+        call_mcp_tool.assert_not_awaited()
+        self.assertEqual(result["text"], "done")
+        tool_events = json.loads(result["tool_events"])
+        self.assertEqual(len(tool_events), 1)
+        self.assertTrue(tool_events[0]["result"]["is_error"])
+        self.assertIn("outside allowed admin paths", tool_events[0]["result"]["content"])
+        tool_result_event = next(evt for evt in emitted if evt.get("type") == "tool_result")
+        self.assertTrue(tool_result_event["is_error"])
+        self.assertIn("outside allowed admin paths", tool_result_event["content"])
+
     def test_ollama_chat_passes_standard_tool_allowlist(self) -> None:
         with apex._db_lock:
             conn = apex._get_db()
@@ -842,6 +899,47 @@ class SecurityFixTests(unittest.TestCase):
                 allowed_commands=["sqlite3"],
             ) or "",
         )
+        self.assertIsNone(
+            local_safety.validate_command(
+                "ps aux | grep apex",
+                workspace,
+                permission_level=3,
+                allowed_commands=["ps", "grep"],
+            )
+        )
+        self.assertIn(
+            "command is not allowed: echo",
+            local_safety.validate_command(
+                "git push origin dev; echo injected",
+                workspace,
+                permission_level=3,
+                allowed_commands=["git push"],
+            ) or "",
+        )
+
+    def test_tool_access_level_3_denies_uncatalogued_tools(self) -> None:
+        self.assertFalse(tool_access.tool_allowed_for_level("customdanger__wipe", 3))
+
+    def test_tool_access_level_3_blocks_reads_outside_workspace_and_tmp(self) -> None:
+        allowed, message = tool_access.tool_access_decision(
+            "read_file",
+            {"file_path": "/etc/hosts"},
+            level=3,
+            allowed_commands=[],
+            workspace_paths=str(TEST_ROOT),
+        )
+        self.assertFalse(allowed)
+        self.assertIn("outside allowed admin paths", message)
+
+        allowed, message = tool_access.tool_access_decision(
+            "filesystem__read_multiple_files",
+            {"paths": ["/etc/hosts", str(TEST_ROOT / "inside.txt")]},
+            level=3,
+            allowed_commands=[],
+            workspace_paths=str(TEST_ROOT),
+        )
+        self.assertFalse(allowed)
+        self.assertIn("outside allowed admin paths", message)
 
     def test_sdk_admin_bash_gate_honors_allowlist(self) -> None:
         gate = streaming_mod._make_sdk_tool_gate(3, allowed_commands=["echo"])
@@ -990,6 +1088,48 @@ class SecurityFixTests(unittest.TestCase):
                 self._receive_until(ws, lambda msg: msg.get("type") == "stream_end")
 
         self.assertEqual(routed["ollama"], 1)
+
+    def test_websocket_attach_idle_chat_prompts_reload_from_db(self) -> None:
+        chat_id = self._create_direct_chat()
+
+        with self._client() as client:
+            with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                ws.send_json({
+                    "action": "attach",
+                    "chat_id": chat_id,
+                })
+                first = ws.receive_json()
+                second = ws.receive_json()
+
+        self.assertEqual(first["type"], "attach_ok")
+        self.assertEqual(first["chat_id"], chat_id)
+        self.assertEqual(second["type"], "stream_complete_reload")
+        self.assertEqual(second["chat_id"], chat_id)
+
+    def test_websocket_attach_active_chat_reattaches_without_reload_signal(self) -> None:
+        chat_id = self._create_direct_chat()
+        loop = asyncio.new_event_loop()
+        blocker = asyncio.Event()
+        task = loop.create_task(blocker.wait())
+        streaming_mod._set_active_send_task(chat_id, "stream-live", task)
+
+        try:
+            with self._client() as client:
+                with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                    ws.send_json({
+                        "action": "attach",
+                        "chat_id": chat_id,
+                    })
+                    msg = ws.receive_json()
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                loop.run_until_complete(task)
+            loop.close()
+
+        self.assertEqual(msg["type"], "stream_reattached")
+        self.assertEqual(msg["chat_id"], chat_id)
+        self.assertEqual(msg["stream_id"], "stream-live")
 
     def test_websocket_send_rejects_text_attachments_for_ollama_before_dispatch(self) -> None:
         chat_id = self._create_direct_chat(model="qwen3:latest")

@@ -39,5 +39,10 @@ export APEX_SERVER="https://localhost:${APEX_PORT}"
 PYTHON="$APEX_ROOT/.venv/bin/python3"
 [ -x "$PYTHON" ] || PYTHON="python3"
 
+if [ -n "${APEX_PIDFILE:-}" ]; then
+    mkdir -p "$(dirname "$APEX_PIDFILE")"
+    echo "$$" > "$APEX_PIDFILE"
+fi
+
 echo "Starting Apex dev (port $APEX_PORT, db=$APEX_DB_NAME)..."
 exec "$PYTHON" "$SCRIPT_DIR/apex.py"

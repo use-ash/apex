@@ -817,35 +817,48 @@ async def run_tool_loop(
                     tool_result = block_reason
                     is_error = True
                 else:
-                    # Execute the tool
-                    executor = get_executor(tool_name)
-                    if executor:
-                        try:
-                            if tool_name == "bash":
-                                tool_result = await asyncio.to_thread(
-                                    executor,
-                                    tool_args,
-                                    workspace,
-                                    permission_level=permission_level,
-                                    allowed_commands=allowed_commands,
-                                )
-                            else:
-                                tool_result = await asyncio.to_thread(
-                                    executor,
-                                    tool_args,
-                                    workspace,
-                                    permission_level=permission_level,
-                                )
-                        except Exception as e:
-                            tool_result = f"Error executing {tool_name}: {type(e).__name__}: {e}"
-                    elif is_mcp_tool(tool_name):
-                        try:
-                            from .mcp_bridge import call_mcp_tool
-                            tool_result = await call_mcp_tool(tool_name, tool_args)
-                        except Exception as e:
-                            tool_result = f"Error calling MCP tool {tool_name}: {type(e).__name__}: {e}"
+                    from tool_access import tool_access_decision
+
+                    allowed, message = tool_access_decision(
+                        tool_name,
+                        tool_args if isinstance(tool_args, dict) else {},
+                        level=permission_level,
+                        allowed_commands=allowed_commands,
+                        workspace_paths=workspace or "",
+                    )
+                    if not allowed:
+                        tool_result = message
+                        is_error = True
                     else:
-                        tool_result = f"Error: unknown tool '{tool_name}'"
+                        # Execute the tool
+                        executor = get_executor(tool_name)
+                        if executor:
+                            try:
+                                if tool_name == "bash":
+                                    tool_result = await asyncio.to_thread(
+                                        executor,
+                                        tool_args,
+                                        workspace,
+                                        permission_level=permission_level,
+                                        allowed_commands=allowed_commands,
+                                    )
+                                else:
+                                    tool_result = await asyncio.to_thread(
+                                        executor,
+                                        tool_args,
+                                        workspace,
+                                        permission_level=permission_level,
+                                    )
+                            except Exception as e:
+                                tool_result = f"Error executing {tool_name}: {type(e).__name__}: {e}"
+                        elif is_mcp_tool(tool_name):
+                            try:
+                                from .mcp_bridge import call_mcp_tool
+                                tool_result = await call_mcp_tool(tool_name, tool_args)
+                            except Exception as e:
+                                tool_result = f"Error calling MCP tool {tool_name}: {type(e).__name__}: {e}"
+                        else:
+                            tool_result = f"Error: unknown tool '{tool_name}'"
 
                     is_error = tool_result.startswith("Error:")
 
