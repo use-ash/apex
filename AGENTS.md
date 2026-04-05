@@ -2,6 +2,23 @@
 
 These rules apply to all agents working in this repo. No exceptions.
 
+**Read `REPO_CONVENTIONS.md` first** — it defines the three-repo layout (drm-collab origin, use-ash upstream, apex-private), the development flow, and what goes where. Everything below assumes you understand that layout.
+
+---
+
+## Rule 0 — Repo Routing
+
+Before any git operation, confirm which remote you are targeting:
+
+- `origin` = `drm-collab/apex` (private). Push dev work and merged main here freely.
+- `upstream` = `use-ash/apex` (public OSS). **Never push here.** Dana pushes upstream only after prod validation.
+
+```bash
+git remote -v   # confirm before any push
+```
+
+If you are about to run `git push upstream`, stop and route it through Dana.
+
 ---
 
 ## Rule 1 — Sync-First
