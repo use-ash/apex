@@ -2733,7 +2733,21 @@ function handleEvent(msg) {
       if (_reattachBubble) _reattachBubble.innerHTML = '';
       _clearQueuedState(ctx);
       ctx.awaitingAck = false;
-      if (msg.elapsed_ms) ctx.thinkingStart = Date.now() - msg.elapsed_ms;
+      if (msg.elapsed_ms) {
+        const _correctedStart = Date.now() - msg.elapsed_ms;
+        ctx.thinkingStart = _correctedStart;
+        // Pre-seed activeStreams so the replayed stream_start at line ~2494
+        // picks up the corrected startedAt instead of falling back to Date.now().
+        const _prevEntry = activeStreams.get(sid) || {};
+        activeStreams.set(sid, {
+          ..._prevEntry,
+          stream_id: sid,
+          name: msg.speaker_name || _prevEntry.name || '',
+          avatar: msg.speaker_avatar || _prevEntry.avatar || '',
+          profile_id: msg.speaker_id || _prevEntry.profile_id || '',
+          startedAt: _correctedStart,
+        });
+      }
       _activateStream(ctx, {chatId: msg.chat_id || currentChat || ''});
       markStreamActivity(ctx, 'stream-reattached');
       updateSendBtn();
