@@ -1013,6 +1013,23 @@ class SecurityFixTests(unittest.TestCase):
             )
             self.assertIn("live Apex database", err or "")
 
+    def test_validate_command_blocks_live_apex_db_copy_via_shell_variable(self) -> None:
+        err = local_safety.validate_command(
+            "\n".join(
+                [
+                    "set -euo pipefail",
+                    f"src='{env.APEX_ROOT / 'state' / 'apex.db'}'",
+                    'dst="/tmp/apex.db.$$"',
+                    'cp "$src" "$dst"',
+                    'sqlite3 "$dst" ".tables"',
+                ]
+            ),
+            str(TEST_ROOT),
+            permission_level=4,
+            allowed_commands=["cp", "sqlite3"],
+        )
+        self.assertIn("live Apex database", err or "")
+
     def test_validate_path_blocks_live_apex_db_even_at_level_4(self) -> None:
         for suffix in ("apex.db", "apex.db-wal", "apex.db-shm"):
             err = local_safety.validate_path(

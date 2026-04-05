@@ -260,6 +260,10 @@ def _tokenize_shell_command(command: str) -> list[str]:
 
 def _validate_live_db_command_paths(command: str, workspace: str | None) -> str | None:
     primary = _primary_workspace(workspace)
+    normalized_command = command.replace('"', " ").replace("'", " ")
+    for blocked in LIVE_APEX_DB_PATHS:
+        if blocked in normalized_command:
+            return _live_db_path_error(blocked)
     try:
         tokens = _tokenize_shell_command(command)
     except ValueError:
@@ -268,13 +272,18 @@ def _validate_live_db_command_paths(command: str, workspace: str | None) -> str 
     for token in tokens:
         if token in {"|", "||", "&&", ";", "<", ">", "<<", ">>", "&"}:
             continue
-        candidate = token.strip()
-        if not _looks_like_path(candidate):
-            continue
-        resolved = _resolve_candidate_path(candidate, primary)
-        err = _live_db_path_error(resolved)
-        if err:
-            return err
+        candidates = [token.strip()]
+        if "=" in token and not token.startswith("="):
+            _, _, rhs = token.partition("=")
+            if rhs:
+                candidates.append(rhs.strip())
+        for candidate in candidates:
+            if not _looks_like_path(candidate):
+                continue
+            resolved = _resolve_candidate_path(candidate, primary)
+            err = _live_db_path_error(resolved)
+            if err:
+                return err
     return None
 
 
