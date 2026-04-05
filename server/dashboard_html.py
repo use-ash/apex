@@ -85,6 +85,8 @@ button {
     font-size: inherit;
     border: none;
     border-radius: var(--radius);
+    color: inherit;
+    background: transparent;
     transition: background var(--transition), opacity var(--transition);
 }
 
@@ -349,6 +351,13 @@ select {
     margin-bottom: 24px;
 }
 
+.policy-secondary-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+    margin-top: 16px;
+}
+
 .card {
     background: var(--surface);
     border: 1px solid var(--card);
@@ -376,6 +385,71 @@ select {
 .card-title svg {
     width: 16px;
     height: 16px;
+}
+
+.policy-panel {
+    margin: 0;
+}
+
+.policy-level-card {
+    width: 100%;
+    margin: 0;
+    padding: 11px 12px;
+    text-align: left;
+    border: 1px solid var(--card);
+    background: linear-gradient(180deg, rgba(148, 163, 184, 0.04), rgba(148, 163, 184, 0.02));
+    color: var(--text);
+    box-shadow: none;
+}
+
+.policy-level-card:hover {
+    border-color: rgba(14, 165, 233, 0.45);
+    background: linear-gradient(180deg, rgba(14, 165, 233, 0.12), rgba(14, 165, 233, 0.06));
+}
+
+.policy-level-card.active {
+    border-color: var(--accent);
+    background: linear-gradient(180deg, rgba(14, 165, 233, 0.24), rgba(14, 165, 233, 0.12));
+    box-shadow: 0 0 0 1px rgba(14,165,233,0.25) inset;
+}
+
+.policy-level-card strong {
+    display: block;
+    color: var(--text);
+}
+
+.policy-level-card .form-help {
+    margin-top: 4px;
+    color: var(--dim);
+}
+
+.policy-editor-shell {
+    display: grid;
+    gap: 12px;
+}
+
+.policy-editor-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}
+
+.policy-mini-card {
+    margin: 0;
+    padding: 14px;
+}
+
+.policy-mini-card textarea {
+    min-height: 160px;
+}
+
+.policy-table-wrap {
+    overflow: auto;
+    border: 1px solid var(--soft-border);
+    border-radius: var(--radius);
+    background: rgba(15, 23, 42, 0.14);
 }
 
 .stat-row {
@@ -871,6 +945,10 @@ select {
     }
 
     .card-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .policy-secondary-grid {
         grid-template-columns: 1fr;
     }
 
@@ -2033,34 +2111,36 @@ select {
                 </div>
             </div>
 
-            <div class="card" style="margin-top:16px;">
-                <div class="card-title" style="margin-bottom:8px;">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6l8-4z"/>
-                        <path d="M9 12l2 2 4-4"/>
-                    </svg>
-                    System Guardrails
+            <div class="policy-secondary-grid">
+                <div class="card policy-panel">
+                    <div class="card-title" style="margin-bottom:8px;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6l8-4z"/>
+                            <path d="M9 12l2 2 4-4"/>
+                        </svg>
+                        System Guardrails
+                    </div>
+                    <div class="form-help" style="margin-bottom:10px;">These rules sit above persona and chat permissions. Use them for commands or directories the system should never touch.</div>
+                    <div id="policy-guardrails-status" class="form-help" style="margin-bottom:10px;"></div>
+                    <div id="policy-guardrails-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading guardrails...</div>
+                    </div>
                 </div>
-                <div class="form-help" style="margin-bottom:10px;">These rules sit above persona and chat permissions. Use them for commands or directories the system should never touch.</div>
-                <div id="policy-guardrails-status" class="form-help" style="margin-bottom:10px;"></div>
-                <div id="policy-guardrails-content">
-                    <div class="loading-overlay"><div class="spinner"></div> Loading guardrails...</div>
-                </div>
-            </div>
 
-            <div class="card" style="margin-top:16px;">
-                <div class="card-title" style="margin-bottom:8px;">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <rect x="3" y="5" width="18" height="14" rx="2"/>
-                        <path d="M7 9h10"/>
-                        <path d="M7 13h6"/>
-                    </svg>
-                    Workspace + Browser Tool Set
-                </div>
-                <div class="form-help" style="margin-bottom:10px;">Level 2 uses this normalized tool list. Groups are collapsible so read, write, browser, network, memory, and shell controls are easier to scan.</div>
-                <div id="policy-workspace-tools-status" class="form-help" style="margin-bottom:10px;"></div>
-                <div id="policy-workspace-tools-content">
-                    <div class="loading-overlay"><div class="spinner"></div> Loading workspace tool set...</div>
+                <div class="card policy-panel">
+                    <div class="card-title" style="margin-bottom:8px;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="5" width="18" height="14" rx="2"/>
+                            <path d="M7 9h10"/>
+                            <path d="M7 13h6"/>
+                        </svg>
+                        Workspace + Browser Tool Set
+                    </div>
+                    <div class="form-help" style="margin-bottom:10px;">Level 2 uses this normalized tool list. Groups are collapsible so read, write, browser, network, memory, and shell controls are easier to scan.</div>
+                    <div id="policy-workspace-tools-status" class="form-help" style="margin-bottom:10px;"></div>
+                    <div id="policy-workspace-tools-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading workspace tool set...</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -4244,8 +4324,7 @@ function renderPolicyLevelGuide() {
     var cards = [0, 1, 2, 3, 4].map(function(level) {
         var active = level === selectedPolicyLevel;
         var detail = TOOL_POLICY_DETAILS[level];
-        return '<button type="button" class="card" data-policy-level-card="' + level + '" style="padding:10px 12px; margin:0; text-align:left; border:' +
-            (active ? '1px solid var(--accent); box-shadow:0 0 0 1px rgba(14,165,233,0.25) inset;' : '1px solid var(--card);') + '">' +
+        return '<button type="button" class="policy-level-card' + (active ? ' active' : '') + '" data-policy-level-card="' + level + '">' +
             '<strong>' + level + ' · ' + esc(toolPolicyLabel(level)) + '</strong>' +
             '<div class="form-help">' + esc(detail.summary) + '</div>' +
             '</button>';
@@ -4268,10 +4347,10 @@ function renderPolicyLevelGuide() {
         '<div class="form-help" style="margin-bottom:10px;">' + esc(selected.summary) + '</div>' +
         (selectedPolicyLevel === 2 ? '<div class="form-help" style="margin-bottom:10px;">The exact Workspace + Browser tool set is defined in the editor below.</div>' : '') +
         '<div class="card-grid" style="grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); margin:0;">' +
-            '<div class="card" style="padding:12px; margin:0;">' +
+            '<div class="card policy-mini-card">' +
                 '<strong>Allowed</strong>' + list(selected.allowed) +
             '</div>' +
-            '<div class="card" style="padding:12px; margin:0;">' +
+            '<div class="card policy-mini-card">' +
                 '<strong>Blocked / Not Included</strong>' + list(selected.denied) +
             '</div>' +
         '</div>';
@@ -4296,21 +4375,23 @@ function renderPolicyGuardrailsEditor() {
     var el = document.getElementById("policy-guardrails-content");
     if (!el) return;
     el.innerHTML =
+        '<div class="policy-editor-shell">' +
         '<div class="card-grid" style="grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); margin:0;">' +
-            '<div class="card" style="margin:0; padding:14px;">' +
+            '<div class="card policy-mini-card">' +
                 '<div class="card-title" style="margin-bottom:8px;">Never Allowed Commands</div>' +
                 '<div class="form-help" style="margin-bottom:8px;">One command prefix per line. Each shell segment is checked, so entries like <code>sqlite3</code> or <code>rm -rf</code> are blocked everywhere.</div>' +
                 '<textarea id="policy-never-allowed-commands" rows="8" placeholder="sqlite3&#10;rm -rf&#10;launchctl">' + esc((policyNeverAllowedCommands || []).join('\n')) + '</textarea>' +
             '</div>' +
-            '<div class="card" style="margin:0; padding:14px;">' +
+            '<div class="card policy-mini-card">' +
                 '<div class="card-title" style="margin-bottom:8px;">Blocked Path Prefixes</div>' +
                 '<div class="form-help" style="margin-bottom:8px;">One absolute path prefix per line. File tools and shell commands touching these locations are denied, even at Full Admin.</div>' +
                 '<textarea id="policy-blocked-path-prefixes" rows="8" placeholder="/Users/you/.openclaw/apex/state&#10;/Users/you/.ssh">' + esc((policyBlockedPathPrefixes || []).join('\n')) + '</textarea>' +
             '</div>' +
         '</div>' +
-        '<div style="display:flex; gap:8px; align-items:center; justify-content:flex-end; flex-wrap:wrap; margin-top:12px;">' +
+        '<div class="policy-editor-actions">' +
             '<button class="btn btn-ghost" data-policy-guardrails-reset>Reset</button>' +
             '<button class="btn btn-primary" data-policy-guardrails-save>Save Guardrails</button>' +
+        '</div>' +
         '</div>';
 }
 window.renderPolicyGuardrailsEditor = renderPolicyGuardrailsEditor;
@@ -4370,14 +4451,16 @@ function renderWorkspaceToolsEditor() {
             '</details>';
         }).join('');
     el.innerHTML =
+        '<div class="policy-editor-shell">' +
         '<div style="display:flex; gap:8px; align-items:center; justify-content:space-between; margin-bottom:12px; flex-wrap:wrap;">' +
             '<div class="form-help">Selected tools apply immediately to level 2 across SDK and tool-loop backends.</div>' +
-            '<div style="display:flex; gap:8px; flex-wrap:wrap;">' +
+            '<div class="policy-editor-actions">' +
                 '<button class="btn btn-ghost" data-policy-workspace-reset>Reset to Default</button>' +
                 '<button class="btn btn-primary" data-policy-workspace-save>Save Workspace Tool Set</button>' +
             '</div>' +
         '</div>' +
-        '<div style="display:grid; gap:10px;">' + rowsByGroup + '</div>';
+        '<div style="display:grid; gap:10px;">' + rowsByGroup + '</div>' +
+        '</div>';
 }
 window.renderWorkspaceToolsEditor = renderWorkspaceToolsEditor;
 
@@ -4692,7 +4775,7 @@ function renderPolicyTable() {
         '</tr>';
     }).join('');
     el.innerHTML =
-        '<div style="overflow:auto;">' +
+        '<div class="policy-table-wrap">' +
             '<table style="width:100%; border-collapse:collapse; font-size:13px;">' +
                 '<thead><tr style="border-bottom:1px solid var(--card); color:var(--dim); font-size:11px; text-transform:uppercase;">' +
                     '<th style="text-align:left; padding:8px;">Persona</th>' +
