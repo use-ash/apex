@@ -204,7 +204,10 @@ TOOL_POLICY_CATALOG = {
 
 
 def canonical_tool_name(tool_name: str) -> str:
-    return SDK_TOOL_NAME_MAP.get(tool_name, tool_name or "")
+    canonical = SDK_TOOL_NAME_MAP.get(tool_name, tool_name or "")
+    while canonical.startswith("mcp__"):
+        canonical = canonical[len("mcp__") :]
+    return canonical
 
 
 def _iter_mcp_tool_names() -> list[str]:

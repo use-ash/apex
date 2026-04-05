@@ -955,6 +955,13 @@ class SecurityFixTests(unittest.TestCase):
         self.assertTrue(allowed)
         self.assertEqual(message, "")
 
+    def test_tool_access_normalizes_mcp_prefixed_names(self) -> None:
+        self.assertEqual(
+            tool_access.canonical_tool_name("mcp__playwright__browser_navigate"),
+            "playwright__browser_navigate",
+        )
+        self.assertTrue(tool_access.tool_allowed_for_level("mcp__playwright__browser_navigate", 3))
+
     def test_local_model_admin_commands_use_prefix_match_and_protected_paths(self) -> None:
         workspace = str(TEST_ROOT)
         self.assertIsNone(
