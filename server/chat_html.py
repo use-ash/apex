@@ -2752,6 +2752,13 @@ function handleEvent(msg) {
           startedAt: _correctedStart,
         });
       }
+      // Create the thinking pill immediately — don't wait for buffer replay.
+      // stream_ack is not buffered so it never replays on reconnect.
+      // stream_start (which is buffered) clears awaitingAck, so for models
+      // without extended thinking there are no thinking events to re-trigger
+      // the pill. Showing it here covers all cases.
+      _ensureCtxBubble(ctx);
+      _thinkingPill(ctx, {live: true});
       _activateStream(ctx, {chatId: msg.chat_id || currentChat || ''});
       markStreamActivity(ctx, 'stream-reattached');
       updateSendBtn();
