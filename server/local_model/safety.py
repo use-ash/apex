@@ -602,12 +602,13 @@ def _dispatch_argv_validation(
         err = rule(argv, workspace)
         if not err:
             return None
-        # git and python: allow write-capable fallback when on explicit allowlist at l3+
+        # git and python: allow write-capable fallback when on allowlist at l3+
+        # Uses effective_allowed (includes DEFAULT_LEVEL3_ALLOWED_COMMANDS)
+        # so that python script execution works at L3 with default config.
         if base in {"git", "python", "python3"}:
             if already_allowlisted or (
                 permission_level >= 3
-                and allowed_commands
-                and _command_matches_allowed_prefix(cmd, allowed_commands)
+                and _command_matches_allowed_prefix(cmd, effective_allowed)
             ):
                 return _validate_write_capable_arg_paths(argv[1:], workspace)
         return err
