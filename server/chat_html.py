@@ -2732,7 +2732,11 @@ function handleEvent(msg) {
       const _reattachBubble = ctx.bubble && ctx.bubble.querySelector && ctx.bubble.querySelector('.bubble');
       if (_reattachBubble) _reattachBubble.innerHTML = '';
       _clearQueuedState(ctx);
-      ctx.awaitingAck = false;
+      // Set awaitingAck=true to mirror stream_ack state — stream_ack is not
+      // buffered so it never replays on reconnect.  Without this, agents that
+      // haven't emitted thinking blocks yet have no visible thinking pill after
+      // a page reload.  The buffer replay will clear it via stream_start/text.
+      ctx.awaitingAck = true;
       if (msg.elapsed_ms) {
         const _correctedStart = Date.now() - msg.elapsed_ms;
         ctx.thinkingStart = _correctedStart;
@@ -2748,6 +2752,13 @@ function handleEvent(msg) {
           startedAt: _correctedStart,
         });
       }
+      // Create the thinking pill immediately — don't wait for buffer replay.
+      // stream_ack is not buffered so it never replays on reconnect.
+      // stream_start (which is buffered) clears awaitingAck, so for models
+      // without extended thinking there are no thinking events to re-trigger
+      // the pill. Showing it here covers all cases.
+      _ensureCtxBubble(ctx);
+      _thinkingPill(ctx, {live: true});
       _activateStream(ctx, {chatId: msg.chat_id || currentChat || ''});
       markStreamActivity(ctx, 'stream-reattached');
       updateSendBtn();
