@@ -4287,9 +4287,10 @@ const TOOL_POLICY_DETAILS = {
         ],
     },
     2: {
-        summary: "Workspace-safe tools plus browser testing.",
+        summary: "Workspace-safe tools, code execution, and browser testing.",
         allowed: [
             "Configured Workspace + Browser tool set",
+            "Python code execution (stateful Jupyter kernel)",
             "Playwright MCP when enabled",
             "Fetch MCP when enabled",
             "Selected filesystem read tools",
@@ -4469,8 +4470,9 @@ function renderWorkspaceToolsEditor() {
     var enabledCount = enabledSet.size;
     var defaultCount = defaultSet.size;
     var matchesDefault = enabledCount === defaultCount && Array.from(enabledSet).every(function(id) { return defaultSet.has(id); });
-    var groupOrder = ["read", "write", "browser", "network", "memory", "shell"];
+    var groupOrder = ["execute", "read", "write", "browser", "network", "memory", "shell"];
     var groupLabels = {
+        execute: "Code Execution",
         read: "Read Tools",
         write: "Write Tools",
         browser: "Browser",
