@@ -32,6 +32,7 @@ BUILTIN_LOCAL_TOOLS = frozenset(
 )
 DEFAULT_LEVEL2_TOOL_PATTERNS = (
     "bash",
+    "execute_code",
     "read_file",
     "write_file",
     "edit_file",
@@ -90,7 +91,7 @@ TOOL_POLICY_CATALOG = {
     },
     "execute_code": {
         "name": "Execute Code",
-        "description": "Run Python in a stateful Jupyter kernel. Level 3+ only.",
+        "description": "Run Python in a stateful Jupyter kernel.",
         "category": "built-in",
         "group": "execute",
     },
