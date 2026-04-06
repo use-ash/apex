@@ -192,6 +192,14 @@ setup_venv() {
         err "pip install failed. Check your network connection."
         return 1
     }
+    # Jupyter deps are optional but enable the execute_code tool (stateful Python).
+    # Install separately so a build failure doesn't break the main install.
+    if ! "$VENV_DIR/bin/python3" -c "import jupyter_client" 2>/dev/null; then
+        info "Installing Jupyter kernel (for execute_code tool)..."
+        "$VENV_DIR/bin/python3" -m pip install -q jupyter_client ipykernel 2>/dev/null && \
+            ok "Jupyter kernel installed" || \
+            warn "Jupyter install failed (execute_code tool will be unavailable)"
+    fi
     ok "Dependencies installed"
 }
 
