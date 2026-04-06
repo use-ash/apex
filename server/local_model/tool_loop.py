@@ -118,6 +118,14 @@ def _inject_tool_prompt(messages: list[dict], tool_prompt: str) -> list[dict]:
     return messages
 
 
+_TOOL_RESULT_TAG_RE = re.compile(r"<tool_result>\s*.*?\s*</tool_result>", re.DOTALL)
+
+
+def _strip_tool_result_tags(text: str) -> str:
+    """Remove <tool_result>...</tool_result> echoes from model output."""
+    return _TOOL_RESULT_TAG_RE.sub("", text).strip()
+
+
 _TOOL_CALL_TAG_RE = re.compile(r"<tool_call>\s*", re.DOTALL)
 _TOOL_CALL_END_RE = re.compile(r"\s*</tool_call>")
 
@@ -797,6 +805,8 @@ async def run_tool_loop(
 
         if not tool_calls:
             # No tool calls — emit final text and return
+            if _use_text_tools and content_text:
+                content_text = _strip_tool_result_tags(content_text)
             if content_text:
                 result_text += content_text
                 await emit_event({"type": "text", "text": content_text})
@@ -804,6 +814,8 @@ async def run_tool_loop(
                                    duration_ms=int((time.monotonic() - _loop_started_at) * 1000))
 
         # Model produced text alongside tool calls — emit it
+        if _use_text_tools and content_text:
+            content_text = _strip_tool_result_tags(content_text)
         if content_text:
             result_text += content_text
             await emit_event({"type": "text", "text": content_text})
