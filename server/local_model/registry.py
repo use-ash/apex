@@ -1,5 +1,5 @@
 """Tool registry — maps tool names to JSON schemas and executor functions."""
-from .tools import bash_tool, read_file, write_file, list_files, search_files
+from .tools import bash_tool, read_file, write_file, edit_file, list_files, search_files
 
 TOOLS: dict[str, dict] = {}
 
@@ -61,6 +61,21 @@ _register(
         "required": ["file_path", "content"],
     },
     write_file.execute,
+)
+
+_register(
+    "edit_file",
+    "Edit a file by replacing a specific text span. Finds old_text exactly once and replaces it with new_text. More precise than write_file for targeted changes — no need to rewrite the entire file.",
+    {
+        "type": "object",
+        "properties": {
+            "file_path": {"type": "string", "description": "Path to the file to edit"},
+            "old_text": {"type": "string", "description": "Exact text to find (must match exactly once in the file)"},
+            "new_text": {"type": "string", "description": "Replacement text"},
+        },
+        "required": ["file_path", "old_text", "new_text"],
+    },
+    edit_file.execute,
 )
 
 _register(

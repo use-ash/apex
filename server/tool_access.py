@@ -12,7 +12,7 @@ SDK_TOOL_NAME_MAP = {
     "Bash": "bash",
     "Read": "read_file",
     "Write": "write_file",
-    "Edit": "write_file",
+    "Edit": "edit_file",
     "MultiEdit": "write_file",
     "NotebookEdit": "write_file",
     "LS": "list_files",
@@ -27,12 +27,13 @@ SDK_TOOL_NAME_MAP = {
 
 STANDARD_LOCAL_TOOLS = frozenset({"read_file", "list_files", "search_files"})
 BUILTIN_LOCAL_TOOLS = frozenset(
-    {"bash", "read_file", "write_file", "list_files", "search_files"}
+    {"bash", "read_file", "write_file", "edit_file", "list_files", "search_files"}
 )
 DEFAULT_LEVEL2_TOOL_PATTERNS = (
     "bash",
     "read_file",
     "write_file",
+    "edit_file",
     "list_files",
     "search_files",
     "fetch__*",
@@ -64,7 +65,13 @@ TOOL_POLICY_CATALOG = {
     },
     "write_file": {
         "name": "Write File",
-        "description": "Create or edit files in allowed writable roots for the current level.",
+        "description": "Create or overwrite entire files in allowed writable roots for the current level.",
+        "category": "built-in",
+        "group": "write",
+    },
+    "edit_file": {
+        "name": "Edit File",
+        "description": "Surgically edit a file by replacing a specific text span — more precise than write_file.",
         "category": "built-in",
         "group": "write",
     },
@@ -442,7 +449,7 @@ def tool_access_decision(
     if canonical in {"read_file", "list_files", "search_files"}:
         path_keys = ("path", "file_path")
         allow_write = False
-    elif canonical == "write_file":
+    elif canonical in {"write_file", "edit_file"}:
         path_keys = ("path", "file_path", "new_path", "old_path", "notebook_path")
         allow_write = True
     else:

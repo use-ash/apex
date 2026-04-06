@@ -42,7 +42,7 @@ def build_system_prompt(model: str) -> str:
         parts = [f"You are a local AI assistant running {model} via Ollama."]
         parts.append("You are NOT Claude, NOT made by Anthropic.")
     # Build dynamic tool list (built-in + MCP)
-    tool_names = ["bash", "read_file", "write_file", "list_files", "search_files"]
+    tool_names = ["bash", "read_file", "write_file", "edit_file", "list_files", "search_files"]
     try:
         from local_model.mcp_bridge import get_mcp_tool_schemas
         mcp_tools = get_mcp_tool_schemas()
@@ -78,6 +78,7 @@ def build_system_prompt(model: str) -> str:
     parts.append("- Use search_files with glob filter to narrow searches: search_files(pattern='def main', glob='*.py')")
     parts.append("- Use list_files only when you genuinely need to discover file names")
     parts.append("- Chain multiple reads in sequence rather than exploring directories")
+    parts.append("- Use edit_file for surgical changes — provide old_text (exact match) and new_text. Don't rewrite entire files.")
     if project_md.exists():
         parts.append(f"- Start with: read_file('{project_md}') for full project context")
     parts.append("")
