@@ -440,6 +440,17 @@ def _validate_python_command(argv: list[str], workspace: str | None) -> str | No
         return None
     if len(argv) >= 4 and argv[1] == "-m" and argv[2] == "py_compile":
         return _validate_arg_paths(argv[3:], workspace)
+    if len(argv) >= 2:
+        script = argv[1]
+        if not script.startswith("-") and script.endswith(".py"):
+            resolved, err = ensure_workspace_path(
+                script,
+                workspace,
+                permission_level=3,
+            )
+            if err:
+                return err
+            return _validate_arg_paths(argv[2:], workspace)
     return "Error: python is limited to version checks and -m py_compile"
 
 
@@ -741,7 +752,7 @@ def prepare_command(
         py_err = _validate_python_command(argv, workspace)
         if not py_err:
             return argv, None
-        if permission_level >= 3 and _command_matches_allowed_prefix(cmd, effective_allowed):
+        if permission_level >= 3 and allowed_commands and _command_matches_allowed_prefix(cmd, allowed_commands):
             return argv, _validate_write_capable_arg_paths(argv[1:], workspace)
         return argv, py_err
     if permission_level >= 3 and _command_matches_allowed_prefix(cmd, effective_allowed):
