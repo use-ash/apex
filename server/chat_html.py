@@ -635,6 +635,10 @@ transition:all 0.2s;user-select:none;margin-bottom:4px}
 .pill .pill-dim{color:var(--dim);font-weight:400;font-size:12px}
 .pill .pill-chevron{color:var(--dim);font-size:13px;margin-left:2px}
 .pill--tool:hover{border-color:var(--accent);background:rgba(14,165,233,0.06)}
+.pill--tool-error{border-color:rgba(239,68,68,0.4)}
+.pill--tool-error:hover{border-color:#ef4444;background:rgba(239,68,68,0.06)}
+.pill--tool-error .pill-dim{color:#ef4444}
+.pill--tool-error .pill-counts{color:#ef4444}
 .pill--thinking:hover{border-color:var(--yellow);background:rgba(245,158,11,0.06)}
 .pill--tool .pill-counts{font-size:11px;color:var(--dim)}
 .pill--tool .spinner{width:14px;height:14px;border:2px solid var(--card);border-top-color:var(--accent);
@@ -2097,8 +2101,9 @@ function _updateToolPillProgress(ctx) {
   const dim = pill.querySelector('.pill-dim');
   const counts = pill.querySelector('.pill-counts');
   const bar = pill.querySelector('.pill-bar');
+  const errors = ctx.toolCalls.filter(t => t.status === 'error').length;
   if (label) label.textContent = total === 1 ? '1 tool call' : `${total} tool calls`;
-  if (dim) dim.textContent = total > 0 ? (completed >= total ? 'Complete' : 'Running') : '';
+  if (dim) dim.textContent = total > 0 ? (errors > 0 ? `${errors} failed` : (completed >= total ? 'Complete' : 'Running')) : '';
   if (counts) counts.textContent = total > 0 ? `${completed}/${total}` : '';
   if (bar) {
     const pct = total > 0 ? Math.max(8, Math.round((completed / total) * 100)) : 8;
@@ -2112,14 +2117,16 @@ function _finalizeToolPill(ctx, totalTime) {
   if (!pill) return null;
   const total = ctx.toolCalls.length;
   const completed = ctx.toolCalls.filter(t => t.status && t.status !== 'running').length;
-  pill.className = 'pill pill--tool';
+  const errors = ctx.toolCalls.filter(t => t.status === 'error').length;
+  pill.className = errors > 0 ? 'pill pill--tool pill--tool-error' : 'pill pill--tool';
   pill._toolData = ctx.toolCalls.map(t => ({
     ...t,
     result: t.result ? {...t.result} : null,
   }));
   pill._ctx = null;
   pill._totalTime = totalTime || 0;
-  pill.innerHTML = `<span class="pill-icon">&#128295;</span><span class="pill-label">${total === 1 ? '1 tool call' : `${total} tool calls`}</span><span class="pill-dim">${_formatDuration(totalTime) || 'Complete'}</span><span class="pill-counts">${completed}/${total}</span><span class="pill-chevron">&#8250;</span>`;
+  const dimText = errors > 0 ? `${errors} failed` : (_formatDuration(totalTime) || 'Complete');
+  pill.innerHTML = `<span class="pill-icon">${errors > 0 ? '&#9888;' : '&#128295;'}</span><span class="pill-label">${total === 1 ? '1 tool call' : `${total} tool calls`}</span><span class="pill-dim">${dimText}</span><span class="pill-counts">${completed}/${total}</span><span class="pill-chevron">&#8250;</span>`;
   pill.onclick = () => openToolPanel(pill);
   return pill;
 }
@@ -2376,7 +2383,7 @@ function openToolPanel(pillEl) {
       const resultText = tool.result ? (typeof tool.result.content === 'string' ? tool.result.content : JSON.stringify(tool.result.content, null, 2)) : '';
       const summaryHtml = tool.summary || toolSummary(tool.name, tool.input) || '';
       const summaryText = _htmlToText(summaryHtml) || toolLabel(tool.name);
-      const status = tool.status === 'error' ? '&#10007;' : (tool.status === 'completed' ? '&#10003;' : '&#9203;');
+      const status = tool.status === 'error' ? '<span style="color:#ef4444">&#10007;</span>' : (tool.status === 'completed' ? '&#10003;' : '&#9203;');
       const duration = tool.endTime && tool.startTime ? _formatDuration(tool.endTime - tool.startTime) : '';
       const step = document.createElement('div');
       step.className = 'sp-step';
@@ -2392,7 +2399,8 @@ function openToolPanel(pillEl) {
       }
       if (resultText) {
         const resultNote = toolResultSummary(tool.name, resultText);
-        detailHtml += `<div class="spd-section"><div class="spd-label">Result${resultNote ? ` · ${escHtml(resultNote)}` : ''}</div><div class="spd-content"><pre>${escHtml(resultText.substring(0, 5000))}</pre></div></div>`;
+        const isErr = tool.result && tool.result.is_error;
+        detailHtml += `<div class="spd-section"><div class="spd-label">${isErr ? 'Error' : 'Result'}${resultNote ? ` · ${escHtml(resultNote)}` : ''}</div><div class="spd-content"><pre${isErr ? ' style="color:#ef4444"' : ''}>${escHtml(resultText.substring(0, 5000))}</pre></div></div>`;
       }
       detail.innerHTML = detailHtml;
       step.onclick = () => {
