@@ -423,22 +423,23 @@ def _validate_git_command(argv: list[str], workspace: str | None) -> str | None:
 
 
 def _validate_python_command(argv: list[str], workspace: str | None) -> str | None:
+    """Validate python/python3 commands.
+
+    At L2 (the default level for this validator), only safe read-only
+    operations are allowed: version checks and syntax-only compilation.
+    Script execution is NOT allowed here — it would let a model bypass the
+    execute_code AST sandbox by writing malicious code to a .py file and
+    running it via bash.
+
+    At L3+, the fallback in _dispatch_argv_validation handles script
+    execution for explicitly allowlisted commands (python/python3 are on
+    DEFAULT_LEVEL3_ALLOWED_COMMANDS).
+    """
     if len(argv) == 2 and argv[1] in {"-V", "--version"}:
         return None
     if len(argv) >= 4 and argv[1] == "-m" and argv[2] == "py_compile":
         return _validate_arg_paths(argv[3:], workspace)
-    if len(argv) >= 2:
-        script = argv[1]
-        if not script.startswith("-") and script.endswith(".py"):
-            resolved, err = ensure_workspace_path(
-                script,
-                workspace,
-                permission_level=3,
-            )
-            if err:
-                return err
-            return _validate_arg_paths(argv[2:], workspace)
-    return "Error: python is limited to version checks and -m py_compile"
+    return "Error: python script execution via bash is blocked at this permission level. Use the execute_code tool for Python execution, or elevate to level 3+."
 
 
 # Maps command basename → validator function.
