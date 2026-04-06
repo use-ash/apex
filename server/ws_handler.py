@@ -600,7 +600,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 send_data["stream_id"] = stream_id
                 task = asyncio.create_task(_handle_send_action(websocket, send_data))
                 if send_chat_id:
-                    _set_active_send_task(send_chat_id, stream_id, task)
+                    _set_active_send_task(send_chat_id, stream_id, task, started_at=time.monotonic())
 
                     def _cleanup_send_task(t: asyncio.Task, cid=send_chat_id, sid=stream_id):
                         _remove_active_send_task(cid, sid, t)

@@ -9,6 +9,7 @@ import asyncio
 import base64
 import json
 import os
+import time
 import urllib.request
 import uuid
 from pathlib import Path
@@ -825,10 +826,12 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 "context_tokens_in": _est,
                 "context_window": _cw,
                 "thinking": result.get("thinking", ""),
+                "duration_ms": result.get("duration_ms", 0),
             })
             return result
 
     # Fallback: plain text streaming (no tool support)
+    _stream_started_at = time.monotonic()
     payload = json.dumps({
         "model": effective_model, "messages": messages, "stream": True,
     }).encode()
@@ -881,13 +884,16 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
 
     _est = _estimate_tokens(chat_id) + len(result_text) // 4
     _cw = MODEL_CONTEXT_WINDOWS.get(effective_model, MODEL_CONTEXT_DEFAULT)
+    _stream_duration_ms = int((time.monotonic() - _stream_started_at) * 1000)
     await _send_stream_event(chat_id, {
         "type": "result", "is_error": is_error,
         "cost_usd": 0, "tokens_in": 0, "tokens_out": 0, "session_id": None,
         "context_tokens_in": _est,
         "context_window": _cw,
         "thinking": thinking_text,
+        "duration_ms": _stream_duration_ms,
     })
     return {"text": result_text, "is_error": is_error, "error": error_msg or None,
             "cost_usd": 0, "tokens_in": 0, "tokens_out": 0,
-            "session_id": None, "thinking": thinking_text, "tool_events": "[]"}
+            "session_id": None, "thinking": thinking_text, "tool_events": "[]",
+            "duration_ms": _stream_duration_ms}

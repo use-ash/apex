@@ -2580,7 +2580,11 @@ function handleEvent(msg) {
       _ensureCtxBubble(ctx);
       _activateStream(ctx);
       if (ctx.awaitingAck && !ctx.thinkingText) {
+        // No thinking events before first text — convert live pill to static with TTFT
+        // duration so it persists during streaming. _finalizeThinking will update it
+        // with the correct full duration from result.duration_ms.
         _teardownThinking(ctx);
+        if (ctx.thinkingStart) _thinkingPill(ctx, { durationMs: Date.now() - ctx.thinkingStart });
       } else if (ctx.thinkingText && !ctx.thinkingPill) {
         // Ensure a static thinking pill exists whenever we have thinking text —
         // handles both live→static conversion and recreation after teardown
@@ -2638,6 +2642,7 @@ function handleEvent(msg) {
       _activateStream(ctx);
       if (ctx.awaitingAck && !ctx.thinkingText) {
         _teardownThinking(ctx);
+        if (ctx.thinkingStart) _thinkingPill(ctx, { durationMs: Date.now() - ctx.thinkingStart });
       } else if (ctx.thinkingText && !ctx.thinkingPill) {
         // Ensure a static thinking pill exists whenever we have thinking text
         _teardownThinking(ctx);
@@ -4784,8 +4789,8 @@ async function selectChat(id, title, chatType, category) {
         }, 0);
         _finalizeToolPill(historyCtx, totalTime);
       }
-      if (m.thinking && m.thinking.trim()) {
-        historyCtx.thinkingText = m.thinking;
+      if ((m.thinking && m.thinking.trim()) || m.duration_ms > 0) {
+        if (m.thinking && m.thinking.trim()) historyCtx.thinkingText = m.thinking;
         _thinkingPill(historyCtx, {durationMs: m.duration_ms || 0});
       }
       div.querySelectorAll('.bubble').forEach(el => renderMarkdown(el));
