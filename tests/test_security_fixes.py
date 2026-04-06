@@ -1272,6 +1272,38 @@ class SecurityFixTests(unittest.TestCase):
             ) or "",
         )
 
+    def test_level_3_allows_python_workspace_script_but_not_outside_workspace(self) -> None:
+        workspace = str(TEST_ROOT)
+        script = TEST_ROOT / "fetch_x.py"
+        script.write_text("print('ok')\n", encoding="utf-8")
+
+        self.assertIsNone(
+            local_safety.validate_command(
+                f"python3 {script} https://x.com/example/status/1",
+                workspace,
+                permission_level=3,
+                allowed_commands=[],
+            )
+        )
+        self.assertIn(
+            "outside allowed admin paths",
+            local_safety.validate_command(
+                "python3 /etc/passwd.py",
+                workspace,
+                permission_level=3,
+                allowed_commands=[],
+            ) or "",
+        )
+        self.assertIn(
+            "python is limited",
+            local_safety.validate_command(
+                'python3 -c "print(1)"',
+                workspace,
+                permission_level=3,
+                allowed_commands=[],
+            ) or "",
+        )
+
     def test_level_3_allows_repo_server_reads_but_keeps_state_ssl_blocked(self) -> None:
         server_dir = TEST_ROOT / "server"
         ssl_dir = TEST_ROOT / "state" / "ssl"
