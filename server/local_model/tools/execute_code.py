@@ -8,6 +8,7 @@ Cell history is saved to disk and replayed on kernel restart to restore state.
 Requires: jupyter_client, ipykernel (optional deps in requirements.txt).
 """
 
+import ast
 import atexit
 import json
 import logging
@@ -321,6 +322,103 @@ def _is_error_output(outputs: list[str]) -> bool:
     return "Traceback" in combined or "Error:" in combined
 
 
+# ── L2 sandbox: AST-level safety checks ─────────────────────────────
+
+# Modules that provide shell/process execution — blocked at L2
+_BLOCKED_IMPORTS = frozenset({"subprocess", "pty", "commands"})
+
+# os.* functions that execute commands or spawn processes — blocked at L2
+_BLOCKED_OS_CALLS = frozenset({
+    "system", "popen", "popen2", "popen3", "popen4",
+    "execl", "execle", "execlp", "execlpe",
+    "execv", "execve", "execvp", "execvpe",
+    "spawnl", "spawnle", "spawnlp", "spawnlpe",
+    "spawnv", "spawnve", "spawnvp", "spawnvpe",
+    "fork", "forkpty",
+})
+
+# Fully qualified function calls blocked at L2 (module.function)
+_BLOCKED_QUALIFIED_CALLS = frozenset({
+    "shutil.rmtree",
+})
+
+
+def _check_code_safety(code: str, permission_level: int) -> str | None:
+    """Pre-execution AST safety check.
+
+    Returns None if the code is safe for the given permission level,
+    or an error message describing what was blocked.
+
+    At L3+ all restrictions are lifted — the user consciously escalated.
+    """
+    if permission_level >= 3:
+        return None  # no restrictions at L3+
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None  # let the kernel report syntax errors naturally
+
+    for node in ast.walk(tree):
+        # Block: import subprocess / import pty / etc.
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                module_root = alias.name.split(".")[0]
+                if module_root in _BLOCKED_IMPORTS:
+                    return (
+                        f"Error: import '{alias.name}' is blocked at permission level 2 "
+                        f"(shell/process execution). Elevate to level 3+ to use this module."
+                    )
+
+        # Block: from subprocess import run / from os import system / etc.
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            module_root = module.split(".")[0]
+            if module_root in _BLOCKED_IMPORTS:
+                return (
+                    f"Error: import from '{module}' is blocked at permission level 2 "
+                    f"(shell/process execution). Elevate to level 3+ to use this module."
+                )
+            # Block: from os import system, popen, fork, etc.
+            if module_root == "os":
+                for alias in node.names:
+                    if alias.name in _BLOCKED_OS_CALLS:
+                        return (
+                            f"Error: 'from os import {alias.name}' is blocked at permission "
+                            f"level 2 (process execution). Elevate to level 3+."
+                        )
+
+        # Block: os.system(...), os.popen(...), shutil.rmtree(...), etc.
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                qualified = f"{func.value.id}.{func.attr}"
+                # os.system, os.popen, os.exec*, os.spawn*, os.fork*
+                if func.value.id == "os" and func.attr in _BLOCKED_OS_CALLS:
+                    return (
+                        f"Error: 'os.{func.attr}()' is blocked at permission level 2 "
+                        f"(process execution). Elevate to level 3+."
+                    )
+                # shutil.rmtree, etc.
+                if qualified in _BLOCKED_QUALIFIED_CALLS:
+                    return (
+                        f"Error: '{qualified}()' is blocked at permission level 2. "
+                        f"Elevate to level 3+."
+                    )
+
+            # Block: __import__("subprocess") / __import__("pty")
+            if isinstance(func, ast.Name) and func.id == "__import__":
+                if node.args and isinstance(node.args[0], ast.Constant):
+                    mod_name = str(node.args[0].value).split(".")[0]
+                    if mod_name in _BLOCKED_IMPORTS:
+                        return (
+                            f"Error: __import__('{mod_name}') is blocked at permission "
+                            f"level 2. Elevate to level 3+."
+                        )
+
+    return None  # all checks passed
+
+
 def execute(
     args: dict,
     workspace: str | None = None,
@@ -336,6 +434,11 @@ def execute(
     code = args.get("code", "").strip()
     if not code:
         return "Error: no code provided"
+
+    # L2 sandbox: block shell/process escape patterns before execution
+    safety_error = _check_code_safety(code, permission_level)
+    if safety_error:
+        return safety_error
 
     # Parse timeout
     try:
