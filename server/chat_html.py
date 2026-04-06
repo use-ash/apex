@@ -2164,7 +2164,9 @@ function _thinkingPill(ctx, options = {}) {
     ? `<span class="pill-icon">&#129504;</span><span class="pill-label">Thinking...</span><span class="pill-dim">${_formatDuration(durationMs) || ''}</span><span class="pill-live"></span>`
     : `<span class="pill-icon">&#129504;</span><span class="pill-label">Thinking</span><span class="pill-dim">${_formatDuration(durationMs) || ''}</span><span class="pill-chevron">&#8250;</span>`;
   const bubbleEl = ctx.bubble.querySelector('.bubble');
-  const beforeEl = (ctx.toolPill && ctx.toolPill.isConnected) ? ctx.toolPill : bubbleEl;
+  // Use parentElement check instead of isConnected — tool pill may be a child
+  // of a detached bubble (history rendering) where isConnected is always false.
+  const beforeEl = (ctx.toolPill && ctx.toolPill.parentElement === ctx.bubble) ? ctx.toolPill : bubbleEl;
   if (pill.parentElement !== ctx.bubble || pill.nextSibling !== beforeEl) {
     ctx.bubble.insertBefore(pill, beforeEl);
   }
