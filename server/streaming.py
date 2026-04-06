@@ -151,28 +151,6 @@ def _get_all_active_stream_entries() -> list[tuple[str, str, dict[str, object]]]
     return active
 
 
-def _get_profile_active_stream_stats(profile_id: str) -> tuple[int, int | None]:
-    """Return active stream count and oldest active age for one profile across all chats."""
-    if not profile_id:
-        return 0, None
-
-    active_count = 0
-    oldest_started_at: float | None = None
-    for _, _, info in _get_all_active_stream_entries():
-        if str(info.get("profile_id") or "") != profile_id:
-            continue
-        started_at = float(info.get("started_at") or 0.0)
-        if started_at <= 0:
-            continue
-        active_count += 1
-        if oldest_started_at is None or started_at < oldest_started_at:
-            oldest_started_at = started_at
-
-    if oldest_started_at is None:
-        return active_count, None
-    return active_count, max(0, int(time.monotonic() - oldest_started_at))
-
-
 def _has_active_stream(chat_id: str, exclude_stream_id: str = "") -> bool:
     return any(stream_id != exclude_stream_id for stream_id, _ in _get_active_stream_entries(chat_id))
 
