@@ -52,11 +52,10 @@ SENSITIVE_BASENAMES = {
     "config.json",
 }
 
-SHELL_META_SNIPPETS = ("`", "$(", "${", "&&", "||", "|", ";", ">", "<", "\n", "\r", "\x00")
-LEVEL3_ALLOWED_SHELL_META_SNIPPETS = ("&&", "||", "|", ";", "\n")
-LEVEL3_BLOCKED_SHELL_META_SNIPPETS = ("`", "$(", "${", ">", "<", "\r", "\x00")
-LEVEL3_ALLOWED_SHELL_OPERATORS = frozenset({"&&", "||", "|", ";"})
 LEVEL3_FIND_EXEC_SENTINEL = "__APEX_FIND_EXEC_SEMI__"
+# Shell meta-characters used to detect compound commands / blocked syntax
+_SHELL_ALWAYS_BLOCKED = ("`", "$(", "${", ">", "<", "\r", "\x00")
+_SHELL_PIPELINE_OPS = ("&&", "||", "|", ";", "\n")
 
 READ_ONLY_GIT_SUBCOMMANDS = {
     "status",
@@ -94,25 +93,6 @@ LEVEL3_ALLOWED_GIT_COMMIT_FLAGS = {
     "--message",
 }
 
-READ_ONLY_COMMANDS = {
-    "pwd",
-    "uname",
-    "which",
-    "echo",
-    "ls",
-    "cat",
-    "head",
-    "tail",
-    "wc",
-    "sed",
-    "grep",
-    "rg",
-    "find",
-    "stat",
-    "file",
-}
-
-PYTHON_COMMANDS = {"python", "python3", "/opt/homebrew/bin/python3"}
 DEFAULT_LEVEL3_ALLOWED_COMMANDS = frozenset(
     {
         "awk",
@@ -334,49 +314,56 @@ def _validate_write_capable_arg_paths(args: list[str], workspace: str | None) ->
     return None
 
 
-def _validate_read_only_command(argv: list[str], workspace: str | None) -> str | None:
+def _validate_read_args(argv: list[str], workspace: str | None) -> str | None:
+    return _validate_arg_paths(argv[1:], workspace)
+
+
+def _validate_find_command(argv: list[str], workspace: str | None) -> str | None:
     err = _validate_arg_paths(argv[1:], workspace)
     if err:
         return err
+    blocked_args = {"-delete", "-execdir", "-ok", "-okdir", "-fprintf", "-fprint", "-fls"}
+    for arg in argv[1:]:
+        if arg in blocked_args:
+            return f"Error: find argument is blocked: {arg}"
+    if "-exec" in argv[1:]:
+        exec_positions = [idx for idx, arg in enumerate(argv) if arg == "-exec"]
+        if len(exec_positions) != 1:
+            return "Error: find argument is blocked: -exec"
+        exec_idx = exec_positions[0]
+        try:
+            term_idx = argv.index(";", exec_idx + 1)
+        except ValueError:
+            return "Error: find argument is blocked: -exec"
+        exec_cmd = argv[exec_idx + 1 : term_idx]
+        if not exec_cmd or exec_cmd[0] != "grep" or exec_cmd[-1] != "{}":
+            return "Error: find argument is blocked: -exec"
+        allowed_grep_flags = {
+            "-l",
+            "-i",
+            "-n",
+            "-E",
+            "-F",
+            "-e",
+            "--line-number",
+            "--files-with-matches",
+            "--ignore-case",
+            "--extended-regexp",
+            "--fixed-strings",
+        }
+        for token in exec_cmd[1:-1]:
+            if token.startswith("-") and token not in allowed_grep_flags:
+                return "Error: find argument is blocked: -exec"
+    return None
 
-    exe = os.path.basename(argv[0])
-    if exe == "find":
-        blocked_args = {"-delete", "-execdir", "-ok", "-okdir", "-fprintf", "-fprint", "-fls"}
-        for arg in argv[1:]:
-            if arg in blocked_args:
-                return f"Error: find argument is blocked: {arg}"
-        if "-exec" in argv[1:]:
-            exec_positions = [idx for idx, arg in enumerate(argv) if arg == "-exec"]
-            if len(exec_positions) != 1:
-                return "Error: find argument is blocked: -exec"
-            exec_idx = exec_positions[0]
-            try:
-                term_idx = argv.index(";", exec_idx + 1)
-            except ValueError:
-                return "Error: find argument is blocked: -exec"
-            exec_cmd = argv[exec_idx + 1 : term_idx]
-            if not exec_cmd or exec_cmd[0] != "grep" or exec_cmd[-1] != "{}":
-                return "Error: find argument is blocked: -exec"
-            allowed_grep_flags = {
-                "-l",
-                "-i",
-                "-n",
-                "-E",
-                "-F",
-                "-e",
-                "--line-number",
-                "--files-with-matches",
-                "--ignore-case",
-                "--extended-regexp",
-                "--fixed-strings",
-            }
-            for token in exec_cmd[1:-1]:
-                if token.startswith("-") and token not in allowed_grep_flags:
-                    return "Error: find argument is blocked: -exec"
-    if exe == "sed":
-        for arg in argv[1:]:
-            if arg == "--in-place" or arg.startswith("-i"):
-                return "Error: sed in-place editing is blocked"
+
+def _validate_sed_command(argv: list[str], workspace: str | None) -> str | None:
+    err = _validate_arg_paths(argv[1:], workspace)
+    if err:
+        return err
+    for arg in argv[1:]:
+        if arg == "--in-place" or arg.startswith("-i"):
+            return "Error: sed in-place editing is blocked"
     return None
 
 
@@ -452,6 +439,30 @@ def _validate_python_command(argv: list[str], workspace: str | None) -> str | No
                 return err
             return _validate_arg_paths(argv[2:], workspace)
     return "Error: python is limited to version checks and -m py_compile"
+
+
+# Maps command basename → validator function.
+# Used by prepare_command and _validate_allowlisted_command_segment.
+_COMMAND_VALIDATORS: dict = {
+    "pwd":     _validate_read_args,
+    "uname":   _validate_read_args,
+    "which":   _validate_read_args,
+    "echo":    _validate_read_args,
+    "ls":      _validate_read_args,
+    "cat":     _validate_read_args,
+    "head":    _validate_read_args,
+    "tail":    _validate_read_args,
+    "wc":      _validate_read_args,
+    "grep":    _validate_read_args,
+    "rg":      _validate_read_args,
+    "stat":    _validate_read_args,
+    "file":    _validate_read_args,
+    "sed":     _validate_sed_command,
+    "find":    _validate_find_command,
+    "git":     _validate_git_command,
+    "python":  _validate_python_command,
+    "python3": _validate_python_command,
+}
 
 
 def _tokenize_shell_command(command: str) -> list[str]:
@@ -538,35 +549,6 @@ def _command_matches_allowed_prefix(command: str, allowed_commands: list[str] | 
     return False
 
 
-def _command_matches_blocked_prefix(command: str, blocked_commands: list[str] | None) -> str | None:
-    normalized = _normalize_command_text(command)
-    for entry in blocked_commands or []:
-        prefix = _normalize_command_text(entry)
-        if not prefix:
-            continue
-        if normalized == prefix or normalized.startswith(prefix + " "):
-            return entry
-    return None
-
-
-def _contains_disallowed_shell_syntax(
-    command: str,
-    *,
-    permission_level: int,
-    allowed_commands: list[str] | None = None,
-) -> bool:
-    if permission_level >= 3:
-        command = _strip_level3_safe_stderr_redirects(command)
-    effective_allowed = _effective_allowed_commands(permission_level, allowed_commands)
-    if permission_level >= 3 and any(
-        snippet in command for snippet in LEVEL3_ALLOWED_SHELL_META_SNIPPETS
-    ):
-        return any(snippet in command for snippet in LEVEL3_BLOCKED_SHELL_META_SNIPPETS)
-    if permission_level >= 3 and _command_matches_allowed_prefix(command, effective_allowed):
-        return any(snippet in command for snippet in LEVEL3_BLOCKED_SHELL_META_SNIPPETS)
-    return any(snippet in command for snippet in SHELL_META_SNIPPETS)
-
-
 def _path_is_within_root(path: str, root: str) -> bool:
     try:
         return os.path.commonpath([path, root]) == root
@@ -589,6 +571,53 @@ def _path_is_within_admin_roots(path: str, workspace: str | None) -> bool:
     return inside_workspace or inside_tmp
 
 
+# Sentinel returned by _dispatch_argv_validation when the command is unknown and
+# not on any allowlist — tells prepare_command to return (None, error) rather
+# than (argv, error).
+_NOT_PERMITTED = object()
+
+
+def _dispatch_argv_validation(
+    argv: list[str],
+    workspace: str | None,
+    *,
+    permission_level: int,
+    cmd: str,
+    effective_allowed: list[str],
+    allowed_commands: list[str] | None,
+    already_allowlisted: bool = False,
+) -> str | None | object:
+    """Validate a parsed command argv.
+
+    Returns None on success, an error string on argument error, or the
+    _NOT_PERMITTED sentinel when the command is unknown and not on any allowlist.
+    Callers must check ``result is _NOT_PERMITTED`` before treating the result
+    as a plain string.
+    """
+    exe = argv[0]
+    base = os.path.basename(exe)
+    rule = _COMMAND_VALIDATORS.get(base) or _COMMAND_VALIDATORS.get(exe)
+    if rule is not None:
+        err = rule(argv, workspace)
+        if not err:
+            return None
+        # git and python: allow write-capable fallback when on explicit allowlist at l3+
+        if base in {"git", "python", "python3"}:
+            if already_allowlisted or (
+                permission_level >= 3
+                and allowed_commands
+                and _command_matches_allowed_prefix(cmd, allowed_commands)
+            ):
+                return _validate_write_capable_arg_paths(argv[1:], workspace)
+        return err
+    # Unknown command: fall back to write-capable path check if on any allowlist
+    if already_allowlisted or (
+        permission_level >= 3 and _command_matches_allowed_prefix(cmd, effective_allowed)
+    ):
+        return _validate_write_capable_arg_paths(argv[1:], workspace)
+    return _NOT_PERMITTED
+
+
 def _validate_allowlisted_command_segment(
     segment: str,
     workspace: str | None,
@@ -596,37 +625,23 @@ def _validate_allowlisted_command_segment(
 ) -> str | None:
     segment = _restore_level3_command_tokens(segment)
     effective_allowed = _effective_allowed_commands(3, allowed_commands)
-    if not _command_matches_allowed_prefix(segment, effective_allowed):
-        try:
-            argv = shlex.split(segment, posix=True)
-        except ValueError as e:
-            return f"Error: invalid command syntax: {e}"
-        exe = argv[0] if argv else ""
-        return f"Error: command is not allowed: {exe}"
-
     try:
         argv = shlex.split(segment, posix=True)
     except ValueError as e:
         return f"Error: invalid command syntax: {e}"
-
     if not argv:
         return "Error: invalid command syntax"
-
-    exe = argv[0]
-    base = os.path.basename(exe)
-    if base in READ_ONLY_COMMANDS:
-        return _validate_read_only_command(argv, workspace)
-    if base == "git":
-        git_err = _validate_git_command(argv, workspace)
-        if not git_err:
-            return None
-        return _validate_write_capable_arg_paths(argv[1:], workspace)
-    if exe in PYTHON_COMMANDS or base in PYTHON_COMMANDS:
-        py_err = _validate_python_command(argv, workspace)
-        if not py_err:
-            return None
-        return _validate_write_capable_arg_paths(argv[1:], workspace)
-    return _validate_write_capable_arg_paths(argv[1:], workspace)
+    if not _command_matches_allowed_prefix(segment, effective_allowed):
+        return f"Error: command is not allowed: {argv[0]}"
+    # already_allowlisted=True means _NOT_PERMITTED cannot be returned
+    return _dispatch_argv_validation(  # type: ignore[return-value]
+        argv, workspace,
+        permission_level=3,
+        cmd=segment,
+        effective_allowed=effective_allowed,
+        allowed_commands=allowed_commands,
+        already_allowlisted=True,
+    )
 
 
 def _split_level3_shell_segments(command: str) -> tuple[list[str] | None, str | None]:
@@ -642,7 +657,7 @@ def _split_level3_shell_segments(command: str) -> tuple[list[str] | None, str | 
     segments: list[str] = []
     current: list[str] = []
     for token in tokens:
-        if token in LEVEL3_ALLOWED_SHELL_OPERATORS:
+        if token in {"&&", "||", "|", ";"}:
             if not current:
                 return None, "Error: invalid command syntax"
             segments.append(shlex.join(current))
@@ -686,9 +701,11 @@ def _validate_system_blocked_command(command: str) -> str | None:
                 return f"Error: command is denied by system policy: {entry}"
         return None
     for segment in segments or []:
-        match = _command_matches_blocked_prefix(segment, blocked_commands)
-        if match:
-            return f"Error: command is denied by system policy: {match}"
+        normalized = _normalize_command_text(segment)
+        for entry in blocked_commands:
+            prefix = _normalize_command_text(entry)
+            if prefix and (normalized == prefix or normalized.startswith(prefix + " ")):
+                return f"Error: command is denied by system policy: {entry}"
     return None
 
 
@@ -714,20 +731,16 @@ def prepare_command(
         return None, live_db_err
     if permission_level >= 4:
         return ["/bin/sh", "-lc", cmd], None
-    if _contains_disallowed_shell_syntax(
-        cmd,
-        permission_level=permission_level,
-        allowed_commands=effective_allowed,
-    ):
+    _scan = _strip_level3_safe_stderr_redirects(cmd) if permission_level >= 3 else cmd
+    if any(s in _scan for s in _SHELL_ALWAYS_BLOCKED):
         return None, "Error: shell syntax is not allowed"
-    if (
-        permission_level >= 3
-        and any(snippet in cmd for snippet in LEVEL3_ALLOWED_SHELL_META_SNIPPETS)
-    ):
-        err = _validate_level3_shell_command(cmd, workspace, effective_allowed)
-        if err:
-            return None, err
-        return ["/bin/sh", "-lc", cmd], None
+    if any(s in _scan for s in _SHELL_PIPELINE_OPS):
+        if permission_level >= 3:
+            err = _validate_level3_shell_command(cmd, workspace, effective_allowed)
+            if err:
+                return None, err
+            return ["/bin/sh", "-lc", cmd], None
+        return None, "Error: shell syntax is not allowed"
 
     try:
         argv = shlex.split(cmd, posix=True)
@@ -738,26 +751,16 @@ def prepare_command(
         return None, "Error: no command provided"
 
     exe = argv[0]
-    base = os.path.basename(exe)
-    if base in READ_ONLY_COMMANDS:
-        return argv, _validate_read_only_command(argv, workspace)
-    if base == "git":
-        git_err = _validate_git_command(argv, workspace)
-        if not git_err:
-            return argv, None
-        if permission_level >= 3 and allowed_commands and _command_matches_allowed_prefix(cmd, allowed_commands):
-            return argv, _validate_write_capable_arg_paths(argv[1:], workspace)
-        return argv, git_err
-    if exe in PYTHON_COMMANDS or base in PYTHON_COMMANDS:
-        py_err = _validate_python_command(argv, workspace)
-        if not py_err:
-            return argv, None
-        if permission_level >= 3 and allowed_commands and _command_matches_allowed_prefix(cmd, allowed_commands):
-            return argv, _validate_write_capable_arg_paths(argv[1:], workspace)
-        return argv, py_err
-    if permission_level >= 3 and _command_matches_allowed_prefix(cmd, effective_allowed):
-        return argv, _validate_write_capable_arg_paths(argv[1:], workspace)
-    return None, f"Error: command '{exe}' is not permitted at permission level {permission_level}. Level 4 (Admin) allows unrestricted shell commands."
+    result = _dispatch_argv_validation(
+        argv, workspace,
+        permission_level=permission_level,
+        cmd=cmd,
+        effective_allowed=effective_allowed,
+        allowed_commands=allowed_commands,
+    )
+    if result is _NOT_PERMITTED:
+        return None, f"Error: command '{exe}' is not permitted at permission level {permission_level}. Level 4 (Admin) allows unrestricted shell commands."
+    return argv, result  # type: ignore[return-value]
 
 
 def validate_command(

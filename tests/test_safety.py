@@ -16,19 +16,24 @@ import tempfile
 from pathlib import Path
 
 # ── bootstrap (must happen before any apex import) ────────────────────────────
+# conftest.py sets APEX_ROOT / APEX_DB_NAME before this file is imported.
+# These assignments are no-ops when running the full suite; they are here only
+# so this file can also be run in isolation (pytest tests/test_safety.py).
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SERVER_DIR = REPO_ROOT / "server"
 
 _TEST_ROOT = Path(tempfile.mkdtemp(prefix="apex-safety-tests-"))
-os.environ.setdefault("APEX_ROOT", str(_TEST_ROOT))
-os.environ.setdefault("APEX_WORKSPACE", str(_TEST_ROOT))
-os.environ.setdefault("APEX_ALERT_TOKEN", "test-token")
-os.environ.setdefault("APEX_ADMIN_TOKEN", "test-admin")
-os.environ.setdefault("APEX_SSL_CERT", "")
-os.environ.setdefault("APEX_SSL_KEY", "")
-os.environ.setdefault("APEX_SSL_CA", "")
-os.environ.setdefault("APEX_DB_NAME", "test_apex.db")
-os.environ.setdefault("APEX_LOG_NAME", "test_apex.log")
+# Use hard-set (not setdefault) so the shell environment can never override
+# to a real database path.  conftest.py wins when running the full suite.
+os.environ["APEX_ROOT"] = os.environ.get("APEX_ROOT", str(_TEST_ROOT))
+os.environ["APEX_WORKSPACE"] = os.environ.get("APEX_WORKSPACE", str(_TEST_ROOT))
+os.environ["APEX_ALERT_TOKEN"] = os.environ.get("APEX_ALERT_TOKEN", "test-token")
+os.environ["APEX_ADMIN_TOKEN"] = os.environ.get("APEX_ADMIN_TOKEN", "test-admin")
+os.environ["APEX_SSL_CERT"] = os.environ.get("APEX_SSL_CERT", "")
+os.environ["APEX_SSL_KEY"] = os.environ.get("APEX_SSL_KEY", "")
+os.environ["APEX_SSL_CA"] = os.environ.get("APEX_SSL_CA", "")
+os.environ["APEX_DB_NAME"] = os.environ.get("APEX_DB_NAME", "test_apex.db")
+os.environ["APEX_LOG_NAME"] = os.environ.get("APEX_LOG_NAME", "test_apex.log")
 
 if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))

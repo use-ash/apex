@@ -57,8 +57,12 @@ def build_system_prompt(
         parts = [f"You are a local AI assistant running {model} via Ollama."]
         parts.append("You are NOT Claude, NOT made by Anthropic.")
 
-    # Collect all possible tool names for display, filtered to what's actually allowed
-    all_tool_names = ["bash", "read_file", "write_file", "edit_file", "list_files", "search_files"]
+    # Collect tool names from registry (not hardcoded) + MCP
+    try:
+        from local_model.registry import TOOLS as _registered_tools
+        all_tool_names = list(_registered_tools.keys())
+    except Exception:
+        all_tool_names = ["bash", "read_file", "write_file", "edit_file", "list_files", "search_files"]
     try:
         from local_model.mcp_bridge import get_mcp_tool_schemas
         mcp_tools = get_mcp_tool_schemas()
@@ -71,6 +75,8 @@ def build_system_prompt(
     else:
         tool_names = all_tool_names
     parts.append(f"You have tools: {', '.join(tool_names) if tool_names else 'none'}. Use them to answer questions and complete tasks.")
+    if "execute_code" in tool_names:
+        parts.append("IMPORTANT: For Python code execution, always use the execute_code tool (stateful Jupyter kernel) instead of bash. Variables and imports persist between calls.")
     parts.append("")
 
     # Permission level section — tells the model exactly what it can do this turn
