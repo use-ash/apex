@@ -269,7 +269,9 @@ def get_workspace_tool_patterns() -> list[str]:
     raw = policy.get("workspace_tools", "")
     if isinstance(raw, list):
         patterns = _normalize_tool_patterns(raw)
-        return patterns or list(DEFAULT_LEVEL2_TOOL_PATTERNS)
+        if not patterns:
+            return list(DEFAULT_LEVEL2_TOOL_PATTERNS)
+        return _merge_new_defaults(patterns)
     text = str(raw or "").replace("\r\n", "\n").replace("\r", "\n")
     items: list[str] = []
     for line in text.split("\n"):
@@ -278,7 +280,24 @@ def get_workspace_tool_patterns() -> list[str]:
             if item:
                 items.append(item)
     patterns = _normalize_tool_patterns(items)
-    return patterns or list(DEFAULT_LEVEL2_TOOL_PATTERNS)
+    if not patterns:
+        return list(DEFAULT_LEVEL2_TOOL_PATTERNS)
+    return _merge_new_defaults(patterns)
+
+
+def _merge_new_defaults(patterns: list[str]) -> list[str]:
+    """Ensure new DEFAULT_LEVEL2_TOOL_PATTERNS entries are auto-included.
+
+    When a saved workspace_tools config predates new additions to
+    DEFAULT_LEVEL2_TOOL_PATTERNS, the new tools would silently be excluded.
+    This merges any missing defaults into the saved set so they are picked up
+    automatically without requiring a manual Dashboard reset.
+    """
+    pattern_set = set(patterns)
+    for default in DEFAULT_LEVEL2_TOOL_PATTERNS:
+        if default not in pattern_set:
+            patterns.append(default)
+    return patterns
 
 
 def tool_matches_pattern(tool_name: str, pattern: str) -> bool:

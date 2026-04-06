@@ -1057,10 +1057,15 @@ class SecurityFixTests(unittest.TestCase):
             "policy",
             {"workspace_tools": "playwright__*\nfetch__*"},
         )
+        # Custom patterns are included
         self.assertTrue(tool_access.tool_allowed_for_level("playwright__browser_navigate", 2))
         self.assertTrue(tool_access.tool_allowed_for_level("fetch__fetch", 2))
-        self.assertFalse(tool_access.tool_allowed_for_level("filesystem__read_text_file", 2))
-        self.assertFalse(tool_access.tool_allowed_for_level("bash", 2))
+        # Non-default tools not in saved config are still excluded
+        self.assertFalse(tool_access.tool_allowed_for_level("filesystem__write_file", 2))
+        self.assertFalse(tool_access.tool_allowed_for_level("memory__read_graph", 2))
+        # Defaults are auto-merged even if not in saved config (prevents stale snapshots)
+        self.assertTrue(tool_access.tool_allowed_for_level("bash", 2))
+        self.assertTrue(tool_access.tool_allowed_for_level("execute_code", 2))
 
     def test_tool_access_level_2_denies_memory_and_filesystem_writes(self) -> None:
         allowed, message = tool_access.tool_access_decision(
