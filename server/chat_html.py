@@ -3150,6 +3150,13 @@ function _isBusyErrorMessage(text = '') {
 let _userScrolledUp = false;
 const _SCROLL_THRESHOLD = 150; // px from bottom to count as "near bottom"
 
+// ---- History pagination (infinite scroll) ----
+let _historyHasMore = false;
+let _historyOldestId = null;
+let _historyLoading = false;
+const _HISTORY_PAGE_SIZE = 100;
+const _SCROLL_TOP_THRESHOLD = 200; // px from top to trigger load-more
+
 function _isNearBottom() {
   const el = document.getElementById('messages');
   if (!el) return true;
@@ -3218,6 +3225,131 @@ function _toggleThinkingBlock(headerEl) {
   _toggleCollapsible(headerEl);
 }
 
+// ---- Render a single history message DOM node (user or assistant) ----
+function _renderHistoryMsg(m) {
+  if (m.role === 'user') {
+    const div = document.createElement('div');
+    div.className = 'msg user';
+    if (m.content) {
+      const msgText = document.createElement('div');
+      msgText.className = 'msg-text';
+      msgText.textContent = m.content;
+      div.appendChild(msgText);
+    }
+    const attachmentWrap = buildMessageAttachments(m.attachments || []);
+    if (attachmentWrap) div.appendChild(attachmentWrap);
+    if (!m.content && !attachmentWrap) div.textContent = '(attachment)';
+    return div;
+  }
+  // Assistant message
+  const div = document.createElement('div');
+  div.className = 'msg assistant';
+  let inner = '';
+  if (m.speaker_name) {
+    inner += `<div class="speaker-header" data-profile-id="${escHtml(m.speaker_id || '')}"><span class="speaker-avatar">${escHtml(m.speaker_avatar || '')}</span> <span class="speaker-name">${escHtml(m.speaker_name)}</span></div>`;
+  }
+  inner += `<div class="bubble"></div>`;
+  if (m.cost_usd || m.tokens_in || m.tokens_out) {
+    const cost = m.cost_usd ? `$${m.cost_usd.toFixed(4)}` : '';
+    const tokens = (m.tokens_in || m.tokens_out) ? `${m.tokens_in}in/${m.tokens_out}out` : '';
+    inner += `<div class="cost">${[cost, tokens].filter(Boolean).join(' | ')}</div>`;
+  }
+  div.innerHTML = inner;
+  const bubble = div.querySelector('.bubble');
+  bubble.textContent = m.content;
+  const historyCtx = _newStreamCtx('', m.speaker_name ? {name: m.speaker_name, avatar: m.speaker_avatar || '', id: m.speaker_id || ''} : null);
+  historyCtx.bubble = div;
+  historyCtx.textContent = m.content || '';
+  try {
+    historyCtx.toolCalls = _normalizeToolEvents(JSON.parse(m.tool_events || '[]'));
+  } catch (e) {
+    historyCtx.toolCalls = [];
+  }
+  if (historyCtx.toolCalls.length > 0) {
+    const totalTime = historyCtx.toolCalls.reduce((sum, tool) => {
+      const duration = tool.startTime && tool.endTime ? (tool.endTime - tool.startTime) : 0;
+      return sum + Math.max(0, duration);
+    }, 0);
+    _finalizeToolPill(historyCtx, totalTime);
+  }
+  if ((m.thinking && m.thinking.trim()) || m.duration_ms > 0) {
+    if (m.thinking && m.thinking.trim()) historyCtx.thinkingText = m.thinking;
+    _thinkingPill(historyCtx, {durationMs: m.duration_ms || 0});
+  }
+  div.querySelectorAll('.bubble').forEach(el => renderMarkdown(el));
+  return div;
+}
+
+// ---- Load older messages when scrolling to top ----
+async function _loadOlderMessages() {
+  if (_historyLoading || !_historyHasMore || !currentChat) return;
+  _historyLoading = true;
+  const el = document.getElementById('messages');
+  if (!el) { _historyLoading = false; return; }
+
+  // Show loading spinner at top
+  let spinner = document.getElementById('_historySpinner');
+  if (!spinner) {
+    spinner = document.createElement('div');
+    spinner.id = '_historySpinner';
+    spinner.style.cssText = 'text-align:center;padding:12px;color:var(--dim);font-size:13px';
+    spinner.innerHTML = '<span class="dot-spinner" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--dim);animation:dotPulse 1.4s ease-in-out infinite;margin:0 2px"></span> Loading older messages\u2026';
+  }
+  el.prepend(spinner);
+
+  try {
+    const url = `/api/chats/${currentChat}/messages?limit=${_HISTORY_PAGE_SIZE}&before_id=${encodeURIComponent(_historyOldestId)}`;
+    const r = await fetch(url, {credentials: 'same-origin'});
+    if (!r.ok) { dbg('load-more failed:', r.status); return; }
+    const data = await r.json();
+    const msgs = Array.isArray(data) ? data : (data.messages || []);
+    _historyHasMore = data.has_more === true;
+
+    if (msgs.length > 0) {
+      _historyOldestId = msgs[0].id;
+
+      // Preserve scroll position: anchor to current first real message
+      const scrollAnchor = el.children[1]; // [0] is spinner
+      const anchorTop = scrollAnchor ? scrollAnchor.getBoundingClientRect().top : 0;
+
+      // Build fragment of older messages
+      const frag = document.createDocumentFragment();
+      msgs.forEach(m => frag.appendChild(_renderHistoryMsg(m)));
+
+      // Insert after spinner (which we'll remove)
+      spinner.remove();
+      el.prepend(frag);
+
+      // Restore scroll position so the view doesn't jump
+      if (scrollAnchor && scrollAnchor.isConnected) {
+        _programmaticScroll = true;
+        const newAnchorTop = scrollAnchor.getBoundingClientRect().top;
+        el.scrollTop += (newAnchorTop - anchorTop);
+        requestAnimationFrame(() => { _programmaticScroll = false; });
+      }
+    } else {
+      spinner.remove();
+    }
+
+    // Show "beginning of conversation" marker when no more history
+    if (!_historyHasMore) {
+      let marker = document.getElementById('_historyEnd');
+      if (!marker) {
+        marker = document.createElement('div');
+        marker.id = '_historyEnd';
+        marker.style.cssText = 'text-align:center;padding:16px 12px 8px;color:var(--dim);font-size:12px;opacity:0.6';
+        marker.textContent = '\u2500\u2500 Beginning of conversation \u2500\u2500';
+        el.prepend(marker);
+      }
+    }
+  } catch (e) {
+    dbg('load-more error:', e);
+    if (spinner.isConnected) spinner.remove();
+  } finally {
+    _historyLoading = false;
+  }
+}
+
 // Attach scroll listener once DOM is ready
 (function _initScrollWatch() {
   function attach() {
@@ -3227,6 +3359,10 @@ function _toggleThinkingBlock(headerEl) {
       if (_programmaticScroll) return;
       _userScrolledUp = !_isNearBottom();
       if (!_userScrolledUp) _hideNewContentPill();
+      // Infinite scroll: load older messages when near top
+      if (_historyHasMore && !_historyLoading && el.scrollTop < _SCROLL_TOP_THRESHOLD) {
+        _loadOlderMessages();
+      }
     }, {passive: true});
   }
   if (document.readyState === 'loading') {
@@ -4673,6 +4809,10 @@ async function selectChat(id, title, chatType, category) {
     activeStreams.clear();
     Object.keys(_streamCtx).forEach(sid => { delete _streamCtx[sid]; });
     clearComposerDraft();
+    // Reset history pagination for new chat
+    _historyHasMore = false;
+    _historyOldestId = null;
+    _historyLoading = false;
   }
   hideStopMenu();
   // B-23: close side panel on channel switch so thinking/tool content from
@@ -4751,51 +4891,25 @@ async function selectChat(id, title, chatType, category) {
     dbg(' stale selectChat response ignored:', id);
     return;
   }
+
+  // Initialize pagination state
+  _historyHasMore = data.has_more === true;
+  _historyOldestId = msgs.length > 0 ? msgs[0].id : null;
+  _historyLoading = false;
+
   const el = document.getElementById('messages');
   el.innerHTML = '';
-  msgs.forEach(m => {
-    if (m.role === 'user') {
-      addUserMsg(m.content || '', m.attachments || []);
-    } else {
-      const div = document.createElement('div');
-      div.className = 'msg assistant';
-      let inner = '';
-      // Speaker identity header for group messages
-      if (m.speaker_name) {
-        inner += `<div class="speaker-header" data-profile-id="${escHtml(m.speaker_id || '')}"><span class="speaker-avatar">${escHtml(m.speaker_avatar || '')}</span> <span class="speaker-name">${escHtml(m.speaker_name)}</span></div>`;
-      }
-      inner += `<div class="bubble"></div>`;
-      if (m.cost_usd || m.tokens_in || m.tokens_out) {
-        const cost = m.cost_usd ? `$${m.cost_usd.toFixed(4)}` : '';
-        const tokens = (m.tokens_in || m.tokens_out) ? `${m.tokens_in}in/${m.tokens_out}out` : '';
-        inner += `<div class="cost">${[cost, tokens].filter(Boolean).join(' | ')}</div>`;
-      }
-      div.innerHTML = inner;
-      const bubble = div.querySelector('.bubble');
-      bubble.textContent = m.content;
-      el.appendChild(div);
-      const historyCtx = _newStreamCtx('', m.speaker_name ? {name: m.speaker_name, avatar: m.speaker_avatar || '', id: m.speaker_id || ''} : null);
-      historyCtx.bubble = div;
-      historyCtx.textContent = m.content || '';
-      try {
-        historyCtx.toolCalls = _normalizeToolEvents(JSON.parse(m.tool_events || '[]'));
-      } catch (e) {
-        historyCtx.toolCalls = [];
-      }
-      if (historyCtx.toolCalls.length > 0) {
-        const totalTime = historyCtx.toolCalls.reduce((sum, tool) => {
-          const duration = tool.startTime && tool.endTime ? (tool.endTime - tool.startTime) : 0;
-          return sum + Math.max(0, duration);
-        }, 0);
-        _finalizeToolPill(historyCtx, totalTime);
-      }
-      if ((m.thinking && m.thinking.trim()) || m.duration_ms > 0) {
-        if (m.thinking && m.thinking.trim()) historyCtx.thinkingText = m.thinking;
-        _thinkingPill(historyCtx, {durationMs: m.duration_ms || 0});
-      }
-      div.querySelectorAll('.bubble').forEach(el => renderMarkdown(el));
-    }
-  });
+
+  // Show "beginning of conversation" marker if all messages fit in first page
+  if (!_historyHasMore && msgs.length > 0) {
+    const marker = document.createElement('div');
+    marker.id = '_historyEnd';
+    marker.style.cssText = 'text-align:center;padding:16px 12px 8px;color:var(--dim);font-size:12px;opacity:0.6';
+    marker.textContent = '\u2500\u2500 Beginning of conversation \u2500\u2500';
+    el.appendChild(marker);
+  }
+
+  msgs.forEach(m => el.appendChild(_renderHistoryMsg(m)));
   _userScrolledUp = false;
   scrollBottomForce();
   fetchContext(id);
