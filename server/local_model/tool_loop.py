@@ -85,6 +85,11 @@ def _build_tool_prompt(tool_schemas: list[dict]) -> str:
         "After each tool call, you will receive the result in a <tool_result> block.",
         "When you have the final answer, respond with plain text (no <tool_call> block).",
         "",
+        "CRITICAL RULES:",
+        "- When asked to run, execute, or evaluate ANY Python code, you MUST use a <tool_call> — NEVER simulate or predict the output yourself.",
+        "- For Python code, ALWAYS use execute_code (not bash). The execute_code tool runs a stateful Jupyter kernel where variables persist between calls.",
+        "- Even for simple code like `print(1+1)`, you MUST call the tool. Do NOT generate the output from your own knowledge.",
+        "",
         "### Tool Definitions",
     ]
     for schema in tool_schemas:
