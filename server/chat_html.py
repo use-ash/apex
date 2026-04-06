@@ -2567,7 +2567,13 @@ function handleEvent(msg) {
       _ensureCtxBubble(ctx);
       _activateStream(ctx);
       if (ctx.awaitingAck && !ctx.thinkingText) {
+        // GPT-based agents (no thinking events): live pill was created at
+        // stream_ack, thinkingStart was set then — convert to static with
+        // elapsed duration so the timer is preserved, matching Claude behavior.
         _teardownThinking(ctx);
+        if (ctx.thinkingStart) {
+          _thinkingPill(ctx, {durationMs: Date.now() - ctx.thinkingStart});
+        }
       } else if (ctx.thinkingText && !ctx.thinkingPill) {
         // Ensure a static thinking pill exists whenever we have thinking text —
         // handles both live→static conversion and recreation after teardown
@@ -2624,7 +2630,11 @@ function handleEvent(msg) {
       _ensureCtxBubble(ctx);
       _activateStream(ctx);
       if (ctx.awaitingAck && !ctx.thinkingText) {
+        // Same as text case: preserve elapsed duration for GPT agents.
         _teardownThinking(ctx);
+        if (ctx.thinkingStart) {
+          _thinkingPill(ctx, {durationMs: Date.now() - ctx.thinkingStart});
+        }
       } else if (ctx.thinkingText && !ctx.thinkingPill) {
         // Ensure a static thinking pill exists whenever we have thinking text
         _teardownThinking(ctx);
