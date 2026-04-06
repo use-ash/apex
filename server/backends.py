@@ -293,8 +293,34 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
         # Skip context injection: the thread carries profile/roster/workspace from
         # prior turns. Re-injecting every turn causes ~4K token bloat per turn that
         # compounds as Codex replays the full thread on resume.
-        full_prompt = prompt
-        log(f"codex resume: session={scope_key[:24]} thread={existing_thread[:8]} (no ctx injection)")
+        # Exception: inject a minimal identity anchor to prevent character capture.
+        # GPT-series models drift into impersonating other agents (writing [Operations]:
+        # etc.) on long relay threads where their own name hasn't appeared recently.
+        _anchor_pid = _current_group_profile_id.get("")
+        _anchor_name = ""
+        if _anchor_pid:
+            try:
+                from db import _get_db
+                from state import _db_lock
+                with _db_lock:
+                    _anchor_conn = _get_db()
+                    _anchor_row = _anchor_conn.execute(
+                        "SELECT name FROM agent_profiles WHERE id = ?", (_anchor_pid,)
+                    ).fetchone()
+                    _anchor_conn.close()
+                _anchor_name = _anchor_row[0] if _anchor_row else ""
+            except Exception:
+                pass
+        if _anchor_name:
+            full_prompt = (
+                f"<system-reminder>You are {_anchor_name}. "
+                "Respond only as yourself. Do not write as, speak for, or impersonate "
+                "any other agent. Never prefix your response with another agent's name."
+                f"</system-reminder>\n\n{prompt}"
+            )
+        else:
+            full_prompt = prompt
+        log(f"codex resume: session={scope_key[:24]} thread={existing_thread[:8]} (identity anchor={'yes' if _anchor_name else 'no'})")
         cmd = [
             CODEX_CLI, "exec", "resume", existing_thread,
             "--json", "--skip-git-repo-check",
@@ -648,6 +674,22 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
     workspace_ctx = _get_workspace_context(chat_id)
     if profile_prompt or group_roster_prompt or memory_prompt or workspace_ctx:
         sys_prompt = f"{sys_prompt}\n\n{profile_prompt}{group_roster_prompt}{memory_prompt}{workspace_ctx}"
+
+    # In group chats, conversation history prefixes other agents' messages with
+    # [AgentName]: for attribution. GPT-series models learn this pattern and can
+    # start their own responses with [AgentName]: — impersonating other agents.
+    # Append an explicit identity lock after all context so it is the last
+    # instruction the model reads before the conversation history.
+    if current_pid:
+        sys_prompt = (
+            f"{sys_prompt}\n\n<system-reminder>"
+            "You are responding as yourself. "
+            "In the conversation history above, messages from other agents are prefixed "
+            "with [AgentName]: to show who said them — this is a display convention only. "
+            "Never start your own response with [AgentName]: or any other agent's name. "
+            "Do not impersonate, speak for, or write as any other agent."
+            "</system-reminder>"
+        )
 
     messages = [{"role": "system", "content": sys_prompt}]
     for m in recent[-50:]:
