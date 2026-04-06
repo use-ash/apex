@@ -4,12 +4,18 @@
 Wraps the Jupyter kernel-backed execute_code tool as an MCP stdio server
 so Claude sessions can use stateful Python execution.
 
+Protocol: newline-delimited JSON-RPC over stdin/stdout (MCP stdio transport).
+
 Run standalone:  python3 mcp_execute_code.py
-Registered via:  state/mcp_servers.json  (auto-configured by setup)
+Registered via:  streaming.py _inject_execute_code_mcp() (auto-configured)
 """
 import json
 import sys
 import os
+
+# Diagnostic logging to stderr (visible in Claude Code debug output)
+def _log(msg: str) -> None:
+    print(f"[mcp-execute-code] {msg}", file=sys.stderr, flush=True)
 
 # Add server dir to path so we can import local_model modules
 _server_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -19,17 +25,23 @@ if _server_dir not in sys.path:
 
 def _init_executor():
     """Lazy-load the execute_code module."""
-    from local_model.tools.execute_code import execute
-    return execute
+    try:
+        from local_model.tools.execute_code import execute
+        _log("executor loaded OK")
+        return execute
+    except Exception as e:
+        _log(f"executor load FAILED: {e}")
+        raise
 
 
-def _handle_request(request: dict, executor) -> dict:
+def _handle_request(request: dict, executor) -> dict | None:
     """Handle a single JSON-RPC request."""
     method = request.get("method", "")
     req_id = request.get("id")
     params = request.get("params", {})
 
     if method == "initialize":
+        _log(f"initialize (id={req_id})")
         return {
             "jsonrpc": "2.0",
             "id": req_id,
@@ -44,9 +56,11 @@ def _handle_request(request: dict, executor) -> dict:
         }
 
     if method == "notifications/initialized":
+        _log("notifications/initialized received")
         return None  # notification, no response
 
     if method == "tools/list":
+        _log(f"tools/list (id={req_id})")
         return {
             "jsonrpc": "2.0",
             "id": req_id,
@@ -82,6 +96,7 @@ def _handle_request(request: dict, executor) -> dict:
     if method == "tools/call":
         tool_name = params.get("name", "")
         args = params.get("arguments", {})
+        _log(f"tools/call: {tool_name} (id={req_id})")
 
         if tool_name != "execute_code":
             return {
@@ -93,17 +108,22 @@ def _handle_request(request: dict, executor) -> dict:
                 },
             }
 
-        # Extract chat_id from env (set by Apex when spawning the SDK client)
+        # Extract context from env (set by Apex when spawning the SDK client)
         chat_id = os.environ.get("APEX_CHAT_ID")
         workspace = os.environ.get("APEX_WORKSPACE")
+        try:
+            perm_level = int(os.environ.get("APEX_PERMISSION_LEVEL", "2"))
+        except (TypeError, ValueError):
+            perm_level = 2
 
         try:
-            result = executor(args, workspace, chat_id=chat_id)
+            result = executor(args, workspace, chat_id=chat_id, permission_level=perm_level)
             is_error = result.startswith("Error")
         except Exception as e:
             result = f"Error: {type(e).__name__}: {e}"
             is_error = True
 
+        _log(f"tools/call result: error={is_error} len={len(result)}")
         return {
             "jsonrpc": "2.0",
             "id": req_id,
@@ -113,19 +133,32 @@ def _handle_request(request: dict, executor) -> dict:
             },
         }
 
-    # Unknown method
-    return {
-        "jsonrpc": "2.0",
-        "id": req_id,
-        "error": {"code": -32601, "message": f"Method not found: {method}"},
-    }
+    # Unknown method — respond with error if it has an id (request), skip if notification
+    if req_id is not None:
+        _log(f"unknown method: {method} (id={req_id})")
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": -32601, "message": f"Method not found: {method}"},
+        }
+    _log(f"unknown notification: {method}")
+    return None
 
 
 def main():
-    """Run the MCP server on stdio."""
-    executor = _init_executor()
+    """Run the MCP server on stdio using newline-delimited JSON."""
+    _log(f"starting (pid={os.getpid()}, python={sys.executable})")
+    _log(f"env: APEX_CHAT_ID={os.environ.get('APEX_CHAT_ID')}, APEX_WORKSPACE={os.environ.get('APEX_WORKSPACE')}")
 
-    # Read JSON-RPC messages from stdin, write responses to stdout
+    try:
+        executor = _init_executor()
+    except Exception:
+        _log("FATAL: cannot load executor, exiting")
+        sys.exit(1)
+
+    _log("ready, reading stdin")
+
+    # Read newline-delimited JSON-RPC messages from stdin
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -133,13 +166,16 @@ def main():
 
         try:
             request = json.loads(line)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            _log(f"JSON parse error: {e} — line: {line[:200]}")
             continue
 
         response = _handle_request(request, executor)
         if response is not None:
             sys.stdout.write(json.dumps(response) + "\n")
             sys.stdout.flush()
+
+    _log("stdin closed, exiting")
 
 
 if __name__ == "__main__":

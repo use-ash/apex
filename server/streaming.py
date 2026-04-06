@@ -343,7 +343,8 @@ def _load_mcp_servers() -> dict[str, dict]:
 
 
 def _inject_execute_code_mcp(servers: dict, *, chat_id: str | None = None,
-                              workspace: str | None = None) -> dict:
+                              workspace: str | None = None,
+                              permission_level: int = 2) -> dict:
     """Auto-inject the execute_code MCP server if Jupyter is installed."""
     if "execute_code" in servers:
         return servers  # user already configured it manually
@@ -356,7 +357,7 @@ def _inject_execute_code_mcp(servers: dict, *, chat_id: str | None = None,
     if not mcp_script.exists():
         return servers
     # Build env vars so the MCP server knows the chat context
-    mcp_env = {}
+    mcp_env = {"APEX_PERMISSION_LEVEL": str(permission_level)}
     if chat_id:
         mcp_env["APEX_CHAT_ID"] = chat_id
     if workspace:
@@ -547,7 +548,8 @@ def _make_options(
     mcp_servers = _load_mcp_servers()
     # Auto-inject execute_code MCP server if Jupyter is available
     mcp_servers = _inject_execute_code_mcp(mcp_servers, chat_id=chat_id,
-                                             workspace=str(workspace_root))
+                                             workspace=str(workspace_root),
+                                             permission_level=permission_level)
     if mcp_servers:
         opts.mcp_servers = mcp_servers
         log(f"MCP: {len(mcp_servers)} server(s) attached to SDK options")
