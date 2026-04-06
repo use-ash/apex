@@ -120,9 +120,9 @@ if _HAS_JUPYTER:
     _register(
         "execute_code",
         "Execute Python code in a stateful Jupyter kernel. Variables, imports, and "
-        "function definitions persist between calls. Use for data processing, file "
-        "manipulation, complex logic, and multi-step computations. Prefer this over "
-        "bash for anything beyond simple shell commands.",
+        "function definitions persist between calls. ALWAYS use this tool instead of "
+        "bash for ANY Python code — including print statements, calculations, scripts, "
+        "and multi-step computations. State is preserved across calls.",
         {
             "type": "object",
             "properties": {
