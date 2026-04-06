@@ -76,7 +76,9 @@ def build_system_prompt(
         tool_names = all_tool_names
     parts.append(f"You have tools: {', '.join(tool_names) if tool_names else 'none'}. Use them to answer questions and complete tasks.")
     if "execute_code" in tool_names:
-        parts.append("IMPORTANT: For Python code execution, always use the execute_code tool (stateful Jupyter kernel) instead of bash. Variables and imports persist between calls.")
+        parts.append("IMPORTANT: For ALL Python code execution, you MUST use the execute_code tool — NEVER use bash to run Python. "
+                     "execute_code runs a stateful Jupyter kernel where variables, imports, and definitions persist between calls. "
+                     "This applies to any request involving Python code, scripts, calculations, or print statements.")
     parts.append("")
 
     # Permission level section — tells the model exactly what it can do this turn
