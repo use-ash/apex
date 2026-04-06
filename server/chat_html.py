@@ -1622,7 +1622,12 @@ async function attachToStream(socket, chatId, options = {}) {
   if (!chatId || !socket || ws !== socket || socket.readyState !== WebSocket.OPEN) return;
   if (reloadBeforeAttach) {
     await selectChat(chatId).catch(err => reportError(`${reason} selectChat`, err));
-    if (ws !== socket || socket.readyState !== WebSocket.OPEN) return;
+    // selectChat already sent {action:'attach'} at line ~4656 — do NOT send a
+    // second one.  A double-attach causes the server to replay the buffer twice:
+    // the second stream_reattached clears accumulated thinkingText and the second
+    // el.innerHTML='' wipes rebuilt bubbles, making thinking pills vanish for
+    // concurrent agents.
+    return;
   }
   dbg('sending attach:', chatId, 'reason=', reason, 'reloadBeforeAttach=', reloadBeforeAttach);
   socket.send(JSON.stringify({action: 'attach', chat_id: chatId}));
@@ -1734,6 +1739,10 @@ function connect() {
     updateSendBtn();
 
     refreshDebugState('ws-open');
+    // Track whether initApp ran inside ensureInitialized.  If it did, initApp
+    // already called selectChat which sent {action:'attach'} — we must not
+    // call attachToStream again or we get a second full buffer replay.
+    const _initWasAlreadyDone = initDone;
     await ensureInitialized('ws-open').catch(err => reportError('init ws-open', err));
     if (resumeHandledExternally) {
       resumeHandledExternally = false;
@@ -1741,16 +1750,22 @@ function connect() {
     } else if (initDone) {
       const restoreChat = currentChat || sessionStorage.getItem('currentChatId');
       const streamingChatId = sessionStorage.getItem('streamingChatId');
-      dbg('ws-open: restore state', {currentChat, restoreChat, streamingChatId});
+      dbg('ws-open: restore state', {currentChat, restoreChat, streamingChatId, _initWasAlreadyDone});
       if (!restoreChat) {
         // No chat to restore
       } else if (streamingChatId && streamingChatId === restoreChat) {
         if (!currentChat) currentChat = restoreChat;
-        dbg('ws-open: active stream found in sessionStorage, reattaching:', currentChat);
-        await attachToStream(socket, currentChat, {
-          reloadBeforeAttach: true,
-          reason: 'ws-open',
-        });
+        if (!_initWasAlreadyDone) {
+          // initApp just ran — selectChat inside initApp already sent attach.
+          // The stream_reattached + buffer replay are already in flight.
+          dbg('ws-open: initApp just ran, stream attached via initApp → selectChat — skipping attachToStream');
+        } else {
+          dbg('ws-open: active stream found in sessionStorage, reattaching:', currentChat);
+          await attachToStream(socket, currentChat, {
+            reloadBeforeAttach: true,
+            reason: 'ws-open',
+          });
+        }
       } else {
         if (!currentChat) currentChat = restoreChat;
         selectChat(restoreChat).catch(err => reportError('reload current chat', err));
