@@ -1,5 +1,11 @@
 """Tool registry — maps tool names to JSON schemas and executor functions."""
-from .tools import bash_tool, read_file, write_file, list_files, search_files
+from .tools import bash_tool, read_file, write_file, edit_file, list_files, search_files
+
+try:
+    from .tools import execute_code as _execute_code_mod
+    _HAS_JUPYTER = True
+except ImportError:
+    _HAS_JUPYTER = False
 
 TOOLS: dict[str, dict] = {}
 
@@ -64,6 +70,21 @@ _register(
 )
 
 _register(
+    "edit_file",
+    "Edit a file by replacing a specific text span. Finds old_text exactly once and replaces it with new_text. More precise than write_file for targeted changes — no need to rewrite the entire file.",
+    {
+        "type": "object",
+        "properties": {
+            "file_path": {"type": "string", "description": "Path to the file to edit"},
+            "old_text": {"type": "string", "description": "Exact text to find (must match exactly once in the file)"},
+            "new_text": {"type": "string", "description": "Replacement text"},
+        },
+        "required": ["file_path", "old_text", "new_text"],
+    },
+    edit_file.execute,
+)
+
+_register(
     "list_files",
     "List files matching a glob pattern. Returns matching file paths sorted by modification time.",
     {
@@ -91,6 +112,33 @@ _register(
     },
     search_files.execute,
 )
+
+
+# --- Optional: Jupyter code execution (issue #1, set 2) ---
+
+if _HAS_JUPYTER:
+    _register(
+        "execute_code",
+        "Execute Python code in a stateful Jupyter kernel. Variables, imports, and "
+        "function definitions persist between calls. Use for data processing, file "
+        "manipulation, complex logic, and multi-step computations. Prefer this over "
+        "bash for anything beyond simple shell commands.",
+        {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "Python code to execute",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Execution timeout in seconds (default: 30, max: 120)",
+                },
+            },
+            "required": ["code"],
+        },
+        _execute_code_mod.execute,
+    )
 
 
 def get_tool_schemas(allowed_names: set[str] | None = None) -> list[dict]:

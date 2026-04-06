@@ -353,6 +353,19 @@ def _init_db() -> None:
             last_seen TEXT NOT NULL
         )
     """)
+    # Migration: permission change audit log
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS permission_audit_log (
+            id TEXT PRIMARY KEY,
+            chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+            event_type TEXT NOT NULL,
+            old_level INTEGER,
+            new_level INTEGER,
+            elevated_until TEXT DEFAULT NULL,
+            changed_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_perm_audit_chat ON permission_audit_log(chat_id)")
     conn.commit()
     conn.close()
 
@@ -1496,3 +1509,28 @@ def _remove_device_token(token: str) -> None:
         conn.commit()
         conn.close()
     log(f"APNs: removed expired token {token[:12]}...")
+
+
+def _log_permission_change(
+    chat_id: str,
+    event_type: str,
+    old_level: int | None,
+    new_level: int | None,
+    elevated_until: str | None = None,
+) -> None:
+    """Append a row to permission_audit_log. Non-blocking — errors are swallowed."""
+    import uuid as _uuid
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    row_id = str(_uuid.uuid4())
+    try:
+        with _db_lock:
+            conn = _get_db()
+            conn.execute(
+                "INSERT INTO permission_audit_log (id, chat_id, event_type, old_level, new_level, elevated_until, changed_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (row_id, chat_id, event_type, old_level, new_level, elevated_until, now),
+            )
+            conn.commit()
+            conn.close()
+    except Exception as exc:
+        log(f"permission_audit_log write failed: {exc}")

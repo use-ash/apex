@@ -757,7 +757,7 @@ def prepare_command(
         return argv, py_err
     if permission_level >= 3 and _command_matches_allowed_prefix(cmd, effective_allowed):
         return argv, _validate_write_capable_arg_paths(argv[1:], workspace)
-    return None, f"Error: command is not allowed: {exe}"
+    return None, f"Error: command '{exe}' is not permitted at permission level {permission_level}. Level 4 (Admin) allows unrestricted shell commands."
 
 
 def validate_command(

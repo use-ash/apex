@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import urllib.request
 import uuid
 from typing import Callable, Awaitable
@@ -626,7 +627,8 @@ def _call_chatgpt_backend(model: str, messages: list, tools: list,
         raise RuntimeError(f"ChatGPT backend error: {e} body={error_body}") from e
 
 
-def _build_result(text: str, tool_events: list, is_error: bool = False, error: str | None = None, thinking: str = "") -> dict:
+def _build_result(text: str, tool_events: list, is_error: bool = False, error: str | None = None,
+                   thinking: str = "", duration_ms: int = 0) -> dict:
     """Build result dict matching apex.py's expected format."""
     return {
         "text": text,
@@ -638,6 +640,7 @@ def _build_result(text: str, tool_events: list, is_error: bool = False, error: s
         "session_id": None,
         "thinking": thinking.strip(),
         "tool_events": json.dumps(tool_events),
+        "duration_ms": duration_ms,
     }
 
 
@@ -685,6 +688,7 @@ async def run_tool_loop(
     if not ALLOW_LOCAL_TOOLS and not is_remote:
         raise RuntimeError("Local model tools are disabled (set APEX_ALLOW_LOCAL_TOOLS=1 to enable)")
 
+    _loop_started_at = time.monotonic()
     tool_schemas = get_tool_schemas(allowed_tools)
     tool_events: list[dict] = []
     result_text = ""
@@ -741,7 +745,8 @@ async def run_tool_loop(
             backend = "API" if (api_key and api_url) else "Ollama"
             err = f"{backend} error: {type(e).__name__}: {e}"
             await emit_event({"type": "error", "message": err})
-            return _build_result("", tool_events, is_error=True, error=err, thinking=thinking_text)
+            return _build_result("", tool_events, is_error=True, error=err, thinking=thinking_text,
+                                   duration_ms=int((time.monotonic() - _loop_started_at) * 1000))
 
         # Emit reasoning/thinking if present
         reasoning = response.get("reasoning")  # OpenAI Responses API / ChatGPT backend
@@ -772,7 +777,8 @@ async def run_tool_loop(
             if content_text:
                 result_text += content_text
                 await emit_event({"type": "text", "text": content_text})
-            return _build_result(result_text, tool_events, thinking=thinking_text)
+            return _build_result(result_text, tool_events, thinking=thinking_text,
+                                   duration_ms=int((time.monotonic() - _loop_started_at) * 1000))
 
         # Model produced text alongside tool calls — emit it
         if content_text:
@@ -812,8 +818,10 @@ async def run_tool_loop(
             if allowed_tools is not None and tool_name not in allowed_tools:
                 if permission_level <= 0:
                     tool_result = "This agent is Restricted and cannot use tools or access files."
-                else:
+                elif permission_level == 1:
                     tool_result = "This action requires Elevated or Admin permissions."
+                else:
+                    tool_result = f"Error: tool '{tool_name}' is not enabled in the workspace policy. Check Dashboard → Policy → Workspace Tools."
                 is_error = True
             else:
                 # Guardrail pre-check
@@ -904,4 +912,5 @@ async def run_tool_loop(
     max_msg = "\n\n[Reached maximum tool iterations]"
     result_text += max_msg
     await emit_event({"type": "text", "text": max_msg})
-    return _build_result(result_text, tool_events, thinking=thinking_text)
+    return _build_result(result_text, tool_events, thinking=thinking_text,
+                           duration_ms=int((time.monotonic() - _loop_started_at) * 1000))

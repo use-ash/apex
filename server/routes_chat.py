@@ -19,7 +19,7 @@ from db import (
     SYSTEM_PROFILE_ID,
     _create_chat, _get_chats, _get_chat, _update_chat, _delete_chat,
     _get_chat_settings, _update_chat_settings,
-    _get_chat_tool_policy, _normalize_tool_policy, _set_chat_tool_policy,
+    _get_chat_tool_policy, _normalize_tool_policy, _set_chat_tool_policy, _log_permission_change,
     _get_group_members,
     _add_group_member,
     _update_group_member,
@@ -422,9 +422,12 @@ async def api_set_chat_tool_policy(chat_id: str, request: Request):
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
     if not isinstance(data, dict):
         return JSONResponse({"error": "Request body must be a JSON object"}, status_code=400)
-    default_level = int(_get_chat_tool_policy(chat_id).get("default_level", 2))
+    current_policy = _get_chat_tool_policy(chat_id)
+    old_level = int(current_policy.get("level", current_policy.get("default_level", 2)))
+    default_level = int(current_policy.get("default_level", 2))
     policy = _normalize_tool_policy(data, default_level=default_level)
     policy = _set_chat_tool_policy(chat_id, policy, default_level=default_level)
+    _log_permission_change(chat_id, "set", old_level, int(policy.get("level", default_level)))
     await _refresh_direct_chat_runtime(chat_id)
     return JSONResponse({"ok": True, "tool_policy": policy})
 
@@ -451,11 +454,13 @@ async def api_elevate_chat_tool_policy(chat_id: str, request: Request):
         return JSONResponse({"error": "minutes must be between 1 and 1440"}, status_code=400)
     current = _get_chat_tool_policy(chat_id)
     default_level = int(current.get("default_level", current.get("level", 2)))
+    old_level = int(current.get("level", default_level))
     expires_at = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat(timespec="seconds")
     current["default_level"] = default_level
     current["level"] = max(default_level, min(4, target_level))
     current["elevated_until"] = expires_at
     policy = _set_chat_tool_policy(chat_id, current, default_level=default_level)
+    _log_permission_change(chat_id, "elevate", old_level, int(policy.get("level", default_level)), elevated_until=expires_at)
     await _refresh_direct_chat_runtime(chat_id)
     return JSONResponse({"ok": True, "chat_id": chat_id, "tool_policy": policy, "expires_at": expires_at})
 
@@ -468,11 +473,34 @@ async def api_revoke_chat_tool_policy(chat_id: str):
         return err
     current = _get_chat_tool_policy(chat_id)
     default_level = int(current.get("default_level", current.get("level", 2)))
+    old_level = int(current.get("level", default_level))
     current["level"] = default_level
     current["elevated_until"] = None
     policy = _set_chat_tool_policy(chat_id, current, default_level=default_level)
+    _log_permission_change(chat_id, "revoke", old_level, default_level)
     await _refresh_direct_chat_runtime(chat_id)
     return JSONResponse({"ok": True, "chat_id": chat_id, "tool_policy": policy})
+
+
+@chat_router.get("/api/chats/{chat_id}/tool-policy/audit")
+async def api_get_permission_audit(chat_id: str, limit: int = 50):
+    chat = _get_chat(chat_id)
+    err = _direct_chat_tool_policy_error(chat)
+    if err:
+        return err
+    with _db_lock:
+        conn = _get_db()
+        rows = conn.execute(
+            "SELECT event_type, old_level, new_level, elevated_until, changed_at"
+            " FROM permission_audit_log WHERE chat_id = ?"
+            " ORDER BY changed_at DESC LIMIT ?",
+            (chat_id, max(1, min(limit, 200))),
+        ).fetchall()
+        conn.close()
+    return JSONResponse({"chat_id": chat_id, "audit": [
+        {"event_type": r[0], "old_level": r[1], "new_level": r[2], "elevated_until": r[3], "changed_at": r[4]}
+        for r in rows
+    ]})
 
 
 @chat_router.delete("/api/threads/stale")
