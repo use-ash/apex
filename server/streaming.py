@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import re
+import sys
 import time
 import uuid
 from collections import deque
@@ -341,6 +342,34 @@ def _load_mcp_servers() -> dict[str, dict]:
         return {}
 
 
+def _inject_execute_code_mcp(servers: dict, *, chat_id: str | None = None,
+                              workspace: str | None = None) -> dict:
+    """Auto-inject the execute_code MCP server if Jupyter is installed."""
+    if "execute_code" in servers:
+        return servers  # user already configured it manually
+    try:
+        # Check if jupyter_client is available
+        import jupyter_client  # noqa: F401
+    except ImportError:
+        return servers  # no Jupyter — skip
+    mcp_script = APEX_ROOT / "server" / "local_model" / "mcp_execute_code.py"
+    if not mcp_script.exists():
+        return servers
+    # Build env vars so the MCP server knows the chat context
+    mcp_env = {}
+    if chat_id:
+        mcp_env["APEX_CHAT_ID"] = chat_id
+    if workspace:
+        mcp_env["APEX_WORKSPACE"] = workspace
+    servers = dict(servers)  # don't mutate caller's dict
+    servers["execute_code"] = {
+        "command": sys.executable,
+        "args": [str(mcp_script)],
+        "env": mcp_env,
+    }
+    return servers
+
+
 def _resolve_sdk_permission_level(client_key: str | None, chat_id: str | None = None) -> int:
     if not client_key:
         return 2
@@ -516,6 +545,9 @@ def _make_options(
         },
     )
     mcp_servers = _load_mcp_servers()
+    # Auto-inject execute_code MCP server if Jupyter is available
+    mcp_servers = _inject_execute_code_mcp(mcp_servers, chat_id=chat_id,
+                                             workspace=str(workspace_root))
     if mcp_servers:
         opts.mcp_servers = mcp_servers
         log(f"MCP: {len(mcp_servers)} server(s) attached to SDK options")
