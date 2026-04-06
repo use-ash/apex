@@ -272,6 +272,11 @@ async def lifespan(app: FastAPI):
             await mcp_shutdown()
         except Exception:
             pass
+        try:
+            from local_model.tools.execute_code import shutdown_all_kernels
+            shutdown_all_kernels()
+        except Exception:
+            pass
         for chat_id in list(_clients):
             await _disconnect_client(chat_id)
 

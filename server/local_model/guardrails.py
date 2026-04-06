@@ -52,7 +52,7 @@ def filter_output(tool_name: str, output: str, model: str = "unknown") -> str:
     """Post-execution output filter. Redacts secrets from tool results."""
     if not _AVAILABLE:
         return output
-    if tool_name in ("bash", "read_file", "search_files"):
+    if tool_name in ("bash", "read_file", "search_files", "execute_code"):
         masked, count = mask_output(output, session_id=f"local:{model}")
         return masked
     return output

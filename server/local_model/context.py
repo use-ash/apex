@@ -33,7 +33,22 @@ def _read_safe(path: Path, max_chars: int = 0) -> str:
         return ""
 
 
-def build_system_prompt(model: str) -> str:
+_LEVEL_NAMES = {0: "Restricted", 1: "Read-Only", 2: "Standard", 3: "Elevated", 4: "Admin"}
+_LEVEL_DESCRIPTIONS = {
+    0: "No tools available.",
+    1: "Read-only file access only (read_file, list_files, search_files).",
+    2: "Read/write files, bash (pre-approved commands only), filesystem read via MCP.",
+    3: "All catalogued tools + extended bash allowlist (write/network commands included).",
+    4: "Unrestricted shell — all commands permitted with no restrictions.",
+}
+
+
+def build_system_prompt(
+    model: str,
+    *,
+    permission_level: int = 2,
+    allowed_tool_names: set[str] | None = None,
+) -> str:
     """Build a condensed system prompt for a local model."""
     if model.startswith("grok-"):
         parts = ["You are Grok, made by xAI. You are running as a channel in the Apex server."]
@@ -41,16 +56,39 @@ def build_system_prompt(model: str) -> str:
     else:
         parts = [f"You are a local AI assistant running {model} via Ollama."]
         parts.append("You are NOT Claude, NOT made by Anthropic.")
-    # Build dynamic tool list (built-in + MCP)
-    tool_names = ["bash", "read_file", "write_file", "edit_file", "list_files", "search_files"]
+
+    # Collect all possible tool names for display, filtered to what's actually allowed
+    all_tool_names = ["bash", "read_file", "write_file", "edit_file", "list_files", "search_files"]
     try:
         from local_model.mcp_bridge import get_mcp_tool_schemas
         mcp_tools = get_mcp_tool_schemas()
         for t in mcp_tools:
-            tool_names.append(t["function"]["name"])
+            all_tool_names.append(t["function"]["name"])
     except Exception:
         pass
-    parts.append(f"You have tools: {', '.join(tool_names)}. Use them to answer questions and complete tasks.")
+    if allowed_tool_names is not None:
+        tool_names = [n for n in all_tool_names if n in allowed_tool_names]
+    else:
+        tool_names = all_tool_names
+    parts.append(f"You have tools: {', '.join(tool_names) if tool_names else 'none'}. Use them to answer questions and complete tasks.")
+    parts.append("")
+
+    # Permission level section — tells the model exactly what it can do this turn
+    level_name = _LEVEL_NAMES.get(permission_level, str(permission_level))
+    level_desc = _LEVEL_DESCRIPTIONS.get(permission_level, "")
+    parts.append(f"## Permission Level: {permission_level} ({level_name})")
+    parts.append(level_desc)
+    if permission_level == 4:
+        parts.append("You may run any shell command via the bash tool without restriction.")
+    elif permission_level == 3:
+        parts.append("Write tools and an extended bash allowlist are available. Output redirection (>) and backtick subshells are still blocked.")
+    elif permission_level == 2:
+        parts.append("Write tools (write_file, edit_file) are available. Bash is restricted to a pre-approved command set. MCP filesystem write tools require level 3.")
+    elif permission_level == 1:
+        parts.append("Only read-only tools are available. Do not attempt to write or run shell commands.")
+    else:
+        parts.append("No tools are available at this permission level.")
+    parts.append("If a tool call fails due to permissions, explain this to the user and suggest upgrading the permission level in channel settings.")
     parts.append("")
 
     # Workspace context

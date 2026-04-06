@@ -27,7 +27,8 @@ SDK_TOOL_NAME_MAP = {
 
 STANDARD_LOCAL_TOOLS = frozenset({"read_file", "list_files", "search_files"})
 BUILTIN_LOCAL_TOOLS = frozenset(
-    {"bash", "read_file", "write_file", "edit_file", "list_files", "search_files"}
+    {"bash", "read_file", "write_file", "edit_file", "list_files", "search_files",
+     "execute_code"}
 )
 DEFAULT_LEVEL2_TOOL_PATTERNS = (
     "bash",
@@ -86,6 +87,12 @@ TOOL_POLICY_CATALOG = {
         "description": "Search file contents inside allowed workspace roots.",
         "category": "built-in",
         "group": "read",
+    },
+    "execute_code": {
+        "name": "Execute Code",
+        "description": "Run Python in a stateful Jupyter kernel. Level 3+ only.",
+        "category": "built-in",
+        "group": "execute",
     },
     "fetch__*": {
         "name": "Fetch MCP",

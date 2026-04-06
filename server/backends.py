@@ -667,7 +667,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
     allowed_commands = list(tool_policy.get("allowed_commands") or [])
     allowed_local_tools = allowed_tool_names_for_level(permission_level)
     if _TOOL_LOOP_AVAILABLE and ALLOW_LOCAL_TOOLS:
-        sys_prompt = build_system_prompt(effective_model)
+        sys_prompt = build_system_prompt(effective_model, permission_level=permission_level, allowed_tool_names=allowed_local_tools)
     else:
         sys_prompt = f"You are {effective_model}, a local AI model running via Ollama. Be helpful and concise."
 
