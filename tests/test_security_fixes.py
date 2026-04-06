@@ -19,7 +19,11 @@ from fastapi.testclient import TestClient
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SERVER_DIR = REPO_ROOT / "server"
-TEST_ROOT = Path(tempfile.mkdtemp(prefix="apex-security-tests-"))
+# Use the APEX_ROOT set by conftest.py if running in the full suite.
+# This keeps TEST_ROOT, env.APEX_ROOT, and the startup-event path all in
+# agreement — preventing the TestClient startup event from overriding
+# _state_dir back to a different temp dir (or worse, the real apex state).
+TEST_ROOT = Path(os.environ.get("APEX_ROOT") or tempfile.mkdtemp(prefix="apex-security-tests-"))
 
 os.environ["APEX_ROOT"] = str(TEST_ROOT)
 os.environ["APEX_WORKSPACE"] = str(TEST_ROOT)
