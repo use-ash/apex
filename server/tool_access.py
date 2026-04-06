@@ -286,7 +286,14 @@ def tool_matches_pattern(tool_name: str, pattern: str) -> bool:
     normalized = canonical_tool_name(pattern)
     if normalized.endswith("*"):
         return canonical.startswith(normalized[:-1])
-    return canonical == normalized
+    if canonical == normalized:
+        return True
+    # MCP tools where server == tool (e.g. execute_code__execute_code matches "execute_code")
+    if "__" in canonical:
+        server, tool = canonical.split("__", 1)
+        if server == tool and tool == normalized:
+            return True
+    return False
 
 
 def _tool_is_catalogued(tool_name: str) -> bool:
