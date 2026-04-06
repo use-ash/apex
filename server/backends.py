@@ -472,6 +472,7 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
         stderr=asyncio.subprocess.PIPE,
         env=codex_env,
     )
+    _codex_started_at = time.monotonic()
 
     if proc.stdin is not None:
         proc.stdin.write(full_prompt.encode())
@@ -630,6 +631,7 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
         "context_tokens_in": tokens_in,
         "context_window": _cw,
         "thinking": thinking_text,
+        "duration_ms": int((time.monotonic() - _codex_started_at) * 1000),
     })
     if thread_id:
         _codex_thread_turns[scope_key] = _codex_thread_turns.get(scope_key, 0) + 1
