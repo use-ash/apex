@@ -812,8 +812,10 @@ async def run_tool_loop(
             if allowed_tools is not None and tool_name not in allowed_tools:
                 if permission_level <= 0:
                     tool_result = "This agent is Restricted and cannot use tools or access files."
-                else:
+                elif permission_level == 1:
                     tool_result = "This action requires Elevated or Admin permissions."
+                else:
+                    tool_result = f"Error: tool '{tool_name}' is not enabled in the workspace policy. Check Dashboard → Policy → Workspace Tools."
                 is_error = True
             else:
                 # Guardrail pre-check
