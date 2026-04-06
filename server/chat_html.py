@@ -2130,7 +2130,11 @@ function _thinkingPill(ctx, options = {}) {
   const durationMs = options.durationMs != null
     ? options.durationMs
     : (ctx.thinkingStart ? (Date.now() - ctx.thinkingStart) : 0);
-  if (!live && (!ctx.bubble || !ctx.thinkingText)) return null;
+  // Allow static pill when there's an explicit non-zero duration even without
+  // thinkingText — GPT-based agents (Developer/Codex) produce no thinking events
+  // but still have measurable processing time that should show in the pill.
+  if (!live && !ctx.bubble) return null;
+  if (!live && !ctx.thinkingText && !durationMs) return null;
   _ensureCtxBubble(ctx);
   const key = live ? 'liveThinkingPill' : 'thinkingPill';
   let pill = ctx[key];
