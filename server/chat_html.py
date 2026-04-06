@@ -2018,7 +2018,12 @@ function _rebuildActiveStreamUi(ctx) {
   if (ctx.toolCalls && ctx.toolCalls.length > 0) {
     _updateToolPillProgress(ctx);
   }
-  if (ctx.awaitingAck || ctx.thinkingText) {
+  // Show live thinking pill if: server confirmed stream is active (awaitingAck),
+  // OR thinking text has already accumulated, OR no text has arrived yet
+  // (meaning the agent is still in the thinking phase — stream_start from buffer
+  // replay clears awaitingAck before any thinking events arrive for a second
+  // concurrent agent, so !ctx.textContent catches that early-turn window).
+  if (ctx.awaitingAck || ctx.thinkingText || !ctx.textContent) {
     if (!ctx.thinkingStart) ctx.thinkingStart = Date.now();
     _thinkingPill(ctx, {live: true});
   }
