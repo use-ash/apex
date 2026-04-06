@@ -1963,7 +1963,11 @@ function _normalizeToolEvents(rawEvents) {
 
 function _ensureCtxBubble(ctx) {
   if (!ctx) return null;
-  if (!ctx.bubble || !ctx.bubble.isConnected) {
+  // B-4 fix: history contexts have _isHistory=true and a valid but detached
+  // bubble (not yet appended to DOM).  Without this guard, isConnected is
+  // false for detached elements, causing addAssistantMsg() to create a
+  // phantom bubble with .streaming that is never cleaned up.
+  if (!ctx.bubble || (!ctx.bubble.isConnected && !ctx._isHistory)) {
     ctx.bubble = addAssistantMsg(ctx.speaker, ctx.id || '');
     ctx.toolPill = null;
     ctx.thinkingPill = null;
@@ -2272,6 +2276,10 @@ function _finalizeStreamUi(ctx, resultMsg = null) {
     costEl.textContent = cost + tokens;
   }
   _clearStreamingBubbleState(ctx.id || '', ctx.bubble);
+  // B-4 hardened: direct removal of .streaming from the bubble element itself.
+  // _clearStreamingBubbleState uses stream_id matching which can miss during
+  // concurrent streams. This direct removal is the last line of defense.
+  ctx.bubble.classList.remove('streaming');
   ctx.bubble.querySelectorAll('.bubble').forEach(b => b.parentElement?.classList?.remove('streaming'));
   // Cancel any pending debounced render and do a final authoritative pass
   // using the accumulated raw markdown (ctx.textContent), not el.textContent
@@ -3259,6 +3267,7 @@ function _renderHistoryMsg(m) {
   bubble.textContent = m.content;
   const historyCtx = _newStreamCtx('', m.speaker_name ? {name: m.speaker_name, avatar: m.speaker_avatar || '', id: m.speaker_id || ''} : null);
   historyCtx.bubble = div;
+  historyCtx._isHistory = true;  // prevent _ensureCtxBubble from creating phantom bubbles
   historyCtx.textContent = m.content || '';
   try {
     historyCtx.toolCalls = _normalizeToolEvents(JSON.parse(m.tool_events || '[]'));
