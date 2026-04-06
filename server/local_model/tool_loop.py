@@ -13,7 +13,30 @@ from env import ALLOW_LOCAL_TOOLS
 from .registry import get_tool_schemas, get_executor, is_mcp_tool
 from .guardrails import pre_check, filter_output
 
-log = logging.getLogger("apex.tool_loop")
+_pylog = logging.getLogger("apex.tool_loop")
+
+# Use the Apex custom log function (writes to state/apex.log + stderr)
+try:
+    from log import log as _apex_log
+except ImportError:
+    _apex_log = None
+
+
+class _ToolLoopLogger:
+    """Wrapper that sends .info() calls to both Python logging and Apex log file."""
+    def info(self, msg, *args):
+        formatted = msg % args if args else msg
+        _pylog.info(formatted)
+        if _apex_log:
+            _apex_log(formatted)
+
+    def warning(self, msg, *args):
+        formatted = msg % args if args else msg
+        _pylog.warning(formatted)
+        if _apex_log:
+            _apex_log(f"WARN: {formatted}")
+
+log = _ToolLoopLogger()
 
 MAX_TOOL_ITERATIONS = 25
 OLLAMA_TIMEOUT = 300  # 5 minutes per Ollama call
@@ -241,7 +264,8 @@ def _call_ollama(ollama_url: str, model: str, messages: list, tools: list,
         headers={"Content-Type": "application/json"},
     )
     resp = urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT)
-    return json.loads(resp.read().decode())
+    raw = resp.read().decode()
+    return json.loads(raw)
 
 
 def _call_openai_compat(api_url: str, model: str, messages: list, tools: list, api_key: str) -> dict:
@@ -694,7 +718,6 @@ async def run_tool_loop(
     result_text = ""
     thinking_text = ""
     iteration_limit = max_iterations or MAX_TOOL_ITERATIONS
-
     # Use Responses API for OpenAI reasoning models (o3, o4, gpt-5)
     _use_responses_api = (
         api_key and api_url
@@ -855,6 +878,15 @@ async def run_tool_loop(
                                         workspace,
                                         permission_level=permission_level,
                                         allowed_commands=allowed_commands,
+                                    )
+                                elif tool_name == "execute_code":
+                                    _chat_id = audit_context.get("chat_id") if audit_context else None
+                                    tool_result = await asyncio.to_thread(
+                                        executor,
+                                        tool_args,
+                                        workspace,
+                                        permission_level=permission_level,
+                                        chat_id=_chat_id,
                                     )
                                 else:
                                     tool_result = await asyncio.to_thread(

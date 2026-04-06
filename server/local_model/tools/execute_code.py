@@ -2,17 +2,20 @@
 
 Provides a stateful Python execution environment — variables, imports,
 and function definitions persist between calls within the same kernel.
-Kernels are keyed by workspace path and auto-shutdown after idle timeout.
+Kernels are keyed by (workspace, chat_id) for per-chat isolation.
+Cell history is saved to disk and replayed on kernel restart to restore state.
 
 Requires: jupyter_client, ipykernel (optional deps in requirements.txt).
 """
 
 import atexit
+import json
 import logging
 import os
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from queue import Empty
 
 from jupyter_client import KernelManager
@@ -29,6 +32,74 @@ MAX_TIMEOUT = 120          # hard cap on user-requested timeout
 IDLE_SHUTDOWN_SECS = 600   # kill kernels idle > 10 minutes
 REAPER_INTERVAL = 60       # check for idle kernels every 60s
 KERNEL_STARTUP_TIMEOUT = 30  # seconds to wait for kernel ready
+REPLAY_TIMEOUT = 10        # seconds per cell during replay (shorter — skip slow cells)
+MAX_HISTORY_CELLS = 200    # cap history to prevent unbounded replay
+
+# Where cell history lives on disk
+_STATE_DIR: Path | None = None
+
+
+def _get_state_dir() -> Path:
+    """Lazily resolve the state directory for kernel cell history."""
+    global _STATE_DIR
+    if _STATE_DIR is None:
+        # state/ is next to the server directory
+        server_dir = Path(__file__).resolve().parent.parent.parent
+        _STATE_DIR = server_dir / "state" / "kernels"
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
+    return _STATE_DIR
+
+
+# ── Cell history persistence ─────────────────────────────────────────
+
+def _history_path(kernel_key: str) -> Path:
+    """Path to cell history file for a kernel key."""
+    # Sanitize key for filesystem (replace / and other bad chars)
+    safe_key = kernel_key.replace("/", "_").replace("\\", "_").replace(":", "_")
+    return _get_state_dir() / f"{safe_key}.jsonl"
+
+
+def _save_cell(kernel_key: str, code: str, success: bool):
+    """Append a cell to the history file. Only saves successful cells."""
+    if not success:
+        return
+    path = _history_path(kernel_key)
+    try:
+        with open(path, "a") as f:
+            f.write(json.dumps({"code": code, "ts": time.time()}) + "\n")
+    except Exception as e:
+        log.warning("Failed to save cell history: %s", e)
+
+
+def _load_history(kernel_key: str) -> list[str]:
+    """Load cell history from disk. Returns list of code strings."""
+    path = _history_path(kernel_key)
+    if not path.exists():
+        return []
+    cells = []
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    cells.append(entry["code"])
+                except (json.JSONDecodeError, KeyError):
+                    continue
+    except Exception as e:
+        log.warning("Failed to load cell history: %s", e)
+    return cells[-MAX_HISTORY_CELLS:]  # keep last N
+
+
+def _clear_history(kernel_key: str):
+    """Remove cell history file."""
+    path = _history_path(kernel_key)
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 # ── Kernel lifecycle ──────────────────────────────────────────────────
@@ -38,9 +109,10 @@ class KernelContext:
     """Wraps a running Jupyter kernel with metadata."""
     km: KernelManager
     kc: BlockingKernelClient
-    workspace_key: str
+    kernel_key: str
     last_used: float = field(default_factory=time.monotonic)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    cell_count: int = 0
 
 
 _kernels: dict[str, KernelContext] = {}
@@ -48,15 +120,24 @@ _global_lock = threading.Lock()
 _reaper_started = False
 
 
-def _start_kernel(workspace_key: str) -> KernelContext:
-    """Start a new Jupyter kernel for the given workspace."""
+def _make_kernel_key(workspace: str | None, chat_id: str | None) -> str:
+    """Build a kernel key from workspace + chat_id."""
+    ws = _primary_workspace(workspace) or "__default__"
+    if chat_id:
+        return f"{ws}::{chat_id}"
+    return ws
+
+
+def _start_kernel(kernel_key: str, workspace_key: str | None = None) -> KernelContext:
+    """Start a new Jupyter kernel."""
     km = KernelManager(kernel_name="python3")
 
-    # Set working directory for the kernel process
+    # Resolve workspace directory for cwd
+    ws_dir = workspace_key or kernel_key.split("::")[0]
     env = os.environ.copy()
-    if workspace_key and os.path.isdir(workspace_key):
-        km.cwd = workspace_key
-        env["APEX_WORKSPACE"] = workspace_key
+    if ws_dir and ws_dir != "__default__" and os.path.isdir(ws_dir):
+        km.cwd = ws_dir
+        env["APEX_WORKSPACE"] = ws_dir
 
     km.start_kernel(env=env)
 
@@ -66,43 +147,70 @@ def _start_kernel(workspace_key: str) -> KernelContext:
 
     # Inject preamble — set cwd and basic imports
     preamble = "import os, sys\n"
-    if workspace_key and os.path.isdir(workspace_key):
-        preamble += f"os.chdir({workspace_key!r})\n"
+    if ws_dir and ws_dir != "__default__" and os.path.isdir(ws_dir):
+        preamble += f"os.chdir({ws_dir!r})\n"
 
     msg_id = kc.execute(preamble, silent=True)
-    # Drain preamble output (don't care about results)
     _drain_iopub(kc, msg_id, timeout=10)
 
-    ctx = KernelContext(km=km, kc=kc, workspace_key=workspace_key)
+    ctx = KernelContext(km=km, kc=kc, kernel_key=kernel_key)
     try:
         pid = km.provisioner.pid if hasattr(km, 'provisioner') else "unknown"
     except Exception:
         pid = "unknown"
-    log.info("Started Jupyter kernel for workspace %s (pid=%s)", workspace_key, pid)
+    log.info("Started Jupyter kernel for %s (pid=%s)", kernel_key, pid)
     return ctx
 
 
-def _get_or_create_kernel(workspace: str | None) -> KernelContext:
-    """Get existing kernel for workspace or create a new one."""
+def _replay_history(ctx: KernelContext):
+    """Replay saved cell history into a fresh kernel to restore state.
+
+    Runs each cell silently — output is discarded. Cells that error are
+    skipped (the user will see errors when they re-run interactively).
+    """
+    cells = _load_history(ctx.kernel_key)
+    if not cells:
+        return
+
+    log.info("Replaying %d cells for %s", len(cells), ctx.kernel_key)
+    replayed = 0
+    for code in cells:
+        try:
+            msg_id = ctx.kc.execute(code, silent=True)
+            outputs = _drain_iopub(ctx.kc, msg_id, timeout=REPLAY_TIMEOUT)
+            replayed += 1
+        except Exception as e:
+            log.warning("Replay cell failed for %s: %s", ctx.kernel_key, e)
+            # Continue — skip failed cells
+
+    ctx.cell_count = replayed
+    log.info("Replayed %d/%d cells for %s", replayed, len(cells), ctx.kernel_key)
+
+
+def _get_or_create_kernel(workspace: str | None, chat_id: str | None = None) -> KernelContext:
+    """Get existing kernel for (workspace, chat_id) or create a new one."""
     global _reaper_started
-    workspace_key = _primary_workspace(workspace) or "__default__"
+    kernel_key = _make_kernel_key(workspace, chat_id)
 
     with _global_lock:
-        ctx = _kernels.get(workspace_key)
+        ctx = _kernels.get(kernel_key)
         if ctx is not None:
-            # Verify kernel is still alive
             if ctx.km.is_alive():
                 ctx.last_used = time.monotonic()
                 return ctx
             else:
-                # Dead kernel — clean up and recreate
-                log.warning("Kernel for %s found dead, restarting", workspace_key)
+                log.warning("Kernel for %s found dead, restarting", kernel_key)
                 _cleanup_kernel(ctx)
-                del _kernels[workspace_key]
+                del _kernels[kernel_key]
 
         # Create new kernel (hold lock to prevent double-create)
-        ctx = _start_kernel(workspace_key)
-        _kernels[workspace_key] = ctx
+        ws_key = _primary_workspace(workspace) or "__default__"
+        ctx = _start_kernel(kernel_key, workspace_key=ws_key)
+
+        # Replay history to restore state from a previous session
+        _replay_history(ctx)
+
+        _kernels[kernel_key] = ctx
 
         # Start reaper thread on first kernel creation
         if not _reaper_started:
@@ -189,8 +297,8 @@ def _drain_iopub(kc: BlockingKernelClient, msg_id: str, timeout: int = DEFAULT_T
             outputs.append(content.get("text", ""))
         elif msg_type == "error":
             # Format traceback without ANSI escape codes
-            tb = content.get("traceback", [])
             import re
+            tb = content.get("traceback", [])
             clean_tb = [re.sub(r"\x1b\[[0-9;]*m", "", line) for line in tb]
             outputs.append("\n".join(clean_tb))
         elif msg_type == "execute_result":
@@ -207,15 +315,23 @@ def _drain_iopub(kc: BlockingKernelClient, msg_id: str, timeout: int = DEFAULT_T
     return outputs
 
 
+def _is_error_output(outputs: list[str]) -> bool:
+    """Check if any output looks like an error traceback."""
+    combined = "".join(outputs)
+    return "Traceback" in combined or "Error:" in combined
+
+
 def execute(
     args: dict,
     workspace: str | None = None,
     *,
     permission_level: int = 2,
+    chat_id: str | None = None,
 ) -> str:
     """Execute Python code in a stateful Jupyter kernel.
 
     Follows the standard local model tool executor signature.
+    chat_id is used for per-chat kernel isolation.
     """
     code = args.get("code", "").strip()
     if not code:
@@ -227,9 +343,9 @@ def execute(
     except (TypeError, ValueError):
         timeout = DEFAULT_TIMEOUT
 
-    # Get or create kernel
+    # Get or create kernel (per-chat isolation)
     try:
-        ctx = _get_or_create_kernel(workspace)
+        ctx = _get_or_create_kernel(workspace, chat_id=chat_id)
     except Exception as e:
         return f"Error starting Jupyter kernel: {type(e).__name__}: {e}"
 
@@ -243,6 +359,11 @@ def execute(
             return f"Error executing code: {type(e).__name__}: {e}"
 
     result = "".join(outputs).strip()
+    success = not _is_error_output(outputs)
+
+    # Persist cell to history (only successful cells, for replay on restart)
+    _save_cell(ctx.kernel_key, code, success=success)
+    ctx.cell_count += 1
 
     if not result:
         return "(no output)"
