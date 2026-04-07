@@ -48,6 +48,17 @@ docs/OSS_PLAN.md
 docs/wip/
 APEX.md
 CLAUDE.md
+AGENTS.md
+REPO_CONVENTIONS.md
+docs/CONVENTIONS.md
+docs/ISSUES_RESOLVED.md
+docs/LICENSING.md
+docs/images/IMAGE_PROMPTS.md
+docs/warroom.html
+scripts/gh_commit.sh
+scripts/license_keygen.py
+install-exif.sh
+skills/skill-improver/
 deploy-phase3.sh
 claude-commands/
 mockups/
