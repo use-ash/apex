@@ -53,6 +53,12 @@ _OPTIONAL_PACKAGES = {
     "google.genai": "google-genai",
 }
 
+# Packages installed automatically if missing — not listed in dep check UI
+# but essential for core features (execute_code tool).
+_AUTO_INSTALL_PACKAGES = {
+    "jupyter_client": ["jupyter_client", "ipykernel"],
+}
+
 
 def check_dependencies() -> dict[str, bool]:
     """Check for required and optional Python packages.
@@ -112,6 +118,20 @@ def check_dependencies() -> dict[str, bool]:
                     print_info(line)
         else:
             print_warning("Skipped. The server will not start without these packages.")
+
+    # Auto-install packages needed for core features (no prompt)
+    for import_name, pip_names in _AUTO_INSTALL_PACKAGES.items():
+        try:
+            importlib.import_module(import_name)
+        except ImportError:
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-q"] + pip_names,
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                print_success(f"Jupyter kernel installed (enables execute_code tool)")
+            else:
+                print_warning(f"Jupyter install failed (execute_code tool unavailable)")
 
     return results
 
