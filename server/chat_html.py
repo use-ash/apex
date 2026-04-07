@@ -2149,6 +2149,36 @@ function _clearQueuedState(ctx) {
   }
 }
 
+function _syncQueuedUiFromQueueState() {
+  const queueItems = Array.isArray(queuedMessages) ? queuedMessages : [];
+  const queuedIds = new Set();
+  queueItems.forEach(item => {
+    const sid = String(item?.msg_id || item?.stream_id || '');
+    if (sid) queuedIds.add(sid);
+  });
+
+  Object.keys(_streamCtx).forEach(sid => {
+    const ctx = _streamCtx[sid] || null;
+    if (!ctx) return;
+    const queueIndex = queueItems.findIndex(item => String(item?.msg_id || item?.stream_id || '') === sid);
+    if (queueIndex >= 0) {
+      _renderQueuedState(ctx, {
+        position: queueIndex + 1,
+        queued_label: ctx.speaker && ctx.speaker.name ? `Queued for ${ctx.speaker.name}` : 'Queued',
+      });
+      return;
+    }
+    if (!ctx.queued || activeStreams.has(sid)) return;
+    const hasContent = Boolean(ctx.textContent || ctx.thinkingText || (ctx.toolCalls && ctx.toolCalls.length));
+    _clearQueuedState(ctx);
+    if (!hasContent) {
+      _removeStreamCtx(sid, {removeBubble: true});
+    }
+  });
+
+  _syncLegacyStreamGlobals(currentStreamId, {clearSessionWhenIdle: false});
+}
+
 function _rebuildActiveStreamUi(ctx) {
   if (!ctx) return;
   _teardownThinking(ctx, {resetCollapsed: false});
@@ -2736,6 +2766,7 @@ function handleEvent(msg) {
     case 'queue_update': {
       if (msg.chat_id && currentChat && msg.chat_id !== currentChat) break;
       queuedMessages = Array.isArray(msg.queued) ? msg.queued.map(item => ({...item})) : [];
+      _syncQueuedUiFromQueueState();
       if (document.getElementById('stopMenu')?.classList.contains('show')) {
         renderStopMenu();
       }
