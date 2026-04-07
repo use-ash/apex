@@ -5633,12 +5633,11 @@ var MCP_CATALOG = [
     { category: "Web & Data", items: [
         { name: "fetch", desc: "Fetch web pages and extract content as markdown", runners: [
             { label: "Docker", command: "docker", args: ["run", "-i", "--rm", "mcp/fetch"] },
-            { label: "npx", command: "npx", args: ["-y", "@anthropic-ai/mcp-server-fetch"] },
             { label: "uvx", command: "uvx", args: ["mcp-server-fetch"] },
         ]},
         { name: "brave-search", desc: "Web search via Brave Search API", runners: [
             { label: "Docker", command: "docker", args: ["run", "-i", "--rm", "-e", "BRAVE_API_KEY", "mcp/brave-search"] },
-            { label: "npx", command: "npx", args: ["-y", "@anthropic-ai/mcp-server-brave-search"] },
+            { label: "npx", command: "npx", args: ["-y", "@modelcontextprotocol/server-brave-search"] },
         ], env: [{ key: "BRAVE_API_KEY", hint: "From search.brave.com/api" }]},
     ]},
     { category: "Developer Tools", items: [
@@ -5653,7 +5652,7 @@ var MCP_CATALOG = [
         ]},
         { name: "playwright", desc: "Browser automation: navigate, click, screenshot, scrape", runners: [
             { label: "Docker", command: "docker", args: ["run", "-i", "--rm", "mcp/playwright"] },
-            { label: "npx", command: "npx", args: ["-y", "@anthropic-ai/mcp-server-playwright"] },
+            { label: "npx", command: "npx", args: ["-y", "@playwright/mcp"] },
         ]},
         { name: "filesystem", desc: "Read, write, and manage files in a directory", runners: [
             { label: "npx", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"] },
@@ -5669,7 +5668,7 @@ var MCP_CATALOG = [
             { key: "SLACK_TEAM_ID", hint: "Workspace ID (starts with T)" },
         ]},
         { name: "google-drive", desc: "Search and read Google Drive documents", runners: [
-            { label: "npx", command: "npx", args: ["-y", "@anthropic-ai/mcp-server-gdrive"] },
+            { label: "npx", command: "npx", args: ["-y", "@modelcontextprotocol/server-gdrive"] },
         ], env: [{ key: "GDRIVE_CREDENTIALS_PATH", hint: "Path to OAuth credentials JSON" }]},
         { name: "memory", desc: "Persistent key-value memory for agents", runners: [
             { label: "Docker", command: "docker", args: ["run", "-i", "--rm", "mcp/memory"] },
