@@ -332,6 +332,18 @@ def _detect_ips_linux(seen: set[str]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+def _has_openssl() -> bool:
+    """Check whether the openssl CLI is available."""
+    try:
+        result = subprocess.run(
+            ["openssl", "version"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def generate_certificates(
     state_dir: Path,
     ips: list[str],
@@ -343,6 +355,9 @@ def generate_certificates(
         - CA cert/key (10yr, RSA 2048)
         - Server cert with SANs (825 days)
         - Client cert + .p12 bundle (825 days)
+
+    Uses openssl CLI if available, otherwise falls back to the Python
+    ``cryptography`` library (required for Windows which lacks openssl).
 
     Parameters
     ----------
@@ -358,6 +373,226 @@ def generate_certificates(
     dict
         Paths to generated files and the .p12 password.
     """
+    if _has_openssl():
+        return _generate_certificates_openssl(state_dir, ips, dns_names)
+    else:
+        print_info("openssl CLI not found — using Python cryptography library.")
+        return _generate_certificates_python(state_dir, ips, dns_names)
+
+
+def _generate_certificates_python(
+    state_dir: Path,
+    ips: list[str],
+    dns_names: list[str],
+) -> dict:
+    """Generate mTLS certificates using the Python cryptography library.
+
+    Pure Python — no openssl CLI required. Works on Windows, macOS, Linux.
+    """
+    import datetime
+    import ipaddress
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives.serialization import pkcs12
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+    print_step(4, "Generating TLS certificates (Python)")
+
+    ssl_dir = state_dir / "ssl"
+    ssl_dir.mkdir(parents=True, exist_ok=True)
+    safe_chmod(ssl_dir, 0o700)
+
+    ca_key_path = ssl_dir / "ca.key"
+    ca_crt_path = ssl_dir / "ca.crt"
+    server_key_path = ssl_dir / "apex.key"
+    server_crt_path = ssl_dir / "apex.crt"
+    ext_cnf_path = ssl_dir / "ext.cnf"
+    client_key_path = ssl_dir / "client.key"
+    client_crt_path = ssl_dir / "client.crt"
+    client_p12_path = ssl_dir / "client.p12"
+
+    p12_password = secrets.token_urlsafe(12)
+    total_steps = 5
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    def _gen_key() -> rsa.RSAPrivateKey:
+        return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+    def _write_key(path: Path, key: rsa.RSAPrivateKey) -> None:
+        path.write_bytes(key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        ))
+
+    def _write_cert(path: Path, cert: x509.Certificate) -> None:
+        path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+
+    # ---- Step 1: CA ----
+    print_progress(1, total_steps, "Generating CA")
+    ca_key = _gen_key()
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Apex CA")])
+    ca_cert = (
+        x509.CertificateBuilder()
+        .subject_name(ca_name)
+        .issuer_name(ca_name)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + datetime.timedelta(days=3650))
+        .add_extension(
+            x509.BasicConstraints(ca=True, path_length=None), critical=True,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+    _write_key(ca_key_path, ca_key)
+    _write_cert(ca_crt_path, ca_cert)
+
+    # ---- Step 2: Server cert with SANs ----
+    print_progress(2, total_steps, "Generating server certificate")
+    server_key = _gen_key()
+    san_entries: list[x509.GeneralName] = []
+    for ip in ips:
+        try:
+            san_entries.append(x509.IPAddress(ipaddress.ip_address(ip)))
+        except ValueError:
+            pass
+    for dns in dns_names:
+        san_entries.append(x509.DNSName(dns))
+
+    server_cert = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, "apex-server"),
+        ]))
+        .issuer_name(ca_name)
+        .public_key(server_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + datetime.timedelta(days=825))
+        .add_extension(
+            x509.BasicConstraints(ca=False, path_length=None), critical=True,
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True, key_encipherment=True,
+                content_commitment=False, data_encipherment=False,
+                key_agreement=False, key_cert_sign=False,
+                crl_sign=False, encipher_only=False, decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False,
+        )
+        .add_extension(
+            x509.SubjectAlternativeName(san_entries), critical=False,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+    _write_key(server_key_path, server_key)
+    _write_cert(server_crt_path, server_cert)
+
+    # Write ext.cnf for compatibility (not used by Python path but
+    # keeps the file layout consistent for external tools)
+    san_parts: list[str] = []
+    for ip in ips:
+        san_parts.append(f"IP:{ip}")
+    for dns in dns_names:
+        san_parts.append(f"DNS:{dns}")
+    ext_cnf_path.write_text(
+        f"basicConstraints=CA:FALSE\n"
+        f"keyUsage=digitalSignature,keyEncipherment\n"
+        f"extendedKeyUsage=serverAuth\n"
+        f"subjectAltName={','.join(san_parts)}\n",
+        encoding="utf-8",
+    )
+
+    # ---- Step 3: Client cert ----
+    print_progress(3, total_steps, "Generating client certificate")
+    client_key = _gen_key()
+    client_cert = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, "apex-client"),
+        ]))
+        .issuer_name(ca_name)
+        .public_key(client_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + datetime.timedelta(days=825))
+        .add_extension(
+            x509.BasicConstraints(ca=False, path_length=None), critical=False,
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True, key_encipherment=False,
+                content_commitment=False, data_encipherment=False,
+                key_agreement=False, key_cert_sign=False,
+                crl_sign=False, encipher_only=False, decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH]),
+            critical=False,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+    _write_key(client_key_path, client_key)
+    _write_cert(client_crt_path, client_cert)
+
+    # ---- Step 4: .p12 bundle ----
+    print_progress(4, total_steps, "Creating .p12 bundle")
+    p12_data = pkcs12.serialize_key_and_certificates(
+        b"Apex Client",
+        client_key,
+        client_cert,
+        [ca_cert],
+        serialization.BestAvailableEncryption(p12_password.encode()),
+    )
+    client_p12_path.write_bytes(p12_data)
+
+    # ---- Set file permissions ----
+    for key_file in [ca_key_path, server_key_path, client_key_path, client_p12_path]:
+        safe_chmod(key_file, 0o600)
+    for cert_file in [ca_crt_path, server_crt_path, client_crt_path]:
+        safe_chmod(cert_file, 0o644)
+
+    # ---- Step 5: Encrypt private keys at rest ----
+    print_progress(5, total_steps, "Encrypting keys")
+    _encrypt_keys_at_rest(ca_key_path, server_key_path)
+
+    print()
+    print_success("CA certificate:     " + str(ca_crt_path))
+    print_success("Server certificate: " + str(server_crt_path))
+    print_success("Client certificate: " + str(client_crt_path))
+    print_success("Client .p12 bundle: " + str(client_p12_path))
+    print_info(f".p12 password: {p12_password}")
+    print_info("Save this password — you will need it to install the .p12 on your device.")
+
+    return {
+        "ca_crt": str(ca_crt_path),
+        "ca_key": str(ca_key_path),
+        "server_crt": str(server_crt_path),
+        "server_key": str(server_key_path),
+        "client_crt": str(client_crt_path),
+        "client_key": str(client_key_path),
+        "client_p12": str(client_p12_path),
+        "ext_cnf": str(ext_cnf_path),
+        "p12_password": p12_password,
+    }
+
+
+def _generate_certificates_openssl(
+    state_dir: Path,
+    ips: list[str],
+    dns_names: list[str],
+) -> dict:
+    """Generate mTLS certificates using the openssl CLI (original path)."""
     print_step(4, "Generating TLS certificates")
 
     ssl_dir = state_dir / "ssl"
@@ -502,32 +737,7 @@ def generate_certificates(
         safe_chmod(cert_file, 0o644)
 
     # ---- Encrypt private keys at rest ----
-    from setup.ssl_keystore import (
-        encrypt_key_file,
-        generate_passphrase,
-        retrieve_passphrase,
-        store_passphrase,
-    )
-
-    passphrase = retrieve_passphrase()
-    if not passphrase:
-        passphrase = generate_passphrase()
-
-    if store_passphrase(passphrase):
-        encrypted_count = 0
-        # Only encrypt server-side keys; client key stays plaintext
-        # for direct PEM usage (curl, browser import, etc.)
-        for key_file in [ca_key, server_key]:
-            try:
-                encrypt_key_file(key_file, passphrase)
-                encrypted_count += 1
-            except RuntimeError as exc:
-                print_warning(f"Could not encrypt {key_file.name}: {exc}")
-        if encrypted_count:
-            print_success(f"Encrypted {encrypted_count} private key(s) at rest.")
-            print_info("Passphrase stored in macOS Keychain (service: apex-ssl).")
-    else:
-        print_warning("Could not store passphrase — private keys left unencrypted.")
+    _encrypt_keys_at_rest(ca_key, server_key)
 
     print()
     print_success("CA certificate:     " + str(ca_crt))
@@ -548,6 +758,39 @@ def generate_certificates(
         "ext_cnf": str(ext_cnf),
         "p12_password": p12_password,
     }
+
+
+def _encrypt_keys_at_rest(ca_key_path: Path, server_key_path: Path) -> None:
+    """Encrypt server-side private keys at rest (shared by both cert paths)."""
+    from setup.ssl_keystore import (
+        encrypt_key_file,
+        generate_passphrase,
+        retrieve_passphrase,
+        store_passphrase,
+    )
+
+    passphrase = retrieve_passphrase()
+    if not passphrase:
+        passphrase = generate_passphrase()
+
+    if store_passphrase(passphrase):
+        encrypted_count = 0
+        # Only encrypt server-side keys; client key stays plaintext
+        # for direct PEM usage (curl, browser import, etc.)
+        for key_file in [ca_key_path, server_key_path]:
+            try:
+                encrypt_key_file(key_file, passphrase)
+                encrypted_count += 1
+            except RuntimeError as exc:
+                print_warning(f"Could not encrypt {key_file.name}: {exc}")
+        if encrypted_count:
+            print_success(f"Encrypted {encrypted_count} private key(s) at rest.")
+            if platform.system() == "Darwin":
+                print_info("Passphrase stored in macOS Keychain (service: apex-ssl).")
+            else:
+                print_info("Passphrase stored securely.")
+    else:
+        print_warning("Could not store passphrase — private keys left unencrypted.")
 
 
 def _run_openssl(cmd: list[str], timeout: int = 30) -> subprocess.CompletedProcess:

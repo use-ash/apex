@@ -530,8 +530,7 @@ SETUP_HTML = """<!DOCTYPE html>
 
     <div class="checklist">
       <div style="font-size: 12px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 12px;">What we'll set up</div>
-      <div class="checklist-item"><span class="arrow">→</span> <strong>Claude Code</strong>&nbsp; your main AI agent</div>
-      <div class="checklist-item"><span class="arrow">→</span> <strong>Optional models</strong>&nbsp; Grok, Google, Ollama</div>
+      <div class="checklist-item"><span class="arrow">→</span> <strong>AI models</strong>&nbsp; Claude, Grok, Ollama, and more</div>
       <div class="checklist-item"><span class="arrow">→</span> <strong>Workspace</strong>&nbsp; folder + permission level</div>
       <div class="checklist-item"><span class="arrow">→</span> <strong>AI history</strong>&nbsp; index your Claude/Codex conversations</div>
       <div class="checklist-item"><span class="arrow">→</span> <strong>Knowledge scan</strong>&nbsp; teach the AI about your projects</div>
@@ -548,7 +547,7 @@ SETUP_HTML = """<!DOCTYPE html>
   <!-- ══════════════════════════════════════════ -->
   <div class="step" id="step-2">
     <h2 class="step-title">Connect Claude</h2>
-    <p class="step-subtitle">Choose how Apex authenticates with Anthropic.</p>
+    <p class="step-subtitle">Choose how Apex authenticates with Anthropic, or skip to use other models.</p>
 
     <div class="status" id="claude-status-row">
       <div class="status-dot yellow" id="claude-dot"></div>
@@ -596,6 +595,7 @@ SETUP_HTML = """<!DOCTYPE html>
     <div class="err-msg" id="err-2"></div>
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="showStep(1)">← Back</button>
+      <button class="btn btn-ghost" onclick="skipClaude()" style="font-size:13px;opacity:0.7;">Skip — I'll configure later</button>
       <button class="btn btn-primary" id="btn-2" onclick="saveModels()">Continue →</button>
     </div>
   </div>
@@ -1362,6 +1362,20 @@ async function checkCodexStatus() {
     // If not installed, hide the status row entirely
   } catch(e) {
     // silent — codex is optional
+  }
+}
+
+// ── Step 2: Skip Claude ──────────────────────────────────────────────────────
+async function skipClaude() {
+  showErr('err-2', '');
+  try {
+    await apiFetch('/api/setup/models', {
+      method: 'POST',
+      body: JSON.stringify({ skip_claude: true }),
+    });
+    showStep(3);
+  } catch(e) {
+    showErr('err-2', e.message);
   }
 }
 

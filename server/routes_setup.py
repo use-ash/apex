@@ -321,12 +321,19 @@ async def api_setup_models(request: Request):
     saved: list[str] = []
     errors: list[str] = []
     is_step2 = bool(data.get("auth_method") or data.get("anthropic_api_key"))
+    skipped_claude = data.get("skip_claude", False)
 
-    # ── Step 2: Anthropic auth (required, blocks on failure) ──────────
+    # ── Step 2: Anthropic auth (optional — users can skip) ────────────
     auth_method = (data.get("auth_method") or "").strip()
     auth_valid = False
 
-    if auth_method == "oauth":
+    if skipped_claude:
+        # User chose to skip Claude — proceed without Anthropic auth
+        auth_valid = True
+        saved.append("skipped_claude")
+        log("setup: Claude skipped by user — will use other models")
+
+    elif auth_method == "oauth":
         # Subscription auth — use `claude auth status` for end-to-end validation
         try:
             import asyncio as _aio
@@ -380,7 +387,7 @@ async def api_setup_models(request: Request):
         except Exception as exc:
             errors.append(f"API key validation failed: {exc}")
 
-    # If this is Step 2 and auth failed, block — don't mark complete
+    # If this is Step 2 and auth failed (and not skipped), block
     if is_step2 and not auth_valid:
         return JSONResponse(
             {"error": errors[0] if errors else "Authentication required",

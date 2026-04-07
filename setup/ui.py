@@ -28,7 +28,30 @@ _BOLD_CYAN = "\033[1;36m"
 _ERASE_LINE = "\033[2K\r"
 
 # Detect whether the terminal supports colors
-_NO_COLOR = os.environ.get("NO_COLOR") is not None or not sys.stdout.isatty()
+def _detect_no_color() -> bool:
+    """Detect whether to disable ANSI colors."""
+    if os.environ.get("NO_COLOR") is not None:
+        return True
+    if not sys.stdout.isatty():
+        return True
+    if os.name == "nt":
+        # Try to enable Windows VT100 processing (Windows 10 1511+)
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+            mode = ctypes.c_ulong()
+            kernel32.GetConsoleMode(handle, ctypes.byref(mode))
+            # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+            if not (mode.value & 0x0004):
+                kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+            return False  # VT100 enabled successfully
+        except Exception:
+            return True  # Can't enable VT100, disable colors
+    return False
+
+
+_NO_COLOR = _detect_no_color()
 
 # Non-interactive mode — all prompts return their defaults immediately.
 # Set via set_non_interactive() when --fast or stdin is not a tty.
