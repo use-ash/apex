@@ -22,8 +22,8 @@ One computer. One app. Your data stays yours.
 
 ## What You Need Before Starting
 
-- **A Mac or Linux computer.** (Windows support is coming, but not ready yet.)
-- **Python 3.10 or newer.** Python is the programming language Apex is built with. You will not need to write any code or learn Python. It runs behind the scenes, like an engine in a car — you just need it installed. The installer checks for it automatically and tells you if it is missing.
+- **A Mac, Linux, or Windows computer.**
+- **Python 3.10 or newer.** Python is the programming language Apex is built with. You will not need to write any code or learn Python. It runs behind the scenes, like an engine in a car — you just need it installed. The installer checks for it automatically and tells you if it is missing. Apex runs inside a virtual environment, so it will not interfere with anything else on your system.
 - **About 10 minutes of time.**
 
 ### Optional (but recommended)
