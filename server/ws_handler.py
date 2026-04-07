@@ -768,8 +768,8 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         if group_agent is None and is_group_chat:
             group_agent = _resolve_primary_group_agent(chat_id, prompt)
     mention_prompt = prompt
+    _coord_protocol = _get_chat_settings(chat_id).get("coordination_protocol", "freeform") if (group_agent and is_group_chat) else "freeform"
     if group_agent and is_group_chat and not suppress_user_message and handoff_source not in {"agent", "user_multi"}:
-        _coord_protocol = _get_chat_settings(chat_id).get("coordination_protocol", "freeform")
         if _coord_protocol == "sequential" or _strict_relay_requested(mention_prompt):
             _start_strict_group_relay(
                 chat_id,
@@ -781,7 +781,11 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
     permission_policy = _resolve_effective_tool_policy(chat_id, chat, group_agent)
     permission_level = int(permission_policy.get("level", 1))
     allowed_commands = list(permission_policy.get("allowed_commands") or [])
-    if strict_relay_active or handoff_source in {"relay_feedback", "relay_roster_feedback", "relay_strict_feedback"}:
+    if handoff_source in {"relay_feedback", "relay_roster_feedback", "relay_strict_feedback"}:
+        permission_policy = {**permission_policy, "level": 0, "allowed_commands": []}
+        permission_level = 0
+        allowed_commands = []
+    elif strict_relay_active and _coord_protocol != "sequential":
         permission_policy = {**permission_policy, "level": 0, "allowed_commands": []}
         permission_level = 0
         allowed_commands = []
