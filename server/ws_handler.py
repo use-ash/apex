@@ -228,6 +228,45 @@ async def _broadcast_chat_event(chat_id: str, payload: dict) -> None:
         await _safe_ws_send_json(ws, payload, chat_id=chat_id)
 
 
+def _queue_preview_text(raw: str, limit: int = 30) -> str:
+    text = " ".join(str(raw or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _queued_turn_payload(entry: dict) -> dict:
+    data = dict(entry.get("data") or {})
+    stream_id = str(entry.get("msg_id") or entry.get("stream_id") or data.get("stream_id") or "")
+    return {
+        "msg_id": stream_id,
+        "stream_id": stream_id,
+        "preview": _queue_preview_text(data.get("prompt", "")),
+        "agent": str(entry.get("profile_id") or "") or None,
+    }
+
+
+def _queue_update_payload(chat_id: str) -> dict:
+    queued: list[tuple[float, dict]] = []
+    for queue in _queued_turns.values():
+        for entry in queue:
+            if str(entry.get("chat_id") or "") != chat_id:
+                continue
+            queued.append((float(entry.get("queued_at") or 0.0), _queued_turn_payload(entry)))
+    queued.sort(key=lambda item: item[0])
+    return {
+        "type": "queue_update",
+        "chat_id": chat_id,
+        "queued": [payload for _, payload in queued],
+    }
+
+
+async def _emit_queue_update(chat_id: str) -> None:
+    if not chat_id:
+        return
+    await _broadcast_chat_event(chat_id, _queue_update_payload(chat_id))
+
+
 def _enqueue_turn(
     lock_key: str,
     websocket: WebSocket,
@@ -245,6 +284,8 @@ def _enqueue_turn(
         "data": dict(data),
         "chat_id": chat_id,
         "stream_id": stream_id,
+        "msg_id": stream_id,
+        "queued_at": time.time(),
         "name": group_agent["name"] if group_agent else "",
         "avatar": group_agent["avatar"] if group_agent else "",
         "profile_id": group_agent["profile_id"] if group_agent else "",
@@ -252,11 +293,62 @@ def _enqueue_turn(
     return len(queue)
 
 
-def _purge_queued_turns_for_ws(websocket: WebSocket) -> int:
+def _purge_queued_turns_for_ws(websocket: WebSocket) -> tuple[int, set[str]]:
+    removed = 0
+    affected_chat_ids: set[str] = set()
+    empty_keys: list[str] = []
+    for lock_key, queue in list(_queued_turns.items()):
+        removed_entries = [item for item in queue if item.get("websocket") is websocket]
+        if removed_entries:
+            removed += len(removed_entries)
+            affected_chat_ids.update(
+                str(item.get("chat_id") or "")
+                for item in removed_entries
+                if str(item.get("chat_id") or "")
+            )
+        kept = deque(item for item in queue if item.get("websocket") is not websocket)
+        if kept:
+            _queued_turns[lock_key] = kept
+        else:
+            empty_keys.append(lock_key)
+    for lock_key in empty_keys:
+        _queued_turns.pop(lock_key, None)
+    return removed, affected_chat_ids
+
+
+def _cancel_queued_turn(chat_id: str, msg_id: str) -> bool:
+    if not chat_id or not msg_id:
+        return False
+    removed = False
+    empty_keys: list[str] = []
+    for lock_key, queue in list(_queued_turns.items()):
+        kept = deque()
+        changed = False
+        for entry in queue:
+            entry_chat_id = str(entry.get("chat_id") or "")
+            entry_msg_id = str(entry.get("msg_id") or entry.get("stream_id") or "")
+            if not removed and entry_chat_id == chat_id and entry_msg_id == msg_id:
+                removed = True
+                changed = True
+                continue
+            kept.append(entry)
+        if changed:
+            if kept:
+                _queued_turns[lock_key] = kept
+            else:
+                empty_keys.append(lock_key)
+    for lock_key in empty_keys:
+        _queued_turns.pop(lock_key, None)
+    return removed
+
+
+def _clear_queued_turns(chat_id: str) -> int:
+    if not chat_id:
+        return 0
     removed = 0
     empty_keys: list[str] = []
     for lock_key, queue in list(_queued_turns.items()):
-        kept = deque(item for item in queue if item.get("websocket") is not websocket)
+        kept = deque(item for item in queue if str(item.get("chat_id") or "") != chat_id)
         removed += len(queue) - len(kept)
         if kept:
             _queued_turns[lock_key] = kept
@@ -280,6 +372,8 @@ def _launch_next_queued_turn(lock_key: str) -> None:
     send_data = dict(entry["data"])
     chat_id = str(entry.get("chat_id") or send_data.get("chat_id") or "")
     stream_id = str(entry.get("stream_id") or send_data.get("stream_id") or "")
+    if chat_id:
+        asyncio.create_task(_emit_queue_update(chat_id))
     task = asyncio.create_task(_handle_send_action(websocket, send_data))
     if chat_id and stream_id:
         _set_active_send_task(
@@ -516,6 +610,11 @@ async def websocket_endpoint(websocket: WebSocket):
                                 {"type": "stream_complete_reload", "chat_id": attach_id},
                                 chat_id=attach_id,
                             )
+                        await _safe_ws_send_json(
+                            websocket,
+                            _queue_update_payload(attach_id),
+                            chat_id=attach_id,
+                        )
                 continue
 
             if action == "set_model":
@@ -614,14 +713,36 @@ async def websocket_endpoint(websocket: WebSocket):
                         await websocket.send_json({"type": "error", "message": "Invalid chat_id"})
                         continue
                     await _cancel_chat_streams(chat_id, stream_id=requested_stream_id)
+            elif action == "cancel_queued":
+                chat_id = str(data.get("chat_id") or "")
+                msg_id = str(data.get("msg_id") or "")
+                if not chat_id:
+                    continue
+                if not _is_valid_chat_id(chat_id):
+                    await websocket.send_json({"type": "error", "message": "Invalid chat_id"})
+                    continue
+                _cancel_queued_turn(chat_id, msg_id)
+                await _emit_queue_update(chat_id)
+            elif action == "stop_all":
+                chat_id = str(data.get("chat_id") or "")
+                if not chat_id:
+                    continue
+                if not _is_valid_chat_id(chat_id):
+                    await websocket.send_json({"type": "error", "message": "Invalid chat_id"})
+                    continue
+                _clear_queued_turns(chat_id)
+                await _emit_queue_update(chat_id)
+                await _cancel_chat_streams(chat_id)
 
     except WebSocketDisconnect as wd:
         log(f"websocket disconnected ws={ws_id} code={wd.code if hasattr(wd, 'code') else '?'}")
     except Exception as e:
         log(f"websocket error ws={ws_id}: {type(e).__name__}: {e}")
     finally:
-        purged = _purge_queued_turns_for_ws(websocket)
+        purged, purged_chat_ids = _purge_queued_turns_for_ws(websocket)
         _detach_ws(websocket)
+        for purged_chat_id in purged_chat_ids:
+            await _emit_queue_update(purged_chat_id)
         if purged:
             log(f"websocket cleanup ws={ws_id}: purged {purged} queued turn(s)")
         if active_tasks:
@@ -922,6 +1043,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             group_agent=group_agent,
             position=position,
         )
+        await _emit_queue_update(chat_id)
         return
 
     result: dict | None = None

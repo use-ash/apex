@@ -196,14 +196,18 @@ padding:6px;min-width:180px;box-shadow:0 8px 32px rgba(0,0,0,0.45);z-index:100;
 opacity:0;transform:translateY(8px);pointer-events:none;transition:opacity .15s ease,transform .15s ease}
 .stop-menu.show{opacity:1;transform:translateY(0);pointer-events:auto}
 .stop-menu button{display:flex;align-items:center;gap:10px;width:100%;padding:10px 12px;
-background:none;border:none;color:var(--text);font-size:14px;cursor:pointer;border-radius:10px;transition:background .15s ease}
+background:none;border:none;color:var(--text);font-size:14px;cursor:pointer;border-radius:10px;transition:background .15s ease;text-align:left}
 .stop-menu button:hover{background:var(--bg)}
 .stop-menu button:active{background:var(--bg)}
 .stop-menu button .stop-dot{width:8px;height:8px;border-radius:50%;background:var(--red);
 animation:dotPulse 1.2s ease-in-out infinite;flex-shrink:0}
-.stop-menu button .agent-time{margin-left:auto;font-size:11px;color:var(--dim)}
+.stop-menu button .stop-icon{width:16px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;font-size:13px}
+.stop-menu button .stop-label{min-width:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stop-menu button .agent-time{margin-left:auto;font-size:11px;color:var(--dim);flex-shrink:0}
 .stop-menu hr{border:none;border-top:1px solid var(--card);margin:4px 0}
 .stop-menu .stop-all{color:var(--red);font-weight:500}
+.stop-menu .stop-confirm{background:rgba(239,68,68,0.12)}
+.stop-menu .stop-keep{opacity:.6}
 @keyframes dotPulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.7)}}
 .thinking-indicator{display:flex;gap:5px;padding:12px 16px;align-items:center}
 .thinking-indicator .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);
@@ -1035,6 +1039,8 @@ let currentStreamId = '';
 let composerHasDraft = false;
 let lastSubmittedPrompt = '';
 const activeStreams = new Map(); // stream_id -> {name, avatar, profile_id}
+let queuedMessages = []; // [{msg_id, stream_id, preview, agent}]
+let _stopMenuConfirmKey = '';
 // Per-stream context: supports concurrent agent streams without clobbering
 const _streamCtx = {};  // stream_id -> {bubble, speaker, toolPill, toolCalls, ...}
 // Per-chat last-seen event seq — dedupes events that arrive via both live-send
@@ -1256,6 +1262,7 @@ function restoreComposerDraft(text, attachments = []) {
 
 function hideStopMenu() {
   document.getElementById('stopMenu')?.classList.remove('show');
+  _stopMenuConfirmKey = '';
 }
 
 function _elapsedLabel(startedAt) {
@@ -1265,45 +1272,135 @@ function _elapsedLabel(startedAt) {
   return `${Math.floor(sec / 60)}m${sec % 60}s`;
 }
 
+function _queuePreview(preview = '') {
+  const text = String(preview || '').trim();
+  return text || 'Queued message';
+}
+
+function _stopMenuLabel(label, confirmLabel, isConfirm) {
+  return isConfirm ? confirmLabel : label;
+}
+
+function _appendStopMenuRow(menu, spec) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = spec.className || '';
+  if (spec.confirmKey && _stopMenuConfirmKey === spec.confirmKey) btn.classList.add('stop-confirm');
+  const label = _stopMenuLabel(spec.label, spec.confirmLabel || spec.label, spec.confirmKey && _stopMenuConfirmKey === spec.confirmKey);
+  const time = spec.elapsed ? `<span class="agent-time">${escHtml(spec.elapsed)}</span>` : '';
+  btn.innerHTML = `<span class="${spec.dot ? 'stop-dot' : 'stop-icon'}">${spec.dot ? '' : escHtml(spec.icon || '')}</span><span class="stop-label">${escHtml(label)}</span>${time}`;
+  btn.onclick = () => {
+    if (!spec.confirmKey) {
+      spec.onConfirm();
+      return;
+    }
+    if (_stopMenuConfirmKey === spec.confirmKey) {
+      const run = spec.onConfirm;
+      hideStopMenu();
+      run();
+      return;
+    }
+    _stopMenuConfirmKey = spec.confirmKey;
+    renderStopMenu();
+  };
+  menu.appendChild(btn);
+}
+
 function renderStopMenu() {
   const menu = document.getElementById('stopMenu');
   if (!menu) return;
+  const activeRows = Array.from(activeStreams.values());
+  const queuedRows = Array.isArray(queuedMessages) ? queuedMessages.slice() : [];
   menu.innerHTML = '';
-  Array.from(activeStreams.values()).forEach(stream => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.innerHTML = `<span class="stop-dot"></span>${escHtml(stream.avatar || '')} Stop ${escHtml(stream.name || 'agent')}<span class="agent-time">${_elapsedLabel(stream.startedAt)}</span>`;
-    btn.onclick = () => stopStream(stream.stream_id);
-    menu.appendChild(btn);
-  });
-  if (activeStreams.size > 1) {
-    menu.appendChild(document.createElement('hr'));
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'stop-all';
-    btn.textContent = 'Stop All';
-    btn.onclick = () => stopAllStreams();
-    menu.appendChild(btn);
+  if (!activeRows.length && !queuedRows.length) {
+    hideStopMenu();
+    return;
   }
+  activeRows.forEach(stream => {
+    const isGroupRow = activeRows.length > 1 || currentChatType === 'group';
+    const who = isGroupRow ? `${stream.avatar || ''} ${stream.name || 'this response'}`.trim() : 'this response';
+    _appendStopMenuRow(menu, {
+      label: `⏹ Stop ${who}`,
+      confirmLabel: `Tap again to stop ${who}`,
+      confirmKey: `active:${stream.stream_id}`,
+      dot: false,
+      icon: '⏹',
+      elapsed: _elapsedLabel(stream.startedAt),
+      onConfirm: () => stopStream(stream.stream_id),
+    });
+  });
+  queuedRows.forEach(item => {
+    const preview = _queuePreview(item.preview || item.msg_id || '');
+    _appendStopMenuRow(menu, {
+      label: `✕ Cancel "${preview}"`,
+      confirmLabel: `Tap again to cancel "${preview}"`,
+      confirmKey: `queued:${item.msg_id || item.stream_id || ''}`,
+      dot: false,
+      icon: '✕',
+      onConfirm: () => cancelQueuedMessage(item.msg_id || item.stream_id || ''),
+    });
+  });
+  if (activeRows.length || queuedRows.length) {
+    menu.appendChild(document.createElement('hr'));
+  }
+  if (activeRows.length + queuedRows.length > 1) {
+    _appendStopMenuRow(menu, {
+      label: '⏹ Stop + cancel all',
+      confirmLabel: 'Tap again to stop + cancel all',
+      confirmKey: 'all',
+      className: 'stop-all',
+      dot: false,
+      icon: '⏹',
+      onConfirm: () => stopAllStreams(),
+    });
+    menu.appendChild(document.createElement('hr'));
+  }
+  _appendStopMenuRow(menu, {
+    label: '← Keep going',
+    className: 'stop-keep',
+    dot: false,
+    icon: '←',
+    onConfirm: () => hideStopMenu(),
+  });
 }
 
 function stopStream(streamId) {
   if (!currentChat || !streamId) return;
   cancelStream(streamId).catch(err => reportError('stop stream', err));
-  hideStopMenu();
+}
+
+async function cancelQueuedMessage(msgId) {
+  if (!currentChat || !msgId || !ws || ws.readyState !== WebSocket.OPEN) return;
+  try {
+    ws.send(JSON.stringify({action: 'cancel_queued', chat_id: currentChat, msg_id: msgId}));
+  } catch (err) {
+    reportError('cancel queued', err);
+  }
 }
 
 function stopAllStreams() {
-  if (!currentChat) return;
-  cancelStream('').catch(err => reportError('stop all streams', err));
-  hideStopMenu();
+  if (!currentChat || !ws || ws.readyState !== WebSocket.OPEN) return;
+  try {
+    ws.send(JSON.stringify({action: 'stop_all', chat_id: currentChat}));
+    if (activeStreams.size > 0) {
+      Array.from(activeStreams.keys()).forEach(sid => _finalizeStream(sid, {trackAnswered: false}));
+    }
+  } catch (err) {
+    reportError('stop all streams', err);
+  }
 }
 
 function toggleStopMenu() {
   const menu = document.getElementById('stopMenu');
-  if (!menu || activeStreams.size <= 1) return;
-  renderStopMenu();
-  menu.classList.toggle('show');
+  const hasStopTargets = activeStreams.size > 0 || queuedMessages.length > 0;
+  if (!menu || !hasStopTargets) return;
+  if (!menu.classList.contains('show')) {
+    _stopMenuConfirmKey = '';
+    renderStopMenu();
+    menu.classList.add('show');
+    return;
+  }
+  hideStopMenu();
 }
 
 function dbg(...args) {
@@ -2541,7 +2638,7 @@ function openThinkingPanel(pillEl) {
 function handleEvent(msg) {
   const el = document.getElementById('messages');
   // B-42: drop stream events that belong to a different chat
-  const _B42_STREAM = new Set(['stream_start','stream_ack','stream_queued','text','thinking','tool_use','tool_result','stream_end','active_streams']);
+  const _B42_STREAM = new Set(['stream_start','stream_ack','stream_queued','text','thinking','tool_use','tool_result','stream_end','active_streams','queue_update']);
   if (_B42_STREAM.has(msg.type) && msg.chat_id && currentChat && msg.chat_id !== currentChat) {
     dbg('B42: drop cross-chat', msg.type, msg.chat_id);
     return;
@@ -2628,10 +2725,21 @@ function handleEvent(msg) {
       const ctx = _upsertStreamCtx(sid, speaker);
       ctx.awaitingAck = false;
       _renderQueuedState(ctx, msg);
-      hideStopMenu();
+      if (document.getElementById('stopMenu')?.classList.contains('show')) renderStopMenu();
       updateSendBtn();
 
       refreshDebugState('stream-queued');
+      break;
+    }
+
+    case 'queue_update': {
+      if (msg.chat_id && currentChat && msg.chat_id !== currentChat) break;
+      queuedMessages = Array.isArray(msg.queued) ? msg.queued.map(item => ({...item})) : [];
+      if (document.getElementById('stopMenu')?.classList.contains('show')) {
+        renderStopMenu();
+      }
+      updateSendBtn();
+      refreshDebugState('queue-update');
       break;
     }
 
@@ -4407,12 +4515,12 @@ function renderMarkdown(el, rawText) {
 function updateSendBtn() {
   const btn = document.getElementById('sendBtn');
   const canSend = Boolean(currentChat && ws && ws.readyState === WebSocket.OPEN);
-  const showStop = (streaming || _isAnyStreamActive()) && !composerHasDraft;
+  const showStop = (streaming || _isAnyStreamActive() || queuedMessages.length > 0) && !composerHasDraft;
   if (showStop) {
     btn.innerHTML = '&#9632;';
     btn.className = 'btn-compose compose-action is-stop';
     btn.disabled = !canSend;
-    btn.title = activeStreams.size > 1 ? 'Choose stream to stop' : 'Stop';
+    btn.title = (activeStreams.size + queuedMessages.length) > 1 ? 'Choose what to stop' : 'Stop';
   } else {
     btn.innerHTML = '&#9654;';
     btn.className = 'btn-compose compose-action is-send';
@@ -4882,6 +4990,8 @@ async function selectChat(id, title, chatType, category, options) {
   // must preserve active stream contexts or long-running streams go invisible
   if (id !== currentChat) {
     activeStreams.clear();
+    queuedMessages = [];
+    _stopMenuConfirmKey = '';
     Object.keys(_streamCtx).forEach(sid => { delete _streamCtx[sid]; });
     clearComposerDraft();
     // Reset history pagination for new chat
@@ -5211,14 +5321,8 @@ document.getElementById('threadToggle').onclick = () => {
   btn.textContent = collapsed ? '\u25B8' : '\u25BE';
 };
 document.getElementById('sendBtn').onclick = () => {
-  if ((streaming || _isAnyStreamActive()) && !composerHasDraft) {
-    if (activeStreams.size > 1) {
-      toggleStopMenu();
-    } else if (activeStreams.size === 1) {
-      stopStream(activeStreams.keys().next().value || '');
-    } else {
-      stopAllStreams();
-    }
+  if ((streaming || _isAnyStreamActive() || queuedMessages.length > 0) && !composerHasDraft) {
+    toggleStopMenu();
   } else {
     send().catch(err => reportError('send click', err));
   }
