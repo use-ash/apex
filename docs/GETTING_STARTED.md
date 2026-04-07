@@ -23,7 +23,7 @@ One computer. One app. Your data stays yours.
 ## What You Need Before Starting
 
 - **A Mac or Linux computer.** (Windows support is coming, but not ready yet.)
-- **Python 3.11 or newer.** Python is the programming language Apex is built with. You will not need to write any code or learn Python. It runs behind the scenes, like an engine in a car — you just need it installed. We will check if you have it in Step 2, and help you install it if you do not.
+- **Python 3.10 or newer.** Python is the programming language Apex is built with. You will not need to write any code or learn Python. It runs behind the scenes, like an engine in a car — you just need it installed. The installer checks for it automatically and tells you if it is missing.
 - **About 10 minutes of time.**
 
 ### Optional (but recommended)
@@ -38,70 +38,52 @@ These are not required. You can set up Apex with none of them and still use free
 
 ---
 
-## Step 1: Download Apex
+## Step 1: Download and Install Apex
 
-First, you need to get the Apex files onto your computer. There are two ways to do this. Pick whichever feels easier.
+Open the **Terminal** app. On Mac, you can find it by pressing `Cmd + Space`, typing "Terminal", and pressing Enter.
 
-### Option A: Download as a ZIP file (easiest)
+> **What is a terminal?** It is a text-based way to give commands to your computer. Instead of clicking buttons, you type instructions. It looks like a window with text and a blinking cursor. Everything in this guide that appears in a gray code box is something you type into the terminal.
 
-1. Go to [github.com/use-ash/apex](https://github.com/use-ash/apex) in your web browser.
-2. Click the green **Code** button.
-3. Click **Download ZIP**.
-4. Once it downloads, find the ZIP file (usually in your Downloads folder) and double-click it to unzip.
-5. You should now have a folder called `apex` (or `apex-main`). Move it somewhere you will remember, like your Documents folder or Desktop.
-
-> The unzipped folder will probably be called `apex-main`. That's fine — this is normal.
-
-### Option B: Use git (if you are comfortable with the terminal)
-
-Git is a tool that developers use to download and track changes to code. If you have never used it before, Option A above is simpler. But if you want to try:
-
-1. Open the **Terminal** app. On Mac, you can find it by pressing `Cmd + Space`, typing "Terminal", and pressing Enter.
-2. Type the following and press Enter:
+Type the following three lines, pressing Enter after each:
 
 ```bash
-git clone https://github.com/use-ash/apex.git
+git clone https://github.com/use-ash/apex.git ~/.apex
+cd ~/.apex
+bash install.sh
 ```
 
-This downloads the Apex files into a folder called `apex` in whatever directory your terminal is currently in (usually your Documents folder).
+That's it. The installer handles everything:
 
-> **What is a terminal?** It is a text-based way to give commands to your computer. Instead of clicking buttons, you type instructions. It looks like a window with text and a blinking cursor. Everything in this guide that starts with a `$` or appears in a gray code box is something you type into the terminal.
+1. **Finds Python** on your system (3.10 or newer required)
+2. **Creates a virtual environment** so Apex's dependencies don't interfere with anything else on your computer
+3. **Installs all dependencies** automatically
+4. **Launches the setup wizard** which walks you through the rest
+
+> **"git: command not found"?** Install git first:
+>
+> - **Mac:** Open Terminal and type `xcode-select --install`, then press Enter. Follow the prompts.
+> - **Linux:** `sudo apt install git` (Ubuntu/Debian) or `sudo dnf install git` (Fedora)
+>
+> Then run the three commands above again.
+
+> **"No suitable Python found"?** The installer needs Python 3.10+. On Mac, the easiest way to install it:
+>
+> - Go to [python.org/downloads](https://www.python.org/downloads/)
+> - Download the latest version
+> - Open the downloaded file and follow the installer
+> - **Close and reopen Terminal**, then run `bash install.sh` again
 
 ---
 
-## Step 2: Run the Setup Wizard
+## Step 2: The Setup Wizard
 
-The setup wizard is an interactive program that configures everything for you. It asks questions, you answer them, and it does the rest.
+After `install.sh` finishes installing dependencies, it automatically launches the setup wizard. The wizard is an interactive program that configures everything for you. It asks questions, you answer them, and it does the rest.
 
-### Open Terminal and navigate to the Apex folder
-
-1. Open the **Terminal** app (see the tip above if you have not used it before).
-2. Type the following and press Enter:
-
-```bash
-cd ~/Desktop/apex-main
-```
-
-> **What does `cd` mean?** It stands for "change directory." It tells the terminal to move into a folder. The `~` symbol is a shortcut that means "my home folder." If you put the folder somewhere other than the Desktop, adjust the path accordingly.
->
-> **Used git to download?** If you used `git clone` (Option B above), your folder is just called `apex`, so use:
+> **Want to re-run the wizard later?** You can always run it again:
 > ```bash
-> cd apex
+> cd ~/.apex
+> .venv/bin/python3 setup.py
 > ```
-
-**To make sure you're in the right folder,** type `ls` and press Enter. You should see files like `setup.py` and `server/`. If you see "No such file or directory," double-check the folder name and location.
-
-3. Now start the setup wizard:
-
-```bash
-python3 setup.py
-```
-
-> **"python3: command not found"?** Don't worry — it just means Python isn't installed yet. On Mac, the easiest way to install it:
-> - Go to [python.org/downloads](https://www.python.org/downloads/)
-> - Download the latest version (3.11 or newer)
-> - Open the downloaded file and follow the installer
-> - **Close and reopen Terminal** (you need to do this because Terminal only checks for new programs when it first starts up), then try `python3 setup.py` again
 
 The wizard will ask you to choose between **Quick** and **Full** setup. We recommend **Full** for your first time -- it takes a few extra minutes but configures everything properly.
 
@@ -115,13 +97,7 @@ The bootstrap phase gets the basic infrastructure ready. Here is what happens at
 
 #### Step 1 of 7: Check Python packages
 
-The wizard checks whether your computer has the software libraries Apex needs. If anything is missing, it will ask:
-
-```
-Install missing required packages (fastapi, uvicorn, claude-agent-sdk)? [Y/n]
-```
-
-Type **Y** and press Enter. The wizard installs them automatically.
+The wizard verifies that all required packages are installed in the virtual environment. Since `install.sh` already handled this, you should see green checkmarks. If anything is missing, the wizard installs it automatically.
 
 > **What are packages?** They are pre-built building blocks that Apex uses. Think of them like ingredients in a recipe -- Apex needs them to work, but you do not need to know what they do.
 
@@ -342,9 +318,8 @@ Opened https://localhost:8300 in your browser.
 #### Want to run Apex without keeping Terminal open?
 
 1. Open Terminal
-2. Navigate to the Apex folder (e.g., `cd ~/Desktop/apex-main`)
-3. Type: `nohup bash server/launch.sh > /dev/null 2>&1 &`
-4. You can now close Terminal — Apex keeps running
+2. Type: `cd ~/.apex && nohup bash server/launch.sh > /dev/null 2>&1 &`
+3. You can now close Terminal — Apex keeps running
 
 To stop it later: open Terminal and type `pkill -f apex.py`
 
@@ -369,10 +344,10 @@ You only need to do this once per browser.
 The file you need is located at:
 
 ```
-apex/state/ssl/client.p12
+~/.apex/state/ssl/client.p12
 ```
 
-**Not sure where the certificate file is?** In Terminal, type `open state/ssl/` to open the folder in Finder.
+**Not sure where the certificate file is?** In Terminal, type `open ~/.apex/state/ssl/` to open the folder in Finder.
 
 You will also need the **password** that was shown during setup. If you chose the defaults, the password is: `apex`
 
@@ -409,7 +384,7 @@ If Chrome does not find the certificate automatically:
 2. Type `chrome://settings/certificates` and press Enter.
 3. This opens the certificate manager. Click **Your certificates** (or the relevant tab).
 4. Click **Import**.
-5. Navigate to `apex/state/ssl/` and select `client.p12`.
+5. Navigate to `~/.apex/state/ssl/` and select `client.p12`.
 6. Enter the certificate password and click **OK**.
 
 ---
@@ -424,7 +399,7 @@ Firefox has its own certificate store, separate from the system keychain. You mu
 4. Click **View Certificates**.
 5. In the Certificate Manager window, click the **Your Certificates** tab.
 6. Click **Import**.
-7. Navigate to `apex/state/ssl/` and select the `client.p12` file.
+7. Navigate to `~/.apex/state/ssl/` and select the `client.p12` file.
 8. Enter the certificate password and click **OK**.
 
 You should see the certificate appear in the list. Close the Certificate Manager.
@@ -436,7 +411,7 @@ You should see the certificate appear in the list. Close the Certificate Manager
 1. Open Chrome and go to `chrome://settings/certificates`.
 2. Click the **Your certificates** tab.
 3. Click **Import**.
-4. Select the `client.p12` file from `apex/state/ssl/`.
+4. Select the `client.p12` file from `~/.apex/state/ssl/`.
 5. Enter the certificate password.
 
 ### Linux -- Firefox
@@ -517,7 +492,7 @@ You can access Apex from your iPhone or iPad over your local network. Your phone
 ### iPhone / iPad
 
 1. **Get the certificate file onto your phone.** The easiest way on Mac:
-   - Open Finder and navigate to `apex/state/ssl/`.
+   - Open Finder and navigate to `~/.apex/state/ssl/` (in Terminal, type `open ~/.apex/state/ssl/` to open it).
    - AirDrop the `client.p12` file to your iPhone. (Right-click the file, choose **Share > AirDrop**, and select your phone.)
    - Alternatively, email it to yourself and open the attachment on your phone.
 
@@ -542,7 +517,7 @@ You can access Apex from your iPhone or iPad over your local network. Your phone
 
 > **"Can't connect" on your phone?** Make sure your phone and your computer are on the same Wi-Fi network. If they are on different networks, they cannot see each other.
 
-> **Apex Pro (native iOS app):** For a better mobile experience, the Apex Pro iOS app starts at $29.99/mo ($249/yr or $499 lifetime). It is a native app with push notifications, gesture navigation, and background streaming -- not just a website in a browser. Connect it to your server the same way.
+> **ApexChat (native iOS app):** For a better mobile experience, the ApexChat iOS app provides push notifications, gesture navigation, and background streaming -- a native experience rather than a website in a browser. Connect it to your server the same way.
 
 ### Android
 
@@ -561,10 +536,10 @@ Here are the most common issues people run into, and how to fix them.
 
 ### "This site can't be reached" or the page never loads
 
-**The server is not running.** Open Terminal, navigate to the Apex folder, and start it:
+**The server is not running.** Open Terminal and start it:
 
 ```bash
-cd apex
+cd ~/.apex
 bash server/launch.sh
 ```
 
@@ -597,7 +572,7 @@ This usually means one of two things:
 
 If all else fails, you can regenerate the certificates:
 ```bash
-python3 setup.py --regen-certs
+cd ~/.apex && .venv/bin/python3 setup.py --regen-certs
 ```
 
 Then re-import the new `client.p12` into your browser.
@@ -611,20 +586,21 @@ This means the certificate was not imported correctly, or it was imported into t
 - **Try restarting your browser** after importing the certificate.
 - **Re-import:** Delete the old certificate and import `client.p12` again, making sure to enter the correct password.
 
-### Setup wizard fails on "pip install"
+### Installer fails on dependencies
 
-Python might not be installed, or it might be too old.
+If `install.sh` fails during package installation, it usually means Python is too old or missing build tools.
 
 Check your Python version:
 ```bash
 python3 --version
 ```
 
-You need version 3.11 or newer. If you see an older version or "command not found":
+You need version 3.10 or newer. If you see an older version or "command not found":
+
 - Go to [python.org/downloads](https://www.python.org/downloads/)
 - Download and install the latest version
 - Close and reopen Terminal
-- Try again
+- Run `bash install.sh` again from `~/.apex`
 
 ### The AI says it cannot access my files
 
@@ -632,9 +608,16 @@ The workspace path might be wrong. Check it by going to the dashboard (**https:/
 
 ### I want to start over
 
-Run the full setup wizard again:
+Run the installer again:
 ```bash
-python3 setup.py
+cd ~/.apex
+bash install.sh
+```
+
+Or re-run just the setup wizard:
+```bash
+cd ~/.apex
+.venv/bin/python3 setup.py
 ```
 
 It detects the previous setup and offers a menu. Choose **"Run full setup again"** to start fresh.
@@ -658,7 +641,7 @@ Now that Apex is running, here are some things to explore:
 
 - **Troubleshooting guide:** See `docs/TROUBLESHOOTING.md` in the Apex folder for a detailed log of known issues and fixes.
 - **GitHub Issues:** Report bugs or ask questions at [github.com/use-ash/apex/issues](https://github.com/use-ash/apex/issues).
-- **Re-run setup:** `python3 setup.py` -- the wizard detects your existing configuration and offers options to update specific parts without starting over.
+- **Re-run setup:** `cd ~/.apex && .venv/bin/python3 setup.py` -- the wizard detects your existing configuration and offers options to update specific parts without starting over.
 
 ---
 
@@ -666,13 +649,16 @@ Now that Apex is running, here are some things to explore:
 
 | What | How |
 |------|-----|
-| Start Apex | `bash server/launch.sh` (from the apex folder) |
+| Install location | `~/.apex` |
+| Start Apex | `cd ~/.apex && bash server/launch.sh` |
 | Stop Apex | Close the Terminal window, or press Ctrl+C |
 | Apex URL | https://localhost:8300 |
 | Admin Dashboard | https://localhost:8300/admin |
-| Your data | Everything in the `state/` folder |
-| API keys | Stored in `~/.apex/.env` |
-| Logs | `state/apex.log` |
+| Virtual environment | `~/.apex/.venv/` |
+| Your data | `~/.apex/state/` |
+| API keys | `~/.apex/.env` |
+| Logs | `~/.apex/state/apex.log` |
+| Re-run setup | `cd ~/.apex && .venv/bin/python3 setup.py` |
 
 ---
 
@@ -681,13 +667,15 @@ Now that Apex is running, here are some things to explore:
 To remove Apex:
 
 ```bash
-python3 setup.py --uninstall
+cd ~/.apex
+.venv/bin/python3 setup.py --uninstall
 ```
 
 This preserves your memory files and conversation history. To remove everything:
 
 ```bash
-python3 setup.py --uninstall --purge
+cd ~/.apex
+.venv/bin/python3 setup.py --uninstall --purge
 ```
 
 ---
