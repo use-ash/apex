@@ -174,7 +174,7 @@ def rewrite_mcp_servers_for_workspace(
 MODEL: str = os.environ.get("APEX_MODEL", "claude-sonnet-4-6")
 PERMISSION_MODE: str = os.environ.get("APEX_PERMISSION_MODE", "acceptEdits")
 SDK_QUERY_TIMEOUT: int = int(os.environ.get("APEX_SDK_QUERY_TIMEOUT", "30"))
-SDK_STREAM_TIMEOUT: int = int(os.environ.get("APEX_SDK_STREAM_TIMEOUT", "300"))
+SDK_STREAM_TIMEOUT: int = int(os.environ.get("APEX_SDK_STREAM_TIMEOUT", "900"))
 MAX_TOOL_ITERATIONS: int = int(os.environ.get("APEX_MAX_TOOL_ITERATIONS", "50"))
 COMPACTION_THRESHOLD: int = int(os.environ.get("APEX_COMPACTION_THRESHOLD", "100000"))
 COMPACTION_MODEL: str = os.environ.get(
@@ -282,6 +282,10 @@ ENV_FILE: Path = Path(
 
 # Optional bearer token for defense-in-depth on /admin routes (mTLS is primary).
 ADMIN_TOKEN: str = os.environ.get("APEX_ADMIN_TOKEN", "")
+
+# mTLS mode: "required" (default) or "optional" (dev/Playwright — accepts but
+# does not demand client certificates).
+MTLS_MODE: str = os.environ.get("APEX_MTLS_MODE", "required").lower()
 
 # ---------------------------------------------------------------------------
 # Licensing

@@ -503,10 +503,16 @@ if __name__ == "__main__":
                 pass
     atexit.register(_cleanup_decrypted_key)
 
+    _mtls_label = "mTLS (client certificate)"
+    _ssl_cert_reqs = ssl.CERT_REQUIRED
+    if env.MTLS_MODE == "optional":
+        _ssl_cert_reqs = ssl.CERT_OPTIONAL
+        _mtls_label = "mTLS optional (client cert accepted, not required)"
+
     print(f"\n  Apex {APP_BUILD}")
     print(f"  https://{HOST}:{PORT}")
     print(f"  Model: {MODEL}")
-    print(f"  Auth: mTLS (client certificate)")
+    print(f"  Auth: {_mtls_label}")
     print(f"  CA: {SSL_CA}")
     print()
 
@@ -516,5 +522,5 @@ if __name__ == "__main__":
         ssl_certfile=SSL_CERT,
         ssl_keyfile=_ssl_key_path,
         ssl_ca_certs=SSL_CA,
-        ssl_cert_reqs=ssl.CERT_REQUIRED,
+        ssl_cert_reqs=_ssl_cert_reqs,
     )

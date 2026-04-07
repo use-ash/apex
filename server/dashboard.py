@@ -1354,6 +1354,30 @@ def _encrypt_new_key(key_path: Path) -> None:
     return
 
 
+def _harden_ssl_dir(ssl_dir: Path) -> None:
+    """Lock down the SSL directory and any private key files inside it.
+
+    - Directory: 0700 (owner-only access)
+    - Private keys (.key, .pem, .p12, .pfx): 0600 (owner read/write only)
+    - Certificates (.crt, .csr, .cnf, .srl): 0644 (world-readable is fine)
+    """
+    try:
+        ssl_dir.chmod(0o700)
+    except OSError:
+        _log.warning("Could not chmod SSL directory %s", ssl_dir)
+    _KEY_SUFFIXES = frozenset({".key", ".pem", ".p12", ".pfx"})
+    for item in ssl_dir.iterdir():
+        if not item.is_file():
+            continue
+        try:
+            if item.suffix.lower() in _KEY_SUFFIXES:
+                item.chmod(0o600)
+            else:
+                item.chmod(0o644)
+        except OSError:
+            _log.warning("Could not chmod %s", item)
+
+
 def _parse_cert_full(path: Path) -> dict[str, Any] | None:
     """Parse a certificate for full details: subject, issuer, expiry,
     serial, fingerprint, SANs."""
@@ -1650,6 +1674,9 @@ async def api_tls_clients_create(request: Request):
         # 5. Clean up CSR
         csr_path.unlink(missing_ok=True)
 
+        # Lock down key file permissions
+        _harden_ssl_dir(_ssl_dir)
+
         # Parse the new cert for expiry
         info = _parse_cert_full(crt_path)
         expires = info["expires"] if info else "unknown"
@@ -1895,6 +1922,9 @@ async def api_tls_server_renew():
     # Clean up CSR
     csr_path.unlink(missing_ok=True)
 
+    # Lock down key file permissions
+    _harden_ssl_dir(_ssl_dir)
+
     # Parse the renewed cert for expiry
     info = _parse_cert_full(crt_path)
     expires = info["expires"] if info else "unknown"
@@ -2124,6 +2154,9 @@ async def api_tls_ca_generate(request: Request):
 
         # Encrypt the new CA key at rest
         _encrypt_new_key(ca_key)
+
+        # Lock down SSL directory and key file permissions
+        _harden_ssl_dir(_ssl_dir)
 
         # Parse the new CA cert for details
         info = _parse_cert_full(ca_crt)
@@ -4023,6 +4056,8 @@ async def api_backup_restore(request: Request):
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(str(item), str(dest_file))
                     restored.append(f"ssl/{rel}")
+            # Lock down restored SSL directory and key permissions
+            _harden_ssl_dir(ssl_dest)
         # Check if the target ssl dir has key files that weren't in the backup
         ssl_dest_check = _state_dir / "ssl"
         if ssl_dest_check.exists() and ssl_dest_check.is_dir():

@@ -342,6 +342,7 @@ def generate_certificates(
 
     ssl_dir = state_dir / "ssl"
     ssl_dir.mkdir(parents=True, exist_ok=True)
+    safe_chmod(ssl_dir, 0o700)
 
     ca_key = ssl_dir / "ca.key"
     ca_crt = ssl_dir / "ca.crt"
@@ -475,9 +476,9 @@ def generate_certificates(
     ])
 
     # ---- Set file permissions ----
-    for key_file in [ca_key, server_key, client_key]:
+    for key_file in [ca_key, server_key, client_key, client_p12]:
         safe_chmod(key_file, 0o600)
-    for cert_file in [ca_crt, server_crt, client_crt, client_p12]:
+    for cert_file in [ca_crt, server_crt, client_crt]:
         safe_chmod(cert_file, 0o644)
 
     # ---- Encrypt private keys at rest ----

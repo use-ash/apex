@@ -1304,7 +1304,7 @@ class SecurityFixTests(unittest.TestCase):
             ) or "",
         )
         self.assertIn(
-            "python is limited",
+            "blocked",  # python -c inline execution is blocked at all levels
             local_safety.validate_command(
                 'python3 -c "print(1)"',
                 workspace,
@@ -2651,7 +2651,9 @@ class SecurityFixTests(unittest.TestCase):
             )
             self.assertEqual(put_resp.status_code, 200, put_resp.text)
             payload = put_resp.json()
-            self.assertEqual(payload["workspace_tools"], ["playwright__*", "fetch__*"])
+            # Custom patterns survive; defaults are auto-merged in so the list is a superset.
+            self.assertIn("playwright__*", payload["workspace_tools"])
+            self.assertIn("fetch__*", payload["workspace_tools"])
 
             get_resp = client.get("/admin/api/policy/tools", headers=self._admin_headers())
             self.assertEqual(get_resp.status_code, 200, get_resp.text)
@@ -2659,7 +2661,10 @@ class SecurityFixTests(unittest.TestCase):
             play = next(item for item in catalog if item["id"] == "playwright__*")
             self.assertEqual(play["name"], "Playwright MCP")
             self.assertTrue(play["workspace_enabled"])
-            self.assertEqual(get_resp.json()["workspace_tools"], ["playwright__*", "fetch__*"])
+            # Custom patterns are preserved; defaults are merged in automatically.
+            returned_tools = get_resp.json()["workspace_tools"]
+            self.assertIn("playwright__*", returned_tools)
+            self.assertIn("fetch__*", returned_tools)
 
     def test_dashboard_html_keeps_multiline_workspace_js_escaped(self) -> None:
         self.assertIn(

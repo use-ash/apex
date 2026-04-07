@@ -602,15 +602,33 @@ def _dispatch_argv_validation(
         err = rule(argv, workspace)
         if not err:
             return None
-        # git and python: allow write-capable fallback when on allowlist at l3+
-        # Uses effective_allowed (includes DEFAULT_LEVEL3_ALLOWED_COMMANDS)
-        # so that python script execution works at L3 with default config.
-        if base in {"git", "python", "python3"}:
+        # git: allow write-capable fallback only when explicitly on allowlist at l3+.
+        # Does NOT use effective_allowed — structural errors (e.g. missing -m) must
+        # propagate when allowed_commands is empty/unset.
+        if base == "git":
+            if already_allowlisted or (
+                permission_level >= 3
+                and allowed_commands
+                and _command_matches_allowed_prefix(cmd, allowed_commands)
+            ):
+                return _validate_write_capable_arg_paths(argv[1:], workspace)
+            return err
+        # python/python3: at L3+ allow .py script execution within workspace only.
+        # The validator blocks all script execution at L2 (prevents AST sandbox bypass).
+        # Other blocked forms (-c inline code, etc.) remain blocked at all levels.
+        if base in {"python", "python3"}:
             if already_allowlisted or (
                 permission_level >= 3
                 and _command_matches_allowed_prefix(cmd, effective_allowed)
             ):
-                return _validate_write_capable_arg_paths(argv[1:], workspace)
+                if len(argv) >= 2 and not argv[1].startswith("-") and argv[1].endswith(".py"):
+                    _, ws_err = ensure_workspace_path(
+                        argv[1], workspace, permission_level=permission_level
+                    )
+                    if ws_err:
+                        return ws_err
+                    return _validate_arg_paths(argv[2:], workspace)
+            return err
         return err
     # Unknown command: fall back to write-capable path check if on any allowlist
     if already_allowlisted or (
@@ -761,7 +779,7 @@ def prepare_command(
         allowed_commands=allowed_commands,
     )
     if result is _NOT_PERMITTED:
-        return None, f"Error: command '{exe}' is not permitted at permission level {permission_level}. Level 4 (Admin) allows unrestricted shell commands."
+        return None, f"Error: command is not allowed at level {permission_level}: {exe}"
     return argv, result  # type: ignore[return-value]
 
 

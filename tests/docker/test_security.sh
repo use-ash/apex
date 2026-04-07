@@ -4,6 +4,7 @@ set +e
 
 cd /home/testuser/apex
 mkdir -p state/ssl
+chmod 700 state/ssl
 SSL_DIR=state/ssl
 
 # Generate certs
@@ -20,6 +21,10 @@ openssl x509 -req -in $SSL_DIR/apex.csr -CA $SSL_DIR/ca.crt -CAkey $SSL_DIR/ca.k
 openssl genrsa -out $SSL_DIR/client.key 2048 2>/dev/null
 openssl req -new -key $SSL_DIR/client.key -out $SSL_DIR/client.csr -subj "/CN=apex-client" 2>/dev/null
 openssl x509 -req -in $SSL_DIR/client.csr -CA $SSL_DIR/ca.crt -CAkey $SSL_DIR/ca.key -CAcreateserial -out $SSL_DIR/client.crt -days 825 2>/dev/null
+
+# Lock down private key permissions
+chmod 600 $SSL_DIR/*.key 2>/dev/null
+chmod 644 $SSL_DIR/*.crt $SSL_DIR/*.cnf 2>/dev/null
 
 export APEX_SSL_CERT=$SSL_DIR/apex.crt
 export APEX_SSL_KEY=$SSL_DIR/apex.key

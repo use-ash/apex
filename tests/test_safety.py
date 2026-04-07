@@ -119,9 +119,12 @@ class TestLevel2PythonPass:
     def test_python3_py_compile(self):  _ok(f"python3 -m py_compile {WS}/script.py", 2)
 
     def test_python3_run_workspace_script(self):
+        # Script execution via bash is blocked at L2 to prevent AST sandbox bypass
+        # (a model could write malicious code to a .py file and run it via bash).
+        # Use the execute_code tool at L2, or elevate to L3+ for bash script execution.
         script = _TEST_ROOT / "run_me.py"
         script.write_text("print('hello')\n")
-        _ok(f"python3 {script}", 2)
+        _blocked(f"python3 {script}", 2)
 
 
 class TestLevel2Blocked:
