@@ -26,6 +26,7 @@ from log import log
 from db import (
     _get_chat, _update_chat, _get_chat_settings, _update_chat_settings,
     _get_chat_tool_policy, _get_profile_tool_policy, _set_chat_tool_policy, _set_profile_tool_policy,
+    _get_group_members,
     _get_recent_messages_text,
     _save_message,
     _get_latest_user_attachments,
@@ -36,6 +37,7 @@ from group_coordinator import (
     _build_missing_group_mentions_feedback_prompt,
     _build_missing_group_mentions_message,
     _clear_strict_group_relay,
+    _find_invalid_group_mentions,
     _get_multi_dispatch_targets_fallback,
     _merge_group_dispatch_targets,
     _resolve_direct_group_agent,
@@ -866,6 +868,24 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
     roster_feedback_depth = int(data.get("_roster_feedback_depth", 0) or 0)
     strict_feedback_depth = int(data.get("_strict_feedback_depth", 0) or 0)
     suppress_user_message = bool(data.get("_suppress_user_message"))
+
+    if is_group_chat and not suppress_user_message and not str(data.get("target_agent") or "").strip():
+        relay_members = _get_group_members(chat_id)
+        invalid_user_mentions = _find_invalid_group_mentions(prompt, relay_members)
+        if invalid_user_mentions:
+            missing_message = _build_missing_group_mentions_message(
+                invalid_user_mentions,
+                relay_members,
+            )
+            log(
+                f"user invalid mention blocked: missing={invalid_user_mentions!r} chat={chat_id[:8]}"
+            )
+            await _safe_ws_send_json(
+                websocket,
+                {"type": "system_message", "chat_id": chat_id, "text": missing_message},
+                chat_id=chat_id,
+            )
+            return
 
     # --- Group @mention routing (premium) ---
     group_agent = None

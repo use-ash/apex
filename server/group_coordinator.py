@@ -6,6 +6,7 @@ group orchestration can evolve into a first-class coordinator.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 import re
 
 from db import (
@@ -249,6 +250,35 @@ def _format_group_member_mentions(members: list[dict], *, exclude_profile_id: st
         seen.add(folded)
         handles.append(f"@{name}")
     return ", ".join(handles)
+
+
+def _closest_group_member_mention(missing_mention: str, members: list[dict], *, exclude_profile_id: str = "") -> str:
+    candidate = str(missing_mention or "").strip().casefold()
+    if not candidate:
+        return ""
+    best_name = ""
+    best_score = 0.0
+    for member in members:
+        profile_id = str(member.get("profile_id") or "")
+        if exclude_profile_id and profile_id == exclude_profile_id:
+            continue
+        member_name = str(member.get("name") or "").strip()
+        if not member_name:
+            continue
+        for alias in _group_member_aliases(member):
+            alias_text = str(alias or "").strip()
+            if not alias_text:
+                continue
+            alias_folded = alias_text.casefold()
+            score = SequenceMatcher(None, candidate, alias_folded).ratio()
+            if candidate and candidate in alias_folded:
+                score = max(score, 0.7)
+            if score > best_score:
+                best_score = score
+                best_name = member_name
+    if best_score < 0.55:
+        return ""
+    return f"@{best_name}"
 
 
 def _member_profile_id_list(members: list[dict]) -> list[str]:
@@ -574,7 +604,15 @@ def _build_missing_group_mentions_message(
 ) -> str:
     available = _format_group_member_mentions(members, exclude_profile_id=sender_profile_id)
     if len(missing_mentions) == 1:
-        message = f"@{missing_mentions[0]} isn't in this room."
+        missing_name = missing_mentions[0]
+        message = f"@{missing_name} isn't in this room."
+        suggestion = _closest_group_member_mention(
+            missing_name,
+            members,
+            exclude_profile_id=sender_profile_id,
+        )
+        if suggestion:
+            message = f"{message} Did you mean {suggestion}?"
     else:
         missing_list = ", ".join(f"@{name}" for name in missing_mentions)
         message = f"These agents aren't in this room: {missing_list}."
