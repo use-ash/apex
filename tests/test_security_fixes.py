@@ -2687,6 +2687,9 @@ class SecurityFixTests(unittest.TestCase):
         self.assertIn('id="newChatModelSelect"', chat_html_mod.CHAT_HTML)
         self.assertIn('Pick the model before creating the chat.', chat_html_mod.CHAT_HTML)
 
+    def test_stream_complete_reload_bypasses_select_chat_debounce(self) -> None:
+        self.assertIn("forceReload: true", chat_html_mod.CHAT_HTML)
+
     def test_sdk_pre_tool_hook_blocks_level_3_non_allowlisted_date(self) -> None:
         allowed, message = streaming_mod._sdk_pre_tool_use_decision(
             "Bash",
