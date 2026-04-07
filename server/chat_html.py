@@ -3322,13 +3322,11 @@ function addSystemMsg(text, options = {}) {
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
   bubble.style.color = 'var(--red)';
-  // Escape text, then linkify markdown-style [label](/path) for internal links only
-  // Regex literal keeps the pattern readable and avoids string-escape collapse.
-  const safe = escHtml(text).replace(
-    /\\[([^\\]]+)\\]\\((\\/[^)]+)\\)/g,
-    '<a href="$2" target="_blank" style="color:var(--accent);text-decoration:underline">$1</a>'
-  );
-  bubble.innerHTML = `<div>${safe}</div>`;
+  // Use the normal markdown renderer so system-authored literal @mentions
+  // survive display the same way assistant text does.
+  const content = document.createElement('div');
+  renderMarkdown(content, text || '');
+  bubble.appendChild(content);
   if (options.retryable) {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -4452,13 +4450,20 @@ function toolResultSummary(name, content) {
   return null;
 }
 
+function linkifyInternalMarkdownLinks(html) {
+  return String(html || '').replace(
+    /\[([^\]]+)\]\((\/[^)]+)\)/g,
+    '<a href="$2" target="_blank" style="color:var(--accent);text-decoration:underline">$1</a>'
+  );
+}
+
 function renderInlineMarkdown(text) {
   let html = escHtml(text);
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-  html = html.replace(/\\*\\*\\*([^*]+)\\*\\*\\*/g, '<strong><em>$1</em></strong>');
-  html = html.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
-  html = html.replace(/\\*([^*]+)\\*/g, '<em>$1</em>');
-  return html;
+  html = html.replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>');
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  return linkifyInternalMarkdownLinks(html);
 }
 
 function renderMarkdown(el, rawText) {
