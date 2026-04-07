@@ -1289,7 +1289,8 @@ function _appendStopMenuRow(menu, spec) {
   const label = _stopMenuLabel(spec.label, spec.confirmLabel || spec.label, spec.confirmKey && _stopMenuConfirmKey === spec.confirmKey);
   const time = spec.elapsed ? `<span class="agent-time">${escHtml(spec.elapsed)}</span>` : '';
   btn.innerHTML = `<span class="${spec.dot ? 'stop-dot' : 'stop-icon'}">${spec.dot ? '' : escHtml(spec.icon || '')}</span><span class="stop-label">${escHtml(label)}</span>${time}`;
-  btn.onclick = () => {
+  btn.onclick = (e) => {
+    e.stopPropagation();
     if (!spec.confirmKey) {
       spec.onConfirm();
       return;
@@ -1320,7 +1321,7 @@ function renderStopMenu() {
     const isGroupRow = activeRows.length > 1 || currentChatType === 'group';
     const who = isGroupRow ? `${stream.avatar || ''} ${stream.name || 'this response'}`.trim() : 'this response';
     _appendStopMenuRow(menu, {
-      label: `⏹ Stop ${who}`,
+      label: `Stop ${who}`,
       confirmLabel: `Tap again to stop ${who}`,
       confirmKey: `active:${stream.stream_id}`,
       dot: false,
@@ -1332,7 +1333,7 @@ function renderStopMenu() {
   queuedRows.forEach(item => {
     const preview = _queuePreview(item.preview || item.msg_id || '');
     _appendStopMenuRow(menu, {
-      label: `✕ Cancel "${preview}"`,
+      label: `Cancel "${preview}"`,
       confirmLabel: `Tap again to cancel "${preview}"`,
       confirmKey: `queued:${item.msg_id || item.stream_id || ''}`,
       dot: false,
@@ -1345,7 +1346,7 @@ function renderStopMenu() {
   }
   if (activeRows.length + queuedRows.length > 1) {
     _appendStopMenuRow(menu, {
-      label: '⏹ Stop + cancel all',
+      label: 'Stop + cancel all',
       confirmLabel: 'Tap again to stop + cancel all',
       confirmKey: 'all',
       className: 'stop-all',
@@ -4515,7 +4516,7 @@ function renderMarkdown(el, rawText) {
 function updateSendBtn() {
   const btn = document.getElementById('sendBtn');
   const canSend = Boolean(currentChat && ws && ws.readyState === WebSocket.OPEN);
-  const showStop = (streaming || _isAnyStreamActive() || queuedMessages.length > 0) && !composerHasDraft;
+  const showStop = streaming || _isAnyStreamActive() || queuedMessages.length > 0;
   if (showStop) {
     btn.innerHTML = '&#9632;';
     btn.className = 'btn-compose compose-action is-stop';
@@ -5321,7 +5322,7 @@ document.getElementById('threadToggle').onclick = () => {
   btn.textContent = collapsed ? '\u25B8' : '\u25BE';
 };
 document.getElementById('sendBtn').onclick = () => {
-  if ((streaming || _isAnyStreamActive() || queuedMessages.length > 0) && !composerHasDraft) {
+  if (streaming || _isAnyStreamActive() || queuedMessages.length > 0) {
     toggleStopMenu();
   } else {
     send().catch(err => reportError('send click', err));
