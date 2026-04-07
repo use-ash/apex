@@ -33,6 +33,7 @@ BUILTIN_LOCAL_TOOLS = frozenset(
 DEFAULT_LEVEL2_TOOL_PATTERNS = (
     "bash",
     "execute_code",
+    "ToolSearch",
     "read_file",
     "write_file",
     "edit_file",
