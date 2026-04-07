@@ -1,24 +1,61 @@
 # Guardrails
 
-Apex runs AI models that can read files, execute commands, and modify your system. Guardrails are the safety layer that controls what those models are allowed to do.
+Apex runs AI models that can read files, execute commands, and modify your system. Guardrails control what those models are allowed to do.
 
-Every tool call goes through the guardrail system before it executes. If a call looks dangerous, it gets blocked and you get an alert.
-
----
-
-## How It Works
-
-When an AI model tries to use a tool (write a file, run a bash command, read a file), the guardrail checks three things:
-
-1. **Is the file protected?** Some files should never be modified by an AI model.
-2. **Is it inside the sandbox?** Tool calls are restricted to your workspace and temp directories.
-3. **Is the command safe?** Bash commands are scanned for patterns that could bypass file protections.
-
-If a check fails, the call is blocked, an audit log entry is written, and you get an alert (in-app and optionally via Telegram).
+Every tool call goes through the guardrail system before it executes. If a call is not permitted at the current permission level, it gets blocked.
 
 ---
 
-## Protected Files
+## Permission Levels
+
+Each chat can be assigned a permission level that controls what tools the AI can use. Higher levels unlock more capabilities.
+
+| Level | Name | What It Can Do | What It Cannot Do |
+|-------|------|----------------|-------------------|
+| **L0** | Restricted | Nothing — all tools blocked | Everything |
+| **L1** | Standard | Read files, list directories, search files | Write files, run commands, use browser, execute code |
+| **L2** | Workspace | Everything in L1, plus: write/edit files, run sandboxed Python (Jupyter), restricted shell commands, browse the web (Playwright, Fetch), use MCP filesystem tools (read-only) | Run arbitrary shell commands, use subprocess/os.system from code, write via MCP filesystem, access system directories |
+| **L3** | Elevated | Everything in L2, plus: full shell access (allowlisted commands), run scripts, write via MCP filesystem | System-level commands not on the allowlist, paths outside workspace |
+| **L4+** | Admin | Unrestricted tool access | Nothing is blocked |
+
+**Default for new chats:** L2 (Workspace).
+
+Levels are set per-chat in the chat settings panel. Changing the level takes effect immediately — no restart needed.
+
+---
+
+## Sandboxed Code Execution (L2)
+
+At L2, the `execute_code` tool runs Python in a stateful Jupyter kernel. An AST-level sandbox blocks dangerous operations before execution:
+
+- **Blocked imports:** `subprocess`, `shutil`, `signal`, `ctypes`, `importlib`
+- **Blocked calls:** `os.system()`, `os.popen()`, `os.exec*()`, `shutil.rmtree()`
+- **Blocked builtins:** `exec()`, `eval()`, `compile()`, `__import__()`
+
+At L3+, these restrictions are lifted.
+
+Each chat gets its own isolated kernel — state does not leak between chats.
+
+---
+
+## Shell Command Restrictions
+
+Bash commands are validated differently at each level:
+
+| Level | Allowed |
+|-------|---------|
+| **L1** | No shell access |
+| **L2** | Version checks only (`python3 --version`, `git --version`, `py_compile`) |
+| **L3** | Allowlisted commands (git, curl, ls, find, grep, python3, node, npm, etc.) within workspace paths. Stderr redirects permitted. |
+| **L4+** | Unrestricted |
+
+At all levels, commands targeting protected paths or system directories are blocked.
+
+---
+
+## File Protection
+
+### Protected Files
 
 These files are always blocked from AI modification:
 
@@ -28,34 +65,19 @@ These files are always blocked from AI modification:
 | **SSH** | Anything under `~/.ssh/` |
 | **Secrets directories** | Any path containing `/secrets/` |
 
-You can add your own protected files through the admin dashboard under **Guardrails > Whitelist**.
+### Sandbox Boundaries
 
----
+Tool calls are restricted to allowed directories:
 
-## Sandbox
+**Allowed:** Your configured workspace, `/tmp/`, `~/.claude/`
 
-AI tool calls are restricted to allowed directories:
-
-**Allowed:**
-
-- Your configured workspace (set during setup)
-- `/tmp/` and `/private/tmp/`
-- `~/.claude/` (Claude Code data)
-
-**Blocked:**
-
-- `~/.ssh/`
-- `/etc/`, `/usr/`, `/bin/`, `/sbin/`
-- `/System/`, `/Library/`
-- System directories that should never be modified by AI
-
-If a model tries to write outside the sandbox, the call is blocked immediately.
+**Blocked:** `~/.ssh/`, `/etc/`, `/usr/`, `/bin/`, `/sbin/`, `/System/`, `/Library/`
 
 ---
 
 ## Bash Command Scanning
 
-Bash commands get extra scrutiny because they can bypass file-level protections. The guardrail detects these patterns:
+Bash commands get extra scrutiny because they can bypass file-level protections:
 
 - **Output redirection** (`>`, `>>`, `tee`)
 - **File operations** (`cp`, `mv`, `sed -i`)
@@ -63,19 +85,18 @@ Bash commands get extra scrutiny because they can bypass file-level protections.
 - **Encoded payloads** (`base64 -d | bash`)
 - **Variable interpolation** that targets protected paths
 
-If a bash command would write to a protected file or escape the sandbox, it is blocked.
+If a command would write to a protected file or escape the sandbox, it is blocked.
 
 ---
 
-## Whitelist (Temporary Exemptions)
+## Tool Policy Dashboard
 
-Sometimes you need the AI to do something the guardrail would normally block. The whitelist system lets you grant time-limited exemptions:
+The admin dashboard (**Settings > Guardrails**) lets you customize which tools are available at L2:
 
-- Exemptions are scoped to a specific **tool + target** combination
-- Each exemption has an **expiration time**
-- Expired exemptions are automatically ignored
-
-Manage the whitelist from the admin dashboard: **Settings > Guardrails**.
+- Toggle individual tools on/off
+- Tools are grouped by category: built-in, MCP, SDK
+- New tools added in updates are auto-merged into your saved config
+- Whitelist time-limited exemptions for specific tool + target combinations
 
 ---
 
@@ -83,8 +104,7 @@ Manage the whitelist from the admin dashboard: **Settings > Guardrails**.
 
 Every tool call is logged to `agent_audit.jsonl` with:
 
-- Timestamp
-- Tool name and arguments
+- Timestamp, tool name, and arguments
 - Whether it was allowed, blocked, or allowed via whitelist
 - The session and actor that made the call
 - Reason for blocking (if blocked)
@@ -97,7 +117,7 @@ The audit log is append-only. It is never modified or deleted by the AI.
 
 When a guardrail blocks a dangerous action, you get notified:
 
-- **In-app alert** — appears in the Apex alerts panel (bell icon)
+- **In-app alert** — appears in the Apex alerts panel
 - **Telegram** — if configured, sends to your alert channel
 - **iOS push notification** — if the mobile app is set up
 
@@ -109,51 +129,29 @@ Alerts are throttled to prevent flooding (5-minute window per unique alert type)
 
 Before any tool output is logged or displayed, the guardrail scrubs known API key patterns:
 
-- Anthropic (`sk-ant-*`)
-- OpenAI (`sk-proj-*`, `sk-*`)
-- xAI (`xai-*`)
-- Google (`AIza*`)
-- AWS (`AKIA*`)
-- GitHub (`ghp_*`, `ghu_*`)
+- Anthropic (`sk-ant-*`), OpenAI (`sk-proj-*`), xAI (`xai-*`), Google (`AIza*`), AWS (`AKIA*`), GitHub (`ghp_*`, `ghu_*`)
 - Generic key/token/secret patterns
 
 Scrubbed values are replaced with `[REDACTED]` in the audit log.
 
 ---
 
-## Authentication & Access Control
+## Authentication
 
 Apex uses mutual TLS (mTLS) as its primary access control:
 
 - **Client certificate required** — every connection must present a valid certificate signed by the Apex CA
-- **No passwords to guess** — there is no username/password login. If you don't have the certificate, the TLS handshake fails before any HTTP request reaches the server
-- **API key validation** — during setup, all API keys are validated against their provider before being saved. Invalid keys are rejected with a clear error message
-- **OAuth auto-recovery** — if your Claude subscription token expires, Apex automatically refreshes it from your macOS Keychain on the next request. No manual re-authentication needed (as long as you have a GUI terminal session open)
-
-### Setup Validation
-
-The setup wizard validates credentials at entry time:
-
-| Provider | Validation Method |
-|----------|------------------|
-| Claude (OAuth) | `claude auth status` CLI check — verifies login, email, subscription |
-| Claude (API key) | REST API call to Anthropic |
-| Grok (xAI) | `GET /v1/models` — verifies key is active |
-| Google | `GET /v1beta/models` — verifies key is active |
-| OpenAI | `GET /v1/models` — verifies key is active |
-
-Invalid keys are not saved. The setup wizard shows a per-field error and blocks advancement until the key is corrected or removed.
+- **No passwords** — if you don't have the certificate, the TLS handshake fails before any HTTP request reaches the server
+- **API key validation** — during setup, all provider keys are validated before being saved
+- **OAuth auto-recovery** — expired Claude tokens are refreshed automatically from macOS Keychain
 
 ---
 
-## For Developers
+## Architecture
 
-The guardrail system is implemented in two layers:
+The guardrail system has two layers:
 
-1. **`guardrail_core.py`** — shared logic for all backends (file protection, sandbox, bash scanning, whitelisting, alerting, audit logging)
-2. **Backend adapters** — thin wrappers that call `guardrail_core` before executing tool calls:
-    - Claude Code: via CLI hooks (`PreToolUse`, `PostToolUse`)
-    - Local models (Ollama): via `local_model/guardrails.py`
-    - Grok: via the skill wrapper
+1. **`tool_access.py`** — permission levels, tool gating, path validation, command validation
+2. **`guardrail_core.py`** — file protection, sandbox boundaries, bash scanning, whitelisting, alerting, audit logging
 
-All backends share the same protection rules, audit log format, and alert pipeline.
+All backends (Claude SDK, local models, Grok) share the same protection rules and audit pipeline.
