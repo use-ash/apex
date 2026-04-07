@@ -30,6 +30,16 @@ _ERASE_LINE = "\033[2K\r"
 # Detect whether the terminal supports colors
 _NO_COLOR = os.environ.get("NO_COLOR") is not None or not sys.stdout.isatty()
 
+# Non-interactive mode — all prompts return their defaults immediately.
+# Set via set_non_interactive() when --fast or stdin is not a tty.
+_NON_INTERACTIVE = False
+
+
+def set_non_interactive(enabled: bool = True) -> None:
+    """Enable non-interactive mode — all prompts return defaults."""
+    global _NON_INTERACTIVE
+    _NON_INTERACTIVE = enabled
+
 
 def _c(code: str, text: str) -> str:
     """Wrap text in ANSI escape codes, respecting NO_COLOR."""
@@ -106,6 +116,10 @@ def prompt_choice(question: str, options: list[str], default: int = 1) -> int:
     int
         0-based index of the selected option.
     """
+    if _NON_INTERACTIVE:
+        print_info(f"{question} -> [{default}] {options[default - 1]} (auto)")
+        return default - 1
+
     print()
     print(_c(_BOLD, question))
     for i, opt in enumerate(options, 1):
@@ -128,6 +142,11 @@ def prompt_choice(question: str, options: list[str], default: int = 1) -> int:
 
 def prompt_yes_no(question: str, default: bool = True) -> bool:
     """Y/n prompt. Returns bool."""
+    if _NON_INTERACTIVE:
+        answer = "yes" if default else "no"
+        print_info(f"{question} -> {answer} (auto)")
+        return default
+
     hint = "Y/n" if default else "y/N"
     prompt = f"  {_c(_BOLD, question)} [{hint}]: "
     while True:
@@ -158,6 +177,11 @@ def prompt_text(question: str, default: str = "", required: bool = False) -> str
     str
         The user's input, or the default.
     """
+    if _NON_INTERACTIVE:
+        if default:
+            print_info(f"{question} -> {default} (auto)")
+        return default
+
     if default:
         prompt = f"  {_c(_BOLD, question)} [{default}]: "
     else:
@@ -187,7 +211,12 @@ def prompt_confirm(text: str) -> None:
 
     Used for security acknowledgments like 'I understand'.
     Loops until the user types the exact text or Ctrl-C.
+    In non-interactive mode, auto-acknowledges.
     """
+    if _NON_INTERACTIVE:
+        print_info(f'"{text}" (auto-acknowledged)')
+        return
+
     print()
     print(_c(_DIM, f'  Type "{text}" to continue:'))
     while True:

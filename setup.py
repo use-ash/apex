@@ -1054,6 +1054,11 @@ def main() -> None:
     # Import setup package
     _setup_imports()
 
+    # Enable non-interactive mode for --fast or non-tty stdin
+    if args.fast or not sys.stdin.isatty():
+        from setup.ui import set_non_interactive
+        set_non_interactive(True)
+
     # Dispatch based on flags
     if args.add_knowledge:
         result = _run_phase_knowledge()
