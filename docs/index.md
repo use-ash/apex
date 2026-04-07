@@ -56,7 +56,7 @@ Build specialized agents across different models — Architect on Claude Opus, D
 </figure>
 
 !!! example "See it in action"
-    Five agents from three providers autonomously completed a full security audit — 15 findings resolved in 22 turns for ~$6. One human message started it. [**Read the War Room transcript →**](warroom.html)
+    Five agents from three providers autonomously completed a full security audit — 15 findings resolved in 22 turns for ~$6. One human message started it.
 
 ---
 

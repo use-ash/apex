@@ -73,14 +73,11 @@ plugins:
 nav:
   - Home: index.md
   - Getting Started: GETTING_STARTED.md
-  - War Room: warroom.html
   - Personas: PERSONAS.md
   - Features:
       - What You Get Free: FREE_TIER_OVERVIEW.md
-      - Licensing: LICENSING.md
   - Infrastructure:
       - Guardrails: infrastructure/guardrails.md
-      - Security: SECURITY_AUDIT_2026-03-31.md
   - Reference:
       - Upgrade Guide: UPGRADE_GUIDE.md
       - Troubleshooting: TROUBLESHOOTING.md
