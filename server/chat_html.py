@@ -4547,7 +4547,10 @@ function renderMarkdown(el, rawText) {
 function updateSendBtn() {
   const btn = document.getElementById('sendBtn');
   const canSend = Boolean(currentChat && ws && ws.readyState === WebSocket.OPEN);
-  const showStop = streaming || _isAnyStreamActive() || queuedMessages.length > 0;
+  const inputEl = document.getElementById('input');
+  const composerHasText = Boolean(inputEl && inputEl.value.trim());
+  const hasActiveOrQueuedWork = streaming || _isAnyStreamActive() || queuedMessages.length > 0;
+  const showStop = hasActiveOrQueuedWork && !composerHasText;
   if (showStop) {
     btn.innerHTML = '&#9632;';
     btn.className = 'btn-compose compose-action is-stop';
@@ -5353,7 +5356,9 @@ document.getElementById('threadToggle').onclick = () => {
   btn.textContent = collapsed ? '\u25B8' : '\u25BE';
 };
 document.getElementById('sendBtn').onclick = () => {
-  if (streaming || _isAnyStreamActive() || queuedMessages.length > 0) {
+  const inputEl = document.getElementById('input');
+  const composerHasText = Boolean(inputEl && inputEl.value.trim());
+  if ((streaming || _isAnyStreamActive() || queuedMessages.length > 0) && !composerHasText) {
     toggleStopMenu();
   } else {
     send().catch(err => reportError('send click', err));
