@@ -2899,8 +2899,9 @@ function handleEvent(msg) {
       if (msg.chat_id && msg.chat_id === currentChat && !_isAnyStreamActive()) {
         _resetAllStreamState();
         // Reconnect-triggered reloads often arrive immediately after the same
-        // chat was selected/attached, so bypass the normal 500ms debounce.
-        selectChat(msg.chat_id, undefined, undefined, undefined, {forceReload: true}).catch(() => {});
+        // chat was selected/attached, so bypass the normal 500ms debounce
+        // without triggering another attach/reload cycle.
+        selectChat(msg.chat_id, undefined, undefined, undefined, {forceReload: true, skipAttach: true}).catch(() => {});
       }
       refreshDebugState('stream-complete-reload');
       break;
@@ -4859,6 +4860,7 @@ function setChatFontScale(nextScale) {
 async function selectChat(id, title, chatType, category, options) {
   options = options || {};
   const forceReload = Boolean(options.forceReload);
+  const skipAttach = Boolean(options.skipAttach);
   // Debounce: skip if same chat selected within 500ms
   const now = Date.now();
   if (!forceReload && id === _lastSelectChatId && now - _lastSelectChatTime < 500) {
@@ -4903,7 +4905,7 @@ async function selectChat(id, title, chatType, category, options) {
   setCurrentChat(id, title || 'ApexChat');
   closeSidebar();
   // Attach WS to the selected chat so we receive live stream events
-  if (ws && ws.readyState === WebSocket.OPEN) {
+  if (!skipAttach && ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({action: 'attach', chat_id: id}));
   }
 
