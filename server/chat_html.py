@@ -564,6 +564,7 @@ border:1px dashed var(--card);border-radius:10px;background:none;color:var(--dim
 cursor:pointer;font-size:13px;transition:all .15s}
 .gs-add-btn:hover{border-color:var(--accent);color:var(--accent)}
 .gs-toggle-row{display:flex;align-items:center;justify-content:space-between;padding:6px 0}
+.gs-toggle-copy{flex:1;min-width:0;padding-right:12px}
 .gs-toggle-label{font-size:13px;color:var(--text)}
 .gs-toggle-hint{font-size:11px;color:var(--dim);margin-top:4px;line-height:1.4}
 .gs-toggle{position:relative;width:44px;height:24px;border-radius:12px;border:none;
@@ -573,6 +574,31 @@ cursor:pointer;transition:background .2s;flex-shrink:0}
 .gs-toggle::after{content:'';position:absolute;top:2px;left:2px;width:20px;height:20px;
 border-radius:50%;background:white;transition:transform .2s;box-shadow:0 1px 3px rgba(0,0,0,.3)}
 .gs-toggle.on::after{transform:translateX(20px)}
+.gs-relay-status{margin-top:8px;padding:12px 14px;border:1px solid var(--card);border-radius:8px;
+background:var(--bg);opacity:1;max-height:480px;overflow:hidden;transition:max-height .2s ease,opacity .15s ease}
+.gs-relay-ready{display:flex;align-items:flex-start;gap:8px}
+.gs-relay-ready-icon{font-size:15px;line-height:1;color:var(--accent)}
+.gs-relay-ready-title{font-size:13px;font-weight:600;color:var(--text)}
+.gs-relay-ready-copy{font-size:11px;color:var(--dim);line-height:1.4;margin-top:4px}
+.gs-relay-header{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.gs-relay-round{font-size:13px;font-weight:600;color:var(--text)}
+.gs-relay-round-max{font-size:11px;font-weight:400;color:var(--dim)}
+.gs-relay-count{font-size:12px;color:var(--dim);white-space:nowrap}
+.gs-relay-progress{height:4px;border-radius:2px;background:var(--card);margin:8px 0}
+.gs-relay-progress-fill{height:100%;border-radius:2px;background:var(--accent);transition:width .3s ease}
+.gs-relay-agents{display:flex;flex-direction:column;gap:6px}
+.gs-relay-agent{display:flex;align-items:center;gap:6px;padding:3px 0}
+.gs-relay-agent-emoji{width:22px;flex-shrink:0;font-size:16px;line-height:1;text-align:center}
+.gs-relay-agent-icon{width:16px;flex-shrink:0;font-size:12px;line-height:1;text-align:center;color:var(--dim)}
+.gs-relay-agent-name{flex:1;min-width:0;font-size:12px;color:var(--text)}
+.gs-relay-agent-label{font-size:11px;color:var(--dim);text-align:right;white-space:nowrap}
+.gs-relay-agent.is-next .gs-relay-agent-icon,.gs-relay-agent.is-next .gs-relay-agent-name,.gs-relay-agent.is-next .gs-relay-agent-label{color:var(--accent)}
+.gs-relay-agent.is-next .gs-relay-agent-name{font-weight:600}
+.gs-relay-agent.is-responded .gs-relay-agent-icon{color:#4ade80}
+.gs-relay-agent.is-waiting .gs-relay-agent-icon,.gs-relay-agent.is-waiting .gs-relay-agent-name,.gs-relay-agent.is-waiting .gs-relay-agent-label{color:var(--dim)}
+.gs-relay-agent.is-abstained .gs-relay-agent-icon{color:color-mix(in srgb, var(--dim) 60%, transparent)}
+.gs-relay-agent.is-abstained .gs-relay-agent-name,.gs-relay-agent.is-abstained .gs-relay-agent-label{color:var(--dim)}
+.gs-relay-agent.is-abstained .gs-relay-agent-label{font-style:italic}
 .gs-add-picker{padding:8px 0}
 .gs-add-picker .profile-card{margin-bottom:4px;padding:8px 10px}
 .gs-add-picker .profile-card .profile-avatar{font-size:22px;width:32px}
@@ -6085,6 +6111,32 @@ async function showGroupSettings() {
     t._timer = setTimeout(() => t.classList.remove('show'), 2000);
   }
 
+  function renderRelayStatus(relayState) {
+    if (!relayState) return null;
+    const card = document.createElement('div');
+    card.className = 'gs-relay-status';
+    if (relayState.active !== true) {
+      card.innerHTML = `<div class="gs-relay-ready"><div class="gs-relay-ready-icon">◎</div><div><div class="gs-relay-ready-title">Ready</div><div class="gs-relay-ready-copy">Relay starts on your next message.<br>Agents will respond one at a time.</div></div></div>`;
+      return card;
+    }
+    const agents = Array.isArray(relayState.agents) ? relayState.agents : [];
+    const completed = agents.filter(a => a.status === 'responded' || a.status === 'abstained').length;
+    const total = agents.length;
+    const pct = total > 0 ? Math.max(0, Math.min(100, (completed / total) * 100)) : 0;
+    const statusMeta = {
+      responded: { icon: '✓', label: 'responded', cls: 'is-responded' },
+      abstained: { icon: '⊘', label: 'passed', cls: 'is-abstained' },
+      next: { icon: '▸', label: 'up next', cls: 'is-next' },
+      waiting: { icon: '○', label: 'waiting', cls: 'is-waiting' },
+    };
+    const rows = agents.map(agent => {
+      const meta = statusMeta[agent.status] || statusMeta.waiting;
+      return `<div class="gs-relay-agent ${meta.cls}"><div class="gs-relay-agent-emoji">${escHtml(agent.emoji || '🤖')}</div><div class="gs-relay-agent-icon">${meta.icon}</div><div class="gs-relay-agent-name">${escHtml(agent.name || agent.profile_id || 'Agent')}</div><div class="gs-relay-agent-label">${meta.label}</div></div>`;
+    }).join('');
+    card.innerHTML = `<div class="gs-relay-header"><div class="gs-relay-round">Round ${Number(relayState.round_number || 1)} <span class="gs-relay-round-max">· ${Number(relayState.max_rounds || 10)} max</span></div><div class="gs-relay-count">${completed}/${total}</div></div><div class="gs-relay-progress"><div class="gs-relay-progress-fill" style="width:${pct}%"></div></div><div class="gs-relay-agents">${rows}</div>`;
+    return card;
+  }
+
   function renderTabs() {
     const tabs = document.createElement('div');
     tabs.className = 'gs-tabs';
@@ -6434,18 +6486,33 @@ async function showGroupSettings() {
     seqRow.style.paddingTop = '10px';
     seqRow.style.marginTop = '6px';
     const seqOn = settings.coordination_protocol === 'sequential';
-    seqRow.innerHTML = `<div><span class="gs-toggle-label">Sequential Relay</span>
-      <div class="gs-toggle-hint" style="margin-top:2px">Each agent responds once in order, seeing all prior outputs. When off, agents use free @mention routing.</div></div>`;
+    const relayState = settings.relay_state || null;
+    const seqCopy = document.createElement('div');
+    seqCopy.className = 'gs-toggle-copy';
+    seqCopy.innerHTML = `<span class="gs-toggle-label">Sequential Relay</span>
+      <div class="gs-toggle-hint" style="margin-top:2px">Agents take turns in order. Each one sees all prior responses before adding theirs.</div>`;
+    seqRow.appendChild(seqCopy);
     const seqToggle = document.createElement('button');
     seqToggle.className = 'gs-toggle ' + (seqOn ? 'on' : 'off');
     seqToggle.onclick = async () => {
       const newVal = seqOn ? 'freeform' : 'sequential';
+      if (seqOn && relayState && relayState.active === true) {
+        const confirmed = confirm("End the active relay? Agents who haven't responded will be skipped.");
+        if (!confirmed) return;
+      }
       try {
-        await fetch(`/api/chats/${chatId}/settings`, {
+        const resp = await fetch(`/api/chats/${chatId}/settings`, {
           method: 'PATCH', credentials: 'same-origin',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({coordination_protocol: newVal})
         });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          gsToast(err.error || 'Setting update failed');
+          return;
+        }
+        const payload = await resp.json().catch(() => ({}));
+        settings = payload.settings || settings;
         settings.coordination_protocol = newVal;
         gsToast(newVal === 'sequential' ? 'Sequential relay enabled' : 'Freeform routing enabled');
         render();
@@ -6453,6 +6520,8 @@ async function showGroupSettings() {
     };
     seqRow.appendChild(seqToggle);
     setSection.appendChild(seqRow);
+    const relayCard = renderRelayStatus(relayState);
+    if (relayCard) setSection.appendChild(relayCard);
 
     content.appendChild(setSection);
 

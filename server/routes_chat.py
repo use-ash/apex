@@ -27,6 +27,7 @@ from db import (
     _get_messages,
     _get_last_turn_tokens_in, _estimate_tokens,
 )
+from group_coordinator import _MAX_RELAY_ROUNDS, _clear_strict_group_relay, _get_strict_group_relay_state
 from license import get_license_manager
 from model_dispatch import MODEL_CONTEXT_WINDOWS, MODEL_CONTEXT_DEFAULT
 from streaming import (
@@ -50,6 +51,54 @@ APEX_ROOT = env.APEX_ROOT
 COMPACTION_THRESHOLD = env.COMPACTION_THRESHOLD
 
 _license_mgr = get_license_manager()
+
+
+def _serialize_relay_state(chat_id: str, chat: dict | None = None) -> dict | None:
+    current_chat = chat or _get_chat(chat_id)
+    if not current_chat or str(current_chat.get("type") or "chat") != "group":
+        return None
+    settings = _get_chat_settings(chat_id)
+    if str(settings.get("coordination_protocol") or "freeform") != "sequential":
+        return None
+    members = _get_group_members(chat_id)
+    relay_state = _get_strict_group_relay_state(chat_id, members)
+    member_map = {
+        str(member.get("profile_id") or ""): member
+        for member in members
+        if str(member.get("profile_id") or "")
+    }
+    if not relay_state.active:
+        return {
+            "active": False,
+            "round_number": int(relay_state.round_number or 1),
+            "max_rounds": _MAX_RELAY_ROUNDS,
+            "agents": [],
+        }
+    abstained = set(relay_state.round_abstentions or ())
+    completed = set(relay_state.completed_profile_ids or [])
+    agents: list[dict] = []
+    for profile_id in relay_state.ordered_profile_ids:
+        member = member_map.get(profile_id) or {}
+        if profile_id in abstained:
+            status = "abstained"
+        elif profile_id in completed:
+            status = "responded"
+        elif profile_id == relay_state.next_profile_id:
+            status = "next"
+        else:
+            status = "waiting"
+        agents.append({
+            "profile_id": profile_id,
+            "name": str(member.get("name") or profile_id),
+            "emoji": str(member.get("avatar") or "🤖"),
+            "status": status,
+        })
+    return {
+        "active": True,
+        "round_number": int(relay_state.round_number or 1),
+        "max_rounds": _MAX_RELAY_ROUNDS,
+        "agents": agents,
+    }
 
 
 def _direct_chat_tool_policy_error(chat: dict | None) -> JSONResponse | None:
@@ -383,7 +432,9 @@ async def api_get_chat_settings(chat_id: str):
     chat = _get_chat(chat_id)
     if not chat:
         return JSONResponse({"error": "Chat not found"}, status_code=404)
-    return JSONResponse({"settings": _get_chat_settings(chat_id)})
+    settings = dict(_get_chat_settings(chat_id))
+    settings["relay_state"] = _serialize_relay_state(chat_id, chat)
+    return JSONResponse({"settings": settings})
 
 
 @chat_router.patch("/api/chats/{chat_id}/settings")
@@ -392,12 +443,20 @@ async def api_update_chat_settings(chat_id: str, request: Request):
     chat = _get_chat(chat_id)
     if not chat:
         return JSONResponse({"error": "Chat not found"}, status_code=404)
+    current_settings = _get_chat_settings(chat_id)
     data = await request.json()
     allowed = {"agent_mentions_enabled", "auto_title", "notification_level", "auto_reply", "shared_memory", "coordination_protocol"}
     filtered = {k: v for k, v in data.items() if k in allowed}
     if not filtered:
         return JSONResponse({"error": f"No valid settings. Allowed: {', '.join(sorted(allowed))}"}, status_code=400)
+    if (
+        str(current_settings.get("coordination_protocol") or "freeform") == "sequential"
+        and str(filtered.get("coordination_protocol") or "sequential") == "freeform"
+    ):
+        _clear_strict_group_relay(chat_id)
     updated = _update_chat_settings(chat_id, filtered)
+    updated = dict(updated)
+    updated["relay_state"] = _serialize_relay_state(chat_id, chat)
     return JSONResponse({"ok": True, "settings": updated})
 
 
