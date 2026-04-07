@@ -493,7 +493,7 @@ async def api_get_permission_audit(chat_id: str, limit: int = 50):
         rows = conn.execute(
             "SELECT event_type, old_level, new_level, elevated_until, changed_at"
             " FROM permission_audit_log WHERE chat_id = ?"
-            " ORDER BY changed_at DESC LIMIT ?",
+            " ORDER BY changed_at DESC, rowid DESC LIMIT ?",
             (chat_id, max(1, min(limit, 200))),
         ).fetchall()
         conn.close()

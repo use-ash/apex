@@ -3313,6 +3313,12 @@ function _renderHistoryMsg(m) {
     if (m.thinking && m.thinking.trim()) historyCtx.thinkingText = m.thinking;
     _thinkingPill(historyCtx, {durationMs: m.duration_ms || 0});
   }
+  if (m.canceled) {
+    let badge = document.createElement('div');
+    badge.className = 'canceled-badge';
+    badge.textContent = 'Canceled';
+    div.appendChild(badge);
+  }
   div.querySelectorAll('.bubble').forEach(el => renderMarkdown(el));
   return div;
 }

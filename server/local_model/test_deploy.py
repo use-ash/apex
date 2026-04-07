@@ -188,6 +188,51 @@ def main():
         for cid in [CHAT_A, CHAT_B]:
             _clear_history(_make_kernel_key(WORKSPACE, cid))
 
+    # ── 6. MCP server protocol (newline-delimited JSON) ──
+    print("\n--- 6. MCP server protocol ---")
+    try:
+        from local_model.mcp_execute_code import _handle_request
+
+        # Test initialize response
+        resp = _handle_request({"method": "initialize", "id": 1, "params": {}}, None)
+        test("initialize response", resp and resp.get("result", {}).get("serverInfo", {}).get("name") == "apex-execute-code")
+
+        # Test tools/list response
+        resp = _handle_request({"method": "tools/list", "id": 2, "params": {}}, None)
+        tools = resp.get("result", {}).get("tools", []) if resp else []
+        tool_names = [t["name"] for t in tools]
+        test("tools/list has execute_code", "execute_code" in tool_names)
+
+        # Test notification returns None
+        resp = _handle_request({"method": "notifications/initialized", "params": {}}, None)
+        test("notification returns None", resp is None)
+
+        # Test full stdio round-trip via subprocess
+        import subprocess
+        init_body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}})
+        list_body = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+        full_input = init_body + "\n" + list_body + "\n"
+
+        mcp_script = str(Path(__file__).resolve().parent / "mcp_execute_code.py")
+        proc = subprocess.run(
+            [sys.executable, mcp_script],
+            input=full_input, capture_output=True, text=True, timeout=15
+        )
+        lines = [l for l in proc.stdout.strip().split("\n") if l.strip()]
+        test("stdio round-trip produces 2 responses", len(lines) == 2, f"got {len(lines)} lines")
+        if lines:
+            first = json.loads(lines[0])
+            test("first response is initialize", first.get("result", {}).get("serverInfo", {}).get("name") == "apex-execute-code")
+        if len(lines) >= 2:
+            second = json.loads(lines[1])
+            tnames = [t["name"] for t in second.get("result", {}).get("tools", [])]
+            test("second response has execute_code", "execute_code" in tnames)
+
+    except Exception as e:
+        import traceback
+        test("MCP protocol", False, str(e))
+        traceback.print_exc()
+
     # ── Summary ──
     print(f"\n{'=' * 60}")
     total = PASS + FAIL + SKIP

@@ -315,6 +315,7 @@ async def _cancel_chat_streams(chat_id: str, stream_id: str = "") -> bool:
                 speaker_id=speaker_id,
                 speaker_name=speaker_name,
                 speaker_avatar=speaker_avatar,
+                canceled=True,
             )
             log(f"cancel-save: chat={chat_id} text={len(text)}chars thinking={len(partial.get('thinking',''))}chars tools={len(partial.get('tool_events',[]))} duration={duration_ms}ms")
     except Exception as e:

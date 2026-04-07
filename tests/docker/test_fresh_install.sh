@@ -122,6 +122,7 @@ echo ""
 echo "[4] Certificate generation"
 
 mkdir -p state/ssl
+chmod 700 state/ssl
 SSL_DIR="state/ssl"
 
 # Generate CA
@@ -155,6 +156,10 @@ openssl req -new -key "$SSL_DIR/client.key" -out "$SSL_DIR/client.csr" \
     -subj "/CN=apex-client" 2>/dev/null
 openssl x509 -req -in "$SSL_DIR/client.csr" -CA "$SSL_DIR/ca.crt" -CAkey "$SSL_DIR/ca.key" \
     -CAcreateserial -out "$SSL_DIR/client.crt" -days 825 2>/dev/null && pass "Client cert generated" || fail "Client cert generation failed"
+
+# Lock down private key permissions
+chmod 600 "$SSL_DIR"/*.key "$SSL_DIR"/*.p12 2>/dev/null
+chmod 644 "$SSL_DIR"/*.crt "$SSL_DIR"/*.cnf "$SSL_DIR"/*.csr 2>/dev/null
 
 echo ""
 
