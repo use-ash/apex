@@ -650,6 +650,75 @@ def create_initial_config(
 # ---------------------------------------------------------------------------
 
 
+def _seed_workspace(workspace: Path) -> None:
+    """Create starter files in the workspace so it's not an empty box.
+
+    Only creates files that don't already exist — safe to re-run.
+    """
+    print_step(9, "Seeding workspace")
+
+    # --- APEX.md (project instructions) ---
+    apex_md = workspace / "APEX.md"
+    if not apex_md.exists():
+        apex_md.write_text(
+            "# My Workspace\n"
+            "\n"
+            "## About\n"
+            "Describe your project here. AI agents will read this file for context\n"
+            "about your codebase, preferences, and conventions.\n"
+            "\n"
+            "## Rules\n"
+            "- Be concise and direct\n"
+            "- Ask before making large changes\n"
+            "\n"
+            "## Notes\n"
+            "Add anything you want agents to know about this workspace.\n",
+            encoding="utf-8",
+        )
+        print_success(f"Created starter {apex_md}")
+    else:
+        print_info(f"APEX.md already exists — skipped")
+
+    # --- memory/ directory + index ---
+    memory_dir = workspace / "memory"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    memory_index = memory_dir / "MEMORY.md"
+    if not memory_index.exists():
+        memory_index.write_text(
+            "# Memory\n"
+            "\n"
+            "Agent memory files are stored here. Each file captures decisions,\n"
+            "context, and lessons learned across sessions.\n"
+            "\n"
+            "Files are created automatically as you work with agents.\n",
+            encoding="utf-8",
+        )
+        print_success(f"Created {memory_index}")
+    else:
+        print_info(f"Memory index already exists — skipped")
+
+    # --- skills/ directory ---
+    skills_dir = workspace / "skills"
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    skills_readme = skills_dir / "README.md"
+    if not skills_readme.exists():
+        skills_readme.write_text(
+            "# Skills\n"
+            "\n"
+            "Custom skills extend what your agents can do.\n"
+            "\n"
+            "Each skill lives in its own directory with a `SKILL.md` file\n"
+            "that defines its name, description, and instructions.\n"
+            "\n"
+            "Built-in skills (recall, codex, grok) are available automatically.\n"
+            "Add custom skills here to teach agents new capabilities.\n",
+            encoding="utf-8",
+        )
+        print_success(f"Created {skills_readme}")
+    else:
+        print_info(f"Skills directory already exists — skipped")
+
+
 def run_bootstrap(apex_root: Path) -> dict:
     """Run the full bootstrap phase.
 
@@ -796,6 +865,10 @@ def run_bootstrap(apex_root: Path) -> dict:
 
     # 8. Write config
     create_initial_config(apex_root, workspace, permission_mode, host=host)
+    print()
+
+    # 9. Seed workspace with starter files
+    _seed_workspace(workspace)
     print()
 
     # Mark phase complete
