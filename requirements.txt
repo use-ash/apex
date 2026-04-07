@@ -11,3 +11,7 @@ numpy>=1.24.0
 # Jupyter deps are installed separately by install.sh (optional — enables execute_code tool)
 # jupyter_client>=8.6.0
 # ipykernel>=6.29.0
+
+# External tools (not Python packages — installed separately by setup wizard):
+# - Codex CLI: npm install -g @openai/codex
+# - Ollama: https://ollama.com
