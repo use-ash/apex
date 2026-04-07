@@ -439,7 +439,7 @@ def _validate_python_command(argv: list[str], workspace: str | None) -> str | No
         return None
     if len(argv) >= 4 and argv[1] == "-m" and argv[2] == "py_compile":
         return _validate_arg_paths(argv[3:], workspace)
-    return "Error: python script execution via bash is blocked at this permission level. Use the execute_code tool for Python execution, or elevate to level 3+."
+    return "Error: python script execution via bash is blocked at Level 2. Use the execute_code tool, or ask the user to elevate to Level 3 — at Level 3 this command will be allowed."
 
 
 # Maps command basename → validator function.
