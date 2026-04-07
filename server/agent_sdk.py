@@ -56,6 +56,10 @@ SDK_STREAM_TIMEOUT = env.SDK_STREAM_TIMEOUT
 ENABLE_SUBCONSCIOUS_WHISPER = env.ENABLE_SUBCONSCIOUS_WHISPER
 
 UPLOAD_DIR = APEX_ROOT / "state" / "uploads"
+
+# Partial results for cancelled turns — updated during streaming so cancel
+# handler can save whatever accumulated before interruption.
+_partial_results: dict[str, dict] = {}
 IMAGE_TYPES = {"jpg", "jpeg", "png", "gif", "webp"}
 TEXT_TYPES = {"txt", "py", "json", "csv", "md", "yaml", "yml", "toml", "cfg", "ini", "log", "html", "css", "js", "ts", "sh"}
 MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB
@@ -840,6 +844,8 @@ async def _stream_response(
 
     _stream_event_count = 0
     _stream_start = time.monotonic()
+    # Track partial results for cancel-save
+    _partial_results[chat_id] = {"text": "", "thinking": "", "tool_events": [], "start": _stream_start}
     try:
         response = _normalize_response_stream(client.receive_response())
         async for msg in response:
@@ -857,6 +863,7 @@ async def _stream_response(
                 for block in msg.content:
                     if isinstance(block, TextBlock):
                         result_text += block.text
+                        _partial_results[chat_id]["text"] = result_text
                         # Don't stream raw auth errors to user — they'll get
                         # a helpful message via the error handler instead
                         if _is_auth_error(block.text):
@@ -865,6 +872,7 @@ async def _stream_response(
 
                     elif isinstance(block, ThinkingBlock):
                         thinking_text += block.thinking
+                        _partial_results[chat_id]["thinking"] = thinking_text
                         await _send({"type": "thinking", "text": block.thinking})
 
                     elif isinstance(block, ToolUseBlock):
@@ -897,6 +905,7 @@ async def _stream_response(
                                 "result": {"tool_use_id": tool_use_id,
                                            "content": content, "is_error": is_error},
                             })
+                            _partial_results[chat_id]["tool_events"] = tool_events
                         await _send({
                             "type": "tool_result",
                             "tool_use_id": tool_use_id,
@@ -978,6 +987,8 @@ async def _stream_response(
                     "thinking": thinking_text,
                 })
                 if DEBUG: log(f"DBG stream COMPLETE: chat={chat_id} events={_stream_event_count} time={elapsed:.0f}s session={msg.session_id[:8] if msg.session_id else '?'} cost=${result_info['cost_usd']:.4f}")
+                # Normal completion — clear partial results (ws_handler saves the full result)
+                _partial_results.pop(chat_id, None)
 
     except asyncio.TimeoutError:
         if DEBUG: log(f"DBG stream TIMEOUT: chat={chat_id} after {SDK_STREAM_TIMEOUT}s. text={len(result_text)}chars thinking={len(thinking_text)}chars tools={len(tool_events)}")

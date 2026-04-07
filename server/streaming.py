@@ -287,6 +287,39 @@ async def _cancel_chat_streams(chat_id: str, stream_id: str = "") -> bool:
     if tasks_to_drain:
         await asyncio.wait(tasks_to_drain, timeout=2.0)
 
+    # Save partial results from cancelled turn so they persist across refresh
+    try:
+        from agent_sdk import _partial_results
+        partial = _partial_results.pop(chat_id, None)
+        if partial and (partial.get("text") or partial.get("thinking") or partial.get("tool_events")):
+            from db import _save_message
+            duration_ms = int((time.monotonic() - partial.get("start", time.monotonic())) * 1000)
+            tool_events_json = json.dumps(partial.get("tool_events", []))
+            text = partial.get("text", "")
+            if not text:
+                text = "[Response canceled]"
+            # Extract speaker info from the active entry
+            speaker_id = ""
+            speaker_name = ""
+            speaker_avatar = ""
+            for _, entry in active_entries:
+                speaker_id = str(entry.get("profile_id") or "")
+                speaker_name = str(entry.get("name") or "")
+                speaker_avatar = str(entry.get("avatar") or "")
+                break
+            _save_message(
+                chat_id, "assistant", text,
+                tool_events=tool_events_json,
+                thinking=partial.get("thinking", ""),
+                duration_ms=duration_ms,
+                speaker_id=speaker_id,
+                speaker_name=speaker_name,
+                speaker_avatar=speaker_avatar,
+            )
+            log(f"cancel-save: chat={chat_id} text={len(text)}chars thinking={len(partial.get('thinking',''))}chars tools={len(partial.get('tool_events',[]))} duration={duration_ms}ms")
+    except Exception as e:
+        log(f"cancel-save FAILED: chat={chat_id} {type(e).__name__}: {e}")
+
     await _send_active_streams(chat_id)
     return True
 

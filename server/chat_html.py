@@ -149,6 +149,7 @@ font-size:calc(11px * var(--chat-font-scale));margin:4px 0;max-height:200px;over
 
 /* Cost footer */
 .cost{font-size:11px;color:var(--dim);margin-top:4px;padding-left:4px}
+.canceled-badge{font-size:11px;color:var(--red,#ef4444);margin-top:4px;padding-left:4px;font-style:italic}
 
 /* Streaming indicator */
 .streaming .bubble::after{content:'';display:inline-block;width:6px;height:14px;
@@ -1537,6 +1538,13 @@ function renderStaleBar() {
 async function cancelStream(streamId = '') {
   if (!currentChat) return false;
   try {
+    // Capture bubble refs + partial content BEFORE finalization removes ctx
+    const ids = streamId ? [streamId] : Array.from(activeStreams.keys());
+    const cancelledCtx = ids.map(sid => {
+      const ctx = _streamCtx[sid] || null;
+      return ctx ? {bubble: ctx.bubble, text: ctx.textContent || '', thinking: ctx.thinkingText || '', tools: ctx.toolCalls.length} : null;
+    }).filter(Boolean);
+
     const resp = await fetch(`/api/chats/${currentChat}/cancel`, {
       method: 'POST',
       credentials: 'same-origin',
@@ -1544,8 +1552,26 @@ async function cancelStream(streamId = '') {
       body: JSON.stringify(streamId ? {stream_id: streamId} : {}),
     });
     if (!resp.ok && resp.status !== 204) throw new Error(`cancel failed: ${resp.status}`);
-    const ids = streamId ? [streamId] : Array.from(activeStreams.keys());
     ids.forEach(sid => _finalizeStream(sid, {trackAnswered: false}));
+
+    // Add [Canceled] badge to each cancelled message
+    cancelledCtx.forEach(({bubble, text}) => {
+      if (!bubble) return;
+      // If no text was generated, add a placeholder so the message is visible
+      const bubbleEl = bubble.querySelector('.bubble');
+      if (bubbleEl && !text.trim()) {
+        bubbleEl.innerHTML = '<span style="color:var(--dim);font-style:italic">Response canceled</span>';
+      }
+      // Add canceled badge
+      let badge = bubble.querySelector('.canceled-badge');
+      if (!badge) {
+        badge = document.createElement('div');
+        badge.className = 'canceled-badge';
+        badge.textContent = 'Canceled';
+        bubble.appendChild(badge);
+      }
+    });
+
     hideStopMenu();
     if (_isAnyStreamActive()) {
       renderStaleBar();
