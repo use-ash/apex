@@ -2898,7 +2898,9 @@ function handleEvent(msg) {
       // during an active stream kills its context and makes it invisible
       if (msg.chat_id && msg.chat_id === currentChat && !_isAnyStreamActive()) {
         _resetAllStreamState();
-        selectChat(msg.chat_id).catch(() => {});
+        // Reconnect-triggered reloads often arrive immediately after the same
+        // chat was selected/attached, so bypass the normal 500ms debounce.
+        selectChat(msg.chat_id, undefined, undefined, undefined, {forceReload: true}).catch(() => {});
       }
       refreshDebugState('stream-complete-reload');
       break;
@@ -4854,10 +4856,12 @@ function setChatFontScale(nextScale) {
   applyChatFontScale();
 }
 
-async function selectChat(id, title, chatType, category) {
+async function selectChat(id, title, chatType, category, options) {
+  options = options || {};
+  const forceReload = Boolean(options.forceReload);
   // Debounce: skip if same chat selected within 500ms
   const now = Date.now();
-  if (id === _lastSelectChatId && now - _lastSelectChatTime < 500) {
+  if (!forceReload && id === _lastSelectChatId && now - _lastSelectChatTime < 500) {
     dbg(' selectChat DEBOUNCED:', id);
     return;
   }
