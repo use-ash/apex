@@ -393,7 +393,7 @@ async def api_update_chat_settings(chat_id: str, request: Request):
     if not chat:
         return JSONResponse({"error": "Chat not found"}, status_code=404)
     data = await request.json()
-    allowed = {"agent_mentions_enabled", "auto_title", "notification_level", "auto_reply", "shared_memory"}
+    allowed = {"agent_mentions_enabled", "auto_title", "notification_level", "auto_reply", "shared_memory", "coordination_protocol"}
     filtered = {k: v for k, v in data.items() if k in allowed}
     if not filtered:
         return JSONResponse({"error": f"No valid settings. Allowed: {', '.join(sorted(allowed))}"}, status_code=400)

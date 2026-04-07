@@ -6428,6 +6428,32 @@ async function showGroupSettings() {
     smRow.appendChild(smToggle);
     setSection.appendChild(smRow);
 
+    const seqRow = document.createElement('div');
+    seqRow.className = 'gs-toggle-row';
+    seqRow.style.borderTop = '1px solid var(--bg)';
+    seqRow.style.paddingTop = '10px';
+    seqRow.style.marginTop = '6px';
+    const seqOn = settings.coordination_protocol === 'sequential';
+    seqRow.innerHTML = `<div><span class="gs-toggle-label">Sequential Relay</span>
+      <div class="gs-toggle-hint" style="margin-top:2px">Each agent responds once in order, seeing all prior outputs. When off, agents use free @mention routing.</div></div>`;
+    const seqToggle = document.createElement('button');
+    seqToggle.className = 'gs-toggle ' + (seqOn ? 'on' : 'off');
+    seqToggle.onclick = async () => {
+      const newVal = seqOn ? 'freeform' : 'sequential';
+      try {
+        await fetch(`/api/chats/${chatId}/settings`, {
+          method: 'PATCH', credentials: 'same-origin',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({coordination_protocol: newVal})
+        });
+        settings.coordination_protocol = newVal;
+        gsToast(newVal === 'sequential' ? 'Sequential relay enabled' : 'Freeform routing enabled');
+        render();
+      } catch(e) { dbg('setting update error:', e); }
+    };
+    seqRow.appendChild(seqToggle);
+    setSection.appendChild(seqRow);
+
     content.appendChild(setSection);
 
     const dangerSection = document.createElement('div');

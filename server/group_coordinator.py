@@ -16,6 +16,19 @@ from db import (
 )
 
 
+_MAX_RELAY_ROUNDS = 10
+
+_PASS_PATTERNS = (
+    "[pass]",
+    "[abstain]",
+    "i have nothing to add",
+    "nothing to add",
+    "i'll pass",
+    "i pass",
+    "pass on this round",
+)
+
+
 @dataclass(frozen=True)
 class GroupStrictRelayState:
     active: bool
@@ -23,6 +36,8 @@ class GroupStrictRelayState:
     completed_profile_ids: list[str]
     next_profile_id: str
     next_target: dict | None
+    round_number: int = 1
+    round_abstentions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -41,6 +56,18 @@ class GroupRelayPlan:
 
 
 _STRICT_RELAY_KEY = "strict_relay"
+
+
+def _detect_agent_abstention(response_text: str) -> bool:
+    """Check if an agent's response signals abstention (PASS)."""
+    if not response_text:
+        return False
+    lowered = " ".join(response_text.casefold().split())
+    # Short responses with pass patterns — don't match long substantive responses
+    # that happen to contain "nothing to add" in a sentence
+    if len(lowered) > 300:
+        return False
+    return any(pattern in lowered for pattern in _PASS_PATTERNS)
 
 
 def _group_member_aliases(member: dict) -> list[str]:
@@ -310,6 +337,8 @@ def _start_strict_group_relay(chat_id: str, *, first_profile_id: str = "") -> Gr
         "active": bool(len(ordered_profile_ids) > 1),
         "ordered_profile_ids": ordered_profile_ids,
         "completed_profile_ids": [],
+        "round_number": 1,
+        "round_abstentions": [],
     }
     _set_strict_relay_payload(chat_id, payload if payload["active"] else None)
     return _get_strict_group_relay_state(chat_id, members)
@@ -337,6 +366,11 @@ def _get_strict_group_relay_state(
         for profile_id in list(payload.get("completed_profile_ids") or [])
         if profile_id in ordered_profile_ids
     ]
+    round_number = int(payload.get("round_number") or 1)
+    round_abstentions = tuple(
+        pid for pid in list(payload.get("round_abstentions") or [])
+        if pid in ordered_profile_ids
+    )
     next_profile_id = next(
         (profile_id for profile_id in ordered_profile_ids if profile_id not in completed_profile_ids),
         "",
@@ -348,6 +382,8 @@ def _get_strict_group_relay_state(
         completed_profile_ids=completed_profile_ids,
         next_profile_id=next_profile_id,
         next_target=member_map.get(next_profile_id),
+        round_number=round_number,
+        round_abstentions=round_abstentions,
     )
 
 
@@ -355,32 +391,57 @@ def _advance_strict_group_relay(
     chat_id: str,
     sender_profile_id: str,
     members: list[dict] | None = None,
+    *,
+    abstained: bool = False,
 ) -> GroupStrictRelayState:
     state = _get_strict_group_relay_state(chat_id, members)
     if not state.active:
         return state
     completed_profile_ids = list(state.completed_profile_ids)
+    round_abstentions = list(state.round_abstentions)
     if (
         sender_profile_id
         and sender_profile_id in state.ordered_profile_ids
         and sender_profile_id not in completed_profile_ids
     ):
         completed_profile_ids.append(sender_profile_id)
+    if abstained and sender_profile_id and sender_profile_id not in round_abstentions:
+        round_abstentions.append(sender_profile_id)
     next_profile_id = next(
         (profile_id for profile_id in state.ordered_profile_ids if profile_id not in completed_profile_ids),
         "",
     )
     if next_profile_id:
+        # Round still in progress
         _set_strict_relay_payload(
             chat_id,
             {
                 "active": True,
                 "ordered_profile_ids": state.ordered_profile_ids,
                 "completed_profile_ids": completed_profile_ids,
+                "round_number": state.round_number,
+                "round_abstentions": round_abstentions,
             },
         )
     else:
-        _clear_strict_group_relay(chat_id)
+        # Round complete — check if we should wrap around
+        coord_protocol = _get_chat_settings(chat_id).get("coordination_protocol", "freeform")
+        all_abstained = set(round_abstentions) >= set(state.ordered_profile_ids)
+        at_max_rounds = state.round_number >= _MAX_RELAY_ROUNDS
+        if coord_protocol == "sequential" and not all_abstained and not at_max_rounds:
+            # Start new round
+            _set_strict_relay_payload(
+                chat_id,
+                {
+                    "active": True,
+                    "ordered_profile_ids": state.ordered_profile_ids,
+                    "completed_profile_ids": [],
+                    "round_number": state.round_number + 1,
+                    "round_abstentions": [],
+                },
+            )
+        else:
+            _clear_strict_group_relay(chat_id)
     return _get_strict_group_relay_state(chat_id, members)
 
 
@@ -450,15 +511,18 @@ def _build_group_relay_state_prompt(chat_id: str) -> str:
         if next_target
         else "The strict relay round is complete. Do not hand off again."
     )
+    round_line = f"Round: {state.round_number}" if state.round_number > 1 else ""
     return (
         "<system-reminder>\n"
         "# Strict Relay\n"
         "A strict relay is active for this room.\n"
-        f"Agents already responded this round: {completed}\n"
+        + (f"{round_line}\n" if round_line else "")
+        + f"Agents already responded this round: {completed}\n"
         f"Agents still pending: {remaining}\n"
         f"{next_line}\n"
         "Use this relay state as authoritative. If you hand off, @mention exactly one pending agent and do not use "
         "tools, files, SDK client counts, or inferred presence signals to determine room membership.\n"
+        "If you have nothing meaningful to add this round, respond with just [PASS] to skip your turn.\n"
         "</system-reminder>\n\n"
     )
 
@@ -672,10 +736,12 @@ def _build_group_relay_plan(
     premium_relay: dict | None = None,
 ) -> GroupRelayPlan:
     relay_members = _get_group_members(chat_id)
+    agent_abstained = _detect_agent_abstention(response_text)
     strict_relay = _advance_strict_group_relay(
         chat_id,
         str(group_agent.get("profile_id") or ""),
         relay_members,
+        abstained=agent_abstained,
     )
     broadcast_mention_present = _has_group_broadcast_mention(response_text, relay_members)
     explicit_relay_targets = _find_specific_group_mentioned_members(response_text, relay_members)

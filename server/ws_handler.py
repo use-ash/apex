@@ -24,7 +24,7 @@ from license import get_license_manager
 
 from log import log
 from db import (
-    _get_chat, _update_chat, _update_chat_settings,
+    _get_chat, _update_chat, _get_chat_settings, _update_chat_settings,
     _get_chat_tool_policy, _get_profile_tool_policy, _set_chat_tool_policy, _set_profile_tool_policy,
     _get_recent_messages_text,
     _save_message,
@@ -769,7 +769,8 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             group_agent = _resolve_primary_group_agent(chat_id, prompt)
     mention_prompt = prompt
     if group_agent and is_group_chat and not suppress_user_message and handoff_source not in {"agent", "user_multi"}:
-        if _strict_relay_requested(mention_prompt):
+        _coord_protocol = _get_chat_settings(chat_id).get("coordination_protocol", "freeform")
+        if _coord_protocol == "sequential" or _strict_relay_requested(mention_prompt):
             _start_strict_group_relay(
                 chat_id,
                 first_profile_id=str(group_agent.get("profile_id") or ""),
