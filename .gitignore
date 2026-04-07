@@ -47,6 +47,7 @@ server/launch_dev.sh
 docs/OSS_PLAN.md
 docs/wip/
 APEX.md
+CLAUDE.md
 deploy-phase3.sh
 claude-commands/
 mockups/
