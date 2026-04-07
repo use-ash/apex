@@ -889,6 +889,8 @@ def _buffer_stream_event(chat_id: str, payload: dict) -> None:
 # Stream event sending
 # ---------------------------------------------------------------------------
 
+_drop_logged: set[str] = set()  # tracks (chat:stream) combos already logged as dropped
+
 async def _send_stream_event(chat_id: str, payload: dict) -> None:
     payload = dict(payload)
     stream_id = _current_stream_id.get("")
@@ -905,7 +907,10 @@ async def _send_stream_event(chat_id: str, payload: dict) -> None:
     async with send_lock:
         ws_set = _chat_ws.get(chat_id)
         if not ws_set:
-            log(f"stream event DROPPED: chat={chat_id[:8]} type={payload.get('type')} sid={str(payload.get('stream_id',''))[:8]} (no viewers)")
+            drop_key = f"{chat_id}:{payload_stream_id}"
+            if drop_key not in _drop_logged:
+                _drop_logged.add(drop_key)
+                log(f"stream events dropping: chat={chat_id[:8]} sid={payload_stream_id[:8]} (no viewers, suppressing repeats)")
             return
         dead: list[WebSocket] = []
         for ws in list(ws_set):
@@ -944,6 +949,7 @@ async def _finalize_stream(chat_id: str, stream_id: str, task: asyncio.Task | No
             await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id, "stream_id": stream_id})
             log(f"stream_end sent: chat={chat_id} viewers={len(_chat_ws.get(chat_id, set()))}")
     finally:
+        _drop_logged.discard(f"{chat_id}:{stream_id}")
         _clear_stream_text_filter(chat_id, stream_id)
         _remove_active_send_task(chat_id, stream_id, task if isinstance(task, asyncio.Task) else None)
         if is_group_chat:
