@@ -140,15 +140,38 @@ def is_key_encrypted(key_path: Path) -> bool:
 def encrypt_key_file(key_path: Path, passphrase: str) -> Path:
     """Encrypt a PEM private key file in-place using AES-256-CBC.
 
+    Uses openssl CLI if available, otherwise falls back to the Python
+    ``cryptography`` library for encryption.
+
     The passphrase is passed via stdin (never on the command line).
     Returns the path to the encrypted file (same path, overwritten).
 
-    Raises RuntimeError on openssl failure.
+    Raises RuntimeError on failure.
     """
     if is_key_encrypted(key_path):
         return key_path  # already encrypted
 
-    # Write encrypted version to a temp file, then replace the original
+    # Try openssl CLI first
+    if _has_openssl_cli():
+        return _encrypt_key_openssl(key_path, passphrase)
+    else:
+        return _encrypt_key_python(key_path, passphrase)
+
+
+def _has_openssl_cli() -> bool:
+    """Check if openssl CLI is available."""
+    try:
+        result = subprocess.run(
+            ["openssl", "version"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def _encrypt_key_openssl(key_path: Path, passphrase: str) -> Path:
+    """Encrypt a key using openssl CLI."""
     fd, tmp_path = tempfile.mkstemp(
         dir=str(key_path.parent), suffix=".enc", prefix=".key_"
     )
@@ -156,7 +179,6 @@ def encrypt_key_file(key_path: Path, passphrase: str) -> Path:
     tmp = Path(tmp_path)
 
     try:
-        # openssl rsa reads the key, re-encrypts it with AES-256-CBC
         result = subprocess.run(
             [
                 "openssl", "rsa",
@@ -179,12 +201,51 @@ def encrypt_key_file(key_path: Path, passphrase: str) -> Path:
         return key_path
 
     except Exception:
-        # Clean up temp file on failure
         try:
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
         raise
+
+
+def _encrypt_key_python(key_path: Path, passphrase: str) -> Path:
+    """Encrypt a key using the Python cryptography library."""
+    try:
+        from cryptography.hazmat.primitives import serialization
+
+        key_data = key_path.read_bytes()
+        private_key = serialization.load_pem_private_key(key_data, password=None)
+
+        encrypted_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.BestAvailableEncryption(
+                passphrase.encode("utf-8")
+            ),
+        )
+
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(key_path.parent), suffix=".enc", prefix=".key_"
+        )
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(encrypted_pem)
+            safe_chmod(Path(tmp_path), 0o600)
+            os.replace(tmp_path, str(key_path))
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+        return key_path
+
+    except ImportError:
+        raise RuntimeError(
+            f"Cannot encrypt {key_path.name}: "
+            "neither openssl CLI nor Python cryptography library available"
+        )
 
 
 def decrypt_key_to_tempfile(key_path: Path, passphrase: str) -> Path:
@@ -194,10 +255,19 @@ def decrypt_key_to_tempfile(key_path: Path, passphrase: str) -> Path:
     Returns the path to the decrypted temp file (0o600 permissions).
 
     If the key is not encrypted, returns the original path unchanged.
+    Uses openssl CLI if available, otherwise Python cryptography library.
     """
     if not is_key_encrypted(key_path):
         return key_path  # nothing to decrypt
 
+    if _has_openssl_cli():
+        return _decrypt_key_openssl(key_path, passphrase)
+    else:
+        return _decrypt_key_python(key_path, passphrase)
+
+
+def _decrypt_key_openssl(key_path: Path, passphrase: str) -> Path:
+    """Decrypt a key using openssl CLI."""
     fd, tmp_path = tempfile.mkstemp(suffix=".pem", prefix=".apex_dec_")
     os.close(fd)
     tmp = Path(tmp_path)
@@ -227,6 +297,42 @@ def decrypt_key_to_tempfile(key_path: Path, passphrase: str) -> Path:
         except OSError:
             pass
         raise
+
+
+def _decrypt_key_python(key_path: Path, passphrase: str) -> Path:
+    """Decrypt a key using the Python cryptography library."""
+    try:
+        from cryptography.hazmat.primitives import serialization
+
+        key_data = key_path.read_bytes()
+        private_key = serialization.load_pem_private_key(
+            key_data, password=passphrase.encode("utf-8"),
+        )
+
+        decrypted_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+
+        fd, tmp_path = tempfile.mkstemp(suffix=".pem", prefix=".apex_dec_")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(decrypted_pem)
+            safe_chmod(Path(tmp_path), 0o600)
+            return Path(tmp_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    except ImportError:
+        raise RuntimeError(
+            f"Cannot decrypt {key_path.name}: "
+            "neither openssl CLI nor Python cryptography library available"
+        )
 
 
 def shred_file(path: Path) -> None:
