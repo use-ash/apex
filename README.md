@@ -228,14 +228,12 @@ Same experience on mobile. Three agents spinning simultaneously on an iPhone —
 From zero to running in under 2 minutes.
 
 ```bash
-# Install
-pip install fastapi uvicorn python-multipart claude-agent-sdk
-
-# Run
-python3 apex.py
+git clone https://github.com/use-ash/apex.git ~/.apex
+cd ~/.apex
+bash install.sh
 ```
 
-Open **https://localhost:8300**. Your Claude subscription is detected automatically.
+The installer creates a virtual environment, installs all dependencies, generates TLS certificates, and walks you through first-time setup. When it finishes, open **https://localhost:8300**. Your Claude subscription is detected automatically.
 
 <details>
 <summary><strong>Add local models (free)</strong></summary>
