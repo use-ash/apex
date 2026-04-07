@@ -1,35 +1,41 @@
 # Apex Agent Personas
 
-Five specialized AI personas for running the Apex project. Each persona has a dedicated Apex channel with a specific model and system prompt.
-
-Full persona definitions are in individual files in this directory. This file is the index + shared conventions.
+Apex ships with system personas and starter templates. Users can create custom personas through the dashboard or by editing persona files.
 
 ---
 
-## Control Model
+## System Personas
 
-- **The owner** is final authority on strategy, spend, public actions, and anything irreversible.
-- **Architect** owns product truth and technical decisions for Apex.
-- **Codex** owns implementation — builds what Architect designs.
-- **Marketing** owns messaging and channel strategy, within Architect-approved product facts.
-- **Operations** owns plans, milestones, budgets, and execution tracking.
-- **Kodi** owns nothing — helpful generalist, escalates everything consequential.
+These are built into the server and refreshed on every startup. They cannot be deleted.
 
-Every task has one **DRI** (Directly Responsible Individual). No shared ownership.
+| Persona | Role | Model | Default? |
+|---------|------|-------|----------|
+| Apex Assistant | General-purpose assistant — questions, research, writing, analysis | Claude Sonnet | Yes |
+| Guide | Apex platform expert — setup help, configuration, how things work | Claude Haiku | No |
+| CodeExpert | Technical specialist — code, debugging, architecture, engineering | Claude Sonnet | No |
 
-## Team
+## Starter Templates
 
-| Persona | Role | Model | File |
-|---------|------|-------|------|
-| [Architect](architect.md) | CTO — plans, designs, reviews, orchestrates | Claude Opus | `claude-opus-4-6` |
-| [Codex](codex.md) | Lead Developer — implements, builds, audits | GPT-5.4 | `codex:gpt-5.4` |
-| [Marketing](marketing.md) | CMO — content, social, ads, community | Grok 4 | `grok-4` |
-| [Operations](operations.md) | COO/CFO — sprints, budget, billing | Claude Sonnet | `claude-sonnet-4-6` |
-| [Kodi](kodi.md) | Local Utility — quick tasks, brainstorm | Qwen 27B | `qwen3.5:27b` |
+These are seeded on first run from `server/persona_templates.json`. Users can edit or delete them freely.
+
+| Persona | Role | File |
+|---------|------|------|
+| [Architect](architect.md) | CTO — product design, system architecture, technical decisions | `architect.md` |
+| [Assistant](assistant.md) | Versatile helper — everyday tasks, research, brainstorming | `assistant.md` |
+| [Designer](designer.md) | UI/UX specialist — interfaces, layouts, visual systems | `designer.md` |
+| [Developer](developer.md) | Software engineer — implementation, testing, code review | `developer.md` |
+| [Planner](planner.md) | Project manager — milestones, tracking, coordination | `planner.md` |
+| [Writer](writer.md) | Content specialist — docs, copy, communication | `writer.md` |
 
 ## Creating Custom Personas
 
-Drop a `.md` file in this directory with YAML frontmatter:
+### From the Dashboard
+
+Open **Apex Dashboard > Personas > + New Persona**. Fill in name, avatar, model, and system prompt.
+
+### From a Markdown File
+
+Drop a `.md` file in `docs/personas/` with YAML frontmatter:
 
 ```yaml
 ---
@@ -47,46 +53,20 @@ avatar: "🎯"
 ...
 ```
 
-The server can discover personas by scanning `docs/personas/*.md`.
-
 ---
 
-## Cross-Persona Conventions
+## Conventions
 
 ### Handoff Format
 ```
 ## Handoff: [Source Persona] → [Target Persona]
 **Context:** [1-2 sentences]
 **What's needed:** [specific ask]
-**Deadline:** [if any]
 **References:** [file paths]
 ```
 
-### Codex Delegation Format (from Architect)
-```
-Task: <one-sentence objective>
-Why: <business reason>
-Scope: <files, modules, allowed writes>
-Current state: <what is true now, file refs>
-Constraints: <must preserve, must not touch>
-Definition of done:
-- <behavioral outcome>
-- <tests or checks>
-Verification: <commands to run>
-Escalate if: <specific blocker>
-```
-
 ### Conflict Resolution
-If two personas give conflicting advice:
-1. Both present their case to the owner
-2. The owner decides
-3. Decision logged in the relevant channel
-
-### Failure Modes to Guard Against
-| Failure | Fix |
-|---------|-----|
-| Architect and Marketing disagree on "what the product is" | Architect is technical source of truth |
-| Marketing promises an unbuilt feature | Approval gate on all external claims |
-| Operations pressures a shortcut that violates security | Architect veto on technical safety |
-| Kodi answers high-stakes question with too much confidence | Mandatory escalation outside lightweight tasks |
-| Codex hits tool iteration limit mid-task | Break work into chunks, checkpoint, check in |
+If two personas give conflicting advice in a group:
+1. Both present their case to the user
+2. The user decides
+3. Decision logged in the channel
