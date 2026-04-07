@@ -196,9 +196,12 @@ setup_venv() {
     # Install separately so a build failure doesn't break the main install.
     if ! "$VENV_DIR/bin/python3" -c "import jupyter_client" 2>/dev/null; then
         info "Installing Jupyter kernel (for execute_code tool)..."
-        "$VENV_DIR/bin/python3" -m pip install -q jupyter_client ipykernel 2>/dev/null && \
-            ok "Jupyter kernel installed" || \
+        if "$VENV_DIR/bin/python3" -m pip install -q jupyter_client ipykernel; then
+            ok "Jupyter kernel installed"
+        else
             warn "Jupyter install failed (execute_code tool will be unavailable)"
+            warn "  Re-run:  $VENV_DIR/bin/python3 -m pip install jupyter_client ipykernel"
+        fi
     fi
     ok "Dependencies installed"
 }
