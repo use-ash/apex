@@ -1,6 +1,6 @@
 # Auto-extracted from chat_html.py during modular split.
 
-_JS_ERROR_HANDLER = r"""window.onerror = (msg, src, line, col, err) => {
+_JS_ERROR_HANDLER = """window.onerror = (msg, src, line, col, err) => {
   document.title = 'JS ERROR: ' + msg;
   const d = document.createElement('div');
   d.style.cssText = 'position:fixed;top:0;left:0;right:0;background:red;color:white;padding:8px;z-index:9999;font-size:12px';
@@ -8,7 +8,7 @@ _JS_ERROR_HANDLER = r"""window.onerror = (msg, src, line, col, err) => {
   document.body.prepend(d);
 };"""
 
-_JS_STATE = r"""let ws = null;
+_JS_STATE = """let ws = null;
 let currentChat = sessionStorage.getItem('currentChatId') || null;
 let streaming = false;
 let currentBubble = null;
@@ -21,7 +21,7 @@ let queuedMessages = []; // [{msg_id, stream_id, preview, agent}]
 let _stopMenuConfirmKey = '';
 // Per-stream context: supports concurrent agent streams without clobbering"""
 
-_JS_STREAM_CONTEXT = r"""const _streamCtx = {};  // stream_id -> {bubble, speaker, toolPill, toolCalls, ...}
+_JS_STREAM_CONTEXT = """const _streamCtx = {};  // stream_id -> {bubble, speaker, toolPill, toolCalls, ...}
 // Per-chat last-seen event seq — dedupes events that arrive via both live-send
 // and attach-replay paths. Server attaches {seq, epoch} to every stream event.
 // Reset on epoch mismatch (server restart) or new ws connection.
@@ -245,7 +245,7 @@ function hideStopMenu() {
 }
 """
 
-_JS_STOP_MENU = r"""function _elapsedLabel(startedAt) {
+_JS_STOP_MENU = """function _elapsedLabel(startedAt) {
   if (!startedAt) return '';
   const sec = Math.round((Date.now() - startedAt) / 1000);
   if (sec < 60) return `${sec}s`;
@@ -385,7 +385,7 @@ function toggleStopMenu() {
 }
 """
 
-_JS_DEBUG = r"""function dbg(...args) {
+_JS_DEBUG = """function dbg(...args) {
   const ts = new Date().toLocaleTimeString();
   const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
   const line = `[${ts}] ${msg}`;
@@ -455,7 +455,7 @@ function updateConnectionIndicators() {
 }
 """
 
-_JS_STREAM_WATCHDOG = r"""function clearStreamWatchdog() {
+_JS_STREAM_WATCHDOG = """function clearStreamWatchdog() {
   if (staleBarTick) {
     clearInterval(staleBarTick);
     staleBarTick = null;
@@ -851,7 +851,7 @@ function setCurrentChat(id, title) {
 }
 """
 
-_JS_STREAM_ATTACH = r"""// --- WebSocket ---
+_JS_STREAM_ATTACH = """// --- WebSocket ---
 let heartbeatInterval = null;
 let lastPong = 0;
 let resumeHandledExternally = false;  // set by visibilitychange to prevent double selectChat
@@ -949,7 +949,7 @@ function connect() {
 }
 """
 
-_JS_WEBSOCKET = r"""function startHeartbeat(socket) {
+_JS_WEBSOCKET = """function startHeartbeat(socket) {
   stopHeartbeat();
   heartbeatInterval = setInterval(() => {
     if (socket.readyState === WebSocket.OPEN) {
@@ -971,7 +971,7 @@ function stopHeartbeat() {
 // Legacy work-group helpers are kept as no-ops for backward compatibility.
 // Live reasoning now renders as a single pill; detailed steps live only in the side panel."""
 
-_JS_TOOL_HELPERS = r"""function _getOrCreateWorkGroup(bubble) {
+_JS_TOOL_HELPERS = """function _getOrCreateWorkGroup(bubble) {
   return bubble || null;
 }
 
@@ -1097,7 +1097,7 @@ function _normalizeToolEvents(rawEvents) {
 }
 """
 
-_JS_STREAM_UI = r"""function _ensureCtxBubble(ctx) {
+_JS_STREAM_UI = """function _ensureCtxBubble(ctx) {
   if (!ctx) return null;
   // B-4 fix: history contexts have _isHistory=true and a valid but detached
   // bubble (not yet appended to DOM).  Without this guard, isConnected is
@@ -1458,7 +1458,7 @@ function _finalizeStreamUi(ctx, resultMsg = null) {
 }
 """
 
-_JS_SIDE_PANEL = r"""function _captureExpandedState() {
+_JS_SIDE_PANEL = """function _captureExpandedState() {
   const panel = document.getElementById('sidePanel');
   const current = new Set();
   panel.querySelectorAll('.sp-step.expanded[data-step-idx]').forEach(step => {
@@ -1654,7 +1654,7 @@ function openThinkingPanel(pillEl) {
 }
 """
 
-_JS_EVENT_HANDLER = r"""function handleEvent(msg) {
+_JS_EVENT_HANDLER = """function handleEvent(msg) {
   const el = document.getElementById('messages');
   // B-42: drop stream events that belong to a different chat
   const _B42_STREAM = new Set(['stream_start','stream_ack','stream_queued','text','thinking','tool_use','tool_result','stream_end','active_streams','queue_update']);
@@ -2121,7 +2121,7 @@ _JS_EVENT_HANDLER = r"""function handleEvent(msg) {
 }
 """
 
-_JS_UI_HELPERS = r"""// --- UI helpers ---
+_JS_UI_HELPERS = """// --- UI helpers ---
 function addAssistantMsg(speaker = currentSpeaker, streamId = '') {
   const el = document.getElementById('messages');
   const div = document.createElement('div');
@@ -2340,7 +2340,7 @@ function _isBusyErrorMessage(text = '') {
 
 /* --- Smart scroll: only auto-scroll if user is near bottom --- */"""
 
-_JS_SCROLL = r"""let _userScrolledUp = false;
+_JS_SCROLL = """let _userScrolledUp = false;
 const _SCROLL_THRESHOLD = 150; // px from bottom to count as "near bottom"
 
 // ---- History pagination (infinite scroll) ----
@@ -2573,7 +2573,7 @@ async function _loadOlderMessages() {
 })();
 """
 
-_JS_ALERTS = r"""// --- Alerts channel view (renders in main messages area) ---
+_JS_ALERTS = """// --- Alerts channel view (renders in main messages area) ---
 function renderAlertsList(alerts) {
   channelAlertsData = alerts;
   const el = document.getElementById('messages');
@@ -2995,7 +2995,7 @@ document.addEventListener('click', (e) => {
 });
 """
 
-_JS_SETTINGS = r"""// --- Settings Panel ---
+_JS_SETTINGS = """// --- Settings Panel ---
 let _settingsModels = [];  // cached model list
 
 async function loadSettingsData() {
@@ -3347,7 +3347,7 @@ if (alertToastInner) {
 }
 """
 
-_JS_MARKDOWN = r"""function escHtml(s) {
+_JS_MARKDOWN = """function escHtml(s) {
   const d = document.createElement('div');
   d.textContent = s == null ? '' : String(s);
   return d.innerHTML;
@@ -3704,7 +3704,7 @@ async function toggleVoiceRecording() {
 }
 """
 
-_JS_COMPOSER = r"""// --- Send ---
+_JS_COMPOSER = """// --- Send ---
 async function send(options = {}) {
   const allowLastPrompt = Boolean(options.allowLastPrompt);
   const input = document.getElementById('input');
@@ -3755,7 +3755,7 @@ async function send(options = {}) {
 }
 """
 
-_JS_CHATS = r"""// --- Chats ---
+_JS_CHATS = """// --- Chats ---
 async function loadChats() {
   const r = await fetch('/api/chats', {credentials: 'same-origin'});
   dbg(' loadChats status:', r.status);
@@ -4170,7 +4170,7 @@ async function newChat() {
 }
 """
 
-_JS_SIDEBAR = r"""// --- Sidebar ---
+_JS_SIDEBAR = """// --- Sidebar ---
 function openSidebar() {
   if (sidebarPinned) {
     applySidebarPinnedState();
@@ -4207,7 +4207,7 @@ function toggleSidebarPin() {
 }
 """
 
-_JS_ATTACHMENTS = r"""// --- Attachments ---
+_JS_ATTACHMENTS = """// --- Attachments ---
 let pendingAttachments = [];
 
 function clearAttachments() {
@@ -4335,7 +4335,7 @@ async function toggleVoiceRecording() {
 }
 """
 
-_JS_INIT = r"""// --- PWA service worker ---
+_JS_INIT = """// --- PWA service worker ---
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
@@ -4571,7 +4571,7 @@ window.addEventListener('unhandledrejection', (e) => {
 });
 """
 
-_JS_CONTEXT_BAR = r"""// --- Context bar ---
+_JS_CONTEXT_BAR = """// --- Context bar ---
 function formatTokenCount(n) {
   if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
   if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
@@ -4603,7 +4603,7 @@ async function fetchContext(chatId) {
 }
 """
 
-_JS_USAGE_BAR = r"""// --- Usage bar (model-aware, toggleable) ---
+_JS_USAGE_BAR = """// --- Usage bar (model-aware, toggleable) ---
 function usageColor(pct) { return pct >= 90 ? 'red' : pct >= 70 ? 'orange' : 'green'; }
 let _usageHideTimer = null;
 let _lastUsageData = null;
@@ -4835,7 +4835,7 @@ function startUsagePolling() {
 }
 """
 
-_JS_PROFILES = r"""// --- Agent Profiles ---
+_JS_PROFILES = """// --- Agent Profiles ---
 let _profilesCache = [];
 let _currentChatProfileId = '';
 let _currentChatProfileName = '';
@@ -5207,7 +5207,7 @@ async function newGroup(title, members) {
 }
 """
 
-_JS_GROUP_SETTINGS = r"""// --- Group Settings Modal ---
+_JS_GROUP_SETTINGS = """// --- Group Settings Modal ---
 async function showGroupSettings() {
   if (!currentChat || currentChatType !== 'group') return;
   const chatId = currentChat;
@@ -6132,7 +6132,7 @@ async function changeChatProfile(profileId) {
 }
 """
 
-_JS_PERSONA_CARD = r"""// --- Persona Info Card (F-1) ---
+_JS_PERSONA_CARD = """// --- Persona Info Card (F-1) ---
 // Opens a popover on desktop or a bottom sheet on mobile when a
 // speaker header (agent name/avatar in message) is clicked.
 
