@@ -79,12 +79,14 @@ from __future__ import annotations
 
 import asyncio
 import ast
+import csv
 import glob as _glob_mod
 import html
 import hmac
 import contextlib
 import hashlib
 import importlib.util
+import io
 import ipaddress
 import json
 import logging
@@ -101,6 +103,7 @@ import tempfile
 import time
 import urllib.request
 import urllib.error
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -123,6 +126,8 @@ from db import (
 import env
 from log import LOG_PATH
 from model_dispatch import get_available_model_ids
+from routes_models import api_usage as provider_api_usage
+from routes_models import api_usage_codex as provider_api_usage_codex
 from tool_access import get_tool_catalog, get_workspace_tool_patterns
 from local_model.safety import (
     get_policy_blocked_path_prefixes,
@@ -148,6 +153,30 @@ _state_dir: Path | None = None
 _db_path: Path | None = None
 _ssl_dir: Path | None = None
 _config: Config | None = None
+
+_USAGE_TRACK_BY_BACKEND = {
+    "claude": "subscription",
+    "codex": "subscription",
+    "openai": "api",
+    "xai": "api",
+    "grok": "api",
+    "gemini": "api",
+    "ollama": "local",
+    "mlx": "local",
+    "local": "local",
+}
+
+_MODEL_PRICING: dict[str, dict[str, Any]] = {
+    "claude-haiku-4-5-20251001": {"display": "Haiku 4.5", "track": "subscription", "price_in": 0.80, "price_out": 4.00, "provider": "claude"},
+    "claude-sonnet-4-6": {"display": "Sonnet 4.6", "track": "subscription", "price_in": 3.00, "price_out": 15.00, "provider": "claude"},
+    "claude-opus-4-6": {"display": "Opus 4.6", "track": "subscription", "price_in": 15.00, "price_out": 75.00, "provider": "claude"},
+    "codex:gpt-5.4": {"display": "Codex GPT-5.4", "track": "subscription", "price_in": 1.50, "price_out": 6.00, "provider": "codex"},
+    "codex:gpt-5.4-mini": {"display": "Codex GPT-5.4 Mini", "track": "subscription", "price_in": 0.30, "price_out": 1.20, "provider": "codex"},
+    "codex:o3": {"display": "Codex o3", "track": "subscription", "price_in": 2.00, "price_out": 8.00, "provider": "codex"},
+    "grok-4": {"display": "Grok 4", "track": "api", "price_in": 5.00, "price_out": 15.00, "provider": "xai"},
+    "gemma4:26b": {"display": "Gemma 4 26B", "track": "local", "price_in": 0.0, "price_out": 0.0, "provider": "local"},
+    "qwen3.5:35b-a3b": {"display": "Qwen 3.5 35B A3B", "track": "local", "price_in": 0.0, "price_out": 0.0, "provider": "local"},
+}
 
 
 def _normalize_workspace_path_value(raw: object) -> str:
@@ -232,6 +261,8 @@ _ADMIN_TOKEN = env.ADMIN_TOKEN
 _ADMIN_READ_ONLY = frozenset({
     "/", "/security-config", "/api/status", "/api/status/db", "/api/status/tls",
     "/api/status/models", "/api/config", "/api/config/schema",
+    "/api/db/stats", "/api/backups",
+    "/api/admin/usage", "/api/admin/usage/config", "/api/admin/usage/export",
     "/api/docs",
 })
 
@@ -474,6 +505,514 @@ def _format_uptime(seconds: float) -> str:
         parts.append(f"{hours}h")
     parts.append(f"{minutes}m")
     return " ".join(parts)
+
+
+def _month_window(month: str | None) -> tuple[str, datetime, datetime]:
+    """Return normalized month key plus UTC start/end datetimes."""
+    if month:
+        try:
+            start = datetime.strptime(month, "%Y-%m").replace(tzinfo=timezone.utc)
+        except ValueError as exc:
+            raise ValueError("month must be YYYY-MM") from exc
+    else:
+        now = datetime.now(timezone.utc)
+        start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    if start.month == 12:
+        end = datetime(start.year + 1, 1, 1, tzinfo=timezone.utc)
+    else:
+        end = datetime(start.year, start.month + 1, 1, tzinfo=timezone.utc)
+    return start.strftime("%Y-%m"), start, end
+
+
+def _days_in_month(start: datetime, end: datetime) -> int:
+    return max(1, (end - start).days)
+
+
+def _month_label(month_key: str) -> str:
+    start = datetime.strptime(month_key, "%Y-%m")
+    return start.strftime("%B %Y")
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _price_for_model(model: str) -> dict[str, Any]:
+    model_id = str(model or "").strip()
+    if model_id in _MODEL_PRICING:
+        return dict(_MODEL_PRICING[model_id])
+    provider = "local"
+    lower = model_id.lower()
+    if lower.startswith("claude"):
+        provider = "claude"
+    elif lower.startswith("codex") or lower.startswith("gpt") or lower.startswith("o3"):
+        provider = "codex"
+    elif lower.startswith("grok"):
+        provider = "xai"
+    elif lower:
+        provider = "local"
+    track = _USAGE_TRACK_BY_BACKEND.get(provider, "local")
+    return {
+        "display": model_id or "Default",
+        "track": track,
+        "price_in": 0.0,
+        "price_out": 0.0,
+        "provider": provider,
+    }
+
+
+def _compute_equivalent_cost(tokens_in: int, tokens_out: int, price_in: float, price_out: float) -> float:
+    return round(((tokens_in * price_in) + (tokens_out * price_out)) / 1_000_000.0, 6)
+
+
+def _message_cost_fields(row: sqlite3.Row) -> dict[str, Any]:
+    model = row["model"] or row["profile_model"] or ""
+    price = _price_for_model(model)
+    tokens_in = _safe_int(row["tokens_in"])
+    tokens_out = _safe_int(row["tokens_out"])
+    actual_cost = round(_safe_float(row["cost_usd"]), 6)
+    equivalent_cost = _compute_equivalent_cost(tokens_in, tokens_out, price["price_in"], price["price_out"])
+    profile_backend = (row["profile_backend"] or "").strip().lower()
+    track = price["track"]
+    provider = price["provider"]
+    if profile_backend:
+        provider = profile_backend
+        track = _USAGE_TRACK_BY_BACKEND.get(profile_backend, track)
+    if track == "api":
+        display_cost = actual_cost if actual_cost > 0 else equivalent_cost
+        equivalent_cost = display_cost
+        cost_source = "reported" if actual_cost > 0 else ("estimated" if display_cost > 0 else "missing")
+    elif track == "subscription":
+        display_cost = 0.0
+        cost_source = "estimated" if equivalent_cost > 0 else "missing"
+    else:
+        display_cost = 0.0
+        equivalent_cost = 0.0
+        cost_source = "local"
+    return {
+        "model": model,
+        "display": price["display"],
+        "provider": provider,
+        "track": track,
+        "price_in": price["price_in"],
+        "price_out": price["price_out"],
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "cost_usd": round(display_cost, 6),
+        "equivalent_cost_usd": round(equivalent_cost, 6),
+        "cost_source": cost_source,
+    }
+
+
+def _pct(part: float, total: float) -> int:
+    if total <= 0:
+        return 0
+    return int(round((part / total) * 100))
+
+
+def _usage_user_label(chat_type: str | None, category: str | None, primary_user_label: str) -> str:
+    ctype = (chat_type or "").strip().lower()
+    ccat = (category or "").strip().lower()
+    if ctype in {"api"} or ccat in {"alerts", "system", "custom", "test"}:
+        return "API / Cron"
+    return primary_user_label
+
+
+def _serialize_provider_utilization(payload: dict[str, Any], *, codex: bool = False) -> dict[str, Any]:
+    session = payload.get("session") or {}
+    resets_at = session.get("resets_at") if not codex else None
+    resets_in = session.get("resets_in")
+    utilization = session.get("utilization")
+    return {
+        "utilization_pct": _safe_int(utilization),
+        "resets_at": resets_at,
+        "resets_in": resets_in,
+        "label": "current window",
+        "stale": bool(payload.get("stale", False)),
+        "plan": payload.get("plan") or "",
+    }
+
+
+def _generate_usage_insight(cost_track: dict[str, Any], subscription_track: dict[str, Any], provider_utilization: dict[str, Any], by_model: list[dict[str, Any]]) -> dict[str, str]:
+    top_api = None
+    api_rows = [row for row in by_model if row.get("track") == "api" and row.get("cost_usd", 0) > 0]
+    if api_rows:
+        top_api = max(api_rows, key=lambda row: row.get("cost_usd", 0))
+    claude_util = provider_utilization.get("claude") or {}
+    codex_util = provider_utilization.get("codex") or {}
+    if claude_util.get("utilization_pct", 0) >= 80:
+        return {
+            "title": "Usage insight",
+            "body": f"Claude window is {claude_util['utilization_pct']}% used. Consider routing lighter drafts to Codex or API models until it resets.",
+        }
+    if codex_util and codex_util.get("utilization_pct", 0) <= 10 and subscription_track.get("tokens_total", 0) > 0:
+        return {
+            "title": "Usage insight",
+            "body": "Codex utilization is low relative to included capacity. You may be able to shift more drafting there without increasing API spend.",
+        }
+    if top_api and cost_track.get("total_usd", 0) > 0:
+        share = _pct(top_api.get("cost_usd", 0), cost_track["total_usd"])
+        return {
+            "title": "Usage insight",
+            "body": f"{top_api.get('display') or top_api.get('model')} is {share}% of API spend this month. Review whether some of that workload can move to a cheaper tier.",
+        }
+    if subscription_track.get("tokens_total", 0) > 0:
+        return {
+            "title": "Usage insight",
+            "body": "Subscription usage is the primary driver this month. Watch current provider windows to avoid hitting included-capacity limits.",
+        }
+    return {
+        "title": "Usage insight",
+        "body": "Usage is light this month so far. No immediate optimization action stands out yet.",
+    }
+
+
+async def _provider_utilization_snapshot() -> dict[str, Any]:
+    providers: dict[str, Any] = {}
+    try:
+        response = await provider_api_usage()
+        if hasattr(response, "body"):
+            payload = json.loads(response.body.decode("utf-8"))
+            if response.status_code < 400:
+                providers["claude"] = _serialize_provider_utilization(payload)
+    except Exception as exc:
+        _log.debug("usage provider snapshot (claude) failed: %s", exc)
+    try:
+        response = await provider_api_usage_codex()
+        if hasattr(response, "body"):
+            payload = json.loads(response.body.decode("utf-8"))
+            if response.status_code < 400:
+                providers["codex"] = _serialize_provider_utilization(payload, codex=True)
+    except Exception as exc:
+        _log.debug("usage provider snapshot (codex) failed: %s", exc)
+    return providers
+
+
+def _usage_export_rows(month_start_iso: str, month_end_iso: str) -> list[dict[str, Any]]:
+    with _db_lock:
+        conn = _get_db()
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT m.created_at, m.chat_id, m.speaker_name, m.cost_usd, m.tokens_in, m.tokens_out,
+                   c.model, c.type AS chat_type, c.category, p.backend AS profile_backend, p.model AS profile_model
+            FROM messages m
+            JOIN chats c ON c.id = m.chat_id
+            LEFT JOIN agent_profiles p ON p.id = c.profile_id
+            WHERE m.role = 'assistant'
+              AND m.created_at >= ?
+              AND m.created_at < ?
+            ORDER BY m.created_at ASC
+            """,
+            (month_start_iso, month_end_iso),
+        ).fetchall()
+        conn.close()
+    export_rows: list[dict[str, Any]] = []
+    for row in rows:
+        cost_fields = _message_cost_fields(row)
+        export_rows.append({
+            "date": row["created_at"],
+            "chat_id": row["chat_id"],
+            "agent": row["speaker_name"] or "Chat",
+            "model": cost_fields["model"] or "default",
+            "track": cost_fields["track"],
+            "provider": cost_fields["provider"],
+            "tokens_in": cost_fields["tokens_in"],
+            "tokens_out": cost_fields["tokens_out"],
+            "cost_usd": round(cost_fields["cost_usd"], 6),
+            "equivalent_cost_usd": round(cost_fields["equivalent_cost_usd"], 6),
+            "cost_source": cost_fields["cost_source"],
+        })
+    return export_rows
+
+
+async def _build_usage_payload(month: str | None) -> dict[str, Any]:
+    if _config is None:
+        raise RuntimeError("Dashboard not initialized")
+    month_key, month_start, month_end = _month_window(month)
+    month_start_iso = month_start.isoformat()
+    month_end_iso = month_end.isoformat()
+    days_in_month = _days_in_month(month_start, month_end)
+    now = datetime.now(timezone.utc)
+    elapsed_end = min(now, month_end)
+    days_elapsed = min(max(1, (elapsed_end - month_start).days + 1), days_in_month) if elapsed_end >= month_start else 1
+    primary_user_label = str(_config.get("usage", "primary_user_label") or "Dana")
+    budget_usd = _safe_int(_config.get("usage", "budget_usd") or 100)
+    alert_pct = _safe_int(_config.get("usage", "alert_pct") or 80)
+    reset_day = _safe_int(_config.get("usage", "reset_day") or 1)
+
+    with _db_lock:
+        conn = _get_db()
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT m.created_at, m.chat_id, m.speaker_name, m.cost_usd, m.tokens_in, m.tokens_out,
+                   c.model, c.type AS chat_type, c.category, c.profile_id,
+                   p.backend AS profile_backend, p.model AS profile_model
+            FROM messages m
+            JOIN chats c ON c.id = m.chat_id
+            LEFT JOIN agent_profiles p ON p.id = c.profile_id
+            WHERE m.role = 'assistant'
+              AND m.created_at >= ?
+              AND m.created_at < ?
+            ORDER BY m.created_at ASC
+            """,
+            (month_start_iso, month_end_iso),
+        ).fetchall()
+        conn.close()
+
+    daily_api_spend: dict[str, float] = defaultdict(float)
+    agent_rollup: dict[str, dict[str, Any]] = defaultdict(lambda: {"name": "", "cost_usd": 0.0, "equivalent_cost_usd": 0.0, "tokens_in": 0, "tokens_out": 0, "api_cost_usd": 0.0, "subscription_equivalent_cost_usd": 0.0, "local_tokens": 0})
+    user_rollup: dict[str, dict[str, Any]] = defaultdict(lambda: {"name": "", "cost_usd": 0.0, "equivalent_cost_usd": 0.0, "tokens_in": 0, "tokens_out": 0, "api_cost_usd": 0.0, "subscription_equivalent_cost_usd": 0.0})
+    model_rollup: dict[str, dict[str, Any]] = {}
+
+    total_api_cost = 0.0
+    subscription_tokens_total = 0
+    tokens_by_provider: dict[str, int] = defaultdict(int)
+    cost_sources_seen: set[str] = set()
+
+    for row in rows:
+        cost_fields = _message_cost_fields(row)
+        cost_sources_seen.add(cost_fields["cost_source"])
+        date_key = str(row["created_at"] or "")[:10]
+        agent_name = row["speaker_name"] or "Chat"
+        user_name = _usage_user_label(row["chat_type"], row["category"], primary_user_label)
+        model_key = cost_fields["model"] or "default"
+
+        if cost_fields["track"] == "api":
+            total_api_cost += cost_fields["cost_usd"]
+            daily_api_spend[date_key] += cost_fields["cost_usd"]
+        elif cost_fields["track"] == "subscription":
+            token_total = cost_fields["tokens_in"] + cost_fields["tokens_out"]
+            subscription_tokens_total += token_total
+            tokens_by_provider[cost_fields["provider"]] += token_total
+
+        agent_entry = agent_rollup[agent_name]
+        agent_entry["name"] = agent_name
+        agent_entry["cost_usd"] += cost_fields["cost_usd"]
+        agent_entry["equivalent_cost_usd"] += cost_fields["equivalent_cost_usd"]
+        agent_entry["tokens_in"] += cost_fields["tokens_in"]
+        agent_entry["tokens_out"] += cost_fields["tokens_out"]
+        if cost_fields["track"] == "api":
+            agent_entry["api_cost_usd"] += cost_fields["cost_usd"]
+        elif cost_fields["track"] == "subscription":
+            agent_entry["subscription_equivalent_cost_usd"] += cost_fields["equivalent_cost_usd"]
+        else:
+            agent_entry["local_tokens"] += cost_fields["tokens_in"] + cost_fields["tokens_out"]
+
+        user_entry = user_rollup[user_name]
+        user_entry["name"] = user_name
+        user_entry["cost_usd"] += cost_fields["cost_usd"]
+        user_entry["equivalent_cost_usd"] += cost_fields["equivalent_cost_usd"]
+        user_entry["tokens_in"] += cost_fields["tokens_in"]
+        user_entry["tokens_out"] += cost_fields["tokens_out"]
+        if cost_fields["track"] == "api":
+            user_entry["api_cost_usd"] += cost_fields["cost_usd"]
+        elif cost_fields["track"] == "subscription":
+            user_entry["subscription_equivalent_cost_usd"] += cost_fields["equivalent_cost_usd"]
+
+        if model_key not in model_rollup:
+            model_rollup[model_key] = {
+                "model": model_key,
+                "display": cost_fields["display"],
+                "track": cost_fields["track"],
+                "provider": cost_fields["provider"],
+                "price_in": cost_fields["price_in"],
+                "price_out": cost_fields["price_out"],
+                "cost_usd": 0.0,
+                "equivalent_cost_usd": 0.0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "cost_source": cost_fields["cost_source"],
+            }
+        model_entry = model_rollup[model_key]
+        model_entry["cost_usd"] += cost_fields["cost_usd"]
+        model_entry["equivalent_cost_usd"] += cost_fields["equivalent_cost_usd"]
+        model_entry["tokens_in"] += cost_fields["tokens_in"]
+        model_entry["tokens_out"] += cost_fields["tokens_out"]
+        if model_entry["cost_source"] == "missing" and cost_fields["cost_source"] != "missing":
+            model_entry["cost_source"] = cost_fields["cost_source"]
+
+    total_api_cost = round(total_api_cost, 2)
+    daily_pace_usd = round(total_api_cost / days_elapsed, 2) if days_elapsed else 0.0
+    projected_month_end_usd = round(daily_pace_usd * days_in_month, 2)
+    budget_used_pct = _pct(total_api_cost, budget_usd) if budget_usd > 0 else 0
+
+    day_cursor = month_start
+    daily_spend: list[dict[str, Any]] = []
+    while day_cursor < month_end:
+        key = day_cursor.strftime("%Y-%m-%d")
+        daily_spend.append({"date": key, "amount": round(daily_api_spend.get(key, 0.0), 2)})
+        day_cursor += timedelta(days=1)
+
+    by_agent = []
+    for entry in agent_rollup.values():
+        by_agent.append({
+            "name": entry["name"],
+            "cost_usd": round(entry["cost_usd"], 2),
+            "equivalent_cost_usd": round(entry["equivalent_cost_usd"], 2),
+            "tokens_in": entry["tokens_in"],
+            "tokens_out": entry["tokens_out"],
+            "pct": _pct(entry["cost_usd"], total_api_cost),
+            "track_mix": {
+                "api_cost_usd": round(entry["api_cost_usd"], 2),
+                "subscription_equivalent_cost_usd": round(entry["subscription_equivalent_cost_usd"], 2),
+            },
+        })
+    by_agent.sort(key=lambda item: (item["cost_usd"], item["equivalent_cost_usd"], item["tokens_out"]), reverse=True)
+
+    by_user = []
+    for entry in user_rollup.values():
+        by_user.append({
+            "name": entry["name"],
+            "cost_usd": round(entry["cost_usd"], 2),
+            "equivalent_cost_usd": round(entry["equivalent_cost_usd"], 2),
+            "tokens_in": entry["tokens_in"],
+            "tokens_out": entry["tokens_out"],
+            "pct": _pct(entry["cost_usd"], total_api_cost),
+            "track_mix": {
+                "api_cost_usd": round(entry["api_cost_usd"], 2),
+                "subscription_equivalent_cost_usd": round(entry["subscription_equivalent_cost_usd"], 2),
+            },
+        })
+    by_user.sort(key=lambda item: (item["cost_usd"], item["equivalent_cost_usd"], item["tokens_out"]), reverse=True)
+
+    by_model = list(model_rollup.values())
+    for entry in by_model:
+        entry["cost_usd"] = round(entry["cost_usd"], 2)
+        entry["equivalent_cost_usd"] = round(entry["equivalent_cost_usd"], 2)
+        entry["pct"] = _pct(entry["cost_usd"], total_api_cost)
+    by_model.sort(key=lambda item: (item["cost_usd"], item["equivalent_cost_usd"], item["tokens_out"]), reverse=True)
+
+    subscription_track = {
+        "tokens_total": subscription_tokens_total,
+        "tokens_by_provider": dict(sorted(tokens_by_provider.items())),
+        "equivalent_cost_usd": round(sum(item["equivalent_cost_usd"] for item in by_model if item["track"] == "subscription"), 2),
+    }
+    cost_track = {
+        "total_usd": total_api_cost,
+        "daily_pace_usd": daily_pace_usd,
+        "projected_month_end_usd": projected_month_end_usd,
+        "budget_usd": budget_usd,
+        "budget_used_pct": budget_used_pct,
+    }
+
+    provider_utilization = await _provider_utilization_snapshot()
+    payload = {
+        "month": month_key,
+        "month_label": _month_label(month_key),
+        "days_elapsed": days_elapsed,
+        "days_in_month": days_in_month,
+        "cost_track": cost_track,
+        "subscription_track": subscription_track,
+        "daily_spend": daily_spend,
+        "by_agent": by_agent,
+        "by_user": by_user,
+        "by_model": by_model,
+        "provider_utilization": provider_utilization,
+        "budget": {
+            "budget_usd": budget_usd,
+            "alert_pct": alert_pct,
+            "reset_day": reset_day,
+        },
+        "cost_source": "reported" if cost_sources_seen == {"reported"} else ("estimated" if "estimated" in cost_sources_seen else "mixed"),
+    }
+    payload["insight"] = _generate_usage_insight(cost_track, subscription_track, provider_utilization, by_model)
+    return payload
+
+
+@dashboard_app.get("/api/admin/usage")
+async def api_admin_usage(month: str | None = None):
+    """Return Usage page data for the V2 admin dashboard."""
+    if _config is None:
+        return _not_initialized()
+    try:
+        payload = await _build_usage_payload(month)
+        return JSONResponse(payload)
+    except ValueError as exc:
+        return _error(str(exc), "INVALID_MONTH", 400)
+    except sqlite3.Error as exc:
+        _log.error("Usage query failed: %s", exc)
+        return _error("Usage query failed", "USAGE_QUERY_FAILED")
+
+
+@dashboard_app.get("/api/admin/usage/config")
+async def api_admin_usage_config():
+    """Return saved Usage budget settings."""
+    if _config is None:
+        return _not_initialized()
+    return JSONResponse({
+        "budget_usd": _safe_int(_config.get("usage", "budget_usd") or 100),
+        "alert_pct": _safe_int(_config.get("usage", "alert_pct") or 80),
+        "reset_day": _safe_int(_config.get("usage", "reset_day") or 1),
+        "primary_user_label": str(_config.get("usage", "primary_user_label") or "Dana"),
+    })
+
+
+@dashboard_app.post("/api/admin/usage/config")
+async def api_admin_usage_config_update(request: Request):
+    """Update saved Usage budget settings."""
+    if _config is None:
+        return _not_initialized()
+    try:
+        body = await request.json()
+    except Exception:
+        return _error("Invalid JSON", "INVALID_JSON", 400)
+    if not isinstance(body, dict):
+        return _error("Request body must be a JSON object", "INVALID_BODY", 400)
+    updates: dict[str, Any] = {}
+    for key in ("budget_usd", "alert_pct", "reset_day", "primary_user_label"):
+        if key in body:
+            updates[key] = body[key]
+    if not updates:
+        return _error("No usage settings provided", "EMPTY_UPDATE", 400)
+    try:
+        values, restart_required = _config.update_section("usage", updates)
+        return JSONResponse({
+            "status": "ok",
+            "section": "usage",
+            "config": values,
+            "restart_required": restart_required,
+        })
+    except ValueError as exc:
+        _log.warning("Usage config validation error: %s", exc)
+        return _error("Invalid usage configuration", "VALIDATION_ERROR", 422)
+
+
+@dashboard_app.get("/api/admin/usage/export")
+async def api_admin_usage_export(month: str | None = None):
+    """Export assistant-message usage rows for the selected month as CSV."""
+    try:
+        _, month_start, month_end = _month_window(month)
+    except ValueError as exc:
+        return _error(str(exc), "INVALID_MONTH", 400)
+    rows = _usage_export_rows(month_start.isoformat(), month_end.isoformat())
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer,
+        fieldnames=[
+            "date", "chat_id", "agent", "model", "track", "provider",
+            "tokens_in", "tokens_out", "cost_usd", "equivalent_cost_usd", "cost_source",
+        ],
+    )
+    writer.writeheader()
+    writer.writerows(rows)
+    month_key = month_start.strftime("%Y-%m")
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="usage-{month_key}.csv"'},
+    )
 
 
 # ---------------------------------------------------------------------------

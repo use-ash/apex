@@ -1635,6 +1635,15 @@ select {
                 </svg>
                 Policy
             </div>
+            <!-- Database -->
+            <div class="nav-item" data-page="database">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                    <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+                    <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+                </svg>
+                Database
+            </div>
             <!-- Workspace -->
             <div class="nav-item" data-page="workspace">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -2206,6 +2215,59 @@ select {
             </div>
         </div>
 
+        <div class="page" id="page-database">
+            <div class="page-header">
+                <h2>Database</h2>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <button class="btn btn-ghost" id="btn-database-refresh">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="23 4 23 10 17 10"/>
+                            <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+                        </svg>
+                        Refresh
+                    </button>
+                </div>
+            </div>
+
+            <div class="card" style="margin-bottom:20px;">
+                <div class="card-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"/>
+                        <path d="M12 8v4l3 3"/>
+                    </svg>
+                    Status
+                </div>
+                <div id="database-status-content">
+                    <div class="loading-overlay"><div class="spinner"></div> Loading database status...</div>
+                </div>
+            </div>
+
+            <div class="config-section" style="margin-bottom:20px;">
+                <div class="config-section-header">
+                    <span class="config-section-title">Tables</span>
+                </div>
+                <div id="database-tables-content">
+                    <div class="loading-overlay"><div class="spinner"></div> Loading table inventory...</div>
+                </div>
+            </div>
+
+            <div class="config-section" style="margin-bottom:20px;">
+                <div class="config-section-header">
+                    <span class="config-section-title">Retention Policies</span>
+                </div>
+                <div class="form-help" style="margin-bottom:12px;">Retention settings are not yet backed by a dedicated V2 API. Current cleanup uses the Logs page purge action for old messages only.</div>
+                <div id="database-retention-content"></div>
+            </div>
+
+            <div class="config-section">
+                <div class="config-section-header">
+                    <span class="config-section-title">Actions</span>
+                </div>
+                <div class="form-help" style="margin-bottom:12px;">Backup and restore operate on the existing tarball backup system. Purge currently deletes messages older than the selected age.</div>
+                <div id="database-actions-content"></div>
+            </div>
+        </div>
+
         <div class="page" id="page-workspace">
             <div class="page-header">
                 <h2>Workspace</h2>
@@ -2681,7 +2743,7 @@ function parseDashboardHash(rawHash) {
     if (personaMatch) {
         return { page: "personas", personaId: personaMatch[1] };
     }
-    if (hash === "config" || hash === "tls" || hash === "models" || hash === "personas" || hash === "policy" || hash === "workspace" || hash === "logs") {
+    if (hash === "config" || hash === "tls" || hash === "models" || hash === "personas" || hash === "policy" || hash === "database" || hash === "workspace" || hash === "logs") {
         return { page: hash, personaId: "" };
     }
     return { page: "", personaId: "" };
@@ -2746,6 +2808,7 @@ function navigateTo(page) {
         if (page === "models") loadModels();
         if (page === "personas") loadPersonas();
         if (page === "policy") loadPolicies();
+        if (page === "database") loadDatabasePage();
         if (page === "workspace") loadWorkspace();
         if (page === "logs") loadLogsPage();
         if (page === "license") loadLicense();
@@ -6081,7 +6144,7 @@ async function loadLogsPage() {
     try {
         await Promise.allSettled([
             loadLogs(),
-            loadDbStats(),
+            loadLegacyDbStats(),
             loadUploads(),
             loadBackups(),
         ]);
@@ -6234,7 +6297,7 @@ window.clearLogs = clearLogs;
 
 /* -- Database -------------------------------------------------------- */
 
-async function loadDbStats() {
+async function loadLegacyDbStats() {
     var container = document.getElementById("db-stats-content");
     try {
         var data = await apiFetch("/db/stats");
@@ -6256,9 +6319,23 @@ async function loadDbStats() {
     }
 }
 
+function setButtonBusy(ids, busy) {
+    (ids || []).forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.disabled = !!busy;
+    });
+}
+
+async function refreshDatabaseViews() {
+    if (currentPage === "database") {
+        await loadDatabasePage();
+        return;
+    }
+    await loadLegacyDbStats();
+}
+
 async function vacuumDb() {
-    var btn = document.getElementById("btn-vacuum");
-    if (btn) btn.disabled = true;
+    setButtonBusy(["btn-vacuum", "btn-database-vacuum"], true);
     try {
         var data = await apiFetch("/db/vacuum", { method: "POST" });
         var before = data.before_size || data.size_before;
@@ -6268,11 +6345,11 @@ async function vacuumDb() {
         } else {
             showToast("Vacuum complete", "success");
         }
-        await loadDbStats();
+        await refreshDatabaseViews();
     } catch (err) {
         showToast("Vacuum failed: " + err.message, "error");
     } finally {
-        if (btn) btn.disabled = false;
+        setButtonBusy(["btn-vacuum", "btn-database-vacuum"], false);
     }
 }
 window.vacuumDb = vacuumDb;
@@ -6294,12 +6371,260 @@ async function purgeMessages() {
         var data = await apiFetch("/db/messages?days=" + days, { method: "DELETE" });
         var count = data.deleted || data.count || 0;
         showToast("Purged " + formatNumber(count) + " messages", "success");
-        await loadDbStats();
+        await refreshDatabaseViews();
     } catch (err) {
         showToast("Purge failed: " + err.message, "error");
     }
 }
 window.purgeMessages = purgeMessages;
+
+function buildDatabaseTableRows(tables) {
+    var preferred = [
+        "messages",
+        "chats",
+        "alerts",
+        "agent_profiles",
+        "channel_agent_memberships",
+        "persona_memories",
+        "persona_model_overrides",
+        "device_tokens",
+        "permission_audit_log",
+        "apex_meta",
+    ];
+    var rows = [];
+    var safeTables = tables || {};
+    preferred.forEach(function(name) {
+        if (Object.prototype.hasOwnProperty.call(safeTables, name)) {
+            rows.push({ name: name, count: safeTables[name] });
+        }
+    });
+    Object.keys(safeTables).sort().forEach(function(name) {
+        if (preferred.indexOf(name) === -1) {
+            rows.push({ name: name, count: safeTables[name] });
+        }
+    });
+    return rows;
+}
+
+function renderDatabaseStatus(data) {
+    var container = document.getElementById("database-status-content");
+    if (!container) return;
+    var dbSize = data.db_size_bytes || data.file_size || 0;
+    var walSize = data.wal_size_bytes || data.wal_size || 0;
+    var pageCount = Number(data.page_count || 0);
+    var freelistCount = Number(data.freelist_count || 0);
+    var fragmentationPct = pageCount > 0 ? ((freelistCount / pageCount) * 100) : 0;
+    var backupSummary = "See backups below";
+    if (data.last_backup_created) {
+        try {
+            backupSummary = new Date(data.last_backup_created).toLocaleString();
+        } catch (err) {
+            backupSummary = String(data.last_backup_created);
+        }
+    }
+    var totalRows = 0;
+    Object.keys(data.tables || {}).forEach(function(name) {
+        var count = Number((data.tables || {})[name]);
+        if (Number.isFinite(count) && count > 0) totalRows += count;
+    });
+
+    var rows = [
+        { label: "Health", value: "Healthy", statusDot: true, statusInline: true },
+        { label: "Database Size", value: formatBytes(dbSize) },
+        { label: "Total Rows", value: formatNumber(totalRows) },
+        { label: "WAL Size", value: formatBytes(walSize) },
+        { label: "Fragmentation", value: fragmentationPct.toFixed(1) + "%" },
+        { label: "Last Backup", value: backupSummary },
+    ];
+
+    container.textContent = "";
+    rows.forEach(function(row) {
+        var statRow = document.createElement("div");
+        statRow.className = "stat-row";
+
+        var label = document.createElement("span");
+        label.className = "stat-label";
+        label.textContent = row.label;
+        statRow.appendChild(label);
+
+        var value = document.createElement("span");
+        value.className = row.statusInline ? "stat-value status-inline" : "stat-value";
+        if (row.statusDot) {
+            var dot = document.createElement("span");
+            dot.className = "status-dot green";
+            value.appendChild(dot);
+        }
+        var text = document.createTextNode(row.value);
+        value.appendChild(text);
+        statRow.appendChild(value);
+
+        container.appendChild(statRow);
+    });
+}
+
+function renderDatabaseTables(data) {
+    var container = document.getElementById("database-tables-content");
+    if (!container) return;
+    var rows = buildDatabaseTableRows(data.tables || {});
+    if (!rows.length) {
+        container.innerHTML = '<div style="padding:12px 0; color:var(--text-dim);">No database tables found.</div>';
+        return;
+    }
+
+    var html = '<table class="backup-list"><thead><tr><th>Table</th><th>Rows</th><th>Size</th></tr></thead><tbody>';
+    rows.forEach(function(row) {
+        html += '<tr>';
+        html += '<td style="font-family:monospace; font-size:12px;">' + esc(row.name) + '</td>';
+        html += '<td>' + (row.count >= 0 ? formatNumber(row.count) : '—') + '</td>';
+        html += '<td style="color:var(--text-dim); font-size:12px;">—</td>';
+        html += '</tr>';
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+function renderDatabaseRetention(data) {
+    var container = document.getElementById("database-retention-content");
+    if (!container) return;
+    var rows = [
+        { label: "Messages", value: "30 days", note: "Backed by /api/db/messages purge action" },
+        { label: "Chats", value: "Keep all", note: "No dedicated retention endpoint yet" },
+        { label: "Alerts", value: "Keep all", note: "No dedicated retention endpoint yet" },
+        { label: "Persona memories", value: "Keep all", note: "No dedicated retention endpoint yet" },
+    ];
+    var html = '<table class="backup-list"><thead><tr><th>Data</th><th>Retention</th><th>Notes</th></tr></thead><tbody>';
+    rows.forEach(function(row) {
+        html += '<tr>';
+        html += '<td>' + esc(row.label) + '</td>';
+        html += '<td>' + esc(row.value) + '</td>';
+        html += '<td style="color:var(--text-dim); font-size:12px;">' + esc(row.note) + '</td>';
+        html += '</tr>';
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+function renderDatabaseActions() {
+    var container = document.getElementById("database-actions-content");
+    if (!container) return;
+    container.innerHTML =
+        '<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:12px;">' +
+            '<button class="btn btn-ghost" id="btn-database-vacuum" style="justify-content:flex-start; padding:14px 16px;">Optimize (VACUUM)</button>' +
+            '<button class="btn btn-ghost" id="btn-database-export" style="justify-content:flex-start; padding:14px 16px;">Export Database</button>' +
+            '<button class="btn btn-ghost" id="btn-database-backup" style="justify-content:flex-start; padding:14px 16px;">Backup Now</button>' +
+            '<button class="btn btn-ghost" id="btn-database-restore" style="justify-content:flex-start; padding:14px 16px; color:var(--yellow);">Open Restore Controls</button>' +
+        '</div>' +
+        '<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:14px;">' +
+            '<span style="color:var(--text-dim); font-size:12px;">Purge messages older than</span>' +
+            '<input type="number" id="database-purge-days-input" value="30" min="1" max="365" style="width:88px;">' +
+            '<span style="color:var(--text-dim); font-size:12px;">days</span>' +
+            '<button class="btn btn-ghost" id="btn-database-purge" style="color:var(--red);">Purge</button>' +
+        '</div>' +
+        '<div style="margin-top:16px;" id="database-backups-content"><div class="loading-overlay"><div class="spinner"></div> Loading backups...</div></div>';
+}
+
+async function loadDatabasePage() {
+    var refreshBtn = document.getElementById("btn-database-refresh");
+    if (refreshBtn) refreshBtn.disabled = true;
+    renderDatabaseActions();
+    try {
+        var results = await Promise.allSettled([
+            apiFetch("/db/stats"),
+            apiFetch("/backups"),
+        ]);
+        var statsResult = results[0];
+        var backupsResult = results[1];
+        if (statsResult.status !== "fulfilled") {
+            throw statsResult.reason || new Error("Could not load database stats");
+        }
+        var stats = statsResult.value || {};
+        if (backupsResult.status === "fulfilled") {
+            var backups = backupsResult.value || {};
+            if (backups && backups.backups && backups.backups.length > 0) {
+                stats.last_backup_created = backups.backups[0].created || backups.backups[0].date || "";
+            }
+            renderBackupsTable(backups, "database-backups-content");
+        } else {
+            var backupsEl = document.getElementById("database-backups-content");
+            if (backupsEl) backupsEl.innerHTML = renderError("Could not load backups: " + backupsResult.reason.message);
+        }
+        renderDatabaseStatus(stats);
+        renderDatabaseTables(stats);
+        renderDatabaseRetention(stats);
+    } catch (err) {
+        var sections = ["database-status-content", "database-tables-content", "database-retention-content", "database-actions-content"];
+        sections.forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.innerHTML = renderError("Could not load database page: " + err.message);
+        });
+    } finally {
+        if (refreshBtn) refreshBtn.disabled = false;
+    }
+}
+window.loadDatabasePage = loadDatabasePage;
+
+async function purgeDatabaseMessages() {
+    var input = document.getElementById("database-purge-days-input");
+    var days = input ? parseInt(input.value, 10) : NaN;
+    if (!Number.isFinite(days) || days < 1) {
+        showToast("Purge days must be at least 1", "warning");
+        return;
+    }
+    if (!confirm("Purge messages older than " + days + " days? This cannot be undone.")) return;
+    setButtonBusy(["btn-database-purge", "btn-purge-messages"], true);
+    try {
+        var data = await apiFetch("/db/messages?days=" + days, { method: "DELETE" });
+        showToast("Purged " + formatNumber(data.deleted || 0) + " messages", "success");
+        await refreshDatabaseViews();
+    } catch (err) {
+        showToast("Purge failed: " + err.message, "error");
+    } finally {
+        setButtonBusy(["btn-database-purge", "btn-purge-messages"], false);
+    }
+}
+window.purgeDatabaseMessages = purgeDatabaseMessages;
+
+function renderBackupsTable(data, containerId) {
+    var container = document.getElementById(containerId || "backups-content");
+    if (!container) return;
+    var backups = data.backups || data.files || [];
+
+    if (!backups || backups.length === 0) {
+        container.innerHTML =
+            '<div style="padding:16px 0; text-align:center; color:var(--dim); font-size:13px;">' +
+            '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block; margin:0 auto 8px;">' +
+                '<path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>' +
+                '<polyline points="17 21 17 13 7 13 7 21"/>' +
+                '<polyline points="7 3 7 8 15 8"/>' +
+            '</svg>' +
+            'No backups yet. Create one above.' +
+            '</div>';
+        return;
+    }
+
+    var html = '<table class="backup-list"><thead><tr>' +
+        '<th>Filename</th><th>Size</th><th>Date</th><th style="text-align:right;">Actions</th>' +
+        '</tr></thead><tbody>';
+
+    for (var i = 0; i < backups.length; i++) {
+        var b = backups[i];
+        var name = b.filename || b.name || "";
+        var size = b.size_bytes || b.size || 0;
+        var date = b.date || b.created || b.modified || "";
+
+        html += '<tr>';
+        html += '<td style="font-family:monospace; font-size:12px;">' + esc(name) + '</td>';
+        html += '<td>' + formatBytes(size) + '</td>';
+        html += '<td style="color:var(--dim); font-size:12px;">' + esc(date) + '</td>';
+        html += '<td style="text-align:right;">';
+        html += '<button class="btn btn-ghost" data-download-backup="' + esc(name) + '" style="font-size:11px; padding:4px 10px; margin-right:4px;">Download</button>';
+        html += '<button class="btn btn-ghost" data-restore-backup="' + esc(name) + '" style="font-size:11px; padding:4px 10px; color:var(--yellow);">Restore</button>';
+        html += '</td>';
+        html += '</tr>';
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
 
 /* -- Uploads --------------------------------------------------------- */
 
@@ -6358,60 +6683,27 @@ async function loadBackups() {
     var container = document.getElementById("backups-content");
     try {
         var data = await apiFetch("/backups");
-        var backups = data.backups || data.files || [];
-
-        if (!backups || backups.length === 0) {
-            container.innerHTML =
-                '<div style="padding:16px 0; text-align:center; color:var(--dim); font-size:13px;">' +
-                '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block; margin:0 auto 8px;">' +
-                    '<path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>' +
-                    '<polyline points="17 21 17 13 7 13 7 21"/>' +
-                    '<polyline points="7 3 7 8 15 8"/>' +
-                '</svg>' +
-                'No backups yet. Create one above.' +
-                '</div>';
-            return;
-        }
-
-        var html = '<table class="backup-list"><thead><tr>' +
-            '<th>Filename</th><th>Size</th><th>Date</th><th style="text-align:right;">Actions</th>' +
-            '</tr></thead><tbody>';
-
-        for (var i = 0; i < backups.length; i++) {
-            var b = backups[i];
-            var name = b.filename || b.name || "";
-            var size = b.size_bytes || b.size || 0;
-            var date = b.date || b.created || b.modified || "";
-
-            html += '<tr>';
-            html += '<td style="font-family:monospace; font-size:12px;">' + esc(name) + '</td>';
-            html += '<td>' + formatBytes(size) + '</td>';
-            html += '<td style="color:var(--dim); font-size:12px;">' + esc(date) + '</td>';
-            html += '<td style="text-align:right;">';
-            html += '<button class="btn btn-ghost" data-download-backup="' + esc(name) + '" style="font-size:11px; padding:4px 10px; margin-right:4px;">Download</button>';
-            html += '<button class="btn btn-ghost" data-restore-backup="' + esc(name) + '" style="font-size:11px; padding:4px 10px; color:var(--yellow);">Restore</button>';
-            html += '</td>';
-            html += '</tr>';
-        }
-        html += '</tbody></table>';
-        container.innerHTML = html;
+        renderBackupsTable(data, "backups-content");
     } catch (err) {
         container.innerHTML = renderError("Could not load backups: " + err.message);
     }
 }
 
 async function createBackup() {
-    var btn = document.getElementById("btn-create-backup");
-    if (btn) btn.disabled = true;
+    setButtonBusy(["btn-create-backup", "btn-database-backup"], true);
     try {
         var data = await apiFetch("/backup", { method: "POST" });
         var name = data.filename || data.name || "backup";
         showToast("Backup created: " + name, "success");
-        await loadBackups();
+        if (currentPage === "database") {
+            await loadDatabasePage();
+        } else {
+            await loadBackups();
+        }
     } catch (err) {
         showToast("Backup failed: " + err.message, "error");
     } finally {
-        if (btn) btn.disabled = false;
+        setButtonBusy(["btn-create-backup", "btn-database-backup"], false);
     }
 }
 window.createBackup = createBackup;
@@ -6425,11 +6717,17 @@ window.downloadBackup = downloadBackup;
 async function restoreBackup(filename) {
     if (!confirm("This will overwrite your database, config, and SSL certs. Are you sure?")) return;
     if (!confirm("FINAL WARNING: Restoring '" + filename + "' is irreversible. Type OK to proceed.")) return;
+    setButtonBusy(["btn-database-restore"], true);
     try {
         await apiFetch("/backup/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename: filename }) });
         showToast("Restore complete. Server may restart.", "success");
+        if (currentPage === "database") {
+            await loadDatabasePage();
+        }
     } catch (err) {
         showToast("Restore failed: " + err.message, "error");
+    } finally {
+        setButtonBusy(["btn-database-restore"], false);
     }
 }
 window.restoreBackup = restoreBackup;
@@ -6462,6 +6760,17 @@ document.addEventListener("click", function(e) {
         toggleSidebar();
     } else if ((btn = e.target.closest("#sidebar-overlay"))) {
         closeSidebar();
+    } else if ((btn = e.target.closest("#btn-database-vacuum"))) {
+        vacuumDb();
+    } else if ((btn = e.target.closest("#btn-database-export"))) {
+        exportDb();
+    } else if ((btn = e.target.closest("#btn-database-backup"))) {
+        createBackup();
+    } else if ((btn = e.target.closest("#btn-database-restore"))) {
+        var backupsBlock = document.getElementById("database-backups-content");
+        if (backupsBlock) backupsBlock.scrollIntoView({ behavior: "smooth", block: "start" });
+    } else if ((btn = e.target.closest("#btn-database-purge"))) {
+        purgeDatabaseMessages();
     } else if ((btn = e.target.closest("[data-close-modal]"))) {
         closeModal(btn.dataset.closeModal);
     } else if ((btn = e.target.closest("[data-persona-id]"))) {
@@ -6562,6 +6871,7 @@ function init() {
     bindClick("btn-purge-messages", purgeMessages);
     bindClick("btn-cleanup-uploads", cleanupUploads);
     bindClick("btn-create-backup", createBackup);
+    bindClick("btn-database-refresh", loadDatabasePage);
     bindClick("btn-save-sans", saveSANs);
     bindClick("btn-activate-license", activateLicense);
 

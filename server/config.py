@@ -208,6 +208,34 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
             "description": "Whether OPENAI_API_KEY is set",
         },
     },
+    "usage": {
+        "budget_usd": {
+            "type": "int",
+            "default": 100,
+            "description": "Monthly API budget target in USD",
+            "min": 0,
+            "max": 100000,
+        },
+        "alert_pct": {
+            "type": "int",
+            "default": 80,
+            "description": "Budget alert threshold percentage",
+            "min": 1,
+            "max": 100,
+        },
+        "reset_day": {
+            "type": "int",
+            "default": 1,
+            "description": "Calendar day of month when the usage budget resets",
+            "min": 1,
+            "max": 28,
+        },
+        "primary_user_label": {
+            "type": "str",
+            "default": "Dana",
+            "description": "Display label for interactive usage in the admin usage report",
+        },
+    },
 }
 
 # Sections that require a server restart when changed
