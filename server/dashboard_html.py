@@ -1321,6 +1321,328 @@ select {
 }
 
 /* ===================================================================
+   Components: Usage Page
+   =================================================================== */
+
+.usage-month-picker {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border: 1px solid var(--card);
+    border-radius: var(--radius);
+    background: var(--surface);
+}
+
+.usage-month-picker .btn {
+    padding: 6px 10px;
+}
+
+.usage-month-label {
+    min-width: 124px;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.usage-hero-card {
+    padding: 0;
+    overflow: hidden;
+    margin-bottom: 20px;
+}
+
+.usage-hero-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.usage-hero-pane {
+    padding: 20px;
+}
+
+.usage-hero-pane + .usage-hero-pane {
+    border-left: 1px solid var(--soft-border);
+}
+
+.usage-hero-kicker {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin-bottom: 10px;
+}
+
+.usage-hero-value {
+    font-size: 30px;
+    font-weight: 700;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+}
+
+.usage-hero-sub {
+    margin-top: 8px;
+    color: var(--dim);
+    font-size: 13px;
+}
+
+.usage-hero-meta {
+    margin-top: 10px;
+    color: var(--dim);
+    font-size: 12px;
+}
+
+.usage-progress {
+    margin-top: 14px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--card);
+    overflow: hidden;
+}
+
+.usage-progress-fill {
+    height: 100%;
+    border-radius: 999px;
+    background: var(--accent);
+    transition: width 0.25s ease;
+}
+
+.usage-progress-fill.warning {
+    background: var(--yellow);
+}
+
+.usage-progress-fill.critical {
+    background: var(--red);
+}
+
+.usage-insight-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 16px 20px;
+    border-top: 1px solid var(--soft-border);
+    background: linear-gradient(180deg, rgba(14, 165, 233, 0.08), rgba(14, 165, 233, 0.03));
+}
+
+.usage-insight-row svg {
+    width: 16px;
+    height: 16px;
+    color: var(--accent);
+    flex-shrink: 0;
+    margin-top: 2px;
+}
+
+.usage-insight-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.usage-insight-body {
+    margin-top: 2px;
+    font-size: 13px;
+    color: var(--dim);
+}
+
+.usage-sparkline {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(24px, 1fr));
+    gap: 8px;
+    align-items: end;
+    min-height: 168px;
+}
+
+.usage-spark-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.usage-spark-bar-wrap {
+    width: 100%;
+    height: 120px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+}
+
+.usage-spark-bar {
+    width: 100%;
+    min-height: 4px;
+    border-radius: 8px 8px 0 0;
+    background: linear-gradient(180deg, rgba(14, 165, 233, 0.95), rgba(14, 165, 233, 0.45));
+}
+
+.usage-spark-bar.today {
+    background: linear-gradient(180deg, rgba(245, 158, 11, 0.95), rgba(245, 158, 11, 0.45));
+}
+
+.usage-spark-label {
+    font-size: 11px;
+    color: var(--dim);
+    font-variant-numeric: tabular-nums;
+}
+
+.usage-spark-amount {
+    font-size: 11px;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+}
+
+.usage-provider-list {
+    display: grid;
+    gap: 12px;
+}
+
+.usage-provider-item {
+    padding: 14px;
+    border: 1px solid var(--soft-border);
+    border-radius: var(--radius);
+    background: rgba(15, 23, 42, 0.12);
+}
+
+.usage-provider-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.usage-provider-name {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.usage-provider-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.usage-provider-stats {
+    display: grid;
+    gap: 6px;
+}
+
+.usage-provider-stat {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 12px;
+}
+
+.usage-provider-stat .label {
+    color: var(--dim);
+}
+
+.usage-provider-stat .value {
+    font-variant-numeric: tabular-nums;
+}
+
+.usage-track-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    border: 1px solid transparent;
+}
+
+.usage-track-badge.api {
+    color: #fff;
+    background: rgba(14, 165, 233, 0.2);
+    border-color: rgba(14, 165, 233, 0.35);
+}
+
+.usage-track-badge.subscription {
+    color: #FDE68A;
+    background: rgba(245, 158, 11, 0.14);
+    border-color: rgba(245, 158, 11, 0.3);
+}
+
+.usage-track-badge.local {
+    color: var(--dim);
+    background: rgba(148, 163, 184, 0.12);
+    border-color: rgba(148, 163, 184, 0.24);
+}
+
+.usage-table-wrap {
+    overflow: auto;
+    border: 1px solid var(--soft-border);
+    border-radius: var(--radius);
+}
+
+.usage-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.usage-table th {
+    text-align: left;
+    padding: 8px 12px;
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--dim);
+    border-bottom: 1px solid var(--card);
+    white-space: nowrap;
+}
+
+.usage-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--soft-border);
+    vertical-align: top;
+}
+
+.usage-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.usage-table tbody tr:hover {
+    background: var(--hover-subtle);
+}
+
+.usage-cell-primary {
+    font-weight: 500;
+}
+
+.usage-cell-sub {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--dim);
+}
+
+.usage-secondary-grid,
+.usage-breakdown-grid {
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+}
+
+@media (max-width: 768px) {
+    .usage-hero-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .usage-hero-pane + .usage-hero-pane {
+        border-left: none;
+        border-top: 1px solid var(--soft-border);
+    }
+
+    .usage-month-picker {
+        width: 100%;
+        justify-content: space-between;
+    }
+}
+
+/* ===================================================================
    Utility
    =================================================================== */
 
@@ -1643,6 +1965,16 @@ select {
                     <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
                 </svg>
                 Database
+            </div>
+            <!-- Usage -->
+            <div class="nav-item" data-page="usage">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M4 19h16"/>
+                    <path d="M7 16V9"/>
+                    <path d="M12 16V5"/>
+                    <path d="M17 16v-3"/>
+                </svg>
+                Usage
             </div>
             <!-- Workspace -->
             <div class="nav-item" data-page="workspace">
@@ -2268,6 +2600,148 @@ select {
             </div>
         </div>
 
+        <div class="page" id="page-usage">
+            <div class="page-header">
+                <h2>Usage</h2>
+                <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                    <div class="usage-month-picker" aria-label="Usage month picker">
+                        <button class="btn btn-ghost btn-sm" id="btn-usage-prev-month" aria-label="Previous month">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+                                <polyline points="15 18 9 12 15 6"/>
+                            </svg>
+                        </button>
+                        <span class="usage-month-label mono" id="usage-month-label">Loading…</span>
+                        <button class="btn btn-ghost btn-sm" id="btn-usage-next-month" aria-label="Next month">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+                                <polyline points="9 18 15 12 9 6"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <button class="btn btn-ghost" id="btn-usage-refresh">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="23 4 23 10 17 10"/>
+                            <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+                        </svg>
+                        Refresh
+                    </button>
+                    <button class="btn btn-ghost" id="btn-usage-export">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="7 10 12 15 17 10"/>
+                            <line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                        Export CSV
+                    </button>
+                </div>
+            </div>
+
+            <div class="card usage-hero-card" id="usage-hero-content">
+                <div class="loading-overlay"><div class="spinner"></div> Loading usage summary...</div>
+            </div>
+
+            <div class="card" style="margin-bottom:20px;">
+                <div class="card-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 3v18h18"/>
+                        <path d="M7 15l3-3 3 2 4-6"/>
+                    </svg>
+                    Daily API Spend (last 14 days)
+                </div>
+                <div id="usage-daily-spend-content">
+                    <div class="loading-overlay"><div class="spinner"></div> Loading daily spend...</div>
+                </div>
+            </div>
+
+            <div class="card-grid usage-secondary-grid">
+                <div class="card">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="10"/>
+                            <path d="M12 6v6l4 2"/>
+                        </svg>
+                        Providers &amp; Utilization
+                    </div>
+                    <div id="usage-providers-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading providers...</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+                        </svg>
+                        Budget Settings
+                    </div>
+                    <div id="usage-budget-content">
+                        <div class="form-help" id="usage-budget-status" style="margin-bottom:12px;">Tracks actual API spend separately from included subscription usage.</div>
+                        <div class="form-field">
+                            <label class="form-label" for="usage-budget-input">Monthly API budget (USD)</label>
+                            <input id="usage-budget-input" type="number" min="0" max="100000" step="1" inputmode="numeric">
+                        </div>
+                        <div class="form-field">
+                            <label class="form-label" for="usage-alert-input">Alert threshold (%)</label>
+                            <input id="usage-alert-input" type="number" min="1" max="100" step="1" inputmode="numeric">
+                        </div>
+                        <div class="form-field">
+                            <label class="form-label" for="usage-reset-input">Reset day of month</label>
+                            <input id="usage-reset-input" type="number" min="1" max="28" step="1" inputmode="numeric">
+                        </div>
+                        <div class="form-field">
+                            <label class="form-label" for="usage-primary-user-input">Primary interactive user label</label>
+                            <input id="usage-primary-user-input" type="text" maxlength="80" placeholder="Dana">
+                        </div>
+                        <div class="config-actions" style="margin-top:16px;">
+                            <button class="btn btn-primary" id="btn-usage-save-config">Save Usage Settings</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card-grid usage-breakdown-grid">
+                <div class="card">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                            <circle cx="12" cy="7" r="4"/>
+                        </svg>
+                        By Agent
+                    </div>
+                    <div id="usage-by-agent-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading agent breakdown...</div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                            <circle cx="9" cy="7" r="4"/>
+                            <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                        </svg>
+                        By User
+                    </div>
+                    <div id="usage-by-user-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading user breakdown...</div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+                            <polyline points="2 17 12 22 22 17"/>
+                            <polyline points="2 12 12 17 22 12"/>
+                        </svg>
+                        By Model
+                    </div>
+                    <div id="usage-by-model-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading model breakdown...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="page" id="page-workspace">
             <div class="page-header">
                 <h2>Workspace</h2>
@@ -2724,6 +3198,7 @@ let themeMode = localStorage.getItem("themeMode")
 const systemThemeQuery = window.matchMedia ? window.matchMedia("(prefers-color-scheme: light)") : null;
 let personaGuidanceExpanded = true;
 let personaGuidanceManual = false;
+let usageState = { month: "", payload: null, config: null };
 
 function applyTheme() {
     document.body.classList.toggle("theme-light", themeMode === "light");
@@ -2743,7 +3218,7 @@ function parseDashboardHash(rawHash) {
     if (personaMatch) {
         return { page: "personas", personaId: personaMatch[1] };
     }
-    if (hash === "config" || hash === "tls" || hash === "models" || hash === "personas" || hash === "policy" || hash === "database" || hash === "workspace" || hash === "logs") {
+    if (hash === "config" || hash === "tls" || hash === "models" || hash === "personas" || hash === "policy" || hash === "database" || hash === "usage" || hash === "workspace" || hash === "logs" || hash === "license") {
         return { page: hash, personaId: "" };
     }
     return { page: "", personaId: "" };
@@ -2809,6 +3284,7 @@ function navigateTo(page) {
         if (page === "personas") loadPersonas();
         if (page === "policy") loadPolicies();
         if (page === "database") loadDatabasePage();
+        if (page === "usage") loadUsagePage();
         if (page === "workspace") loadWorkspace();
         if (page === "logs") loadLogsPage();
         if (page === "license") loadLicense();
@@ -6097,6 +6573,61 @@ function formatNumber(n) {
     return Number(n).toLocaleString();
 }
 
+function formatCurrency(amount) {
+    var value = Number(amount || 0);
+    return value.toLocaleString(undefined, {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    });
+}
+
+function currentMonthKey() {
+    var now = new Date();
+    return now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+}
+
+function shiftMonthKey(monthKey, delta) {
+    var raw = String(monthKey || currentMonthKey());
+    var parts = raw.split("-");
+    var year = parseInt(parts[0], 10);
+    var month = parseInt(parts[1], 10);
+    if (!Number.isFinite(year) || !Number.isFinite(month)) return currentMonthKey();
+    month += delta;
+    while (month < 1) {
+        year -= 1;
+        month += 12;
+    }
+    while (month > 12) {
+        year += 1;
+        month -= 12;
+    }
+    return year + "-" + String(month).padStart(2, "0");
+}
+
+function isFutureMonthKey(monthKey) {
+    return String(monthKey || "") > currentMonthKey();
+}
+
+function providerDisplayName(provider) {
+    var key = String(provider || "").toLowerCase();
+    if (key === "xai" || key === "grok") return "Grok";
+    if (key === "codex") return "Codex";
+    if (key === "claude") return "Claude";
+    if (key === "gemini") return "Gemini";
+    if (key === "openai") return "OpenAI";
+    if (key === "local" || key === "ollama" || key === "mlx") return "Local";
+    return capitalize(key || "provider");
+}
+
+function usageTrackLabel(track) {
+    var key = String(track || "local").toLowerCase();
+    if (key === "subscription") return "Subscription";
+    if (key === "api") return "API";
+    return "Local";
+}
+
 function formatBytes(bytes) {
     if (bytes == null) return "—";
     if (bytes < 1024) return bytes + " B";
@@ -6294,6 +6825,484 @@ async function clearLogs() {
     }
 }
 window.clearLogs = clearLogs;
+
+/* -- Usage ----------------------------------------------------------- */
+
+function createNode(tag, className, text) {
+    var el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text !== undefined && text !== null) el.textContent = text;
+    return el;
+}
+
+function usageLoadingMarkup(message) {
+    return '<div class="loading-overlay"><div class="spinner"></div> ' + esc(message || 'Loading...') + '</div>';
+}
+
+function updateUsageMonthControls(monthKey, monthLabel) {
+    var label = document.getElementById("usage-month-label");
+    if (label) label.textContent = monthLabel || monthKey || "—";
+    var nextBtn = document.getElementById("btn-usage-next-month");
+    if (nextBtn) nextBtn.disabled = isFutureMonthKey(shiftMonthKey(monthKey, 1));
+}
+
+function buildUsageProviderRows(payload) {
+    var rowsByProvider = {};
+    var models = Array.isArray(payload.by_model) ? payload.by_model : [];
+    models.forEach(function(model) {
+        var providerKey = String(model.provider || "local").toLowerCase();
+        if (!rowsByProvider[providerKey]) {
+            rowsByProvider[providerKey] = {
+                provider: providerKey,
+                tracks: {},
+                apiCost: 0,
+                equivalentCost: 0,
+                tokens: 0,
+                utilization: null,
+            };
+        }
+        var row = rowsByProvider[providerKey];
+        row.tracks[String(model.track || "local").toLowerCase()] = true;
+        row.apiCost += Number(model.track === "api" ? (model.cost_usd || 0) : 0);
+        row.equivalentCost += Number(model.track === "subscription" ? (model.equivalent_cost_usd || 0) : 0);
+        row.tokens += Number(model.tokens_in || 0) + Number(model.tokens_out || 0);
+    });
+
+    var tokenProviders = (payload.subscription_track && payload.subscription_track.tokens_by_provider) || {};
+    Object.keys(tokenProviders).forEach(function(providerKey) {
+        var key = String(providerKey || "local").toLowerCase();
+        if (!rowsByProvider[key]) {
+            rowsByProvider[key] = {
+                provider: key,
+                tracks: { subscription: true },
+                apiCost: 0,
+                equivalentCost: 0,
+                tokens: 0,
+                utilization: null,
+            };
+        }
+        rowsByProvider[key].tokens = Number(tokenProviders[providerKey] || 0);
+    });
+
+    var utilization = payload.provider_utilization || {};
+    Object.keys(utilization).forEach(function(providerKey) {
+        var key = String(providerKey || "local").toLowerCase();
+        if (!rowsByProvider[key]) {
+            rowsByProvider[key] = {
+                provider: key,
+                tracks: { subscription: true },
+                apiCost: 0,
+                equivalentCost: 0,
+                tokens: 0,
+                utilization: null,
+            };
+        }
+        rowsByProvider[key].utilization = utilization[providerKey] || null;
+    });
+
+    return Object.keys(rowsByProvider).map(function(key) {
+        var row = rowsByProvider[key];
+        var tracks = Object.keys(row.tracks);
+        row.track = tracks.length > 1 ? "mixed" : (tracks[0] || "local");
+        row.apiCost = Number(row.apiCost || 0);
+        row.equivalentCost = Number(row.equivalentCost || 0);
+        row.tokens = Number(row.tokens || 0);
+        return row;
+    }).sort(function(a, b) {
+        var aWeight = a.apiCost + a.equivalentCost;
+        var bWeight = b.apiCost + b.equivalentCost;
+        if (bWeight !== aWeight) return bWeight - aWeight;
+        return b.tokens - a.tokens;
+    });
+}
+
+function renderUsageHero(payload) {
+    var container = document.getElementById("usage-hero-content");
+    if (!container) return;
+    container.textContent = "";
+
+    var costTrack = payload.cost_track || {};
+    var subTrack = payload.subscription_track || {};
+    var providerUtil = payload.provider_utilization || {};
+    var providerNames = Object.keys(subTrack.tokens_by_provider || {});
+    var windowRows = Object.keys(providerUtil).map(function(key) {
+        return { provider: key, pct: Number((providerUtil[key] || {}).utilization_pct || 0) };
+    }).filter(function(row) { return row.pct > 0; });
+    windowRows.sort(function(a, b) { return b.pct - a.pct; });
+    var topWindow = windowRows.length ? windowRows[0] : null;
+
+    var heroGrid = createNode("div", "usage-hero-grid");
+
+    var left = createNode("div", "usage-hero-pane");
+    left.appendChild(createNode("div", "usage-hero-kicker", "API Spend"));
+    left.appendChild(createNode("div", "usage-hero-value", formatCurrency(costTrack.total_usd || 0)));
+    left.appendChild(createNode("div", "usage-hero-sub", (payload.month_label || payload.month || "This month") + " actual API spend"));
+    var leftMeta = createNode("div", "usage-hero-meta", formatCurrency(costTrack.daily_pace_usd || 0) + "/day · On track for ~" + formatCurrency(costTrack.projected_month_end_usd || 0));
+    left.appendChild(leftMeta);
+    var leftProgress = createNode("div", "usage-progress");
+    var leftFill = createNode("div", "usage-progress-fill");
+    var budgetPct = Math.max(0, Math.min(100, Number(costTrack.budget_used_pct || 0)));
+    leftFill.style.width = budgetPct + "%";
+    if (budgetPct >= 100) leftFill.classList.add("critical");
+    else if (budgetPct >= 80) leftFill.classList.add("warning");
+    leftProgress.appendChild(leftFill);
+    left.appendChild(leftProgress);
+    left.appendChild(createNode("div", "usage-hero-meta", formatCurrency(costTrack.budget_usd || 0) + " monthly budget · " + budgetPct + "% used"));
+
+    var right = createNode("div", "usage-hero-pane");
+    right.appendChild(createNode("div", "usage-hero-kicker", "Subscription Usage"));
+    right.appendChild(createNode("div", "usage-hero-value", formatNumber(subTrack.tokens_total || 0) + " tokens"));
+    right.appendChild(createNode("div", "usage-hero-sub", (payload.month_label || payload.month || "This month") + " included-capacity usage"));
+    var providerSummary = providerNames.length ? providerNames.map(function(key) {
+        return providerDisplayName(key) + ": " + formatNumber((subTrack.tokens_by_provider || {})[key] || 0);
+    }).join(" · ") : "No subscription token activity recorded";
+    right.appendChild(createNode("div", "usage-hero-meta", providerSummary));
+    var rightProgress = createNode("div", "usage-progress");
+    var rightFill = createNode("div", "usage-progress-fill");
+    var windowPct = topWindow ? Math.max(0, Math.min(100, Number(topWindow.pct || 0))) : 0;
+    rightFill.style.width = windowPct + "%";
+    if (windowPct >= 90) rightFill.classList.add("critical");
+    else if (windowPct >= 70) rightFill.classList.add("warning");
+    rightProgress.appendChild(rightFill);
+    right.appendChild(rightProgress);
+    right.appendChild(createNode("div", "usage-hero-meta", topWindow ? (providerDisplayName(topWindow.provider) + " current window: " + windowPct + "% used") : "Current provider window unavailable"));
+
+    heroGrid.appendChild(left);
+    heroGrid.appendChild(right);
+    container.appendChild(heroGrid);
+
+    var insightRow = createNode("div", "usage-insight-row");
+    insightRow.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>';
+    var insightCopy = createNode("div");
+    insightCopy.appendChild(createNode("div", "usage-insight-title", (payload.insight && payload.insight.title) || "Usage insight"));
+    insightCopy.appendChild(createNode("div", "usage-insight-body", (payload.insight && payload.insight.body) || "No insight available yet."));
+    insightRow.appendChild(insightCopy);
+    container.appendChild(insightRow);
+}
+
+function renderUsageDailySpend(payload) {
+    var container = document.getElementById("usage-daily-spend-content");
+    if (!container) return;
+    container.textContent = "";
+    var days = Array.isArray(payload.daily_spend) ? payload.daily_spend.slice(-14) : [];
+    if (!days.length) {
+        container.innerHTML = '<div class="text-dim" style="padding:8px 0;">No usage rows recorded for this month yet.</div>';
+        return;
+    }
+    var maxAmount = 0;
+    days.forEach(function(day) {
+        var amount = Number(day.amount || 0);
+        if (amount > maxAmount) maxAmount = amount;
+    });
+    var sparkline = createNode("div", "usage-sparkline");
+    var todayKey = new Date().toISOString().slice(0, 10);
+    days.forEach(function(day) {
+        var col = createNode("div", "usage-spark-col");
+        var amount = Number(day.amount || 0);
+        var wrap = createNode("div", "usage-spark-bar-wrap");
+        var bar = createNode("div", "usage-spark-bar");
+        var pct = maxAmount > 0 ? Math.max(4, Math.round((amount / maxAmount) * 100)) : 4;
+        bar.style.height = pct + "%";
+        if (String(day.date || "") === todayKey) bar.classList.add("today");
+        wrap.appendChild(bar);
+        col.appendChild(createNode("div", "usage-spark-amount", formatCurrency(amount)));
+        col.appendChild(wrap);
+        col.appendChild(createNode("div", "usage-spark-label", String(day.date || "").slice(5)));
+        sparkline.appendChild(col);
+    });
+    container.appendChild(sparkline);
+}
+
+function createUsageTrackBadge(track) {
+    var badge = createNode("span", "usage-track-badge " + String(track || "local").toLowerCase(), usageTrackLabel(track));
+    return badge;
+}
+
+function renderUsageProviders(payload) {
+    var container = document.getElementById("usage-providers-content");
+    if (!container) return;
+    container.textContent = "";
+    var rows = buildUsageProviderRows(payload);
+    if (!rows.length) {
+        container.innerHTML = '<div class="text-dim" style="padding:8px 0;">No provider usage recorded yet.</div>';
+        return;
+    }
+    var list = createNode("div", "usage-provider-list");
+    rows.forEach(function(row) {
+        var item = createNode("div", "usage-provider-item");
+        var head = createNode("div", "usage-provider-head");
+        head.appendChild(createNode("div", "usage-provider-name", providerDisplayName(row.provider)));
+        var badgeWrap = createNode("div", "usage-provider-meta");
+        if (row.track === "mixed") {
+            badgeWrap.appendChild(createUsageTrackBadge("api"));
+            badgeWrap.appendChild(createUsageTrackBadge("subscription"));
+        } else {
+            badgeWrap.appendChild(createUsageTrackBadge(row.track));
+        }
+        head.appendChild(badgeWrap);
+        item.appendChild(head);
+
+        var stats = createNode("div", "usage-provider-stats");
+        var stat1 = createNode("div", "usage-provider-stat");
+        stat1.appendChild(createNode("span", "label", "API spend"));
+        stat1.appendChild(createNode("span", "value", formatCurrency(row.apiCost)));
+        stats.appendChild(stat1);
+
+        var stat2 = createNode("div", "usage-provider-stat");
+        stat2.appendChild(createNode("span", "label", "Subscription tokens"));
+        stat2.appendChild(createNode("span", "value", formatNumber(row.tokens)));
+        stats.appendChild(stat2);
+
+        var stat3 = createNode("div", "usage-provider-stat");
+        stat3.appendChild(createNode("span", "label", "API-rate equivalent"));
+        stat3.appendChild(createNode("span", "value", formatCurrency(row.equivalentCost)));
+        stats.appendChild(stat3);
+
+        if (row.utilization) {
+            var utilPct = Math.max(0, Math.min(100, Number(row.utilization.utilization_pct || 0)));
+            var stat4 = createNode("div", "usage-provider-stat");
+            stat4.appendChild(createNode("span", "label", row.utilization.label || "Current window"));
+            var utilText = utilPct + "% used";
+            if (row.utilization.resets_in) utilText += " · resets in " + row.utilization.resets_in;
+            stat4.appendChild(createNode("span", "value", utilText));
+            stats.appendChild(stat4);
+
+            var progress = createNode("div", "usage-progress");
+            var fill = createNode("div", "usage-progress-fill");
+            fill.style.width = utilPct + "%";
+            if (utilPct >= 90) fill.classList.add("critical");
+            else if (utilPct >= 70) fill.classList.add("warning");
+            progress.appendChild(fill);
+            item.appendChild(stats);
+            item.appendChild(progress);
+        } else {
+            var stat4b = createNode("div", "usage-provider-stat");
+            stat4b.appendChild(createNode("span", "label", "Current window"));
+            stat4b.appendChild(createNode("span", "value", "No live utilization data"));
+            stats.appendChild(stat4b);
+            item.appendChild(stats);
+        }
+
+        list.appendChild(item);
+    });
+    container.appendChild(list);
+}
+
+function renderUsageBudget(config, payload) {
+    var budget = config || {};
+    var fallbackBudget = payload && payload.budget ? payload.budget : {};
+    var budgetInput = document.getElementById("usage-budget-input");
+    var alertInput = document.getElementById("usage-alert-input");
+    var resetInput = document.getElementById("usage-reset-input");
+    var primaryUserInput = document.getElementById("usage-primary-user-input");
+    var statusEl = document.getElementById("usage-budget-status");
+    if (budgetInput) budgetInput.value = budget.budget_usd != null ? budget.budget_usd : (fallbackBudget.budget_usd || 0);
+    if (alertInput) alertInput.value = budget.alert_pct != null ? budget.alert_pct : (fallbackBudget.alert_pct || 80);
+    if (resetInput) resetInput.value = budget.reset_day != null ? budget.reset_day : (fallbackBudget.reset_day || 1);
+    if (primaryUserInput) primaryUserInput.value = budget.primary_user_label != null ? budget.primary_user_label : "Dana";
+    if (statusEl) {
+        var costSource = payload && payload.cost_source ? String(payload.cost_source) : "mixed";
+        statusEl.textContent = "Tracks actual API spend separately from included subscription usage. Current cost basis: " + costSource + ".";
+    }
+}
+
+function renderUsageEmptyTable(containerId, message) {
+    var container = document.getElementById(containerId);
+    if (container) container.innerHTML = '<div class="text-dim" style="padding:8px 0;">' + esc(message) + '</div>';
+}
+
+function appendUsageTable(containerId, columns, rows) {
+    var container = document.getElementById(containerId);
+    if (!container) return;
+    container.textContent = "";
+    if (!rows.length) {
+        container.innerHTML = '<div class="text-dim" style="padding:8px 0;">No data yet for this month.</div>';
+        return;
+    }
+    var wrap = createNode("div", "usage-table-wrap");
+    var table = createNode("table", "usage-table");
+    var thead = createNode("thead");
+    var headerRow = createNode("tr");
+    columns.forEach(function(col) {
+        headerRow.appendChild(createNode("th", "", col));
+    });
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+    var tbody = createNode("tbody");
+    rows.forEach(function(row) { tbody.appendChild(row); });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    container.appendChild(wrap);
+}
+
+function renderUsageBreakdowns(payload) {
+    var byAgent = Array.isArray(payload.by_agent) ? payload.by_agent : [];
+    var agentRows = byAgent.map(function(item) {
+        var tr = createNode("tr");
+        var nameCell = createNode("td");
+        nameCell.appendChild(createNode("div", "usage-cell-primary", item.name || "—"));
+        nameCell.appendChild(createNode("div", "usage-cell-sub", formatNumber((item.tokens_in || 0) + (item.tokens_out || 0)) + " tokens"));
+        tr.appendChild(nameCell);
+        tr.appendChild(createNode("td", "mono", formatCurrency((item.track_mix && item.track_mix.api_cost_usd) || item.cost_usd || 0)));
+        tr.appendChild(createNode("td", "mono", formatCurrency((item.track_mix && item.track_mix.subscription_equivalent_cost_usd) || 0)));
+        tr.appendChild(createNode("td", "mono text-dim", (item.pct || 0) + "%"));
+        return tr;
+    });
+    appendUsageTable("usage-by-agent-content", ["Agent", "API Spend", "Sub Eqv.", "%"], agentRows);
+
+    var byUser = Array.isArray(payload.by_user) ? payload.by_user : [];
+    var userRows = byUser.map(function(item) {
+        var tr = createNode("tr");
+        var nameCell = createNode("td");
+        nameCell.appendChild(createNode("div", "usage-cell-primary", item.name || "—"));
+        nameCell.appendChild(createNode("div", "usage-cell-sub", formatNumber((item.tokens_in || 0) + (item.tokens_out || 0)) + " tokens"));
+        tr.appendChild(nameCell);
+        tr.appendChild(createNode("td", "mono", formatCurrency((item.track_mix && item.track_mix.api_cost_usd) || item.cost_usd || 0)));
+        tr.appendChild(createNode("td", "mono", formatCurrency((item.track_mix && item.track_mix.subscription_equivalent_cost_usd) || 0)));
+        tr.appendChild(createNode("td", "mono text-dim", (item.pct || 0) + "%"));
+        return tr;
+    });
+    appendUsageTable("usage-by-user-content", ["User", "API Spend", "Sub Eqv.", "%"], userRows);
+
+    var byModel = Array.isArray(payload.by_model) ? payload.by_model : [];
+    var modelRows = byModel.map(function(item) {
+        var tr = createNode("tr");
+        var modelCell = createNode("td");
+        modelCell.appendChild(createNode("div", "usage-cell-primary", item.display || item.model || "—"));
+        var rateText = "In " + formatCurrency((Number(item.price_in || 0) / 1000)) + " · Out " + formatCurrency((Number(item.price_out || 0) / 1000));
+        modelCell.appendChild(createNode("div", "usage-cell-sub mono", rateText));
+        tr.appendChild(modelCell);
+        var trackCell = createNode("td");
+        trackCell.appendChild(createUsageTrackBadge(item.track));
+        tr.appendChild(trackCell);
+        tr.appendChild(createNode("td", "mono", formatCurrency(item.cost_usd || 0)));
+        tr.appendChild(createNode("td", "mono", formatCurrency(item.equivalent_cost_usd || 0)));
+        tr.appendChild(createNode("td", "mono", formatNumber((item.tokens_in || 0) + (item.tokens_out || 0))));
+        return tr;
+    });
+    appendUsageTable("usage-by-model-content", ["Model", "Track", "Cost", "API-rate", "Tokens"], modelRows);
+}
+
+async function loadUsagePage(monthKey) {
+    var targetMonth = monthKey || usageState.month || currentMonthKey();
+    usageState.month = targetMonth;
+    updateUsageMonthControls(targetMonth, targetMonth);
+
+    var refreshBtn = document.getElementById("btn-usage-refresh");
+    var prevBtn = document.getElementById("btn-usage-prev-month");
+    var nextBtn = document.getElementById("btn-usage-next-month");
+    if (refreshBtn) refreshBtn.disabled = true;
+    if (prevBtn) prevBtn.disabled = true;
+    if (nextBtn) nextBtn.disabled = true;
+
+    ["usage-hero-content", "usage-daily-spend-content", "usage-providers-content", "usage-by-agent-content", "usage-by-user-content", "usage-by-model-content"].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el && !el.textContent.trim()) {
+            el.innerHTML = usageLoadingMarkup("Loading...");
+        }
+    });
+
+    try {
+        var results = await Promise.allSettled([
+            apiFetch("/admin/usage?month=" + encodeURIComponent(targetMonth)),
+            apiFetch("/admin/usage/config"),
+        ]);
+        var usageResult = results[0];
+        var configResult = results[1];
+
+        if (usageResult.status !== "fulfilled") {
+            throw usageResult.reason || new Error("Could not load usage report");
+        }
+
+        usageState.payload = usageResult.value || {};
+        usageState.month = usageState.payload.month || targetMonth;
+        updateUsageMonthControls(usageState.month, usageState.payload.month_label || usageState.month);
+        renderUsageHero(usageState.payload);
+        renderUsageDailySpend(usageState.payload);
+        renderUsageProviders(usageState.payload);
+        renderUsageBreakdowns(usageState.payload);
+
+        if (configResult.status === "fulfilled") {
+            usageState.config = configResult.value || {};
+            renderUsageBudget(usageState.config, usageState.payload);
+        } else {
+            usageState.config = null;
+            renderUsageBudget(null, usageState.payload);
+            showToast("Usage config unavailable: " + configResult.reason.message, "warning");
+        }
+    } catch (err) {
+        ["usage-hero-content", "usage-daily-spend-content", "usage-providers-content", "usage-by-agent-content", "usage-by-user-content", "usage-by-model-content"].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.innerHTML = renderError("Could not load usage page: " + err.message);
+        });
+    } finally {
+        if (refreshBtn) refreshBtn.disabled = false;
+        if (prevBtn) prevBtn.disabled = false;
+        updateUsageMonthControls(usageState.month, (usageState.payload && usageState.payload.month_label) || usageState.month);
+    }
+}
+window.loadUsagePage = loadUsagePage;
+
+async function saveUsageConfig() {
+    var budgetInput = document.getElementById("usage-budget-input");
+    var alertInput = document.getElementById("usage-alert-input");
+    var resetInput = document.getElementById("usage-reset-input");
+    var primaryUserInput = document.getElementById("usage-primary-user-input");
+    var button = document.getElementById("btn-usage-save-config");
+    var statusEl = document.getElementById("usage-budget-status");
+    var payload = {
+        budget_usd: parseInt(budgetInput && budgetInput.value, 10),
+        alert_pct: parseInt(alertInput && alertInput.value, 10),
+        reset_day: parseInt(resetInput && resetInput.value, 10),
+        primary_user_label: String(primaryUserInput && primaryUserInput.value || "").trim(),
+    };
+    if (!Number.isFinite(payload.budget_usd) || payload.budget_usd < 0) {
+        showToast("Budget must be 0 or higher", "warning");
+        if (budgetInput) budgetInput.focus();
+        return;
+    }
+    if (!Number.isFinite(payload.alert_pct) || payload.alert_pct < 1 || payload.alert_pct > 100) {
+        showToast("Alert threshold must be between 1 and 100", "warning");
+        if (alertInput) alertInput.focus();
+        return;
+    }
+    if (!Number.isFinite(payload.reset_day) || payload.reset_day < 1 || payload.reset_day > 28) {
+        showToast("Reset day must be between 1 and 28", "warning");
+        if (resetInput) resetInput.focus();
+        return;
+    }
+    if (!payload.primary_user_label) {
+        showToast("Primary user label is required", "warning");
+        if (primaryUserInput) primaryUserInput.focus();
+        return;
+    }
+    if (button) button.disabled = true;
+    if (statusEl) statusEl.textContent = "Saving usage settings...";
+    try {
+        var result = await apiFetch("/admin/usage/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+        usageState.config = result.config || payload;
+        renderUsageBudget(usageState.config, usageState.payload || {});
+        if (statusEl) statusEl.textContent = "Usage settings saved.";
+        showToast("Usage settings saved", "success");
+        await loadUsagePage(usageState.month || currentMonthKey());
+    } catch (err) {
+        if (statusEl) statusEl.textContent = "Failed to save usage settings.";
+        showToast("Usage settings failed: " + err.message, "error");
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+window.saveUsageConfig = saveUsageConfig;
+
+async function exportUsageCsv() {
+    var month = usageState.month || currentMonthKey();
+    window.open(API + "/admin/usage/export?month=" + encodeURIComponent(month), "_blank");
+}
+window.exportUsageCsv = exportUsageCsv;
 
 /* -- Database -------------------------------------------------------- */
 
@@ -6872,6 +7881,14 @@ function init() {
     bindClick("btn-cleanup-uploads", cleanupUploads);
     bindClick("btn-create-backup", createBackup);
     bindClick("btn-database-refresh", loadDatabasePage);
+    bindClick("btn-usage-refresh", function() { loadUsagePage(usageState.month || currentMonthKey()); });
+    bindClick("btn-usage-prev-month", function() { loadUsagePage(shiftMonthKey(usageState.month || currentMonthKey(), -1)); });
+    bindClick("btn-usage-next-month", function() {
+        var nextMonth = shiftMonthKey(usageState.month || currentMonthKey(), 1);
+        if (!isFutureMonthKey(nextMonth)) loadUsagePage(nextMonth);
+    });
+    bindClick("btn-usage-save-config", saveUsageConfig);
+    bindClick("btn-usage-export", exportUsageCsv);
     bindClick("btn-save-sans", saveSANs);
     bindClick("btn-activate-license", activateLicense);
 
