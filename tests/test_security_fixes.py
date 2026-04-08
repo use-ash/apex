@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+import os, sys
+_apex_root = os.environ.get("APEX_ROOT", "")
+if not _apex_root.startswith("/tmp"):
+    print("ABORT: test_security_fixes.py must run under pytest with APEX_ROOT set to a temp path.")
+    print(f"  Got APEX_ROOT={_apex_root!r}")
+    print("  Run: pytest tests/test_security_fixes.py")
+    sys.exit(1)
+
 import asyncio
 import contextlib
 import json
