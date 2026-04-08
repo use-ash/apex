@@ -27,7 +27,6 @@ def execute(args: dict, workspace: str | None = None, *, permission_level: int =
             capture_output=True,
             text=True,
             timeout=30,
-            cwd=workspace,
         )
         output = result.stdout
         if not output and result.returncode == 1:

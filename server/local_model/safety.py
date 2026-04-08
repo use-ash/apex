@@ -813,15 +813,17 @@ def ensure_workspace_path(
     The first entry is the primary workspace used to resolve relative paths.
     A path is allowed if it falls under *any* of the listed roots.
     """
+    normalized_path = _normalize_tool_path(path, allow_write=allow_write)
+
     if permission_level >= 4:
-        resolved = _resolve_candidate_path(path, _primary_workspace(workspace))
+        resolved = _resolve_candidate_path(normalized_path, _primary_workspace(workspace))
         err = validate_path(resolved, allow_write=allow_write, permission_level=permission_level)
         if err:
             return None, err
         return resolved, None
 
     if permission_level >= 3:
-        resolved = _resolve_candidate_path(path, _primary_workspace(workspace))
+        resolved = _resolve_candidate_path(normalized_path, _primary_workspace(workspace))
         if not _path_is_within_admin_roots(resolved, workspace):
             detail = "write path is outside allowed admin paths" if allow_write else "path is outside allowed admin paths"
             return None, f"Error: {detail}: {path}"
@@ -841,7 +843,7 @@ def ensure_workspace_path(
         return None, "Error: workspace is required for file tools"
 
     # Resolve relative paths against the primary (first) workspace root
-    resolved = _resolve_candidate_path(path, roots[0])
+    resolved = _resolve_candidate_path(normalized_path, roots[0])
 
     # Check if the resolved path falls under ANY allowed root
     inside = False
@@ -860,6 +862,16 @@ def ensure_workspace_path(
     if err:
         return None, err
     return resolved, None
+
+
+def _normalize_tool_path(path: str, *, allow_write: bool = False) -> str:
+    raw = str(path or "").strip()
+    if allow_write or not raw.startswith("/api/uploads/"):
+        return raw
+    filename = raw[len("/api/uploads/") :].strip().split("?", 1)[0].split("#", 1)[0]
+    if not filename or "/" in filename or "\\" in filename:
+        return raw
+    return str(APEX_ROOT / "state" / "uploads" / filename)
 
 
 def validate_path(path: str, allow_write: bool = False, *, permission_level: int = 2) -> str | None:

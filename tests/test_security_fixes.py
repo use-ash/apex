@@ -1334,6 +1334,36 @@ class SecurityFixTests(unittest.TestCase):
         blocked_err = local_safety.validate_path(str(blocked), permission_level=3)
         self.assertIn("protected path", blocked_err or "")
 
+    def test_ensure_workspace_path_resolves_upload_api_path_for_reads(self) -> None:
+        upload_dir = TEST_ROOT / "state" / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        target = upload_dir / "example.png"
+        target.write_bytes(b"png")
+
+        resolved, err = local_safety.ensure_workspace_path(
+            "/api/uploads/example.png",
+            str(TEST_ROOT),
+            permission_level=3,
+        )
+        self.assertIsNone(err)
+        self.assertEqual(resolved, str(target.resolve()))
+
+    def test_search_files_handles_multi_root_workspace_paths(self) -> None:
+        primary = TEST_ROOT / "workspace"
+        secondary = TEST_ROOT / "apex"
+        primary.mkdir(parents=True, exist_ok=True)
+        secondary.mkdir(parents=True, exist_ok=True)
+        target = secondary / "notes.txt"
+        target.write_text("needle\n", encoding="utf-8")
+
+        result = search_files.execute(
+            {"path": str(secondary), "pattern": "needle"},
+            workspace=f"{primary}:{secondary}",
+            permission_level=3,
+        )
+        self.assertIn("notes.txt", result)
+        self.assertIn("needle", result)
+
     def test_tool_access_level_3_allows_sdk_coordination_tools(self) -> None:
         self.assertTrue(tool_access.tool_allowed_for_level("Skill", 3))
         self.assertTrue(tool_access.tool_allowed_for_level("ToolSearch", 3))
