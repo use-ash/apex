@@ -25,7 +25,7 @@ from fastapi import WebSocket
 
 from db import _get_db, _get_chat, _update_chat, _get_chat_tool_policy, _get_profile_tool_policy
 from log import log
-from tool_access import tool_access_decision
+from tool_access import tool_access_decision, GUIDE_TOOL_NAMES
 from memory_extract import _filter_stream_text_for_memory_tags, _clear_stream_text_filter
 from state import (
     _clients, _client_sessions, _client_last_used, _client_permission_levels, _client_permission_policies,
@@ -405,6 +405,51 @@ def _inject_execute_code_mcp(servers: dict, *, chat_id: str | None = None,
     return servers
 
 
+_GUIDE_PROFILE_ID = "sys-guide"
+
+
+def _inject_guide_tools_mcp(servers: dict) -> dict:
+    """Auto-inject the guide config tools MCP server for guide sessions."""
+    if "guide_tools" in servers:
+        return servers  # already configured
+    mcp_script = APEX_ROOT / "server" / "local_model" / "mcp_guide_tools.py"
+    if not mcp_script.exists():
+        return servers
+    servers = dict(servers)
+    servers["guide_tools"] = {
+        "command": sys.executable,
+        "args": [str(mcp_script)],
+        "env": {"APEX_ROOT": str(APEX_ROOT)},
+    }
+    return servers
+
+
+def _is_guide_session(client_key: str | None) -> bool:
+    """Check if the client_key corresponds to a guide persona session."""
+    if not client_key:
+        return False
+    # client_key is chat_id:profile_id for group agents, or just chat_id for solo
+    if ":" in client_key:
+        profile_id = client_key.split(":", 1)[1]
+        return profile_id == _GUIDE_PROFILE_ID
+    # Solo chat — check if the chat's profile is the guide
+    chat_id = client_key
+    try:
+        chat = _get_chat(chat_id)
+        if chat and str(chat.get("profile_id", "")) == _GUIDE_PROFILE_ID:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _resolve_guide_extra_tools(client_key: str | None) -> frozenset[str] | None:
+    """Return guide tool names if this is a guide session, else None."""
+    if _is_guide_session(client_key):
+        return GUIDE_TOOL_NAMES
+    return None
+
+
 def _resolve_sdk_permission_level(client_key: str | None, chat_id: str | None = None) -> int:
     if not client_key:
         return 2
@@ -442,6 +487,7 @@ def _make_sdk_tool_gate(
     allowed_commands: list[str] | None = None,
     client_key: str | None = None,
     chat_id: str | None = None,
+    extra_allowed_tools: frozenset[str] | set[str] | None = None,
 ):
     async def _can_use_tool(tool_name: str, tool_input: dict, _context):
         allowed, message = tool_access_decision(
@@ -455,6 +501,7 @@ def _make_sdk_tool_gate(
                 "client_key": client_key or "",
                 "chat_id": chat_id or "",
             },
+            extra_allowed_tools=extra_allowed_tools,
         )
         if not allowed:
             return PermissionResultDeny(
@@ -474,6 +521,7 @@ def _sdk_pre_tool_use_decision(
     allowed_commands: list[str] | None = None,
     client_key: str | None = None,
     chat_id: str | None = None,
+    extra_allowed_tools: frozenset[str] | set[str] | None = None,
 ) -> tuple[bool, str]:
     return tool_access_decision(
         tool_name,
@@ -486,6 +534,7 @@ def _sdk_pre_tool_use_decision(
             "client_key": client_key or "",
             "chat_id": chat_id or "",
         },
+        extra_allowed_tools=extra_allowed_tools,
     )
 
 
@@ -495,6 +544,7 @@ def _make_sdk_pre_tool_use_hook(
     allowed_commands: list[str] | None = None,
     client_key: str | None = None,
     chat_id: str | None = None,
+    extra_allowed_tools: frozenset[str] | set[str] | None = None,
 ):
     async def _hook(hook_input, _tool_use_id, _context):
         tool_name = str((hook_input or {}).get("tool_name") or "")
@@ -508,6 +558,7 @@ def _make_sdk_pre_tool_use_hook(
             allowed_commands=allowed_commands,
             client_key=client_key,
             chat_id=chat_id,
+            extra_allowed_tools=extra_allowed_tools,
         )
         if allowed:
             return {
@@ -549,6 +600,8 @@ def _make_options(
         root for root in workspace_paths[1:]
         if root and root != str(workspace_root)
     ]
+    # Resolve guide-specific extra tools if this is a guide session
+    extra_allowed_tools = _resolve_guide_extra_tools(client_key)
     opts = ClaudeAgentOptions(
         model=model or MODEL,
         cwd=str(workspace_root),
@@ -562,6 +615,7 @@ def _make_options(
             allowed_commands=allowed_commands,
             client_key=client_key,
             chat_id=chat_id,
+            extra_allowed_tools=extra_allowed_tools,
         ),
         hooks={
             "PreToolUse": [
@@ -573,6 +627,7 @@ def _make_options(
                             allowed_commands=allowed_commands,
                             client_key=client_key,
                             chat_id=chat_id,
+                            extra_allowed_tools=extra_allowed_tools,
                         )
                     ],
                 )
@@ -584,6 +639,10 @@ def _make_options(
     mcp_servers = _inject_execute_code_mcp(mcp_servers, chat_id=chat_id,
                                              workspace=str(workspace_root),
                                              permission_level=permission_level)
+    # Auto-inject guide config tools MCP server for guide sessions
+    if extra_allowed_tools:
+        mcp_servers = _inject_guide_tools_mcp(mcp_servers)
+        log(f"Guide tools MCP injected for client_key={client_key}")
     if mcp_servers:
         opts.mcp_servers = mcp_servers
         log(f"MCP: {len(mcp_servers)} server(s) attached to SDK options")

@@ -1,5 +1,6 @@
 """Tool registry — maps tool names to JSON schemas and executor functions."""
 from .tools import bash_tool, read_file, write_file, edit_file, list_files, search_files
+from .tools.guide_tools import GUIDE_TOOL_DEFS as _GUIDE_TOOL_DEFS
 
 try:
     from .tools import execute_code as _execute_code_mod
@@ -138,6 +139,17 @@ if _HAS_JUPYTER:
             "required": ["code"],
         },
         _execute_code_mod.execute,
+    )
+
+
+# --- Register guide configuration tools ---
+
+for _gdef in _GUIDE_TOOL_DEFS:
+    _register(
+        _gdef["name"],
+        _gdef["description"],
+        _gdef["parameters"],
+        _gdef["executor"],
     )
 
 

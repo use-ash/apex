@@ -26,6 +26,12 @@ SDK_TOOL_NAME_MAP = {
 }
 
 STANDARD_LOCAL_TOOLS = frozenset({"read_file", "list_files", "search_files"})
+
+# Guide persona tools — safe-by-design config commands, injected only for guide sessions
+try:
+    from local_model.tools.guide_tools import GUIDE_TOOL_NAMES
+except ImportError:
+    GUIDE_TOOL_NAMES: frozenset[str] = frozenset()
 BUILTIN_LOCAL_TOOLS = frozenset(
     {"bash", "read_file", "write_file", "edit_file", "list_files", "search_files",
      "execute_code"}
@@ -215,6 +221,55 @@ TOOL_POLICY_CATALOG = {
         "description": "Delegate work to another agent as part of a collaborative workflow.",
         "category": "sdk",
         "group": "coordination",
+    },
+    # --- Guide persona tools (safe-by-design config commands) ---
+    "guide__config_get": {
+        "name": "Guide: Read Config",
+        "description": "Read the Apex server configuration.",
+        "category": "guide",
+        "group": "config",
+    },
+    "guide__config_set": {
+        "name": "Guide: Set Config",
+        "description": "Set a whitelisted server configuration value.",
+        "category": "guide",
+        "group": "config",
+    },
+    "guide__agent_list": {
+        "name": "Guide: List Agents",
+        "description": "List all agent personas on the server.",
+        "category": "guide",
+        "group": "config",
+    },
+    "guide__agent_create": {
+        "name": "Guide: Create Agent",
+        "description": "Create a new agent persona.",
+        "category": "guide",
+        "group": "config",
+    },
+    "guide__mcp_list": {
+        "name": "Guide: List MCP Servers",
+        "description": "List MCP servers and their status.",
+        "category": "guide",
+        "group": "config",
+    },
+    "guide__mcp_toggle": {
+        "name": "Guide: Toggle MCP Server",
+        "description": "Enable or disable an MCP server.",
+        "category": "guide",
+        "group": "config",
+    },
+    "guide__server_status": {
+        "name": "Guide: Server Status",
+        "description": "Show server health and configuration summary.",
+        "category": "guide",
+        "group": "config",
+    },
+    "guide__reload_config": {
+        "name": "Guide: Reload Config",
+        "description": "Validate config and confirm live vs. restart-required settings.",
+        "category": "guide",
+        "group": "config",
     },
 }
 
@@ -411,11 +466,19 @@ def get_tool_catalog() -> list[dict[str, str | bool]]:
     return items
 
 
-def tool_allowed_for_level(name: str, level: int) -> bool:
+def tool_allowed_for_level(
+    name: str,
+    level: int,
+    *,
+    extra_allowed_tools: frozenset[str] | set[str] | None = None,
+) -> bool:
     canonical = canonical_tool_name(name)
     if level <= 0:
         return False
     if level >= 4:
+        return True
+    # Check persona-specific extra tools (e.g., guide config tools)
+    if extra_allowed_tools and canonical in extra_allowed_tools:
         return True
     if level == 1:
         return canonical in STANDARD_LOCAL_TOOLS
@@ -424,7 +487,11 @@ def tool_allowed_for_level(name: str, level: int) -> bool:
     return _tool_is_catalogued(canonical)
 
 
-def allowed_tool_names_for_level(level: int) -> set[str] | None:
+def allowed_tool_names_for_level(
+    level: int,
+    *,
+    extra_allowed_tools: frozenset[str] | set[str] | None = None,
+) -> set[str] | None:
     if level <= 0:
         return set()
     if level >= 4:
@@ -432,12 +499,15 @@ def allowed_tool_names_for_level(level: int) -> set[str] | None:
 
     allowed = {
         name for name in BUILTIN_LOCAL_TOOLS
-        if tool_allowed_for_level(name, level)
+        if tool_allowed_for_level(name, level, extra_allowed_tools=extra_allowed_tools)
     }
     allowed.update(
         name for name in _iter_mcp_tool_names()
-        if tool_allowed_for_level(name, level)
+        if tool_allowed_for_level(name, level, extra_allowed_tools=extra_allowed_tools)
     )
+    # Include extra tools directly (they may not be in BUILTIN or MCP lists)
+    if extra_allowed_tools:
+        allowed.update(extra_allowed_tools)
     return allowed
 
 
@@ -449,6 +519,7 @@ def tool_access_decision(
     allowed_commands: list[str] | None,
     workspace_paths: str,
     audit_context: dict | None = None,
+    extra_allowed_tools: frozenset[str] | set[str] | None = None,
 ) -> tuple[bool, str]:
     def _deny(message: str) -> tuple[bool, str]:
         _log_dangerous_tool_intent(
@@ -464,10 +535,14 @@ def tool_access_decision(
         return False, "This agent is Restricted and cannot use tools or access files."
 
     canonical = canonical_tool_name(tool_name)
-    if not tool_allowed_for_level(canonical, level):
+    if not tool_allowed_for_level(canonical, level, extra_allowed_tools=extra_allowed_tools):
         if level == 1:
             return False, "This action requires Elevated or Admin permissions."
         return False, f"Error: tool is not allowed at this permission level: {tool_name}"
+
+    # Guide tools are safe-by-design — no further path/command validation needed
+    if extra_allowed_tools and canonical in extra_allowed_tools:
+        return True, ""
 
     if canonical == "bash":
         command = str((tool_input or {}).get("command") or "").strip()
