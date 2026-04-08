@@ -117,6 +117,9 @@ DEFAULT_LEVEL3_ALLOWED_COMMANDS = frozenset(
         "git",
         "grep",
         "head",
+        "hostname",
+        "ifconfig",
+        "ipconfig",
         "jq",
         "kill",
         "ln",
@@ -125,6 +128,7 @@ DEFAULT_LEVEL3_ALLOWED_COMMANDS = frozenset(
         "make",
         "mkdir",
         "mv",
+        "netstat",
         "npm",
         "npx",
         "open",
@@ -150,6 +154,7 @@ DEFAULT_LEVEL3_ALLOWED_COMMANDS = frozenset(
         "tar",
         "touch",
         "tr",
+        "true",
         "uniq",
         "unzip",
         "uv",
@@ -159,6 +164,7 @@ DEFAULT_LEVEL3_ALLOWED_COMMANDS = frozenset(
         "xargs",
         "yarn",
         "zip",
+        "printf",
     }
 )
 PROTECTED_PATHS = {

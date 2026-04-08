@@ -1370,6 +1370,51 @@ class SecurityFixTests(unittest.TestCase):
         self.assertTrue(tool_access.tool_allowed_for_level("ToolSearch", 3))
         self.assertTrue(tool_access.tool_allowed_for_level("Agent", 3))
 
+    def test_sdk_pre_tool_hook_level_3_allows_agent_tool(self) -> None:
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Agent",
+            {},
+            level=3,
+            allowed_commands=[],
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
+
+    def test_level_3_allows_common_investigation_shell_commands(self) -> None:
+        workspace = str(TEST_ROOT)
+        self.assertIsNone(
+            local_safety.validate_command(
+                'git branch --show-current && git status --short',
+                workspace,
+                permission_level=3,
+                allowed_commands=[],
+            )
+        )
+        self.assertIsNone(
+            local_safety.validate_command(
+                'rg -n "db/stats|db/export|backup" /Users/dana/.openclaw/apex/server/*.py',
+                workspace,
+                permission_level=3,
+                allowed_commands=[],
+            )
+        )
+        self.assertIsNone(
+            local_safety.validate_command(
+                'printf "ok\\n"',
+                workspace,
+                permission_level=3,
+                allowed_commands=[],
+            )
+        )
+        self.assertIsNone(
+            local_safety.validate_command(
+                'hostname',
+                workspace,
+                permission_level=3,
+                allowed_commands=[],
+            )
+        )
+
     def test_tool_access_level_3_blocks_reads_outside_workspace_and_tmp(self) -> None:
         allowed, message = tool_access.tool_access_decision(
             "read_file",
