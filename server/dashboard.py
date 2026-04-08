@@ -1555,6 +1555,124 @@ async def api_policy_tools_update(request: Request):
         return _error("Invalid policy tool configuration", "VALIDATION_ERROR", 422)
 
 
+@dashboard_app.get("/api/policy/denials")
+async def api_policy_denials(request: Request):
+    """Summarize recent blocked tool activity from saved tool events."""
+    try:
+        hours = max(1, min(int(request.query_params.get("hours", "24")), 24 * 14))  # type: ignore[name-defined]
+    except (TypeError, ValueError):
+        hours = 24
+    chat_id = (request.query_params.get("chat_id", "") or "").strip()  # type: ignore[name-defined]
+
+    where_parts = [
+        "m.created_at >= datetime('now', ?)",
+        "CAST(json_extract(j.value, '$.result.is_error') AS INTEGER) = 1",
+    ]
+    params: list[Any] = [f"-{hours} hours"]
+    if chat_id:
+        where_parts.append("m.chat_id = ?")
+        params.append(chat_id)
+
+    base_cte = f"""
+        WITH ev AS (
+            SELECT
+                m.chat_id AS chat_id,
+                c.title AS chat_title,
+                m.created_at AS created_at,
+                COALESCE(NULLIF(m.speaker_name, ''), m.role, 'unknown') AS speaker_name,
+                COALESCE(json_extract(j.value, '$.name'), '') AS tool_name,
+                COALESCE(
+                    json_extract(j.value, '$.input.command'),
+                    json_extract(j.value, '$.input.file_path'),
+                    json_extract(j.value, '$.input.path'),
+                    ''
+                ) AS target,
+                COALESCE(json_extract(j.value, '$.result.content'), '') AS reason
+            FROM messages m
+            JOIN chats c ON c.id = m.chat_id
+            JOIN json_each(m.tool_events) j
+            WHERE {" AND ".join(where_parts)}
+        )
+    """
+
+    def _rows(sql: str) -> list[dict[str, Any]]:
+        with _db_lock:
+            conn = _get_db()
+            try:
+                conn.row_factory = sqlite3.Row
+                cur = conn.execute(sql, params)
+                return [dict(row) for row in cur.fetchall()]
+            finally:
+                conn.close()
+
+    top_tools = _rows(
+        base_cte
+        + """
+        SELECT tool_name, COUNT(*) AS count
+        FROM ev
+        GROUP BY tool_name
+        ORDER BY count DESC, tool_name ASC
+        LIMIT 12
+        """
+    )
+    top_reasons = _rows(
+        base_cte
+        + """
+        SELECT substr(reason, 1, 180) AS reason, COUNT(*) AS count
+        FROM ev
+        GROUP BY substr(reason, 1, 180)
+        ORDER BY count DESC, reason ASC
+        LIMIT 12
+        """
+    )
+    by_speaker = _rows(
+        base_cte
+        + """
+        SELECT speaker_name, COUNT(*) AS count
+        FROM ev
+        GROUP BY speaker_name
+        ORDER BY count DESC, speaker_name ASC
+        LIMIT 12
+        """
+    )
+    examples = _rows(
+        base_cte
+        + """
+        SELECT
+            chat_id,
+            chat_title,
+            speaker_name,
+            tool_name,
+            target,
+            substr(reason, 1, 220) AS reason,
+            created_at
+        FROM ev
+        ORDER BY created_at DESC
+        LIMIT 20
+        """
+    )
+    total_rows = _rows(
+        base_cte
+        + """
+        SELECT COUNT(*) AS total_denials
+        FROM ev
+        """
+    )
+
+    return JSONResponse(
+        {
+            "status": "ok",
+            "hours": hours,
+            "chat_id": chat_id or None,
+            "total_denials": int((total_rows[0]["total_denials"] if total_rows else 0) or 0),
+            "top_tools": top_tools,
+            "top_reasons": top_reasons,
+            "by_speaker": by_speaker,
+            "examples": examples,
+        }
+    )
+
+
 # ===========================================================================
 # MCP Server Management
 # ===========================================================================

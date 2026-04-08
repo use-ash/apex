@@ -187,6 +187,38 @@ class SecurityFixTests(unittest.TestCase):
     def _create_direct_chat(self, model: str = "qwen3:latest") -> str:
         return db_mod._create_chat(title="Security Test", model=model)
 
+    def _insert_tool_event_message(
+        self,
+        chat_id: str,
+        *,
+        speaker_name: str,
+        tool_events: list[dict],
+        role: str = "assistant",
+        content: str = "",
+    ) -> str:
+        msg_id = uuid.uuid4().hex[:12]
+        with apex._db_lock:
+            conn = apex._get_db()
+            conn.execute(
+                """
+                INSERT INTO messages (
+                    id, chat_id, role, content, tool_events, thinking, cost_usd,
+                    tokens_in, tokens_out, created_at, speaker_name
+                ) VALUES (?, ?, ?, ?, ?, '', 0, 0, 0, datetime('now'), ?)
+                """,
+                (
+                    msg_id,
+                    chat_id,
+                    role,
+                    content,
+                    json.dumps(tool_events),
+                    speaker_name,
+                ),
+            )
+            conn.commit()
+            conn.close()
+        return msg_id
+
     def _create_uploaded_attachment(
         self,
         ext: str,
@@ -2741,6 +2773,67 @@ class SecurityFixTests(unittest.TestCase):
             returned_tools = get_resp.json()["workspace_tools"]
             self.assertIn("playwright__*", returned_tools)
             self.assertIn("fetch__*", returned_tools)
+
+    def test_dashboard_policy_denials_summary(self) -> None:
+        chat_id = self._create_direct_chat()
+        self._insert_tool_event_message(
+            chat_id,
+            speaker_name="Architect",
+            tool_events=[
+                {
+                    "id": "tool-1",
+                    "name": "Read",
+                    "input": {"file_path": "/api/uploads/example.png"},
+                    "result": {
+                        "tool_use_id": "tool-1",
+                        "content": "Tool execution was denied by host permissions: Read.",
+                        "is_error": True,
+                    },
+                },
+                {
+                    "id": "tool-2",
+                    "name": "Bash",
+                    "input": {"command": "git status --short && git diff --stat"},
+                    "result": {
+                        "tool_use_id": "tool-2",
+                        "content": "Error: shell syntax is not allowed",
+                        "is_error": True,
+                    },
+                },
+            ],
+        )
+        self._insert_tool_event_message(
+            chat_id,
+            speaker_name="QA",
+            tool_events=[
+                {
+                    "id": "tool-3",
+                    "name": "ToolSearch",
+                    "input": {},
+                    "result": {
+                        "tool_use_id": "tool-3",
+                        "content": "Tool execution was denied by host permissions: ToolSearch.",
+                        "is_error": True,
+                    },
+                }
+            ],
+        )
+
+        with self._client() as client:
+            resp = client.get(
+                f"/admin/api/policy/denials?hours=24&chat_id={chat_id}",
+                headers=self._admin_headers(),
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        payload = resp.json()
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["chat_id"], chat_id)
+        self.assertEqual(payload["total_denials"], 3)
+        self.assertEqual(payload["top_tools"][0]["tool_name"], "Bash")
+        self.assertTrue(any(item["tool_name"] == "Read" for item in payload["top_tools"]))
+        self.assertTrue(any(item["speaker_name"] == "Architect" for item in payload["by_speaker"]))
+        self.assertTrue(any("shell syntax is not allowed" in item["reason"] for item in payload["top_reasons"]))
+        self.assertTrue(any(item["tool_name"] == "Read" and "/api/uploads/example.png" in item["target"] for item in payload["examples"]))
 
     def test_dashboard_html_keeps_multiline_workspace_js_escaped(self) -> None:
         self.assertIn(
