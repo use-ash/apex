@@ -292,32 +292,30 @@ Fresh install. Three AI providers — Claude, Grok, and ChatGPT — collaboratin
 
 ## Free & Premium
 
-The Apex server and web app are **free and open source**. Run it on your machine, use it in your browser — no limits, no costs beyond your own AI subscriptions.
+The Apex server and web app are **free and open source**. Run it on your machine, use it in your browser — no limits, no costs beyond your own AI subscriptions. Everything is fully unlocked for the first 30 days.
 
-**Native apps** for iOS, Android, and Desktop are **premium** — they provide the secure remote access layer that turns your self-hosted server into a mobile-ready AI platform.
+A **license key** ($29.99/mo · $249/yr · $499 lifetime for the first 500) unlocks premium features and native app connectivity.
 
-| | Free | Apex Pro |
+| | Free | Apex Pro (License) |
 |---|---|---|
 | **Apex Server** | ✅ | |
 | **Web App (Desktop & Mobile)** | ✅ | |
 | **All AI Models** | ✅ | |
-| **Memory, Skills, Dashboard** | ✅ | |
+| **Memory, Skills, Alerts** | ✅ | |
 | **mTLS / Certificate Auth** | ✅ | |
-| **iOS App** (native SwiftUI) | | ✅ $29.99/mo · $249/yr |
-| **Android App** (native Kotlin) | | ✅ Coming soon |
-| **Desktop App** (Electron) | | ✅ Planned |
-| **Lifetime License** (first 500) | | ✅ $499 one-time |
+| **Basic Dashboard** | ✅ | |
+| **Group Channels** | 30-day trial | ✅ |
+| **Multi-Agent Orchestration** | 30-day trial | ✅ |
+| **Custom Personas** | 30-day trial | ✅ |
+| **iOS App** (free download) | | ✅ Requires license |
+| **Android App** | | 🚧 Coming soon |
+| **Desktop App** | | 📋 Planned |
 
-### Why native apps?
+### How the license works
 
-The web app works great on localhost. But when you want to reach your server from your phone on the train, from your laptop at a coffee shop, or from your iPad on the couch — you need:
+One license key, one gate. The key lives on your server. When it's valid, premium features are unlocked and native apps can connect. The iOS app is a **free download** — it just needs your server to have an active license.
 
-- **Certificate-pinned mTLS** — your phone authenticates to your server with a client certificate, not a password
-- **Push notifications** — real-time alerts from your AI, your cron jobs, your monitoring
-- **Background survival** — the connection stays alive when you switch apps
-- **Gesture navigation** — swipe between channels, long-press for actions, native scroll physics
-
-That's the difference between a browser tab and a real app. The native experience is the premium.
+The web app always works, licensed or not. If your license expires, you keep everything in the free tier — chat, multi-model routing, memory, skills, alerts, and the dashboard.
 
 <br/>
 
@@ -329,9 +327,9 @@ That's the difference between a browser tab and a real app. The native experienc
 |----------|--------|------|
 | 🌐 Web App (Desktop) | ✅ Available | Free |
 | 🌐 Web App (Mobile) | ✅ Available | Free |
-| 📱 iOS (iPhone) | ✅ Available | Premium |
-| 🤖 Android | 🚧 In Development | Premium |
-| 🖥️ Desktop (Electron) | 📋 Planned | Premium |
+| 📱 iOS (iPhone) | ✅ Free Download | Requires License |
+| 🤖 Android | 🚧 In Development | Requires License |
+| 🖥️ Desktop (Electron) | 📋 Planned | Requires License |
 
 <br/>
 
@@ -458,13 +456,13 @@ No. Claude runs through the Agent SDK with full tool access (read, write, bash, 
 <details>
 <summary><strong>Can I use it on my phone?</strong></summary>
 <br/>
-The webapp works in mobile browsers for free. For a native experience with push notifications, background survival, and certificate-pinned security, <strong>Apex Pro</strong> starts at $29.99/mo ($249/yr or $499 lifetime). Android is in development.
+The webapp works in mobile browsers for free. The iOS app is a free download — it requires your server to have a valid license key for it to connect. Android is in development.
 </details>
 
 <details>
 <summary><strong>What's free vs. paid?</strong></summary>
 <br/>
-The server, web app, all AI model integrations, memory system, skills engine, admin dashboard, and mTLS security are all <strong>free and open source</strong>. Native apps are <strong>Apex Pro</strong> — $29.99/mo, $249/yr, or $499 lifetime (first 500 units).
+The server, web app, all AI model integrations, memory system, skills engine, admin dashboard, and mTLS security are all <strong>free forever</strong>. Group channels, multi-agent orchestration, and custom personas are unlocked for 30 days, then require a license key ($29.99/mo · $249/yr · $499 lifetime). The iOS app is a free download but needs a valid server license to connect.
 </details>
 
 <details>

@@ -359,7 +359,7 @@ All models active. Memory system with semantic search. Whisper injection. Full s
 
 ## iOS App
 
-**Apex Pro** is a native iOS app that connects to your self-hosted server. $29.99/mo · $249/yr · $499 lifetime (first 500).
+The iOS app is a **free download** on the App Store. It connects to your self-hosted server, but requires your server to have a valid license key.
 
 - Native SwiftUI — not a PWA. Background survival, push notifications, gesture navigation.
 - mTLS authentication — certificate-pinned to your server.
@@ -368,7 +368,7 @@ All models active. Memory system with semantic search. Whisper injection. Full s
 - Alert inbox with push notifications
 - Connection profiles for WiFi/VPN switching
 
-The server and webapp are free. The iOS app is **Apex Pro** ($29.99/mo · $249/yr · $499 lifetime).
+The server and webapp are free forever. A license key ($29.99/mo · $249/yr · $499 lifetime for the first 500) unlocks group channels, multi-agent orchestration, custom personas, and native app connectivity.
 
 ---
 
@@ -392,7 +392,7 @@ The server and webapp are free. The iOS app is **Apex Pro** ($29.99/mo · $249/y
 No. Claude runs through the Agent SDK with full tool access (read, write, bash, search). Codex runs through the CLI with sandbox permissions. Local models get a custom tool-calling loop. It's closer to Claude Code than to a simple chat interface.
 
 **Can I use it on my phone?**
-The webapp works in mobile browsers. For a native experience, Apex Pro (iOS) starts at $29.99/mo ($249/yr or $499 lifetime).
+The webapp works in mobile browsers. The iOS app is a free download — it requires your server to have a valid license key ($29.99/mo · $249/yr · $499 lifetime).
 
 **Can multiple people use one server?**
 The current architecture is single-user. Multi-user with RBAC is on the enterprise roadmap.

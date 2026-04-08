@@ -191,7 +191,8 @@ Use any combination. Already paying for Claude Pro? You can use Claude through A
 
 ## What the Free Tier Does NOT Include
 
-- **iOS app** — Requires Apex Pro subscription ($29.99/mo, $249/yr, or $499 lifetime — first 500)
+- **Group channels, multi-agent orchestration, custom personas** — Fully unlocked during 30-day trial. After trial, require a license key ($29.99/mo · $249/yr · $499 lifetime for the first 500).
+- **iOS app connectivity** — The iOS app is a free download, but your server needs a valid license for it to connect.
 - **Multi-tenant isolation** — Enterprise tier (separate DB/workspace/credentials per user)
 - **SSO/OIDC** — Enterprise tier (Okta, Google Workspace, Azure AD)
 - **RBAC** — Enterprise tier (admin vs viewer roles)
@@ -199,4 +200,4 @@ Use any combination. Already paying for Claude Pro? You can use Claude through A
 - **Key rotation workflows** — Enterprise tier (scheduled rotation, zero-downtime)
 - **Compliance reporting** — Enterprise tier (SOC 2 / GDPR evidence generation)
 
-The webapp (browser access to your server) is free and unlimited. The iOS app is the paid product.
+The webapp (browser access to your server) is free and unlimited. One server license key unlocks premium features and native app connectivity.
