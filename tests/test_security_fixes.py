@@ -68,6 +68,7 @@ from state import (  # noqa: E402
     _session_context_sent,
 )
 from local_model import mcp_bridge as mcp_bridge_mod  # noqa: E402
+from local_model import context as local_context_mod  # noqa: E402
 from local_model import safety as local_safety  # noqa: E402
 from local_model import tool_loop  # noqa: E402
 from local_model.tools import list_files, read_file, search_files, write_file  # noqa: E402
@@ -2722,6 +2723,20 @@ class SecurityFixTests(unittest.TestCase):
         self.assertIn("skipAttach: true", chat_html_mod.CHAT_HTML)
         self.assertIn("const skipAttach = Boolean(options.skipAttach)", chat_html_mod.CHAT_HTML)
         self.assertIn("if (!skipAttach && ws && ws.readyState === WebSocket.OPEN)", chat_html_mod.CHAT_HTML)
+
+    def test_local_model_prompt_includes_apex_tool_guidance(self) -> None:
+        prompt = local_context_mod.build_system_prompt("qwen3:latest", permission_level=3)
+        self.assertIn("Prefer read_file/search_files/list_files over bash", prompt)
+        self.assertIn("state/uploads", prompt)
+        self.assertIn("apex-private/ops-docs/REPO_CONVENTIONS.md", prompt)
+
+    def test_workspace_context_includes_apex_tool_guidance(self) -> None:
+        chat_id = self._create_direct_chat()
+        context_mod._clear_session_context(chat_id)
+        ctx = context_mod._get_workspace_context(chat_id)
+        self.assertIn("# Apex Tool Guidance", ctx)
+        self.assertIn("state/uploads", ctx)
+        self.assertIn("apex-private/ops-docs/REPO_CONVENTIONS.md", ctx)
 
     def test_sdk_pre_tool_hook_blocks_level_3_non_allowlisted_date(self) -> None:
         allowed, message = streaming_mod._sdk_pre_tool_use_decision(

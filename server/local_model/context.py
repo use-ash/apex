@@ -125,6 +125,10 @@ def build_system_prompt(
     parts.append("- Use list_files only when you genuinely need to discover file names")
     parts.append("- Chain multiple reads in sequence rather than exploring directories")
     parts.append("- Use edit_file for surgical changes — provide old_text (exact match) and new_text. Don't rewrite entire files.")
+    parts.append("- Prefer read_file/search_files/list_files over bash for file inspection. Avoid grep/cat/find via bash unless a direct tool cannot do the job.")
+    parts.append("- Keep bash simple: one command at a time. Avoid heredocs, inline Python, complex chaining, and shell fallbacks unless absolutely necessary.")
+    parts.append("- Uploaded files are real files under state/uploads. Do not treat /api/uploads/... as a literal filesystem path.")
+    parts.append("- Private repo/process docs live in apex-private/ops-docs/REPO_CONVENTIONS.md, not apex/REPO_CONVENTIONS.md.")
     if project_md.exists():
         parts.append(f"- Start with: read_file('{project_md}') for full project context")
     parts.append("")

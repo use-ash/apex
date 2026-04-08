@@ -936,6 +936,15 @@ def _get_workspace_context(chat_id: str) -> str:
     skills_dir = workspace / "skills"
     if project_md.exists():
         parts.append(f"<system-reminder>\n# Project Instructions\n{project_md.read_text()[:8000]}\n</system-reminder>")
+    parts.append(
+        "<system-reminder>\n"
+        "# Apex Tool Guidance\n"
+        "- Prefer read_file/search_files/list_files over bash for file inspection.\n"
+        "- Keep bash simple: one command at a time. Avoid heredocs, inline Python, and complex shell fallback chains unless necessary.\n"
+        "- Uploaded files are real files under state/uploads. Do not treat /api/uploads/... as a literal filesystem path.\n"
+        "- Private repo/process docs live in apex-private/ops-docs/REPO_CONVENTIONS.md, not apex/REPO_CONVENTIONS.md.\n"
+        "</system-reminder>"
+    )
     if memory_md.exists():
         parts.append(f"<system-reminder>\n# MEMORY.md (persistent memory)\n{memory_md.read_text()[:4000]}\n</system-reminder>")
     if skills_dir.is_dir():
