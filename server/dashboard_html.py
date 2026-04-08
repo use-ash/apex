@@ -2706,10 +2706,11 @@ select {
                             <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
                             <circle cx="12" cy="7" r="4"/>
                         </svg>
-                        By Agent
+                        By Speaker
                     </div>
+                    <div class="form-help" style="margin-bottom:12px;">Grouped by persona name — does not reconcile 1:1 with model rows.</div>
                     <div id="usage-by-agent-content">
-                        <div class="loading-overlay"><div class="spinner"></div> Loading agent breakdown...</div>
+                        <div class="loading-overlay"><div class="spinner"></div> Loading speaker breakdown...</div>
                     </div>
                 </div>
                 <div class="card">
@@ -7148,7 +7149,7 @@ function renderUsageBreakdowns(payload) {
         tr.appendChild(createNode("td", "mono text-dim", (item.pct || 0) + "%"));
         return tr;
     });
-    appendUsageTable("usage-by-agent-content", ["Agent", "API Spend", "Sub Eqv.", "%"], agentRows);
+    appendUsageTable("usage-by-agent-content", ["Speaker", "API Spend", "Sub Eqv.", "%"], agentRows);
 
     var byUser = Array.isArray(payload.by_user) ? payload.by_user : [];
     var userRows = byUser.map(function(item) {
