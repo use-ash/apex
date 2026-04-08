@@ -191,8 +191,8 @@ Use any combination. Already paying for Claude Pro? You can use Claude through A
 
 ## What the Free Tier Does NOT Include
 
-- **Group channels, multi-agent orchestration, custom personas** — Fully unlocked during 30-day trial. After trial, require a license key ($29.99/mo · $249/yr · $499 lifetime for the first 500).
-- **iOS app connectivity** — The iOS app is a free download, but your server needs a valid license for it to connect.
+- **Group channels, multi-agent orchestration, custom personas** — Free through September 30, 2026 (no license required). After that, these features require a license key ($29.99/mo, $249/yr, or $499 lifetime for the first 500).
+- **iOS app connectivity** — Free through September 30, 2026. After that, the iOS app (free download) requires your server to have a valid license for it to connect.
 - **Multi-tenant isolation** — Enterprise tier (separate DB/workspace/credentials per user)
 - **SSO/OIDC** — Enterprise tier (Okta, Google Workspace, Azure AD)
 - **RBAC** — Enterprise tier (admin vs viewer roles)

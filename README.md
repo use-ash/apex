@@ -292,11 +292,11 @@ Fresh install. Three AI providers — Claude, Grok, and ChatGPT — collaboratin
 
 ## Free & Premium
 
-The Apex server and web app are **free and open source**. Run it on your machine, use it in your browser — no limits, no costs beyond your own AI subscriptions. Everything is fully unlocked for the first 30 days.
+The Apex server and web app are **free and open source**. Run it on your machine, use it in your browser, no limits, no costs beyond your own AI subscriptions.
 
-A **license key** ($29.99/mo · $249/yr · $499 lifetime for the first 500) unlocks premium features and native app connectivity.
+**Everything is free through September 30, 2026.** Every feature, every model, every platform. No license key required. After that, premium features (group channels, multi-agent orchestration, custom personas, native app connectivity) will require a license key.
 
-| | Free | Apex Pro (License) |
+| | Free (forever) | Premium (after Sept 30) |
 |---|---|---|
 | **Apex Server** | ✅ | |
 | **Web App (Desktop & Mobile)** | ✅ | |
@@ -304,18 +304,18 @@ A **license key** ($29.99/mo · $249/yr · $499 lifetime for the first 500) unlo
 | **Memory, Skills, Alerts** | ✅ | |
 | **mTLS / Certificate Auth** | ✅ | |
 | **Basic Dashboard** | ✅ | |
-| **Group Channels** | 30-day trial | ✅ |
-| **Multi-Agent Orchestration** | 30-day trial | ✅ |
-| **Custom Personas** | 30-day trial | ✅ |
-| **iOS App** (free download) | | ✅ Requires license |
+| **Group Channels** | ✅ Free until Sept 30 | License required |
+| **Multi-Agent Orchestration** | ✅ Free until Sept 30 | License required |
+| **Custom Personas** | ✅ Free until Sept 30 | License required |
+| **iOS App** (free download) | ✅ Free until Sept 30 | License required |
 | **Android App** | | 🚧 Coming soon |
 | **Desktop App** | | 📋 Planned |
 
 ### How the license works
 
-One license key, one gate. The key lives on your server. When it's valid, premium features are unlocked and native apps can connect. The iOS app is a **free download** — it just needs your server to have an active license.
+One license key, one gate. The key lives on your server. When it's valid, premium features are unlocked and native apps can connect. The iOS app is a **free download** that just needs your server to have an active license.
 
-The web app always works, licensed or not. If your license expires, you keep everything in the free tier — chat, multi-model routing, memory, skills, alerts, and the dashboard.
+Right now, everything is unlocked with no license required. After September 30, 2026, a license key ($29.99/mo, $249/yr, or $499 lifetime for the first 500 users) will be needed for premium features. The web app always works, licensed or not. If your license expires, you keep everything in the free tier: chat, multi-model routing, memory, skills, alerts, and the dashboard.
 
 <br/>
 
@@ -327,9 +327,9 @@ The web app always works, licensed or not. If your license expires, you keep eve
 |----------|--------|------|
 | 🌐 Web App (Desktop) | ✅ Available | Free |
 | 🌐 Web App (Mobile) | ✅ Available | Free |
-| 📱 iOS (iPhone) | ✅ Free Download | Requires License |
-| 🤖 Android | 🚧 In Development | Requires License |
-| 🖥️ Desktop (Electron) | 📋 Planned | Requires License |
+| 📱 iOS (iPhone) | ✅ Free Download | Free until Sept 30, then License |
+| 🤖 Android | 🚧 In Development | License (after Sept 30) |
+| 🖥️ Desktop (Electron) | 📋 Planned | License (after Sept 30) |
 
 <br/>
 
@@ -462,7 +462,7 @@ The webapp works in mobile browsers for free. The iOS app is a free download —
 <details>
 <summary><strong>What's free vs. paid?</strong></summary>
 <br/>
-The server, web app, all AI model integrations, memory system, skills engine, admin dashboard, and mTLS security are all <strong>free forever</strong>. Group channels, multi-agent orchestration, and custom personas are unlocked for 30 days, then require a license key ($29.99/mo · $249/yr · $499 lifetime). The iOS app is a free download but needs a valid server license to connect.
+<strong>Everything is free through September 30, 2026.</strong> No license key required. After that, the server, web app, all AI model integrations, memory system, skills engine, admin dashboard, and mTLS security remain <strong>free forever</strong>. Group channels, multi-agent orchestration, and custom personas will require a license key ($29.99/mo, $249/yr, or $499 lifetime for the first 500). The iOS app is a free download but will need a valid server license to connect after Sept 30.
 </details>
 
 <details>

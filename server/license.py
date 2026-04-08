@@ -2,7 +2,7 @@
 
 Provides LicenseManager which handles:
   - Ed25519 signature verification of license files
-  - 30-day trial tracking via database (tamper-resistant)
+  - Open access period (free until cutoff date) with rolling trial fallback
   - Feature gating (free vs premium)
   - Cached validation with periodic refresh
 
@@ -40,8 +40,13 @@ log = logging.getLogger("apex.license")
 # ---------------------------------------------------------------------------
 
 LICENSE_VERSION = 1
-TRIAL_DAYS = 30
+TRIAL_DAYS = 30  # legacy — overridden by OPEN_ACCESS_CUTOFF when set
 CACHE_TTL_SECONDS = 3600  # re-validate license every hour
+
+# Open access period: all features free until this date (inclusive).
+# After this date, premium features require a license key.
+# Set to None to revert to rolling TRIAL_DAYS behavior.
+OPEN_ACCESS_CUTOFF = datetime(2026, 9, 30, 23, 59, 59, tzinfo=timezone.utc)
 LICENSE_FILENAME = "license.json"
 CHECK_IN_INTERVAL_SECONDS = 7 * 24 * 3600  # 7 days
 LICENSE_SERVER_URL = env.LICENSE_SERVER_URL
@@ -421,38 +426,52 @@ class LicenseManager:
                     reasons.append(f"version {license_data.get('version')}")
                 log.info("License file present but invalid: %s", ", ".join(reasons))
 
-        # --- Check trial ---
-        trial_start = self._get_trial_start_safe()
-        if trial_start is None:
-            # First run — start trial
-            trial_start = datetime.now(timezone.utc)
-            self._set_trial_start_safe(trial_start)
-            log.info("Trial started: %s (expires %s)",
-                     trial_start.isoformat(),
-                     (trial_start + timedelta(days=TRIAL_DAYS)).isoformat())
+        # --- Check open access / trial ---
+        now_utc = datetime.now(timezone.utc)
 
-        elapsed = datetime.now(timezone.utc) - trial_start
-        remaining = TRIAL_DAYS - elapsed.days
-        trial_active = remaining > 0
-
-        if trial_active:
+        if OPEN_ACCESS_CUTOFF and now_utc <= OPEN_ACCESS_CUTOFF:
+            # Fixed open-access period — everything free until cutoff
+            remaining = (OPEN_ACCESS_CUTOFF - now_utc).days
             result.update({
                 "tier": "trial",
                 "premium_active": True,
                 "trial_active": True,
-                "trial_days_remaining": max(0, remaining),
+                "trial_days_remaining": max(1, remaining),
             })
             for f in PREMIUM_FEATURES:
                 result["features"][f] = True
         else:
-            result.update({
-                "tier": "free",
-                "premium_active": False,
-                "trial_active": False,
-                "trial_days_remaining": 0,
-            })
-            for f in PREMIUM_FEATURES:
-                result["features"][f] = False
+            # Fallback: rolling trial from first run (legacy behavior)
+            trial_start = self._get_trial_start_safe()
+            if trial_start is None:
+                trial_start = now_utc
+                self._set_trial_start_safe(trial_start)
+                log.info("Trial started: %s (expires %s)",
+                         trial_start.isoformat(),
+                         (trial_start + timedelta(days=TRIAL_DAYS)).isoformat())
+
+            elapsed = now_utc - trial_start
+            remaining = TRIAL_DAYS - elapsed.days
+            trial_active = remaining > 0
+
+            if trial_active:
+                result.update({
+                    "tier": "trial",
+                    "premium_active": True,
+                    "trial_active": True,
+                    "trial_days_remaining": max(0, remaining),
+                })
+                for f in PREMIUM_FEATURES:
+                    result["features"][f] = True
+            else:
+                result.update({
+                    "tier": "free",
+                    "premium_active": False,
+                    "trial_active": False,
+                    "trial_days_remaining": 0,
+                })
+                for f in PREMIUM_FEATURES:
+                    result["features"][f] = False
 
         for f in FREE_FEATURES:
             result["features"][f] = True

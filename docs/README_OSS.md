@@ -368,7 +368,7 @@ The iOS app is a **free download** on the App Store. It connects to your self-ho
 - Alert inbox with push notifications
 - Connection profiles for WiFi/VPN switching
 
-The server and webapp are free forever. A license key ($29.99/mo · $249/yr · $499 lifetime for the first 500) unlocks group channels, multi-agent orchestration, custom personas, and native app connectivity.
+The server and webapp are free forever. Everything is free through September 30, 2026 with no license required. After that, a license key ($29.99/mo, $249/yr, or $499 lifetime for the first 500) unlocks group channels, multi-agent orchestration, custom personas, and native app connectivity.
 
 ---
 
@@ -392,7 +392,7 @@ The server and webapp are free forever. A license key ($29.99/mo · $249/yr · $
 No. Claude runs through the Agent SDK with full tool access (read, write, bash, search). Codex runs through the CLI with sandbox permissions. Local models get a custom tool-calling loop. It's closer to Claude Code than to a simple chat interface.
 
 **Can I use it on my phone?**
-The webapp works in mobile browsers. The iOS app is a free download — it requires your server to have a valid license key ($29.99/mo · $249/yr · $499 lifetime).
+The webapp works in mobile browsers. The iOS app is a free download. Through September 30, 2026, it connects with no license required. After that, your server needs a valid license key ($29.99/mo, $249/yr, or $499 lifetime).
 
 **Can multiple people use one server?**
 The current architecture is single-user. Multi-user with RBAC is on the enterprise roadmap.
