@@ -67,6 +67,7 @@ mockup-dashboard-v2.html
 
 # Runtime artifacts
 nohup.out
+.playwright-mcp/
 
 # Generated state (created by setup.py and server runtime)
 state/*.db
