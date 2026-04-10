@@ -1317,4 +1317,6 @@ DASHBOARD_BODY_HTML = r"""<body>
             <button class="btn btn-ghost" data-close-modal="modal-credential">Cancel</button>
         </div>
     </div>
-</div>"""
+</div>
+
+"""

@@ -25,12 +25,11 @@ DASHBOARD_HTML = (
 </head>
 """
     + DASHBOARD_BODY_HTML
-    + """
-
-<script nonce="{{CSP_NONCE}}">
+    + """<script nonce="{{CSP_NONCE}}">
 """
     + DASHBOARD_JS
     + """</script>
 </body>
-</html>"""
+</html>
+"""
 )

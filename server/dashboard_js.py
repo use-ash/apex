@@ -1,6 +1,17 @@
 # Auto-extracted from dashboard_html.py during modular split.
 
-_JS_GLOBALS = r"""const API = "/admin/api";
+_JS_PREAMBLE = r"""/* =====================================================================
+   Apex Dashboard — Client-Side Application
+   ===================================================================== */
+
+(function() {
+"use strict";
+
+"""
+
+_JS_GLOBALS = r"""/* -- Constants ------------------------------------------------------ */
+
+const API = "/admin/api";
 const REFRESH_INTERVAL = 30000;  /* 30 seconds */
 
 let refreshTimer = null;
@@ -59,7 +70,9 @@ function syncPersonaGuidance(resetManualOverride) {
 
 function togglePersonaGuidance() {
     applyPersonaGuidanceState(!personaGuidanceExpanded, true);
-}"""
+}
+
+"""
 
 _JS_NAVIGATION = r"""/* =====================================================================
    Navigation
@@ -118,15 +131,15 @@ async function loadLicense() {
 
         if (s.license_valid) {
             banner.className = "health-banner banner-ok";
-            statusText.textContent = `Apex Pro \u2014 ${s.tier} license active`;
+            statusText.textContent = `Apex Pro — ${s.tier} license active`;
             const exp = new Date(s.license_expires);
             const daysLeft = Math.max(0, Math.ceil((exp - Date.now()) / 86400000));
             meta.textContent = `${daysLeft} days remaining`;
             details.innerHTML =
                 '<div style="display:grid;grid-template-columns:auto 1fr;gap:8px 16px;font-size:13px">' +
                 '<span style="color:var(--text-dim)">Tier</span><span>' + s.tier + '</span>' +
-                '<span style="color:var(--text-dim)">License ID</span><span style="font-family:monospace;font-size:11px">' + (s.license_id || '\u2014') + '</span>' +
-                '<span style="color:var(--text-dim)">Expires</span><span>' + (s.license_expires ? new Date(s.license_expires).toLocaleDateString() : '\u2014') + '</span>' +
+                '<span style="color:var(--text-dim)">License ID</span><span style="font-family:monospace;font-size:11px">' + (s.license_id || '—') + '</span>' +
+                '<span style="color:var(--text-dim)">Expires</span><span>' + (s.license_expires ? new Date(s.license_expires).toLocaleDateString() : '—') + '</span>' +
                 '<span style="color:var(--text-dim)">Premium</span><span>' + [['groups','Group Channels'],['orchestration','Multi-Agent Orchestration'],['agent_profiles','Custom Personas']].filter(([k]) => s.features[k]).map(([,v]) => v).join(', ') + '</span>' +
                 '</div>';
             activateSection.querySelector('[id=license-key-input]').style.display = 'none';
@@ -143,7 +156,7 @@ async function loadLicense() {
             document.getElementById("btn-activate-license").style.display = '';
         } else {
             banner.className = "health-banner banner-critical";
-            statusText.textContent = "Free tier \u2014 premium features locked";
+            statusText.textContent = "Free tier — premium features locked";
             meta.textContent = "";
             details.innerHTML =
                 '<div style="font-size:13px;color:var(--text-dim);padding:4px 0">' +
@@ -205,7 +218,9 @@ window.toggleSidebar = toggleSidebar;
 function closeSidebar() {
     document.getElementById("sidebar").classList.remove("sidebar-open");
     document.getElementById("sidebar-overlay").classList.remove("sidebar-open");
-}"""
+}
+
+"""
 
 _JS_API_HELPERS = r"""/* =====================================================================
    API Helpers
@@ -217,7 +232,7 @@ var ADMIN_TOKEN_COOKIE = "apex_admin_token";
 function getAdminToken() {
     var stored = sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) || "";
     if (stored) return stored;
-    var match = document.cookie.match(/(?:^|;\\s*)apex_admin_token=([^;]+)/);
+    var match = document.cookie.match(/(?:^|;\s*)apex_admin_token=([^;]+)/);
     if (!match) return "";
     try {
         stored = decodeURIComponent(match[1]);
@@ -301,7 +316,9 @@ async function rootApiFetch(path, options) {
         }
         throw err;
     }
-}"""
+}
+
+"""
 
 _JS_TOAST = r"""/* =====================================================================
    Toast Notifications
@@ -317,7 +334,9 @@ function showToast(message, type) {
     setTimeout(() => {
         if (toast.parentNode) toast.parentNode.removeChild(toast);
     }, 3500);
-}"""
+}
+
+"""
 
 _JS_HEALTH = r"""/* =====================================================================
    Health Page
@@ -687,7 +706,9 @@ function renderModelsCard(result) {
     }
 
     el.innerHTML = html;
-}"""
+}
+
+"""
 
 _JS_CONFIG = r"""/* =====================================================================
    Config Page
@@ -820,7 +841,7 @@ function renderFormField(section, key, spec, value) {
                 (spec.max != null ? ' max="' + spec.max + '"' : '') +
                 ' data-config-field="1" data-section="' + esc(section) + '" data-key="' + esc(key) + '">';
     } else if (spec.multiline) {
-        const textValue = String(value || "").split(":").join("\\n");
+        const textValue = String(value || "").split(":").join("\n");
         html += '<textarea id="' + fieldId + '" rows="4" ' +
                 'data-config-field="1" data-section="' + esc(section) + '" data-key="' + esc(key) + '"' +
                 (spec.placeholder ? ' placeholder="' + esc(spec.placeholder) + '"' : '') +
@@ -897,7 +918,9 @@ async function saveConfig(section) {
         if (btn) btn.disabled = false;
     }
 }
-window.saveConfig = saveConfig;"""
+window.saveConfig = saveConfig;
+
+"""
 
 _JS_TLS = r"""/* =====================================================================
    TLS Page
@@ -1286,7 +1309,9 @@ async function saveSANs() {
         btn.disabled = false;
     }
 }
-window.saveSANs = saveSANs;"""
+window.saveSANs = saveSANs;
+
+"""
 
 _JS_MODELS = r"""/* =====================================================================
    Models Page
@@ -1582,7 +1607,9 @@ async function setDefaultModel() {
         btn.disabled = false;
     }
 }
-window.setDefaultModel = setDefaultModel;"""
+window.setDefaultModel = setDefaultModel;
+
+"""
 
 _JS_PERSONAS = r"""/* =====================================================================
    Personas Page
@@ -1793,12 +1820,12 @@ function renderPolicyGuardrailsEditor() {
             '<div class="card policy-mini-card">' +
                 '<div class="card-title" style="margin-bottom:8px;">Never Allowed Commands</div>' +
                 '<div class="form-help" style="margin-bottom:8px;">One command prefix per line. Each shell segment is checked, so entries like <code>sqlite3</code> or <code>rm -rf</code> are blocked everywhere.</div>' +
-                '<textarea id="policy-never-allowed-commands" rows="8" placeholder="sqlite3&#10;rm -rf&#10;launchctl">' + esc((policyNeverAllowedCommands || []).join('\\n')) + '</textarea>' +
+                '<textarea id="policy-never-allowed-commands" rows="8" placeholder="sqlite3&#10;rm -rf&#10;launchctl">' + esc((policyNeverAllowedCommands || []).join('\n')) + '</textarea>' +
             '</div>' +
             '<div class="card policy-mini-card">' +
                 '<div class="card-title" style="margin-bottom:8px;">Blocked Path Prefixes</div>' +
                 '<div class="form-help" style="margin-bottom:8px;">One absolute path prefix per line. File tools and shell commands touching these locations are denied, even at Full Admin.</div>' +
-                '<textarea id="policy-blocked-path-prefixes" rows="8" placeholder="/Users/you/project/state&#10;/Users/you/.ssh">' + esc((policyBlockedPathPrefixes || []).join('\\n')) + '</textarea>' +
+                '<textarea id="policy-blocked-path-prefixes" rows="8" placeholder="/Users/you/project/state&#10;/Users/you/.ssh">' + esc((policyBlockedPathPrefixes || []).join('\n')) + '</textarea>' +
             '</div>' +
         '</div>' +
         '<div class="policy-editor-actions">' +
@@ -2144,9 +2171,9 @@ async function deletePersona() {
         btnDelete.disabled = false;
     }
 }
-window.deletePersona = deletePersona;"""
+window.deletePersona = deletePersona;
 
-_JS_POLICY = r"""/* =====================================================================
+/* =====================================================================
    Policy Page
    ===================================================================== */
 
@@ -2211,7 +2238,9 @@ function renderPolicyTable() {
         '</div>';
 }
 
-async function loadPolicies() {
+"""
+
+_JS_POLICY = r"""async function loadPolicies() {
     var btnRefresh = document.getElementById("btn-policy-refresh");
     if (btnRefresh) btnRefresh.disabled = true;
     renderPolicyLevelGuide();
@@ -2281,7 +2310,7 @@ function _collectMultilineValues(elementId) {
     var el = document.getElementById(elementId);
     if (!el) return [];
     return String(el.value || '')
-        .split(/\\r?\\n/)
+        .split(/\r?\n/)
         .map(function(line) { return line.trim(); })
         .filter(Boolean);
 }
@@ -2618,7 +2647,9 @@ async function testAlerts() {
         btn.disabled = false;
     }
 }
-window.testAlerts = testAlerts;"""
+window.testAlerts = testAlerts;
+
+"""
 
 _JS_WORKSPACE = r"""/* =====================================================================
    Workspace Page
@@ -2706,7 +2737,7 @@ function renderWsSummary(result) {
     var projectMdExists = d.project_md_exists !== false;
     var memoryCount = d.memory_file_count != null ? d.memory_file_count : "—";
     var skillsCount = d.skills_count != null ? d.skills_count : "—";
-    var pathsText = workspacePaths.join('\\n');
+    var pathsText = workspacePaths.join('\n');
 
     el.innerHTML =
         '<div class="ws-summary-grid">' +
@@ -2940,7 +2971,7 @@ async function addMcpServer() {
     if (type === "stdio") {
         var cmdRaw = document.getElementById("mcp-command").value.trim();
         if (!cmdRaw) { showToast("Command is required", "error"); return; }
-        var parts = cmdRaw.split(/\\s+/);
+        var parts = cmdRaw.split(/\s+/);
         body.command = parts[0];
         if (parts.length > 1) body.args = parts.slice(1);
     } else {
@@ -3341,7 +3372,9 @@ function openModal(id) {
 function closeModal(id) {
     document.getElementById(id).classList.remove("modal-open");
 }
-window.closeModal = closeModal;"""
+window.closeModal = closeModal;
+
+"""
 
 _JS_REFRESH_TIMER = r"""/* =====================================================================
    Auto-Refresh Timer
@@ -3359,7 +3392,9 @@ function stopAutoRefresh() {
         clearInterval(refreshTimer);
         refreshTimer = null;
     }
-}"""
+}
+
+"""
 
 _JS_FORMATTERS = r"""/* =====================================================================
    Formatting Helpers
@@ -3471,7 +3506,9 @@ function renderError(message) {
         '</svg>' +
         esc(message) +
     '</div>';
-}"""
+}
+
+"""
 
 _JS_LOGS = r"""/* =====================================================================
    Logs Page
@@ -3539,7 +3576,7 @@ function renderLogLines(lines) {
         } else {
             cls = "log-line log-line-info";
         }
-        html += '<span class="' + cls + '">' + esc(text) + '</span>\\n';
+        html += '<span class="' + cls + '">' + esc(text) + '</span>\n';
     }
     viewer.innerHTML = html;
     /* Scroll to bottom */
@@ -3598,7 +3635,7 @@ async function toggleLiveTail() {
         } else {
             cls = "log-line log-line-info";
         }
-        viewer.innerHTML += '<span class="' + cls + '">' + esc(text) + '</span>\\n';
+        viewer.innerHTML += '<span class="' + cls + '">' + esc(text) + '</span>\n';
 
         /* Keep buffer trimmed to ~2000 lines */
         var spans = viewer.querySelectorAll(".log-line");
@@ -4641,7 +4678,9 @@ document.addEventListener("click", function(e) {
     } else if ((btn = e.target.closest("[data-policy-workspace-reset]"))) {
         resetWorkspaceToolPolicyDefaults();
     }
-});"""
+});
+
+"""
 
 _JS_INIT = r"""/* =====================================================================
    Initialization
@@ -4754,33 +4793,26 @@ if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
 } else {
     init();
-}"""
+}
 
-_JS_PREAMBLE = r"""/* =====================================================================
-   Apex Dashboard — Client-Side Application
-   ===================================================================== */
-
-(function() {
-"use strict";
-
-/* -- Constants ------------------------------------------------------ */"""
+"""
 
 DASHBOARD_JS = (
     _JS_PREAMBLE
-    + "\n\n" + _JS_GLOBALS
-    + "\n\n" + _JS_NAVIGATION
-    + "\n\n" + _JS_API_HELPERS
-    + "\n\n" + _JS_TOAST
-    + "\n\n" + _JS_HEALTH
-    + "\n\n" + _JS_CONFIG
-    + "\n\n" + _JS_TLS
-    + "\n\n" + _JS_MODELS
-    + "\n\n" + _JS_PERSONAS
-    + "\n\n" + _JS_POLICY
-    + "\n\n" + _JS_WORKSPACE
-    + "\n\n" + _JS_REFRESH_TIMER
-    + "\n\n" + _JS_FORMATTERS
-    + "\n\n" + _JS_LOGS
-    + "\n\n" + _JS_INIT
-    + "\n\n})();\n"
+    + _JS_GLOBALS
+    + _JS_NAVIGATION
+    + _JS_API_HELPERS
+    + _JS_TOAST
+    + _JS_HEALTH
+    + _JS_CONFIG
+    + _JS_TLS
+    + _JS_MODELS
+    + _JS_PERSONAS
+    + _JS_POLICY
+    + _JS_WORKSPACE
+    + _JS_REFRESH_TIMER
+    + _JS_FORMATTERS
+    + _JS_LOGS
+    + _JS_INIT
+    + "})();\n"
 )
