@@ -3443,11 +3443,18 @@ function toolResultSummary(name, content) {
   return null;
 }
 
-function linkifyInternalMarkdownLinks(html) {
-  return String(html || '').replace(
-    /\[([^\]]+)\]\((\/[^)]+)\)/g,
-    '<a href="$2" target="_blank" style="color:var(--accent);text-decoration:underline">$1</a>'
+function linkifyMarkdownLinks(html) {
+  // Markdown links: [text](url) — internal or external
+  let out = String(html || '').replace(
+    /\[([^\]]+)\]\(([^)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline">$1</a>'
   );
+  // Bare URLs not already inside an href="..." or >...</a>
+  out = out.replace(
+    /(?<!href="|">)(https?:\/\/[^\s<)]+)/g,
+    '<a href="$1" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline">$1</a>'
+  );
+  return out;
 }
 
 function renderInlineMarkdown(text) {
@@ -3456,7 +3463,7 @@ function renderInlineMarkdown(text) {
   html = html.replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>');
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-  return linkifyInternalMarkdownLinks(html);
+  return linkifyMarkdownLinks(html);
 }
 
 function renderMarkdown(el, rawText) {
