@@ -46,6 +46,7 @@ body.theme-light .banner-critical{color:#B91C1C}
 .msg.user{margin-left:auto;background:var(--accent);color:white;padding:10px 14px;
 border-radius:16px 16px 4px 16px;font-size:calc(15px * var(--chat-font-scale));line-height:1.4;word-break:break-word}
 .msg.user .msg-text{white-space:pre-wrap}
+.msg.user a,.msg.user a:visited{color:white!important;text-decoration-color:rgba(255,255,255,.85)}
 .msg.assistant{margin-right:auto}
 .msg.assistant .bubble{background:var(--surface);padding:10px 14px;
 border-radius:16px 16px 16px 4px;font-size:calc(15px * var(--chat-font-scale));line-height:1.5;word-break:break-word}
