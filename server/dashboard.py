@@ -3571,27 +3571,43 @@ async def api_alerts_test():
 # GET /api/workspace — Workspace summary
 # ---------------------------------------------------------------------------
 
+def _find_project_md() -> Path | None:
+    """Search all workspace paths for APEX.md or CLAUDE.md (first match wins)."""
+    for p in _workspace_paths_list():
+        root = Path(p)
+        apex_md = root / "APEX.md"
+        if apex_md.exists():
+            return apex_md
+        claude_md = root / "CLAUDE.md"
+        if claude_md.exists():
+            return claude_md
+    return None
+
+
 @dashboard_app.get("/api/workspace")
 async def api_workspace():
     """Workspace overview: path, project md exists, memory count, skills count."""
     workspace = _workspace_root()
-    # Prefer APEX.md (model-agnostic), fall back to CLAUDE.md for backward compat
-    apex_md = workspace / "APEX.md"
-    claude_md = workspace / "CLAUDE.md"
-    project_md = apex_md if apex_md.exists() else claude_md
-    memory_dir = workspace / "memory"
-    skills_dir = workspace / "skills"
 
-    memory_count = len(list(memory_dir.glob("*.md"))) if memory_dir.is_dir() else 0
-    skills_count = len(
-        _glob_mod.glob(str(skills_dir / "*" / "SKILL.md"))
-    ) if skills_dir.is_dir() else 0
+    # Scan all workspace paths for project md, memory, and skills
+    project_md = _find_project_md()
+
+    memory_count = 0
+    skills_count = 0
+    for p in _workspace_paths_list():
+        root = Path(p)
+        mem_dir = root / "memory"
+        if mem_dir.is_dir():
+            memory_count += len(list(mem_dir.glob("*.md")))
+        sk_dir = root / "skills"
+        if sk_dir.is_dir():
+            skills_count += len(_glob_mod.glob(str(sk_dir / "*" / "SKILL.md")))
 
     return JSONResponse({
         "workspace": str(workspace),
         "workspace_paths": _workspace_paths_list(),
-        "project_md_exists": project_md.exists(),
-        "project_md_name": project_md.name,
+        "project_md_exists": project_md is not None and project_md.exists(),
+        "project_md_name": project_md.name if project_md else "APEX.md",
         "memory_file_count": memory_count,
         "skills_count": skills_count,
     })
@@ -3603,14 +3619,10 @@ async def api_workspace():
 
 @dashboard_app.get("/api/workspace/project-md")
 async def api_workspace_project_md_get():
-    """Return the contents of APEX.md (or CLAUDE.md fallback)."""
-    workspace = _workspace_root()
-    # Prefer APEX.md (model-agnostic), fall back to CLAUDE.md for backward compat
-    apex_md = workspace / "APEX.md"
-    claude_md = workspace / "CLAUDE.md"
-    project_md = apex_md if apex_md.exists() else claude_md
-    if not project_md.exists():
-        return _error("Project instructions file not found (tried APEX.md and CLAUDE.md)", "NOT_FOUND", status=404)
+    """Return the contents of APEX.md (or CLAUDE.md fallback), scanning all workspace paths."""
+    project_md = _find_project_md()
+    if not project_md:
+        return _error("Project instructions file not found (tried APEX.md and CLAUDE.md in all workspace paths)", "NOT_FOUND", status=404)
     try:
         content = project_md.read_text(encoding="utf-8")
     except Exception as e:
@@ -3629,18 +3641,18 @@ async def api_workspace_project_md_get():
 
 @dashboard_app.put("/api/workspace/project-md")
 async def api_workspace_project_md_put(request: Request):
-    """Write APEX.md (or CLAUDE.md fallback) after backing up."""
-    workspace = _workspace_root()
+    """Write APEX.md (or CLAUDE.md fallback) after backing up. Scans all workspace paths."""
     body = await request.json()
     content = body.get("content")
     if content is None:
         return _error("Missing 'content' field", "BAD_REQUEST", status=400)
 
-    # Prefer APEX.md (model-agnostic), fall back to CLAUDE.md for backward compat
-    apex_md = workspace / "APEX.md"
-    claude_md = workspace / "CLAUDE.md"
-    project_md = apex_md if apex_md.exists() else claude_md
-    bak = workspace / f"{project_md.name}.bak"
+    # Find existing file across all workspace paths, or create in primary root
+    project_md = _find_project_md()
+    if not project_md:
+        # No existing file — create APEX.md in the primary workspace root
+        project_md = _workspace_root() / "APEX.md"
+    bak = project_md.parent / f"{project_md.name}.bak"
 
     try:
         if project_md.exists():
@@ -3664,21 +3676,26 @@ async def api_workspace_project_md_put(request: Request):
 @dashboard_app.get("/api/workspace/memory")
 async def api_workspace_memory():
     """List all memory/*.md files with name, size, and modified time."""
-    memory_dir = _workspace_root() / "memory"
-    if not memory_dir.is_dir():
-        return JSONResponse({"files": []})
-
     files = []
-    for p in sorted(memory_dir.glob("*.md")):
-        st = p.stat()
-        files.append({
-            "name": p.name,
-            "size_bytes": st.st_size,
-            "modified": datetime.fromtimestamp(
-                st.st_mtime, tz=timezone.utc
-            ).isoformat(),
-        })
+    seen_names: set[str] = set()
+    for ws in _workspace_paths_list():
+        memory_dir = Path(ws) / "memory"
+        if not memory_dir.is_dir():
+            continue
+        for p in sorted(memory_dir.glob("*.md")):
+            if p.name in seen_names:
+                continue
+            seen_names.add(p.name)
+            st = p.stat()
+            files.append({
+                "name": p.name,
+                "size_bytes": st.st_size,
+                "modified": datetime.fromtimestamp(
+                    st.st_mtime, tz=timezone.utc
+                ).isoformat(),
+            })
 
+    files.sort(key=lambda f: f["name"])
     return JSONResponse({"files": files, "count": len(files)})
 
 
@@ -3695,15 +3712,20 @@ async def api_workspace_memory_read(name: str):
     if not _MEMORY_NAME_RE.match(name):
         return _error("Invalid memory file name", "INVALID_NAME", 400)
 
-    memory_dir = _workspace_root() / "memory"
-    path = memory_dir / name
-    # Prevent path traversal
-    try:
-        path.resolve().relative_to(memory_dir.resolve())
-    except ValueError:
-        return _error("Invalid memory file path", "PATH_TRAVERSAL", 400)
+    # Search all workspace paths for the memory file
+    path = None
+    for ws in _workspace_paths_list():
+        candidate = Path(ws) / "memory" / name
+        if candidate.exists():
+            # Prevent path traversal
+            try:
+                candidate.resolve().relative_to((Path(ws) / "memory").resolve())
+            except ValueError:
+                return _error("Invalid memory file path", "PATH_TRAVERSAL", 400)
+            path = candidate
+            break
 
-    if not path.exists():
+    if not path:
         return _error(f"Memory file '{name}' not found", "NOT_FOUND", 404)
 
     try:
@@ -3820,11 +3842,7 @@ def _parse_skill_frontmatter(skill_path: Path) -> dict[str, str]:
 
 @dashboard_app.get("/api/skills")
 async def api_skills():
-    """List installed skills by scanning skills/*/SKILL.md."""
-    skills_dir = _workspace_root() / "skills"
-    if not skills_dir.is_dir():
-        return JSONResponse({"skills": [], "count": 0})
-
+    """List installed skills by scanning skills/*/SKILL.md across all workspace paths."""
     # Load disabled list
     skills_config_path = _state_dir / "skills_config.json" if _state_dir else None
     disabled: list[str] = []
@@ -3837,16 +3855,25 @@ async def api_skills():
             pass
 
     skills = []
-    for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
-        info = _parse_skill_frontmatter(skill_md)
-        dir_name = skill_md.parent.name
-        skills.append({
-            "dir": dir_name,
-            "name": info["name"],
-            "description": info["description"],
-            "enabled": dir_name not in disabled,
-        })
+    seen_dirs: set[str] = set()
+    for ws in _workspace_paths_list():
+        skills_dir = Path(ws) / "skills"
+        if not skills_dir.is_dir():
+            continue
+        for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
+            dir_name = skill_md.parent.name
+            if dir_name in seen_dirs:
+                continue
+            seen_dirs.add(dir_name)
+            info = _parse_skill_frontmatter(skill_md)
+            skills.append({
+                "dir": dir_name,
+                "name": info["name"],
+                "description": info["description"],
+                "enabled": dir_name not in disabled,
+            })
 
+    skills.sort(key=lambda s: s["name"])
     return JSONResponse({"skills": skills, "count": len(skills)})
 
 
