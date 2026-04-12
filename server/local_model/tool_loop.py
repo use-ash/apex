@@ -49,7 +49,13 @@ _native_tool_support: dict[str, bool] = {}
 
 
 def _check_native_tool_support(ollama_url: str, model: str) -> bool:
-    """Check if model's Ollama template handles tools natively."""
+    """Check if an Ollama model supports native tool calling.
+
+    First checks the ``capabilities`` list returned by ``/api/show``
+    (preferred — works for newer models like qwen3.5 whose template is
+    just ``{{ .Prompt }}``).  Falls back to inspecting the template
+    string for ``.Tools`` references (legacy models).
+    """
     if model in _native_tool_support:
         return _native_tool_support[model]
     try:
@@ -60,11 +66,19 @@ def _check_native_tool_support(ollama_url: str, model: str) -> bool:
         )
         resp = urllib.request.urlopen(req, timeout=10)
         data = json.loads(resp.read().decode())
+
+        # Preferred: check capabilities list (Ollama 0.9+)
+        capabilities = data.get("capabilities", [])
+        if "tools" in capabilities:
+            _native_tool_support[model] = True
+            return True
+
+        # Fallback: check template string for tool handling
         template = data.get("template", "")
-        supported = ".Tools" in template or "tools" in template.lower() and "tool_call" in template.lower()
+        supported = ".Tools" in template or ("tools" in template.lower() and "tool_call" in template.lower())
         _native_tool_support[model] = supported
         if not supported:
-            log.info("Model %s lacks native tool template — using text-based tool calling", model)
+            log.info("Model %s lacks native tool support — using text-based tool calling", model)
         return supported
     except Exception:
         # If we can't check, assume native support (don't break existing models)
@@ -262,11 +276,17 @@ def _parse_text_tool_calls(text: str) -> tuple[str, list[dict]]:
 
 def _call_ollama(ollama_url: str, model: str, messages: list, tools: list,
                   *, use_native_tools: bool = True) -> dict:
-    """Synchronous Ollama API call (runs in thread)."""
+    """Synchronous Ollama API call (runs in thread).
+
+    Uses streaming mode internally to work around an Ollama bug where
+    ``stream: false`` returns ``{"error":"EOF"}`` for thinking-capable
+    models (e.g. qwen3.5).  Chunks are accumulated and reassembled into
+    the same response shape that non-streaming mode would return.
+    """
     payload: dict = {
         "model": model,
         "messages": messages,
-        "stream": False,
+        "stream": True,
         "options": {"num_ctx": DEFAULT_NUM_CTX},
     }
     if tools and use_native_tools:
@@ -277,8 +297,39 @@ def _call_ollama(ollama_url: str, model: str, messages: list, tools: list,
         headers={"Content-Type": "application/json"},
     )
     resp = urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT)
-    raw = resp.read().decode()
-    return json.loads(raw)
+
+    # Accumulate streamed chunks into a single response dict
+    thinking_parts: list[str] = []
+    content_parts: list[str] = []
+    tool_calls: list[dict] | None = None
+    final_chunk: dict = {}
+    for line in resp:
+        if not line.strip():
+            continue
+        chunk = json.loads(line.decode())
+        msg = chunk.get("message", {})
+        if msg.get("thinking"):
+            thinking_parts.append(msg["thinking"])
+        if msg.get("content"):
+            content_parts.append(msg["content"])
+        # Tool calls appear in the final chunk for native-tool models
+        if msg.get("tool_calls"):
+            tool_calls = msg["tool_calls"]
+        if chunk.get("done"):
+            final_chunk = chunk
+            break
+
+    # Reassemble into the non-streaming response shape
+    assembled_msg: dict = {
+        "role": "assistant",
+        "content": "".join(content_parts),
+    }
+    if thinking_parts:
+        assembled_msg["thinking"] = "".join(thinking_parts)
+    if tool_calls:
+        assembled_msg["tool_calls"] = tool_calls
+    final_chunk["message"] = assembled_msg
+    return final_chunk
 
 
 def _call_openai_compat(api_url: str, model: str, messages: list, tools: list, api_key: str) -> dict:

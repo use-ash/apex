@@ -1,4 +1,4 @@
-"""Model backend routing — Ollama, MLX, Claude, Grok, Codex.
+"""Model backend routing — Ollama, MLX, Claude, Grok, Codex, DeepSeek, Zhipu, Gemini.
 
 Layer 1: depends only on log.py (Layer 0).
 """
@@ -33,6 +33,12 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "codex:gpt-5.3-codex": 272_000,
     "codex:gpt-5.2": 272_000,
     "codex:gpt-5.1-codex-max": 272_000,
+    "deepseek-chat": 128_000,
+    "deepseek-reasoner": 128_000,
+    "glm-5.1": 128_000,
+    "glm-4.7-flash": 128_000,
+    "gemini-2.5-pro": 1_000_000,
+    "gemini-2.5-flash": 1_000_000,
 }
 MODEL_CONTEXT_DEFAULT = 128_000  # fallback for local/unknown models
 
@@ -52,6 +58,12 @@ REMOTE_MODEL_OPTIONS = [
     {"id": "codex:gpt-5.3-codex",   "displayName": "GPT-5.3",          "provider": "openai",    "local": False},
     {"id": "codex:gpt-5.2",         "displayName": "GPT-5.2",          "provider": "openai",    "local": False},
     {"id": "codex:gpt-5.1-codex-max","displayName": "GPT-5.1 Max",     "provider": "openai",    "local": False},
+    {"id": "deepseek-chat",          "displayName": "DeepSeek V3",      "provider": "deepseek",  "local": False},
+    {"id": "deepseek-reasoner",      "displayName": "DeepSeek R1",      "provider": "deepseek",  "local": False},
+    {"id": "glm-5.1",               "displayName": "GLM-5.1",          "provider": "zhipu",     "local": False},
+    {"id": "glm-4.7-flash",         "displayName": "GLM-4.7 Flash",    "provider": "zhipu",     "local": False},
+    {"id": "gemini-2.5-pro",        "displayName": "Gemini 2.5 Pro",   "provider": "google",    "local": False},
+    {"id": "gemini-2.5-flash",      "displayName": "Gemini 2.5 Flash", "provider": "google",    "local": False},
 ]
 
 
@@ -72,6 +84,12 @@ def _get_model_backend(model: str) -> str:
         return "claude"
     elif model.startswith("grok-"):
         return "xai"
+    elif model.startswith("deepseek"):
+        return "deepseek"
+    elif model.startswith("glm"):
+        return "zhipu"
+    elif model.startswith("gemini"):
+        return "google"
     elif model.startswith("mlx:"):
         return "mlx"
     else:

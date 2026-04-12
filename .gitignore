@@ -88,6 +88,9 @@ site/
 # Promote to main dirs when ready to ship.
 custom/
 
+# Code review graph (local dependency analysis, never commit)
+.code-review-graph/
+
 # Working directory — operational scratch files, not for OSS distribution
 # These are local working artifacts: bug tracking, design mockups, research notes.
 # Nothing here ships in the OSS repo.

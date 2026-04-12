@@ -17,6 +17,7 @@ from pathlib import Path
 import env
 from env import (
     MODEL, DEBUG, CODEX_CLI, OPENAI_API_KEY, XAI_API_KEY,
+    DEEPSEEK_API_KEY, ZHIPU_API_KEY, GOOGLE_API_KEY,
     MAX_TOOL_ITERATIONS, ALLOW_LOCAL_TOOLS,
 )
 
@@ -237,6 +238,9 @@ _BACKEND_LABELS = {
     "codex": "Codex",
     "ollama": "Ollama",
     "xai": "xAI",
+    "deepseek": "DeepSeek",
+    "zhipu": "Zhipu",
+    "google": "Gemini",
     "mlx": "MLX",
 }
 _CODEX_RESPONSES_API_MODELS = {"o3", "o4-mini"}
@@ -249,7 +253,7 @@ def validate_backend_attachments(backend: str, attachments: list[dict] | None) -
     if backend == "codex":
         return "Attachments are not supported for Codex chats yet. Switch this chat to Claude to send files."
 
-    if backend in {"ollama", "xai", "mlx"} and any(item["type"] == "text" for item in loaded):
+    if backend in {"ollama", "xai", "deepseek", "zhipu", "google", "mlx"} and any(item["type"] == "text" for item in loaded):
         label = _BACKEND_LABELS.get(backend, backend)
         return f"Text attachments are not supported for {label} chats yet. Image attachments still work."
 
@@ -746,6 +750,51 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 workspace=runtime_workspace_paths,
                 api_key=XAI_API_KEY,
                 api_url="https://api.x.ai/v1",
+                max_iterations=MAX_TOOL_ITERATIONS,
+                permission_level=permission_level,
+                allowed_tools=allowed_local_tools,
+                allowed_commands=allowed_commands,
+                audit_context=audit_context,
+            )
+        elif backend == "deepseek":
+            result = await run_tool_loop(
+                ollama_url=OLLAMA_BASE_URL,
+                model=effective_model,
+                messages=messages,
+                emit_event=emit,
+                workspace=runtime_workspace_paths,
+                api_key=DEEPSEEK_API_KEY,
+                api_url="https://api.deepseek.com",
+                max_iterations=MAX_TOOL_ITERATIONS,
+                permission_level=permission_level,
+                allowed_tools=allowed_local_tools,
+                allowed_commands=allowed_commands,
+                audit_context=audit_context,
+            )
+        elif backend == "zhipu":
+            result = await run_tool_loop(
+                ollama_url=OLLAMA_BASE_URL,
+                model=effective_model,
+                messages=messages,
+                emit_event=emit,
+                workspace=runtime_workspace_paths,
+                api_key=ZHIPU_API_KEY,
+                api_url="https://open.z.ai/api/paas/v4",
+                max_iterations=MAX_TOOL_ITERATIONS,
+                permission_level=permission_level,
+                allowed_tools=allowed_local_tools,
+                allowed_commands=allowed_commands,
+                audit_context=audit_context,
+            )
+        elif backend == "google":
+            result = await run_tool_loop(
+                ollama_url=OLLAMA_BASE_URL,
+                model=effective_model,
+                messages=messages,
+                emit_event=emit,
+                workspace=runtime_workspace_paths,
+                api_key=GOOGLE_API_KEY,
+                api_url="https://generativelanguage.googleapis.com/v1beta/openai",
                 max_iterations=MAX_TOOL_ITERATIONS,
                 permission_level=permission_level,
                 allowed_tools=allowed_local_tools,

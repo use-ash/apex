@@ -125,6 +125,8 @@ async def api_setup_status():
             "anthropic": _env_has_key("ANTHROPIC_API_KEY"),
             "claude_oauth": bool(os.environ.get("ANTHROPIC_API_KEY", ""))
                             and not _env_has_key("ANTHROPIC_API_KEY"),
+            "deepseek": _env_has_key("DEEPSEEK_API_KEY"),
+            "zhipu": _env_has_key("ZHIPU_API_KEY"),
             "ollama": ollama_running,
         },
         "workspace": {
@@ -260,6 +262,8 @@ _KEY_MAP = {
     "google_api_key": "GOOGLE_API_KEY",
     "anthropic_api_key": "ANTHROPIC_API_KEY",
     "openai_api_key": "OPENAI_API_KEY",
+    "deepseek_api_key": "DEEPSEEK_API_KEY",
+    "zhipu_api_key": "ZHIPU_API_KEY",
 }
 
 
@@ -301,6 +305,28 @@ async def _validate_optional_key(field: str, value: str) -> str | None:
                     return "OpenAI: Invalid API key. Check your key at platform.openai.com."
                 if r.status_code != 200:
                     return f"OpenAI: API returned {r.status_code}. Try again."
+
+            elif field == "deepseek_api_key":
+                # DeepSeek: list models (OpenAI-compatible)
+                r = await client.get(
+                    "https://api.deepseek.com/models",
+                    headers={"Authorization": f"Bearer {value}"},
+                )
+                if r.status_code == 401:
+                    return "DeepSeek: Invalid API key. Check your key at platform.deepseek.com."
+                if r.status_code != 200:
+                    return f"DeepSeek: API returned {r.status_code}. Try again."
+
+            elif field == "zhipu_api_key":
+                # Zhipu/Z.ai: list models (OpenAI-compatible)
+                r = await client.get(
+                    "https://open.z.ai/api/paas/v4/models",
+                    headers={"Authorization": f"Bearer {value}"},
+                )
+                if r.status_code == 401:
+                    return "Zhipu: Invalid API key. Check your key at z.ai."
+                if r.status_code != 200:
+                    return f"Zhipu: API returned {r.status_code}. Try again."
 
     except httpx.TimeoutException:
         return f"{field}: Validation timed out. Check your internet connection."

@@ -89,6 +89,7 @@ async def _run_server(conn: MCPConnection, config: dict):
     command = config.get("command", "")
     args = config.get("args", [])
     env = config.get("env") or None
+    cwd = config.get("cwd") or None
 
     if not command:
         log.warning("MCP bridge: skipping %s (no command)", conn.name)
@@ -98,6 +99,7 @@ async def _run_server(conn: MCPConnection, config: dict):
         command=command,
         args=args,
         env=env,
+        cwd=cwd,
     )
 
     try:
