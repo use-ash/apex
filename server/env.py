@@ -102,6 +102,35 @@ def get_runtime_workspace_root() -> Path:
     return Path(roots[0] if roots else str(WORKSPACE))
 
 
+def iter_workspace_skill_files(
+    workspace_roots: list[str] | None = None,
+) -> list[Path]:
+    """Return deduplicated SKILL.md files from workspace and mirrored roots."""
+    roots = workspace_roots or get_runtime_workspace_paths_list()
+    results: list[Path] = []
+    seen: set[str] = set()
+
+    for root_str in roots:
+        root = Path(root_str)
+        for skills_dir in (
+            root / "skills",
+            root / ".claude" / "skills",
+            root / ".codex" / "skills",
+        ):
+            if not skills_dir.is_dir():
+                continue
+            for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
+                try:
+                    key = str(skill_md.parent.resolve())
+                except OSError:
+                    key = str(skill_md.parent)
+                if key in seen:
+                    continue
+                seen.add(key)
+                results.append(skill_md)
+    return results
+
+
 def rewrite_mcp_servers_for_workspace(
     servers: dict[str, dict],
     workspace_paths: str | list[str] | None = None,

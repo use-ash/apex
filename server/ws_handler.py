@@ -1099,7 +1099,8 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             prompt = f"{_recall_context}{prompt}"
 
         if ENABLE_SUBCONSCIOUS_WHISPER and backend in ("ollama", "xai", "mlx", "codex"):
-            whisper = _get_whisper_text(chat_id, current_prompt=prompt)
+            whisper = _get_whisper_text(chat_id, current_prompt=prompt,
+                                        model_hint=chat_model)
             if whisper:
                 prompt = f"{whisper}{prompt}"
 
@@ -1148,7 +1149,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                     )
 
             if chat["title"] in ("New Chat", "New Channel", "Quick thread"):
-                title_source = prompt or display_prompt
+                title_source = display_prompt or user_visible_prompt or prompt
                 title = title_source[:50] + ("..." if len(title_source) > 50 else "")
                 _update_chat(chat_id, title=title)
                 await _safe_ws_send_json(

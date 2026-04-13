@@ -21,21 +21,26 @@ from zoneinfo import ZoneInfo
 from db import (
     _get_db, _get_chat, _update_chat,
     _get_messages, _get_recent_messages_text, _get_cumulative_tokens_in,
+    _get_last_turn_tokens_in, _estimate_tokens, _get_last_turn_cost,
     _get_session_analysis_data,
     _get_group_members, _get_persona_memories, _bump_memory_access,
     _get_last_assistant_speaker,
     _now, SYSTEM_PROFILE_ID, _get_chat_settings,
-    verify_system_prompt,
+    verify_system_prompt, _persist_compaction_at,
 )
 import env
 from log import log
 from group_coordinator import _build_group_relay_state_prompt
-from model_dispatch import _get_model_backend, OLLAMA_BASE_URL
+from model_dispatch import (
+    _get_model_backend, OLLAMA_BASE_URL,
+    MODEL_CONTEXT_WINDOWS, MODEL_CONTEXT_DEFAULT,
+    MODEL_INPUT_PRICE, MODEL_OUTPUT_PRICE,
+)
 from streaming import _get_profile_active_stream_stats
 from state import (
     _compaction_summaries, _compaction_session_type,
     _recovery_target, _recovery_skip_count,
-    _last_compacted_at, _session_context_sent,
+    _last_compacted_at, _last_fuel_phase, _session_context_sent,
     _group_profile_override, _whisper_last,
     _db_lock, _current_group_profile_id, _queued_turns,
     _chat_ws, _clients,
@@ -172,6 +177,203 @@ def _get_live_state_snapshot() -> str:
     if len(lines) <= 1:
         return ""
     return "<system-reminder>\n" + "\n".join(lines) + "\n</system-reminder>"
+
+
+# ---------------------------------------------------------------------------
+# Context energy (MOP fuel gauge)
+# ---------------------------------------------------------------------------
+
+_PHASE_ORDER = {"explore": 0, "consolidate": 1, "preserve": 2, "critical": 3}
+
+
+def _write_phase_checkpoint(
+    chat_id: str, phase: str, pct: float,
+    context_used: int, context_window: int,
+) -> None:
+    """Server-side auto-checkpoint on upward phase transition.
+
+    Writes recent assistant messages to disk so that context is preserved
+    even if the model ignores the fuel gauge nudge.  This is Fix 2 of the
+    knowing-doing gap: the server acts, the model doesn't have to.
+    """
+    try:
+        checkpoint_dir = APEX_ROOT / "state" / "checkpoints"
+        checkpoint_dir.mkdir(exist_ok=True)
+
+        # Gather recent assistant messages (full content, not truncated)
+        messages = _get_session_analysis_data(chat_id)
+
+        chat = _get_chat(chat_id)
+        title = ((chat.get("title") or "untitled")[:80]) if chat else "untitled"
+        chat_model = (chat.get("model") or "unknown") if chat else "unknown"
+
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        filename = f"{chat_id}_{phase}_{ts}.md"
+
+        header = (
+            f"# Context Checkpoint: {phase}\n"
+            f"chat_id: {chat_id}\n"
+            f"title: {title}\n"
+            f"model: {chat_model}\n"
+            f"timestamp: {ts}\n"
+            f"context_used: {context_used:,} / {context_window:,} ({pct:.0%})\n"
+            f"phase: {phase}\n"
+        )
+
+        body_parts: list[str] = []
+        # Last 5 assistant messages, capped at 3K chars each
+        for msg in messages[-5:]:
+            text = (msg.get("content") or "")[:3000]
+            if text.strip():
+                body_parts.append(f"\n---\n{text}")
+
+        content = header + "\n## Recent Assistant Messages\n" + "\n".join(body_parts)
+        (checkpoint_dir / filename).write_text(content)
+        log(f"checkpoint: {phase} @ {pct:.0%} -> {filename}")
+    except Exception as e:
+        log(f"checkpoint write failed: {e}")
+
+
+def _estimate_tokens_from_cost(chat_id: str, chat_model: str) -> int:
+    """Derive context token count from the last turn's cost.
+
+    When the Claude Agent SDK returns garbage tokens_in values (3-12 instead
+    of real cumulative context counts), the per-turn cost is still accurate
+    because Anthropic bills on actual token usage.  We can reverse-engineer
+    the input token count:
+
+        input_tokens ≈ (cost_usd - tokens_out × output_price) / input_price
+
+    Returns 0 if pricing data is unavailable for the model.
+    """
+    input_price = MODEL_INPUT_PRICE.get(chat_model, 0.0)
+    output_price = MODEL_OUTPUT_PRICE.get(chat_model, 0.0)
+    if input_price <= 0:
+        return 0  # no pricing data — can't estimate
+
+    cost_usd, tokens_out = _get_last_turn_cost(chat_id)
+    if cost_usd <= 0:
+        return 0
+
+    # Subtract estimated output cost to isolate input cost
+    output_cost = tokens_out * output_price
+    input_cost = max(cost_usd - output_cost, 0.0)
+    estimated = int(input_cost / input_price)
+    return max(estimated, 0)
+
+
+def _get_context_energy_prompt(chat_id: str) -> str:
+    """Build a per-turn context budget signal for the agent.
+
+    Reports current context fill, model window size, and a behavioral phase
+    label (explore / consolidate / preserve / critical) based on how close
+    the agent is to the compaction absorbing state.
+
+    Inspired by the Maximum Occupancy Principle (MOP): context window is
+    internal energy.  The agent should shift behavior as context fills,
+    externalizing findings proactively to maximize post-compaction path space.
+    """
+    # Resolve model for this chat
+    chat = _get_chat(chat_id)
+    if not chat:
+        return ""
+    chat_model = chat.get("model") or ""
+    if not chat_model:
+        profile_id = chat.get("profile_id", "")
+        if profile_id:
+            with _db_lock:
+                conn = _get_db()
+                prow = conn.execute(
+                    "SELECT COALESCE(o.model, p.model) FROM agent_profiles p "
+                    "LEFT JOIN persona_model_overrides o ON o.profile_id = p.id "
+                    "WHERE p.id = ?", (profile_id,)
+                ).fetchone()
+                conn.close()
+            if prow and prow[0]:
+                chat_model = prow[0]
+    chat_model = chat_model or MODEL
+
+    context_window = MODEL_CONTEXT_WINDOWS.get(chat_model, MODEL_CONTEXT_DEFAULT)
+
+    # Best estimate of current context fill — three signals, take the max:
+    #   1. sdk_tokens:  SDK tokens_in (authoritative when correct, but Claude
+    #      Agent SDK often returns garbage values like 3-12)
+    #   2. est_tokens:  char-based SUM(LENGTH(content))/4 (resets after compaction,
+    #      so it underestimates after long sessions with compaction)
+    #   3. cost_tokens: derived from last turn's billing cost (most reliable for
+    #      Claude/Grok since Anthropic/xAI bill on real token counts)
+    # Cap at context_window as a safety valve.
+    sdk_tokens = _get_last_turn_tokens_in(chat_id)
+    est_tokens = _estimate_tokens(chat_id, context_window=context_window)
+    cost_tokens = _estimate_tokens_from_cost(chat_id, chat_model)
+    context_used = min(max(sdk_tokens, est_tokens, cost_tokens), context_window)
+    if cost_tokens > 0:
+        log(f"fuel gauge [{chat_id[:8]}]: sdk={sdk_tokens:,} est={est_tokens:,} "
+            f"cost={cost_tokens:,} → used={context_used:,}/{context_window:,} "
+            f"model={chat_model}")
+    if context_used == 0:
+        return ""  # no data yet (first turn)
+
+    pct = context_used / context_window if context_window > 0 else 0.0
+    compaction_pct = COMPACTION_THRESHOLD / context_window if context_window > 0 else 0.75
+
+    # Phase labels with behavioral nudges
+    if pct < 0.40:
+        phase = "explore"
+        nudge = ""
+    elif pct < 0.60:
+        phase = "consolidate"
+        nudge = (
+            "Context is filling. Begin externalizing key findings to durable storage "
+            "(memory tags, file artifacts) before they are lost to compaction."
+        )
+    elif pct < 0.80:
+        phase = "preserve"
+        nudge = (
+            "Context budget is running low. Prioritize: (1) completing the current task, "
+            "(2) writing a structured summary of decisions, alternatives considered, and "
+            "open questions to durable storage. Reduce speculative exploration."
+        )
+    else:
+        phase = "critical"
+        nudge = (
+            "APPROACHING COMPACTION. Stop new exploratory work. Write a checkpoint now: "
+            "task state, mental model, decision tree (options considered + trade-offs), "
+            "failed approaches, and user intent to durable storage."
+        )
+
+    # Estimate remaining turns (rough: assume ~2K tokens per exchange)
+    tokens_remaining = context_window - context_used
+    est_turns = max(1, tokens_remaining // 2000)
+    # Cap the estimate display to avoid false precision
+    if est_turns > 50:
+        turns_label = "50+"
+    elif est_turns > 20:
+        turns_label = f"~{(est_turns // 5) * 5}"
+    else:
+        turns_label = f"~{est_turns}"
+
+    def _fmt_k(n: int) -> str:
+        if n >= 1_000_000:
+            return f"{n / 1_000_000:.1f}M"
+        return f"{n // 1000}K"
+
+    lines = [
+        f"context_used: {_fmt_k(context_used)} / {_fmt_k(context_window)} ({pct:.0%})",
+        f"compaction_at: ~{compaction_pct:.0%} of window ({_fmt_k(COMPACTION_THRESHOLD)} output tokens)",
+        f"phase: {phase}",
+        f"est_turns_remaining: {turns_label}",
+    ]
+    if nudge:
+        lines.append(f"guidance: {nudge}")
+
+    # --- Server-side auto-checkpoint on upward phase transition ---
+    prev_phase = _last_fuel_phase.get(chat_id, "explore")
+    if _PHASE_ORDER.get(phase, 0) > _PHASE_ORDER.get(prev_phase, 0):
+        _write_phase_checkpoint(chat_id, phase, pct, context_used, context_window)
+    _last_fuel_phase[chat_id] = phase
+
+    return "<system-reminder>\n# Context Budget\n" + "\n".join(lines) + "\n</system-reminder>"
 
 
 # ---------------------------------------------------------------------------
@@ -602,7 +804,9 @@ async def _maybe_compact_chat(chat_id: str) -> bool:
     # Store session type alongside recovery context
     _compaction_session_type[chat_id] = session_type
 
-    _last_compacted_at[chat_id] = _now()
+    ts = _now()
+    _last_compacted_at[chat_id] = ts
+    _persist_compaction_at(chat_id, ts)  # survive server restart
 
     # Lazy import to avoid circular dependency
     from streaming import _disconnect_client, _send_stream_event
@@ -773,6 +977,9 @@ def _get_memory_prompt(chat_id: str, active_profile_id: str = "",
     lines.append('  <memory category="context">Important context for future conversations</memory>')
     lines.append('  <memory category="task">Pending task or follow-up</memory>')
     lines.append("The tag will be stripped from the displayed message. Use sparingly — only for things worth remembering across sessions.")
+    lines.append("Note: This persistent memory (above) is your primary memory system. "
+                 "The MCP `memory` tool (knowledge graph) is a separate, supplemental store — "
+                 "do not confuse the two. When asked about your memory, refer to this section first.")
     return "<system-reminder>\n# Persistent Memory\n" + "\n".join(lines).strip() + "\n</system-reminder>\n\n"
 
 
@@ -1114,9 +1321,23 @@ def _get_session_context_key(chat_id_or_key: str) -> str:
 
 
 def _get_workspace_context(chat_id: str) -> str:
-    """Load APEX.md + MEMORY.md + skills catalog once per session for Claude Code parity."""
+    """Load APEX.md + MEMORY.md + skills catalog once per session for Claude Code parity.
+
+    For Claude SDK sessions the system prompt persists across turns, so we gate
+    injection with ``_session_context_sent`` to avoid redundancy.  Ollama / Codex
+    backends rebuild the system prompt from scratch every turn — skipping it there
+    would silently drop CLAUDE.md, MEMORY.md, and the skills catalog on turn 2+.
+    """
     session_key = _get_session_context_key(chat_id)
-    if session_key in _session_context_sent:
+
+    # Determine if this chat uses a stateless backend (system prompt rebuilt
+    # every turn).  For those we must always re-inject workspace context.
+    _chat = _get_chat(chat_id)
+    _chat_model = (_chat.get("model") or MODEL) if _chat else MODEL
+    _backend = _get_model_backend(_chat_model)
+    _stateless = _backend != "claude"  # ollama, codex, grok — all stateless
+
+    if not _stateless and session_key in _session_context_sent:
         recovery_result = _try_consume_recovery(chat_id)
         if recovery_result is not None:
             summary, session_type = recovery_result
@@ -1135,7 +1356,6 @@ def _get_workspace_context(chat_id: str) -> str:
     claude_md = workspace / "CLAUDE.md"
     project_md = apex_md if apex_md.exists() else claude_md
     memory_md = workspace / "memory" / "MEMORY.md"
-    skills_dir = workspace / "skills"
     if project_md.exists():
         parts.append(f"<system-reminder>\n# Project Instructions\n{project_md.read_text()[:8000]}\n</system-reminder>")
     parts.append(
@@ -1149,9 +1369,10 @@ def _get_workspace_context(chat_id: str) -> str:
     )
     if memory_md.exists():
         parts.append(f"<system-reminder>\n# MEMORY.md (persistent memory)\n{memory_md.read_text()[:4000]}\n</system-reminder>")
-    if skills_dir.is_dir():
+    skill_files = env.iter_workspace_skill_files([str(workspace)])
+    if skill_files:
         skill_entries: list[str] = []
-        for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
+        for skill_md in skill_files:
             skill_name = skill_md.parent.name
             content = skill_md.read_text()
             desc = ""
@@ -1210,8 +1431,17 @@ def _has_session_context(chat_id_or_key: str) -> bool:
 # Subconscious whisper — inject guidance from background memory system
 # ---------------------------------------------------------------------------
 
-def _get_whisper_text(chat_id: str, current_prompt: str = "") -> str:
-    """Inject relevant memories based on current conversation topic via embeddings."""
+def _get_whisper_text(chat_id: str, current_prompt: str = "",
+                      model_hint: str = "") -> str:
+    """Inject relevant memories based on current conversation topic.
+
+    Combines two layers:
+      1. Canonical guidance (invariants, corrections) from the subconscious store
+      2. Embedding-based semantic search from memory files + transcripts
+
+    The canonical adapter (adapters/apex.py) merges both into a unified
+    <subconscious_whisper> block.
+    """
     now = time.time()
     last = _whisper_last.get(chat_id, 0)
     if last and (now - last) < WHISPER_INTERVAL:
@@ -1235,46 +1465,131 @@ def _get_whisper_text(chat_id: str, current_prompt: str = "") -> str:
                 _whisper_last[chat_id] = now
                 return ""
 
-        embed_path = str(_workspace_root() / "skills" / "embedding")
-        if embed_path not in sys.path:
-            sys.path.insert(0, embed_path)
-        import importlib
-        _ms = importlib.import_module("memory_search")
-        results = _ms.search(query, top_k=5, sources=["memory", "transcripts"])
+        # --- Layer 1: Canonical guidance from subconscious store ---
+        guidance_lines = []
+        try:
+            # Find the workspace root that contains the subconscious scripts
+            sub_path = None
+            for wp in env.get_runtime_workspace_paths_list():
+                candidate = Path(wp) / "scripts" / "subconscious"
+                if (candidate / "canonical_store.py").exists():
+                    sub_path = str(candidate)
+                    break
+            if sub_path is None:
+                sub_path = str(_workspace_root() / "scripts" / "subconscious")
+            if sub_path not in sys.path:
+                sys.path.insert(0, sub_path)
 
-        for r in results:
-            if r.get("source") == "transcripts":
-                r["score"] *= 0.6
-            # Staleness decay: older memory files score lower
-            fpath = Path(r.get("file", ""))
-            if fpath.exists():
-                age_days = (time.time() - fpath.stat().st_mtime) / 86400
-                if age_days > 30:
+            # The subconscious package uses bare `import config` and
+            # `import state` which collide with the server's own modules
+            # cached in sys.modules.  Temporarily swap them out.
+            import importlib.util
+            _colliding = ("config", "state")
+            _saved = {name: sys.modules.pop(name, None) for name in _colliding}
+            try:
+                for name in _colliding:
+                    mod_file = Path(sub_path) / f"{name}.py"
+                    if mod_file.exists():
+                        spec = importlib.util.spec_from_file_location(
+                            name, str(mod_file))
+                        mod = importlib.util.module_from_spec(spec)
+                        sys.modules[name] = mod
+                        spec.loader.exec_module(mod)
+
+                # Force-reload canonical_store so it picks up the right deps
+                if "canonical_store" in sys.modules:
+                    importlib.reload(sys.modules["canonical_store"])
+                from canonical_store import CanonicalStore
+                from adapters.apex import render_guidance_whisper, merge_with_embeddings
+            finally:
+                # Restore the server's modules
+                for name in _colliding:
+                    if _saved[name] is not None:
+                        sys.modules[name] = _saved[name]
+                    elif name in sys.modules:
+                        del sys.modules[name]
+
+            store = CanonicalStore()
+            envelope = store.build_envelope(
+                backend="apex",
+                session_id=chat_id,
+            )
+            guidance_lines = render_guidance_whisper(
+                envelope, max_items=5, query=query, model_hint=model_hint)
+        except Exception as e:
+            log(f"Whisper canonical guidance error (non-fatal): {e}")
+
+        # --- Layer 2: Embedding-based semantic search ---
+        results = []
+        try:
+            embed_path = None
+            for wp in env.get_runtime_workspace_paths_list():
+                candidate = Path(wp) / "skills" / "embedding"
+                if (candidate / "memory_search.py").exists():
+                    embed_path = str(candidate)
+                    break
+            if embed_path is None:
+                embed_path = str(_workspace_root() / "skills" / "embedding")
+            if embed_path not in sys.path:
+                sys.path.insert(0, embed_path)
+            import importlib
+            _ms = importlib.import_module("memory_search")
+            results = _ms.search(query, top_k=5, sources=["memory", "transcripts"])
+
+            for r in results:
+                if r.get("source") == "transcripts":
                     r["score"] *= 0.6
-                    r["_stale"] = True
-                elif age_days > 14:
-                    r["score"] *= 0.8
-                    r["_stale"] = True
-        results.sort(key=lambda x: x.get("score", 0), reverse=True)
+                # Staleness decay: older memory files score lower
+                fpath = Path(r.get("file", ""))
+                if fpath.exists():
+                    age_days = (time.time() - fpath.stat().st_mtime) / 86400
+                    if age_days > 30:
+                        r["score"] *= 0.6
+                        r["_stale"] = True
+                    elif age_days > 14:
+                        r["score"] *= 0.8
+                        r["_stale"] = True
+            results.sort(key=lambda x: x.get("score", 0), reverse=True)
+        except Exception as e:
+            log(f"Whisper embedding search error (non-fatal): {e}")
 
-        relevant = [r for r in results if r.get("score", 0) >= 0.55][:3]
-        if not relevant:
+        # --- Merge both layers ---
+        if not guidance_lines and not results:
             _whisper_last[chat_id] = now
             return ""
 
-        lines = ["<subconscious_whisper>"]
-        lines.append("Relevant memories for this conversation:")
-        for r in relevant:
-            name = Path(r["file"]).stem
-            src = r.get("source", "memory")[:4]
-            score_str = f"score={r['score']:.2f}"
-            stale_tag = " STALE — verify before using" if r.get("_stale") else ""
-            lines.append(f"- [{name}] ({src} {score_str}{stale_tag}) {r.get('content', '')[:200]}")
-        lines.append("</subconscious_whisper>")
+        try:
+            from adapters.apex import merge_with_embeddings as _merge
+            output = _merge(guidance_lines, results)
+        except Exception:
+            # Fallback: manual rendering
+            relevant = [r for r in results if r.get("score", 0) >= 0.55][:3]
+            if not relevant and not guidance_lines:
+                _whisper_last[chat_id] = now
+                return ""
+            lines = ["<subconscious_whisper>"]
+            if guidance_lines:
+                lines.append("Guidance:")
+                lines.extend(guidance_lines)
+            if relevant:
+                lines.append("Relevant memories for this conversation:")
+                for r in relevant:
+                    name = Path(r["file"]).stem
+                    src = r.get("source", "memory")[:4]
+                    score_str = f"score={r['score']:.2f}"
+                    stale_tag = " STALE — verify before using" if r.get("_stale") else ""
+                    lines.append(f"- [{name}] ({src} {score_str}{stale_tag}) {r.get('content', '')[:200]}")
+            lines.append("</subconscious_whisper>")
+            output = "\n".join(lines) + "\n\n"
+
+        if output:
+            _whisper_last[chat_id] = now
+            embed_count = len([r for r in results if r.get("score", 0) >= 0.55])
+            log(f"Whisper injected for chat={chat_id} (guidance={len(guidance_lines)}, embeddings={embed_count})")
+            return output
 
         _whisper_last[chat_id] = now
-        log(f"Whisper injected for chat={chat_id} ({len(relevant)} memories)")
-        return "\n".join(lines) + "\n\n"
+        return ""
     except Exception as e:
         log(f"Whisper error: {e}")
         return ""

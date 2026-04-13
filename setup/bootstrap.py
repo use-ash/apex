@@ -981,6 +981,111 @@ def _seed_workspace(workspace: Path) -> None:
     else:
         print_info(f"Skills directory already exists — skipped")
 
+    link_stats = _seed_workspace_links(workspace)
+    if any(link_stats.values()):
+        print_success(
+            "Linked external agent assets: "
+            f"{link_stats['skill_links']} skills, "
+            f"{link_stats['history_links']} history directories"
+        )
+
+
+def _discover_skill_dirs(root: Path) -> list[Path]:
+    """Return directories under root that contain a SKILL.md file."""
+    if not root.is_dir():
+        return []
+
+    seen: set[str] = set()
+    results: list[Path] = []
+    for skill_md in sorted(root.rglob("SKILL.md")):
+        skill_dir = skill_md.parent
+        if skill_dir.name == "lib":
+            continue
+        try:
+            key = str(skill_dir.resolve())
+        except OSError:
+            key = str(skill_dir)
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(skill_dir)
+    return results
+
+
+def _ensure_symlink(link_path: Path, target: Path) -> bool:
+    """Create a symlink if absent. Returns True when created."""
+    if not target.exists():
+        return False
+
+    if link_path.is_symlink():
+        try:
+            if link_path.resolve() == target.resolve():
+                return False
+        except OSError:
+            pass
+        print_warning(f"Existing symlink points elsewhere — skipped: {link_path}")
+        return False
+
+    if link_path.exists():
+        print_warning(f"Existing path blocks symlink creation — skipped: {link_path}")
+        return False
+
+    link_path.parent.mkdir(parents=True, exist_ok=True)
+    link_path.symlink_to(target, target_is_directory=target.is_dir())
+    print_success(f"Linked {link_path} -> {target}")
+    return True
+
+
+def _populate_skill_mirror(dest_dir: Path, sources: list[Path]) -> int:
+    """Mirror skill directories into one destination directory via symlinks."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    created = 0
+    seen_names: set[str] = set()
+    for source_root in sources:
+        for skill_dir in _discover_skill_dirs(source_root):
+            skill_name = skill_dir.name
+            if skill_name in seen_names:
+                continue
+            seen_names.add(skill_name)
+            if _ensure_symlink(dest_dir / skill_name, skill_dir):
+                created += 1
+    return created
+
+
+def _seed_workspace_links(workspace: Path) -> dict[str, int]:
+    """Create workspace-local symlinks to external Claude/Codex assets."""
+    home = Path.home()
+    stats = {"skill_links": 0, "history_links": 0}
+
+    workspace_skills = workspace / "skills"
+    claude_skills = home / ".claude" / "skills"
+    codex_skills = home / ".codex" / "skills"
+
+    # Create workspace-local mirrors that Claude/Codex can discover natively.
+    skill_sources = [workspace_skills, claude_skills, codex_skills]
+    stats["skill_links"] += _populate_skill_mirror(
+        workspace / ".claude" / "skills",
+        skill_sources,
+    )
+    stats["skill_links"] += _populate_skill_mirror(
+        workspace / ".codex" / "skills",
+        skill_sources,
+    )
+
+    # Link conversation / memory directories so Apex can reference them
+    # without duplicating transcript or memory files into the workspace.
+    history_links = [
+        (workspace / ".claude" / "projects", home / ".claude" / "projects"),
+        (workspace / ".codex" / "sessions", home / ".codex" / "sessions"),
+        (workspace / ".codex" / "memories", home / ".codex" / "memories"),
+    ]
+    for link_path, target in history_links:
+        if _ensure_symlink(link_path, target):
+            stats["history_links"] += 1
+
+    return stats
+
 
 def run_bootstrap(apex_root: Path) -> dict:
     """Run the full bootstrap phase.

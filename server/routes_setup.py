@@ -42,6 +42,7 @@ from setup.progress import (  # noqa: E402
     phase_completed,
     mark_phase_completed,
 )
+from setup.bootstrap import _seed_workspace  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Router + shared state
@@ -473,6 +474,8 @@ async def api_setup_workspace(request: Request):
         cfg = _get_config()
         cfg.update_section("workspace", {"path": workspace_path})
         cfg.update_section("models", {"permission_mode": permission_mode})
+        if workspace_path:
+            _seed_workspace(Path(workspace_path))
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 

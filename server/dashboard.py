@@ -3608,9 +3608,7 @@ async def api_workspace():
         mem_dir = root / "memory"
         if mem_dir.is_dir():
             memory_count += len(list(mem_dir.glob("*.md")))
-        sk_dir = root / "skills"
-        if sk_dir.is_dir():
-            skills_count += len(_glob_mod.glob(str(sk_dir / "*" / "SKILL.md")))
+    skills_count = len(env.iter_workspace_skill_files(_workspace_paths_list()))
 
     return JSONResponse({
         "workspace": str(workspace),
@@ -3869,22 +3867,18 @@ async def api_skills():
 
     skills = []
     seen_dirs: set[str] = set()
-    for root in env.get_runtime_workspace_paths_list():
-        skills_dir = Path(root) / "skills"
-        if not skills_dir.is_dir():
+    for skill_md in env.iter_workspace_skill_files():
+        dir_name = skill_md.parent.name
+        if dir_name in seen_dirs:
             continue
-        for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
-            dir_name = skill_md.parent.name
-            if dir_name in seen_dirs:
-                continue
-            seen_dirs.add(dir_name)
-            info = _parse_skill_frontmatter(skill_md)
-            skills.append({
-                "dir": dir_name,
-                "name": info["name"],
-                "description": info["description"],
-                "enabled": dir_name not in disabled,
-            })
+        seen_dirs.add(dir_name)
+        info = _parse_skill_frontmatter(skill_md)
+        skills.append({
+            "dir": dir_name,
+            "name": info["name"],
+            "description": info["description"],
+            "enabled": dir_name not in disabled,
+        })
 
     return JSONResponse({"skills": skills, "count": len(skills)})
 
