@@ -50,6 +50,7 @@ import apex  # noqa: E402
 import alert_client  # noqa: E402
 import agent_sdk  # noqa: E402
 import backends  # noqa: E402
+import setup.bootstrap as bootstrap_mod  # noqa: E402
 import chat_html as chat_html_mod  # noqa: E402
 import dashboard as dashboard_mod  # noqa: E402
 import dashboard_html as dashboard_html_mod  # noqa: E402
@@ -1107,6 +1108,10 @@ class SecurityFixTests(unittest.TestCase):
         # Defaults are auto-merged even if not in saved config (prevents stale snapshots)
         self.assertTrue(tool_access.tool_allowed_for_level("bash", 2))
         self.assertTrue(tool_access.tool_allowed_for_level("execute_code", 2))
+        self.assertTrue(tool_access.tool_allowed_for_level("Skill", 2))
+
+    def test_tool_access_level_2_allows_skill_tool(self) -> None:
+        self.assertTrue(tool_access.tool_allowed_for_level("Skill", 2))
 
     def test_tool_access_level_2_denies_memory_and_filesystem_writes(self) -> None:
         allowed, message = tool_access.tool_access_decision(
@@ -1404,6 +1409,38 @@ class SecurityFixTests(unittest.TestCase):
         )
         self.assertIn("notes.txt", result)
         self.assertIn("needle", result)
+
+    def test_search_files_without_path_searches_all_workspace_roots(self) -> None:
+        primary = TEST_ROOT / "workspace-no-path"
+        secondary = TEST_ROOT / "apex-no-path"
+        primary.mkdir(parents=True, exist_ok=True)
+        secondary.mkdir(parents=True, exist_ok=True)
+        (primary / "primary.txt").write_text("first needle\n", encoding="utf-8")
+        (secondary / "secondary.txt").write_text("second needle\n", encoding="utf-8")
+
+        result = search_files.execute(
+            {"pattern": "needle"},
+            workspace=f"{primary}:{secondary}",
+            permission_level=2,
+        )
+        self.assertIn("primary.txt", result)
+        self.assertIn("secondary.txt", result)
+
+    def test_search_files_wildcard_path_searches_all_workspace_roots(self) -> None:
+        primary = TEST_ROOT / "workspace-wildcard"
+        secondary = TEST_ROOT / "apex-wildcard"
+        primary.mkdir(parents=True, exist_ok=True)
+        secondary.mkdir(parents=True, exist_ok=True)
+        (primary / "one.txt").write_text("alpha needle\n", encoding="utf-8")
+        (secondary / "two.txt").write_text("beta needle\n", encoding="utf-8")
+
+        result = search_files.execute(
+            {"path": "*", "pattern": "needle"},
+            workspace=f"{primary}:{secondary}",
+            permission_level=2,
+        )
+        self.assertIn("one.txt", result)
+        self.assertIn("two.txt", result)
 
     def test_tool_access_level_3_allows_sdk_coordination_tools(self) -> None:
         self.assertTrue(tool_access.tool_allowed_for_level("Skill", 3))
@@ -2682,6 +2719,80 @@ class SecurityFixTests(unittest.TestCase):
         self.assertEqual(payload["memory_file_count"], 1)
         self.assertEqual(payload["skills_count"], 1)
 
+    def test_dashboard_workspace_api_counts_mirrored_skill_dirs(self) -> None:
+        primary = TEST_ROOT / "mirrored-workspace"
+        (primary / "memory").mkdir(parents=True, exist_ok=True)
+        (primary / "skills" / "local-skill").mkdir(parents=True, exist_ok=True)
+        (primary / ".claude" / "skills" / "claude-skill").mkdir(parents=True, exist_ok=True)
+        (primary / ".codex" / "skills" / "codex-skill").mkdir(parents=True, exist_ok=True)
+        (primary / "APEX.md").write_text("# Runtime Workspace\n", encoding="utf-8")
+        (primary / "memory" / "MEMORY.md").write_text("memory", encoding="utf-8")
+        (primary / "skills" / "local-skill" / "SKILL.md").write_text("---\nname: Local Skill\n---\n", encoding="utf-8")
+        (primary / ".claude" / "skills" / "claude-skill" / "SKILL.md").write_text("---\nname: Claude Skill\n---\n", encoding="utf-8")
+        (primary / ".codex" / "skills" / "codex-skill" / "SKILL.md").write_text("---\nname: Codex Skill\n---\n", encoding="utf-8")
+        (primary / ".claude" / "skills" / "local-skill").symlink_to(
+            primary / "skills" / "local-skill",
+            target_is_directory=True,
+        )
+        dashboard_mod._config.update_section(
+            "workspace",
+            {"path": str(primary)},
+        )
+
+        response = asyncio.run(dashboard_mod.api_workspace())
+        payload = json.loads(response.body)
+
+        self.assertEqual(payload["skills_count"], 3)
+
+    def test_dashboard_api_skills_includes_mirrored_skill_dirs(self) -> None:
+        primary = TEST_ROOT / "skill-catalog-workspace"
+        (primary / "skills" / "local-skill").mkdir(parents=True, exist_ok=True)
+        (primary / ".claude" / "skills" / "claude-skill").mkdir(parents=True, exist_ok=True)
+        (primary / ".codex" / "skills" / "codex-skill").mkdir(parents=True, exist_ok=True)
+        (primary / "skills" / "local-skill" / "SKILL.md").write_text("---\nname: Local Skill\n---\n", encoding="utf-8")
+        (primary / ".claude" / "skills" / "claude-skill" / "SKILL.md").write_text("---\nname: Claude Skill\n---\n", encoding="utf-8")
+        (primary / ".codex" / "skills" / "codex-skill" / "SKILL.md").write_text("---\nname: Codex Skill\n---\n", encoding="utf-8")
+        dashboard_mod._config.update_section(
+            "workspace",
+            {"path": str(primary)},
+        )
+
+        response = asyncio.run(dashboard_mod.api_skills())
+        payload = json.loads(response.body)
+        dirs = {item["dir"] for item in payload["skills"]}
+
+        self.assertEqual(payload["count"], 3)
+        self.assertEqual(dirs, {"local-skill", "claude-skill", "codex-skill"})
+
+    def test_seed_workspace_links_known_claude_and_codex_assets(self) -> None:
+        workspace = TEST_ROOT / "seed-workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / "skills" / "local-skill").mkdir(parents=True, exist_ok=True)
+        (workspace / "skills" / "local-skill" / "SKILL.md").write_text("---\nname: Local Skill\n---\n", encoding="utf-8")
+
+        fake_home = TEST_ROOT / "fake-home"
+        (fake_home / ".claude" / "skills" / "claude-skill").mkdir(parents=True, exist_ok=True)
+        (fake_home / ".claude" / "skills" / "claude-skill" / "SKILL.md").write_text("---\nname: Claude Skill\n---\n", encoding="utf-8")
+        (fake_home / ".claude" / "projects").mkdir(parents=True, exist_ok=True)
+        (fake_home / ".claude" / "projects" / "chat.jsonl").write_text("{}\n", encoding="utf-8")
+        (fake_home / ".codex" / "skills" / ".system" / "imagegen").mkdir(parents=True, exist_ok=True)
+        (fake_home / ".codex" / "skills" / ".system" / "imagegen" / "SKILL.md").write_text("---\nname: Imagegen\n---\n", encoding="utf-8")
+        (fake_home / ".codex" / "sessions").mkdir(parents=True, exist_ok=True)
+        (fake_home / ".codex" / "sessions" / "session.jsonl").write_text("{}\n", encoding="utf-8")
+        (fake_home / ".codex" / "memories").mkdir(parents=True, exist_ok=True)
+        (fake_home / ".codex" / "memories" / "memory.md").write_text("# Memory\n", encoding="utf-8")
+
+        with mock.patch.dict(os.environ, {"HOME": str(fake_home)}):
+            bootstrap_mod._seed_workspace(workspace)
+
+        self.assertTrue((workspace / ".claude" / "skills" / "local-skill").is_symlink())
+        self.assertTrue((workspace / ".claude" / "skills" / "claude-skill").is_symlink())
+        self.assertTrue((workspace / ".claude" / "skills" / "imagegen").is_symlink())
+        self.assertTrue((workspace / ".codex" / "skills" / "local-skill").is_symlink())
+        self.assertTrue((workspace / ".claude" / "projects").is_symlink())
+        self.assertTrue((workspace / ".codex" / "sessions").is_symlink())
+        self.assertTrue((workspace / ".codex" / "memories").is_symlink())
+
     def test_dashboard_workspace_update_syncs_filesystem_mcp_roots(self) -> None:
         primary = TEST_ROOT / "sync-one"
         secondary = TEST_ROOT / "sync-two"
@@ -2926,6 +3037,16 @@ class SecurityFixTests(unittest.TestCase):
             "ToolSearch",
             {"query": "playwright browser", "max_results": 3},
             level=3,
+            allowed_commands=[],
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
+
+    def test_sdk_pre_tool_hook_level_2_allows_skill_tool(self) -> None:
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "Skill",
+            {"skill": "recall", "args": "compaction system work"},
+            level=2,
             allowed_commands=[],
         )
         self.assertTrue(allowed)

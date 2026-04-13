@@ -40,6 +40,7 @@ DEFAULT_LEVEL2_TOOL_PATTERNS = (
     "bash",
     "execute_code",
     "ToolSearch",
+    "Skill",
     "read_file",
     "write_file",
     "edit_file",
