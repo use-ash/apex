@@ -78,7 +78,7 @@ def _check_native_tool_support(ollama_url: str, model: str) -> bool:
         supported = ".Tools" in template or ("tools" in template.lower() and "tool_call" in template.lower())
         _native_tool_support[model] = supported
         if not supported:
-            log.info("Model %s lacks native tool template — using text-based tool calling", model)
+            log.info("Model %s lacks native tool support — using text-based tool calling", model)
         return supported
     except Exception:
         # If we can't check, assume native support (don't break existing models)

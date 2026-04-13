@@ -51,6 +51,7 @@ from typing import Any
 # apex.py also manages _recovery_pending lifecycle (startup only).
 # ---------------------------------------------------------------------------
 _compaction_summaries: dict[str, str] = {}    # chat_id -> summary text
+_compaction_session_type: dict[str, str] = {} # chat_id -> "task" | "thinking" | "mixed"
 _recovery_target: dict[str, str] = {}         # chat_id -> profile_id of agent that should get recovery
 _recovery_skip_count: dict[str, int] = {}     # chat_id -> times recovery was skipped (safety valve)
 _last_compacted_at: dict[str, str] = {}       # chat_id -> ISO timestamp

@@ -409,6 +409,36 @@ DASHBOARD_BODY_HTML = r"""<body>
                         <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
                     </div>
                 </div>
+
+                <div class="card">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                        DeepSeek
+                    </div>
+                    <div id="provider-deepseek-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                        Zhipu (GLM)
+                    </div>
+                    <div id="provider-zhipu-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
+                        Gemini
+                    </div>
+                    <div id="provider-gemini-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
             </div>
 
             <!-- Default Model Selector -->

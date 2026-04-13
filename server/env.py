@@ -102,6 +102,35 @@ def get_runtime_workspace_root() -> Path:
     return Path(roots[0] if roots else str(WORKSPACE))
 
 
+def iter_workspace_skill_files(
+    workspace_roots: list[str] | None = None,
+) -> list[Path]:
+    """Return deduplicated SKILL.md files from workspace and mirrored roots."""
+    roots = workspace_roots or get_runtime_workspace_paths_list()
+    results: list[Path] = []
+    seen: set[str] = set()
+
+    for root_str in roots:
+        root = Path(root_str)
+        for skills_dir in (
+            root / "skills",
+            root / ".claude" / "skills",
+            root / ".codex" / "skills",
+        ):
+            if not skills_dir.is_dir():
+                continue
+            for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
+                try:
+                    key = str(skill_md.parent.resolve())
+                except OSError:
+                    key = str(skill_md.parent)
+                if key in seen:
+                    continue
+                seen.add(key)
+                results.append(skill_md)
+    return results
+
+
 def rewrite_mcp_servers_for_workspace(
     servers: dict[str, dict],
     workspace_paths: str | list[str] | None = None,
@@ -181,8 +210,10 @@ COMPACTION_MODEL: str = os.environ.get(
     "APEX_COMPACTION_MODEL", "grok-4-1-fast-non-reasoning"
 )
 COMPACTION_OLLAMA_FALLBACK: str = os.environ.get(
-    "APEX_COMPACTION_OLLAMA_FALLBACK", "gemma3:27b"
+    "APEX_COMPACTION_OLLAMA_FALLBACK", "qwen3.5:35b-a3b"
 )
+TRANSCRIPT_TAIL_THINKING: int = int(os.environ.get("APEX_TRANSCRIPT_TAIL_THINKING", "8000"))
+TRANSCRIPT_TAIL_MIXED: int = int(os.environ.get("APEX_TRANSCRIPT_TAIL_MIXED", "4000"))
 
 # Ollama / MLX base URLs — env-only (also in Admin portal schema)
 OLLAMA_URL: str = os.environ.get("APEX_OLLAMA_URL", "http://localhost:11434")
@@ -220,6 +251,9 @@ ALLOW_LOCAL_TOOLS: bool = (
 ALERT_TOKEN: str = os.environ.get("APEX_ALERT_TOKEN", "")
 OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
 XAI_API_KEY: str = os.environ.get("XAI_API_KEY", "")
+DEEPSEEK_API_KEY: str = os.environ.get("DEEPSEEK_API_KEY", "")
+ZHIPU_API_KEY: str = os.environ.get("ZHIPU_API_KEY", "")
+GOOGLE_API_KEY: str = os.environ.get("GOOGLE_API_KEY", "")
 
 # Codex CLI binary — env-only
 CODEX_CLI: str = os.environ.get("CODEX_CLI_PATH", "codex")

@@ -2841,10 +2841,12 @@ _PROVIDER_KEY_MAP: dict[str, str] = {
     "xai_management": "XAI_MANAGEMENT_KEY",
     "xai_team_id": "XAI_TEAM_ID",
     "openai": "OPENAI_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "zhipu": "ZHIPU_API_KEY",
+    "google": "GOOGLE_API_KEY",
     "telegram_bot": "TELEGRAM_BOT_TOKEN",
     "telegram_chat": "TELEGRAM_CHAT_ID",
     "alert_token": "APEX_ALERT_TOKEN",
-    "google": "GOOGLE_API_KEY",
 }
 
 _CODEX_MODEL_OPTIONS: list[str] = [
@@ -3212,6 +3214,9 @@ async def api_credentials():
             "xai_management": _env_has_key("XAI_MANAGEMENT_KEY"),
             "xai_team_id": _env_has_key("XAI_TEAM_ID"),
             "openai": _env_has_key("OPENAI_API_KEY"),
+            "deepseek": _env_has_key("DEEPSEEK_API_KEY"),
+            "zhipu": _env_has_key("ZHIPU_API_KEY"),
+            "google": _env_has_key("GOOGLE_API_KEY"),
             "telegram_bot": _env_has_key("TELEGRAM_BOT_TOKEN"),
             "telegram_chat": _env_has_key("TELEGRAM_CHAT_ID"),
             "alert_token": _env_has_key("APEX_ALERT_TOKEN"),
@@ -3230,6 +3235,8 @@ _CREDENTIAL_KEY_PATTERNS: dict[str, tuple[str, int, int]] = {
     "xai_management": ("xai-token-", 20, 200),
     "xai_team_id": ("", 20, 60),  # UUID format
     "openai": ("sk-", 20, 200),
+    "deepseek": ("sk-", 20, 200),
+    "zhipu": ("", 20, 200),
     "telegram_bot": ("", 30, 100),   # format: 123456:ABC-DEF...
     "telegram_chat": ("", 5, 20),    # numeric chat ID
     "google": ("AIza", 20, 200),
@@ -3591,6 +3598,8 @@ async def api_workspace():
 
     # Scan all workspace paths for project md, memory, and skills
     project_md = _find_project_md()
+    _paths_debug = _workspace_paths_list()
+    print(f"[dashboard] api_workspace: paths={_paths_debug} project_md={project_md}", flush=True)
 
     memory_count = 0
     skills_count = 0
@@ -3599,9 +3608,7 @@ async def api_workspace():
         mem_dir = root / "memory"
         if mem_dir.is_dir():
             memory_count += len(list(mem_dir.glob("*.md")))
-        sk_dir = root / "skills"
-        if sk_dir.is_dir():
-            skills_count += len(_glob_mod.glob(str(sk_dir / "*" / "SKILL.md")))
+    skills_count = len(env.iter_workspace_skill_files(_workspace_paths_list()))
 
     return JSONResponse({
         "workspace": str(workspace),
@@ -3678,8 +3685,8 @@ async def api_workspace_memory():
     """List all memory/*.md files with name, size, and modified time."""
     files = []
     seen_names: set[str] = set()
-    for ws in _workspace_paths_list():
-        memory_dir = Path(ws) / "memory"
+    for root in env.get_runtime_workspace_paths_list():
+        memory_dir = Path(root) / "memory"
         if not memory_dir.is_dir():
             continue
         for p in sorted(memory_dir.glob("*.md")):
@@ -3693,9 +3700,9 @@ async def api_workspace_memory():
                 "modified": datetime.fromtimestamp(
                     st.st_mtime, tz=timezone.utc
                 ).isoformat(),
+                "root": str(root),
             })
 
-    files.sort(key=lambda f: f["name"])
     return JSONResponse({"files": files, "count": len(files)})
 
 
@@ -3712,21 +3719,25 @@ async def api_workspace_memory_read(name: str):
     if not _MEMORY_NAME_RE.match(name):
         return _error("Invalid memory file name", "INVALID_NAME", 400)
 
-    # Search all workspace paths for the memory file
-    path = None
-    for ws in _workspace_paths_list():
-        candidate = Path(ws) / "memory" / name
+    # Search all workspace roots for the memory file
+    path: Path | None = None
+    memory_dir: Path | None = None
+    for root in env.get_runtime_workspace_paths_list():
+        candidate_dir = Path(root) / "memory"
+        candidate = candidate_dir / name
         if candidate.exists():
-            # Prevent path traversal
-            try:
-                candidate.resolve().relative_to((Path(ws) / "memory").resolve())
-            except ValueError:
-                return _error("Invalid memory file path", "PATH_TRAVERSAL", 400)
             path = candidate
+            memory_dir = candidate_dir
             break
 
-    if not path:
+    if path is None or memory_dir is None:
         return _error(f"Memory file '{name}' not found", "NOT_FOUND", 404)
+
+    # Prevent path traversal
+    try:
+        path.resolve().relative_to(memory_dir.resolve())
+    except ValueError:
+        return _error("Invalid memory file path", "PATH_TRAVERSAL", 400)
 
     try:
         content = path.read_text(encoding="utf-8")
@@ -3842,7 +3853,7 @@ def _parse_skill_frontmatter(skill_path: Path) -> dict[str, str]:
 
 @dashboard_app.get("/api/skills")
 async def api_skills():
-    """List installed skills by scanning skills/*/SKILL.md across all workspace paths."""
+    """List installed skills by scanning skills/*/SKILL.md across all workspace roots."""
     # Load disabled list
     skills_config_path = _state_dir / "skills_config.json" if _state_dir else None
     disabled: list[str] = []
@@ -3856,24 +3867,19 @@ async def api_skills():
 
     skills = []
     seen_dirs: set[str] = set()
-    for ws in _workspace_paths_list():
-        skills_dir = Path(ws) / "skills"
-        if not skills_dir.is_dir():
+    for skill_md in env.iter_workspace_skill_files():
+        dir_name = skill_md.parent.name
+        if dir_name in seen_dirs:
             continue
-        for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
-            dir_name = skill_md.parent.name
-            if dir_name in seen_dirs:
-                continue
-            seen_dirs.add(dir_name)
-            info = _parse_skill_frontmatter(skill_md)
-            skills.append({
-                "dir": dir_name,
-                "name": info["name"],
-                "description": info["description"],
-                "enabled": dir_name not in disabled,
-            })
+        seen_dirs.add(dir_name)
+        info = _parse_skill_frontmatter(skill_md)
+        skills.append({
+            "dir": dir_name,
+            "name": info["name"],
+            "description": info["description"],
+            "enabled": dir_name not in disabled,
+        })
 
-    skills.sort(key=lambda s: s["name"])
     return JSONResponse({"skills": skills, "count": len(skills)})
 
 
@@ -5424,6 +5430,146 @@ async def api_memory_scores(profile_id: str, request: Request):
         "injected_count": sum(1 for c in candidates if c["injected"]),
         "candidates": candidates,
     })
+
+
+# ─── Plan M Screener Reports ────────────────────────────────────────────────
+
+_PLAN_M_RESULTS_DIR = Path(
+    os.environ.get(
+        "PLAN_M_RESULTS_DIR",
+        os.path.expanduser("~/.openclaw/workspace/plan_m/results/current"),
+    )
+)
+
+_PLAN_M_REPORTS = {
+    "long": "plan_m_long_report.html",
+    "short": "plan_m_short_report.html",
+}
+
+
+@dashboard_app.get("/plan-m", response_class=HTMLResponse)
+async def plan_m_index():
+    """Plan M screener index — links to long/short reports + JSON status."""
+    reports = []
+    for label, fname in _PLAN_M_REPORTS.items():
+        fpath = _PLAN_M_RESULTS_DIR / fname
+        exists = fpath.is_file()
+        mtime = ""
+        if exists:
+            import datetime as _dt
+            mtime = _dt.datetime.fromtimestamp(fpath.stat().st_mtime).strftime(
+                "%Y-%m-%d %H:%M"
+            )
+        reports.append((label, fname, exists, mtime))
+
+    # Read screen_results.json for market status
+    results_json = _PLAN_M_RESULTS_DIR / "plan_m_screen_results.json"
+    market_status = ""
+    if results_json.is_file():
+        try:
+            import json as _json
+            data = _json.loads(results_json.read_text())
+            mkt = data.get("market", {})
+            ap = mkt.get("all_pass", False)
+            fg = mkt.get("fg_today", 0)
+            close = mkt.get("close", 0)
+            date = mkt.get("date", "")
+            status_color = "#27ae60" if ap else "#e74c3c"
+            status_text = "GO" if ap else "NO-GO"
+            market_status = (
+                f'<div style="margin:12px 0;padding:10px 16px;background:#16213e;'
+                f'border-left:4px solid {status_color};border-radius:4px;">'
+                f'<span style="color:{status_color};font-weight:700;font-size:16px;">'
+                f'{status_text}</span>'
+                f' &nbsp; SPY ${close:.2f} &nbsp; F&amp;G={fg:.0f} &nbsp; '
+                f'<span style="color:#888;">({date})</span></div>'
+            )
+        except Exception:
+            pass
+
+    rows = ""
+    for label, fname, exists, mtime in reports:
+        if exists:
+            rows += (
+                f'<tr><td><a href="/admin/plan-m/{label}" '
+                f'style="color:#64b5f6;text-decoration:none;font-weight:600;">'
+                f'{label.title()}</a></td>'
+                f'<td style="color:#888;">{mtime}</td></tr>'
+            )
+        else:
+            rows += (
+                f'<tr><td style="color:#555;">{label.title()}</td>'
+                f'<td style="color:#555;">not generated</td></tr>'
+            )
+
+    return HTMLResponse(
+        f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Plan M Screener</title>
+<style>
+  body {{ background:#1a1a2e; color:#eee; font-family:-apple-system,'SF Mono',monospace; margin:20px; }}
+  h1 {{ color:#27ae60; font-size:22px; }}
+  table {{ border-collapse:collapse; margin-top:12px; }}
+  td {{ padding:8px 16px; border-bottom:1px solid #262640; }}
+  a:hover {{ text-decoration:underline !important; }}
+  .back {{ color:#888; font-size:13px; margin-top:20px; }}
+  .back a {{ color:#64b5f6; text-decoration:none; }}
+</style></head><body>
+<h1>Plan M Screener</h1>
+{market_status}
+<table>{rows}</table>
+<div style="margin-top:16px;">
+  <a href="/admin/api/plan-m/results" style="color:#888;font-size:13px;text-decoration:none;">
+    Raw JSON &rarr;</a>
+</div>
+<div class="back"><a href="/admin/">&larr; Dashboard</a></div>
+</body></html>"""
+    )
+
+
+@dashboard_app.get("/plan-m/{report_type}", response_class=HTMLResponse)
+async def plan_m_report(report_type: str):
+    """Serve a Plan M report HTML (long or short)."""
+    fname = _PLAN_M_REPORTS.get(report_type)
+    if not fname:
+        return HTMLResponse(
+            "<h1>Not found</h1><p>Valid reports: long, short</p>", status_code=404
+        )
+    fpath = _PLAN_M_RESULTS_DIR / fname
+    if not fpath.is_file():
+        return HTMLResponse(
+            f"<html><body style='background:#1a1a2e;color:#eee;font-family:system-ui;'>"
+            f"<h1>Plan M {report_type.title()} Report</h1>"
+            f"<p style='color:#e74c3c;'>Report not yet generated.</p>"
+            f"<p style='color:#888;'>Run the screener to generate: "
+            f"<code>python3 plan_m_{report_type}_screener.py --force</code></p>"
+            f"<p><a href='/admin/plan-m' style='color:#64b5f6;'>Back</a></p>"
+            f"</body></html>",
+            status_code=200,
+        )
+    html = fpath.read_text()
+    # Inject a back-link at the top of the report body
+    back_link = (
+        '<div style="margin-bottom:10px;">'
+        '<a href="/admin/plan-m" style="color:#888;font-size:13px;'
+        'text-decoration:none;font-family:system-ui;">&larr; Plan M Index</a>'
+        '</div>'
+    )
+    html = html.replace("<body>", f"<body>{back_link}", 1)
+    return HTMLResponse(html)
+
+
+@dashboard_app.get("/api/plan-m/results")
+async def api_plan_m_results():
+    """Return the latest Plan M screen results JSON."""
+    fpath = _PLAN_M_RESULTS_DIR / "plan_m_screen_results.json"
+    if not fpath.is_file():
+        return _error("No screen results found", "NOT_FOUND", status=404)
+    import json as _json
+    try:
+        data = _json.loads(fpath.read_text())
+        return JSONResponse(data)
+    except Exception as exc:
+        return _error(str(exc), "PARSE_ERROR", status=500)
 
 
 @dashboard_app.api_route(

@@ -207,6 +207,24 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
             "readonly": True,
             "description": "Whether OPENAI_API_KEY is set",
         },
+        "deepseek_configured": {
+            "type": "bool",
+            "default": False,
+            "readonly": True,
+            "description": "Whether DEEPSEEK_API_KEY is set",
+        },
+        "zhipu_configured": {
+            "type": "bool",
+            "default": False,
+            "readonly": True,
+            "description": "Whether ZHIPU_API_KEY is set",
+        },
+        "google_configured": {
+            "type": "bool",
+            "default": False,
+            "readonly": True,
+            "description": "Whether GOOGLE_API_KEY is set",
+        },
     },
     "usage": {
         "budget_usd": {
@@ -451,4 +469,10 @@ class Config:
             return bool(os.environ.get("XAI_API_KEY"))
         if key == "openai_configured":
             return bool(os.environ.get("OPENAI_API_KEY"))
+        if key == "deepseek_configured":
+            return bool(os.environ.get("DEEPSEEK_API_KEY"))
+        if key == "zhipu_configured":
+            return bool(os.environ.get("ZHIPU_API_KEY"))
+        if key == "google_configured":
+            return bool(os.environ.get("GOOGLE_API_KEY"))
         return False

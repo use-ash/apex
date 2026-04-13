@@ -14,7 +14,7 @@ Each chat can be assigned a permission level that controls what tools the AI can
 |-------|------|----------------|-------------------|
 | **L0** | Restricted | Nothing — all tools blocked | Everything |
 | **L1** | Standard | Read files, list directories, search files | Write files, run commands, use browser, execute code |
-| **L2** | Workspace | Everything in L1, plus: write/edit files, run sandboxed Python (Jupyter), restricted shell commands, browse the web (Playwright, Fetch), use MCP filesystem tools (read-only) | Run arbitrary shell commands, use subprocess/os.system from code, write via MCP filesystem, access system directories |
+| **L2** | Workspace | Everything in L1, plus: write/edit files, run sandboxed Python (Jupyter), restricted shell commands, browse the web (Playwright, Fetch), use MCP filesystem tools (read-only), invoke workspace-approved SDK coordination tools such as `Skill` and `ToolSearch` | Run arbitrary shell commands, use subprocess/os.system from code, write via MCP filesystem, access system directories |
 | **L3** | Elevated | Everything in L2, plus: full shell access (allowlisted commands), run scripts, write via MCP filesystem | System-level commands not on the allowlist, paths outside workspace |
 | **L4+** | Admin | Unrestricted tool access | Nothing is blocked |
 

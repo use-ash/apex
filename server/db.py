@@ -824,6 +824,42 @@ def _get_recent_messages_text(chat_id: str, limit: int = 30) -> str:
     return "\n".join(lines)
 
 
+def _get_session_analysis_data(chat_id: str, since: str | None = None) -> list[dict]:
+    """Return recent assistant messages with full content, tool_events, thinking.
+
+    Unlike _get_recent_messages_text, content is NOT truncated — needed for
+    session type classification (Phase 1 of compaction overhaul).
+    Limit 30 messages.  ``since`` filters by created_at (ISO timestamp).
+    """
+    with _db_lock:
+        conn = _get_db()
+        if since:
+            rows = conn.execute(
+                "SELECT content, tool_events, thinking, created_at "
+                "FROM messages WHERE chat_id = ? AND role = 'assistant' "
+                "AND created_at > ? ORDER BY created_at DESC LIMIT 30",
+                (chat_id, since),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT content, tool_events, thinking, created_at "
+                "FROM messages WHERE chat_id = ? AND role = 'assistant' "
+                "ORDER BY created_at DESC LIMIT 30",
+                (chat_id,),
+            ).fetchall()
+        conn.close()
+    rows.reverse()  # chronological order
+    results: list[dict] = []
+    for content, tool_events, thinking, created_at in rows:
+        results.append({
+            "content": content or "",
+            "tool_events": tool_events or "[]",
+            "thinking": thinking or "",
+            "created_at": created_at or "",
+        })
+    return results
+
+
 def _get_last_assistant_speaker(chat_id: str) -> str:
     """Return the speaker_id of the most recent assistant message, or ''."""
     with _db_lock:
