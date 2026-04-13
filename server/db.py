@@ -806,6 +806,34 @@ def _estimate_tokens(chat_id: str, context_window: int = 0) -> int:
     return estimated
 
 
+def _get_last_turn_cost(chat_id: str) -> tuple[float, int]:
+    """Return (cost_usd, tokens_out) for the most recent assistant message.
+
+    Used by the cost-based context estimator when SDK tokens_in is unreliable.
+    """
+    since = _last_compacted_at.get(chat_id)
+    with _db_lock:
+        conn = _get_db()
+        if since:
+            row = conn.execute(
+                "SELECT cost_usd, tokens_out FROM messages "
+                "WHERE chat_id = ? AND role = 'assistant' AND cost_usd > 0 AND created_at > ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (chat_id, since),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT cost_usd, tokens_out FROM messages "
+                "WHERE chat_id = ? AND role = 'assistant' AND cost_usd > 0 "
+                "ORDER BY created_at DESC LIMIT 1",
+                (chat_id,),
+            ).fetchone()
+        conn.close()
+    if row:
+        return (row[0] or 0.0, row[1] or 0)
+    return (0.0, 0)
+
+
 def _get_recent_messages_text(chat_id: str, limit: int = 30) -> str:
     """Get recent message content for summarization (last N messages)."""
     with _db_lock:
