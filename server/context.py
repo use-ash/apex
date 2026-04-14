@@ -1436,6 +1436,31 @@ def _has_session_context(chat_id_or_key: str) -> bool:
 # Subconscious whisper — inject guidance from background memory system
 # ---------------------------------------------------------------------------
 
+_whisper_feedback_mod = None
+
+
+def _load_whisper_feedback():
+    """Lazily import whisper_feedback.py from workspace (no sys.modules collision)."""
+    global _whisper_feedback_mod
+    if _whisper_feedback_mod is not None:
+        return _whisper_feedback_mod
+    try:
+        import importlib.util as _ilu
+        for wp in env.get_runtime_workspace_paths_list():
+            candidate = Path(wp) / "scripts" / "subconscious" / "whisper_feedback.py"
+            if candidate.exists():
+                spec = _ilu.spec_from_file_location("_whisper_feedback", str(candidate))
+                mod = _ilu.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                # Inject correct state dir (workspace path, not symlink-resolved)
+                mod._WS_STATE_DIR = str(Path(wp) / ".subconscious")
+                _whisper_feedback_mod = mod
+                return mod
+    except Exception:
+        pass
+    return None
+
+
 def _get_whisper_text(chat_id: str, current_prompt: str = "",
                       model_hint: str = "") -> str:
     """Inject relevant memories based on current conversation topic.
@@ -1469,6 +1494,19 @@ def _get_whisper_text(chat_id: str, current_prompt: str = "",
             if len(query) < 10:
                 _whisper_last[chat_id] = now
                 return ""
+
+        # --- Feedback loop: evaluate previous turn's injected items ---
+        try:
+            wf = _load_whisper_feedback()
+            if wf:
+                eval_msgs = _get_messages(chat_id, days=1).get("messages", [])
+                asst_msgs = [m for m in eval_msgs if m.get("role") == "assistant"]
+                if asst_msgs:
+                    last_resp = (asst_msgs[-1].get("content") or "")[:3000]
+                    if len(last_resp) > 20:
+                        wf.evaluate_turn(chat_id, last_resp)
+        except Exception:
+            pass  # never block whisper on feedback errors
 
         # --- Layer 1: Canonical guidance from subconscious store ---
         guidance_lines = []
@@ -1591,6 +1629,27 @@ def _get_whisper_text(chat_id: str, current_prompt: str = "",
             _whisper_last[chat_id] = now
             embed_count = len([r for r in results if r.get("score", 0) >= 0.55])
             log(f"Whisper injected for chat={chat_id} (guidance={len(guidance_lines)}, embeddings={embed_count})")
+
+            # --- Feedback loop: log what we injected for next-turn evaluation ---
+            try:
+                wf = _load_whisper_feedback()
+                if wf:
+                    injected = []
+                    for line in guidance_lines:
+                        injected.append({"text": line, "type": "guidance",
+                                         "source": "guidance"})
+                    for r in results:
+                        if r.get("score", 0) >= 0.55:
+                            injected.append({
+                                "text": r.get("content", "")[:500],
+                                "type": "embedding", "source": "embedding",
+                                "relevance_score": r.get("score", 0),
+                            })
+                    if injected:
+                        wf.log_injection(chat_id, injected)
+            except Exception:
+                pass  # never block whisper on feedback logging errors
+
             return output
 
         _whisper_last[chat_id] = now
