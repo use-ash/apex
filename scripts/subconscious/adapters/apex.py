@@ -120,7 +120,19 @@ def _relevance_score(mem: Memory, query_tokens: set[str],
                         "sector", "earnings", "position")):
                 return -0.3
 
-    return min(score, 1.0)
+    score = min(score, 1.0)
+
+    # Apply historical feedback adjustment (contextual bandit signal)
+    # Items that are never useful get penalized; consistently useful ones get boosted
+    try:
+        from whisper_feedback import get_adjustment
+        adjustment = get_adjustment(full_text)
+        score *= adjustment
+        score = min(score, 1.0)
+    except Exception:
+        pass  # feedback index may not exist yet
+
+    return score
 
 
 def render_guidance_whisper(envelope: ContextEnvelope,
