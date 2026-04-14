@@ -220,6 +220,7 @@ def _build_journal_recovery_context(chat_id: str) -> str:
 from context import (
     _get_profile_prompt, _get_group_roster_prompt,
     _get_memory_prompt, _get_workspace_context,
+    _get_context_energy_prompt,
 )
 from agent_sdk import _load_attachment
 
@@ -337,7 +338,8 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
         group_roster_prompt = _get_group_roster_prompt(chat_id, user_message=prompt)
         memory_prompt = "" if group_roster_prompt else _get_memory_prompt(chat_id, user_message=prompt)
         workspace_ctx = _get_workspace_context(chat_id)
-        ctx_prefix = f"{profile_prompt}{group_roster_prompt}{memory_prompt}{workspace_ctx}"
+        context_energy = _get_context_energy_prompt(chat_id)
+        ctx_prefix = f"{profile_prompt}{group_roster_prompt}{memory_prompt}{workspace_ctx}{context_energy}"
         full_prompt = f"{ctx_prefix}{prompt}" if ctx_prefix else prompt
 
         # Fetch wider window, then classify: crash recovery / stale return / cold call
@@ -679,8 +681,9 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
     group_roster_prompt = _get_group_roster_prompt(chat_id, user_message=prompt)
     memory_prompt = "" if group_roster_prompt else _get_memory_prompt(chat_id, user_message=prompt)
     workspace_ctx = _get_workspace_context(chat_id)
-    if profile_prompt or group_roster_prompt or memory_prompt or workspace_ctx:
-        sys_prompt = f"{sys_prompt}\n\n{profile_prompt}{group_roster_prompt}{memory_prompt}{workspace_ctx}"
+    context_energy = _get_context_energy_prompt(chat_id)
+    if profile_prompt or group_roster_prompt or memory_prompt or workspace_ctx or context_energy:
+        sys_prompt = f"{sys_prompt}\n\n{profile_prompt}{group_roster_prompt}{memory_prompt}{workspace_ctx}{context_energy}"
 
     # In group chats, conversation history prefixes other agents' messages with
     # [AgentName]: for attribution. GPT-series models learn this pattern and can

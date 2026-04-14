@@ -1104,11 +1104,74 @@ class SecurityFixTests(unittest.TestCase):
         self.assertTrue(tool_access.tool_allowed_for_level("fetch__fetch", 2))
         # Non-default tools not in saved config are still excluded
         self.assertFalse(tool_access.tool_allowed_for_level("filesystem__write_file", 2))
-        self.assertFalse(tool_access.tool_allowed_for_level("memory__read_graph", 2))
+        self.assertFalse(tool_access.tool_allowed_for_level("customdanger__wipe", 2))
         # Defaults are auto-merged even if not in saved config (prevents stale snapshots)
         self.assertTrue(tool_access.tool_allowed_for_level("bash", 2))
         self.assertTrue(tool_access.tool_allowed_for_level("execute_code", 2))
         self.assertTrue(tool_access.tool_allowed_for_level("Skill", 2))
+
+    def test_tool_access_level_3_inherits_workspace_tool_patterns(self) -> None:
+        dashboard_mod._config.update_section(
+            "policy",
+            {"workspace_tools": "playwright__*\nfetch__*"},
+        )
+        self.assertTrue(tool_access.tool_allowed_for_level("playwright__browser_navigate", 3))
+        self.assertTrue(tool_access.tool_allowed_for_level("fetch__fetch", 3))
+
+    def test_tool_access_level_2_allows_google_workspace_drive_tool_families(self) -> None:
+        self.assertTrue(tool_access.tool_allowed_for_level("google-drive__search", 2))
+        self.assertTrue(tool_access.tool_allowed_for_level("gdrive__search", 2))
+
+    def test_level_2_allows_gws_cli_for_google_workspace_calls(self) -> None:
+        workspace = str(TEST_ROOT)
+        self.assertIsNone(
+            local_safety.validate_command(
+                'gws sheets spreadsheets values batchUpdate --params "{\\"spreadsheetId\\":\\"abc123\\"}" --json "{\\"valueInputOption\\":\\"USER_ENTERED\\",\\"data\\":[]}"',
+                workspace,
+                permission_level=2,
+                allowed_commands=[],
+            )
+        )
+        self.assertIsNone(
+            local_safety.validate_command(
+                'gws schema drive.files.list --resolve-refs',
+                workspace,
+                permission_level=2,
+                allowed_commands=[],
+            )
+        )
+
+    def test_level_2_blocks_gws_auth_and_outside_workspace_file_flags(self) -> None:
+        workspace = str(TEST_ROOT)
+        upload_path = TEST_ROOT / "input.txt"
+        upload_path.write_text("hello\n", encoding="utf-8")
+
+        self.assertIn(
+            "gws auth commands are not allowed",
+            local_safety.validate_command(
+                "gws auth login",
+                workspace,
+                permission_level=2,
+                allowed_commands=[],
+            ) or "",
+        )
+        self.assertIsNone(
+            local_safety.validate_command(
+                f'gws drive files create --upload "{upload_path}"',
+                workspace,
+                permission_level=2,
+                allowed_commands=[],
+            )
+        )
+        self.assertIn(
+            "outside workspace",
+            local_safety.validate_command(
+                'gws drive files get --output "/etc/out.json"',
+                workspace,
+                permission_level=2,
+                allowed_commands=[],
+            ) or "",
+        )
 
     def test_tool_access_level_2_allows_skill_tool(self) -> None:
         self.assertTrue(tool_access.tool_allowed_for_level("Skill", 2))
@@ -1447,9 +1510,24 @@ class SecurityFixTests(unittest.TestCase):
         self.assertTrue(tool_access.tool_allowed_for_level("ToolSearch", 3))
         self.assertTrue(tool_access.tool_allowed_for_level("Agent", 3))
 
+    def test_tool_access_level_3_allows_catalogued_mcp_tool_families(self) -> None:
+        self.assertTrue(tool_access.tool_allowed_for_level("mcp__tradingview__chart_get_state", 3))
+        self.assertTrue(tool_access.tool_allowed_for_level("mcp__code-review-graph__search", 3))
+        self.assertTrue(tool_access.tool_allowed_for_level("mcp__tradingview__chart_get_state", 2))
+
     def test_sdk_pre_tool_hook_level_3_allows_agent_tool(self) -> None:
         allowed, message = streaming_mod._sdk_pre_tool_use_decision(
             "Agent",
+            {},
+            level=3,
+            allowed_commands=[],
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
+
+    def test_sdk_pre_tool_hook_level_3_allows_tradingview_mcp_tool(self) -> None:
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "mcp__tradingview__chart_get_state",
             {},
             level=3,
             allowed_commands=[],
@@ -2994,6 +3072,30 @@ class SecurityFixTests(unittest.TestCase):
         self.assertIn("# Apex Tool Guidance", ctx)
         self.assertIn("state/uploads", ctx)
         self.assertIn("apex-private/ops-docs/REPO_CONVENTIONS.md", ctx)
+
+    def test_workspace_context_lists_skills_from_secondary_workspace_root(self) -> None:
+        primary = TEST_ROOT / "primary-root"
+        secondary = TEST_ROOT / "workspace-root"
+        (primary / "memory").mkdir(parents=True, exist_ok=True)
+        primary.mkdir(parents=True, exist_ok=True)
+        secondary.mkdir(parents=True, exist_ok=True)
+        (secondary / "skills" / "portfolio-manager").mkdir(parents=True, exist_ok=True)
+        (secondary / "skills" / "portfolio-manager" / "SKILL.md").write_text(
+            '---\nname: portfolio-manager\ndescription: "Log, update, and import trades into Dana\'s portfolio sheet."\n---\n',
+            encoding="utf-8",
+        )
+        dashboard_mod._config.update_section(
+            "workspace",
+            {"path": f"{primary}:{secondary}"},
+        )
+
+        chat_id = self._create_direct_chat()
+        context_mod._clear_session_context(chat_id)
+        ctx = context_mod._get_workspace_context(chat_id)
+
+        self.assertIn("`/portfolio-manager`", ctx)
+        self.assertIn("portfolio sheet", ctx)
+        self.assertIn("workspace-root/skills/portfolio-manager/SKILL.md", ctx)
 
     def test_sdk_pre_tool_hook_blocks_level_3_non_allowlisted_date(self) -> None:
         allowed, message = streaming_mod._sdk_pre_tool_use_decision(

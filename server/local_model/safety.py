@@ -472,6 +472,89 @@ _COMMAND_VALIDATORS: dict = {
 }
 
 
+_GWS_VALUE_FLAGS = {
+    "--params",
+    "--json",
+    "--upload",
+    "--output",
+    "--format",
+    "--api-version",
+    "--page-limit",
+    "--page-delay",
+}
+
+_GWS_BOOL_FLAGS = {
+    "--page-all",
+    "--resolve-refs",
+}
+
+
+def _validate_gws_command(argv: list[str], workspace: str | None) -> str | None:
+    """Validate Google Workspace CLI usage.
+
+    Allow direct Google Workspace API calls and schema inspection at L2+.
+    Local file flags must stay inside allowed roots. Interactive auth flows are
+    intentionally blocked; the user should run those manually.
+    """
+    if len(argv) < 2:
+        return "Error: gws command requires a service or schema target"
+
+    mode = argv[1]
+    index = 2
+
+    if mode == "auth":
+        return "Error: gws auth commands are not allowed from bash. Ask the user to run `gws auth login` manually."
+
+    if mode == "schema":
+        if len(argv) < 3 or argv[2].startswith("-"):
+            return "Error: gws schema requires a target like drive.files.list"
+        index = 3
+    else:
+        positional_count = 1  # service name
+        while index < len(argv) and not argv[index].startswith("-"):
+            positional_count += 1
+            index += 1
+        if positional_count < 3 or positional_count > 4:
+            return (
+                "Error: gws commands must use `gws <service> <resource> [sub-resource] <method>`"
+            )
+
+    while index < len(argv):
+        token = argv[index]
+        if token in _GWS_BOOL_FLAGS:
+            index += 1
+            continue
+        if token in _GWS_VALUE_FLAGS:
+            if index + 1 >= len(argv):
+                return f"Error: gws flag requires a value: {token}"
+            value = argv[index + 1]
+            if token == "--upload":
+                _, err = ensure_workspace_path(
+                    value,
+                    workspace,
+                    permission_level=2,
+                )
+                if err:
+                    return err
+            elif token == "--output":
+                _, err = ensure_workspace_path(
+                    value,
+                    workspace,
+                    allow_write=True,
+                    permission_level=2,
+                )
+                if err:
+                    return err
+            index += 2
+            continue
+        return f"Error: gws flag is not allowed: {token}"
+
+    return None
+
+
+_COMMAND_VALIDATORS["gws"] = _validate_gws_command
+
+
 def _tokenize_shell_command(command: str) -> list[str]:
     lexer = shlex.shlex(command.replace("\n", " ; "), posix=True, punctuation_chars="|&;<>")
     lexer.whitespace_split = True

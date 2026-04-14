@@ -58,6 +58,11 @@ DEFAULT_LEVEL2_TOOL_PATTERNS = (
     "filesystem__search_files",
     "filesystem__get_file_info",
     "filesystem__list_allowed_directories",
+    "tradingview__*",
+    "code-review-graph__*",
+    "google-drive__*",
+    "gdrive__*",
+    "memory__*",
 )
 
 TOOL_POLICY_CATALOG = {
@@ -114,6 +119,30 @@ TOOL_POLICY_CATALOG = {
         "description": "Drive a browser for live UI validation and testing.",
         "category": "mcp",
         "group": "browser",
+    },
+    "tradingview__*": {
+        "name": "TradingView MCP",
+        "description": "Read chart state and indicator output from the TradingView MCP server.",
+        "category": "mcp",
+        "group": "trading",
+    },
+    "code-review-graph__*": {
+        "name": "Code Review Graph MCP",
+        "description": "Query the code review graph MCP server for review and repository context.",
+        "category": "mcp",
+        "group": "analysis",
+    },
+    "google-drive__*": {
+        "name": "Google Drive MCP",
+        "description": "Search and read Google Drive documents through the Google Workspace MCP server.",
+        "category": "mcp",
+        "group": "productivity",
+    },
+    "gdrive__*": {
+        "name": "Google Drive MCP",
+        "description": "Search and read Google Drive documents through the Google Workspace MCP server.",
+        "category": "mcp",
+        "group": "productivity",
     },
     "filesystem__read_file": {
         "name": "Filesystem: Read File",
@@ -474,6 +503,10 @@ def tool_allowed_for_level(
     extra_allowed_tools: frozenset[str] | set[str] | None = None,
 ) -> bool:
     canonical = canonical_tool_name(name)
+    workspace_allowed = any(
+        tool_matches_pattern(canonical, pattern)
+        for pattern in get_workspace_tool_patterns()
+    )
     if level <= 0:
         return False
     if level >= 4:
@@ -484,8 +517,8 @@ def tool_allowed_for_level(
     if level == 1:
         return canonical in STANDARD_LOCAL_TOOLS
     if level == 2:
-        return any(tool_matches_pattern(canonical, pattern) for pattern in get_workspace_tool_patterns())
-    return _tool_is_catalogued(canonical)
+        return workspace_allowed
+    return workspace_allowed or _tool_is_catalogued(canonical)
 
 
 def allowed_tool_names_for_level(

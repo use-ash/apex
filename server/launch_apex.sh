@@ -47,6 +47,12 @@ if [ ! -f "$SSL_DIR/ca.crt" ]; then
     }
 fi
 
+# Subconscious whisper: inject canonical guidance + embedding memories per prompt
+export APEX_ENABLE_WHISPER=true
+
+# Metacognition: topic-triggered retrieval from knowledge index
+export APEX_ENABLE_METACOGNITION=true
+
 # Use venv Python if available (created by setup.py)
 PYTHON="$APEX_ROOT/.venv/bin/python3"
 if [ ! -x "$PYTHON" ]; then

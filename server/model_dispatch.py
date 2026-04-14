@@ -25,6 +25,7 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-haiku-4-5-20251001": 200_000,
     "grok-4": 2_000_000,
     "grok-4-fast": 2_000_000,
+    "qwen3.5:35b-a3b": 128_000,
     "mlx:mlx-community/Qwen3.5-35B-A3B-4bit": 128_000,
     "codex:gpt-5.4": 272_000,
     "codex:gpt-5.4-mini": 272_000,
@@ -41,6 +42,26 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "gemini-2.5-flash": 1_000_000,
 }
 MODEL_CONTEXT_DEFAULT = 128_000  # fallback for local/unknown models
+
+# ---------------------------------------------------------------------------
+# Input token pricing (USD per token) — used for cost-based context estimation
+# when the Claude Agent SDK returns garbage tokens_in values (3-12 instead of
+# real cumulative context counts).
+# ---------------------------------------------------------------------------
+MODEL_INPUT_PRICE: dict[str, float] = {
+    "claude-opus-4-6": 15.0 / 1_000_000,       # $15/M input
+    "claude-sonnet-4-6": 3.0 / 1_000_000,       # $3/M input
+    "claude-haiku-4-5-20251001": 0.80 / 1_000_000,  # $0.80/M input
+    "grok-4": 3.0 / 1_000_000,                  # $3/M input
+    "grok-4-fast": 3.0 / 1_000_000,             # $3/M input
+}
+MODEL_OUTPUT_PRICE: dict[str, float] = {
+    "claude-opus-4-6": 75.0 / 1_000_000,        # $75/M output
+    "claude-sonnet-4-6": 15.0 / 1_000_000,      # $15/M output
+    "claude-haiku-4-5-20251001": 4.0 / 1_000_000,   # $4/M output
+    "grok-4": 15.0 / 1_000_000,                 # $15/M output
+    "grok-4-fast": 15.0 / 1_000_000,            # $15/M output
+}
 
 # ---------------------------------------------------------------------------
 # Remote model catalogue (drives the model picker UI)
