@@ -22,11 +22,21 @@ MODE="${1:-prod}"
 shift 2>/dev/null || true
 EXTRA_ARGS="$*"
 
+# ── DB snapshot resolution ──────────────────────────────────────────
+# Only mine from snapshots — never touch the live DB
+SNAPSHOT_DIR="$WORKSPACE/.subconscious/db_snapshots"
+
 case "$MODE" in
     prod)
         LOCK_FILE="$LOCK_DIR/chatmine_prod.lock"
         LOG_FILE="$LOG_DIR/chatmine.log"
         SCRIPT="$SCRIPT_DIR/chatmine.py"
+        if [ -f "$SNAPSHOT_DIR/latest_prod.db" ]; then
+            export APEX_DB="$SNAPSHOT_DIR/latest_prod.db"
+        else
+            echo "$(date): chatmine-prod skipped — no snapshot available" >> "$LOG_FILE"
+            exit 0
+        fi
         CMD="$PYTHON $SCRIPT --all --model qwen3.5:9b-fast $EXTRA_ARGS"
         LABEL="chatmine-prod"
         ;;
@@ -34,7 +44,12 @@ case "$MODE" in
         LOCK_FILE="$LOCK_DIR/chatmine_dev.lock"
         LOG_FILE="$LOG_DIR/chatmine_dev.log"
         SCRIPT="$SCRIPT_DIR/chatmine.py"
-        export APEX_DB="/Users/dana/.openclaw/apex/state/apex_dev.db"
+        if [ -f "$SNAPSHOT_DIR/latest_dev.db" ]; then
+            export APEX_DB="$SNAPSHOT_DIR/latest_dev.db"
+        else
+            echo "$(date): chatmine-dev skipped — no snapshot available" >> "$LOG_FILE"
+            exit 0
+        fi
         CMD="$PYTHON $SCRIPT --all --model qwen3.5:9b-fast $EXTRA_ARGS"
         LABEL="chatmine-dev"
         ;;
