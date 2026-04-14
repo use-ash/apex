@@ -1116,6 +1116,57 @@ class SecurityFixTests(unittest.TestCase):
         self.assertTrue(tool_access.tool_allowed_for_level("playwright__browser_navigate", 3))
         self.assertTrue(tool_access.tool_allowed_for_level("fetch__fetch", 3))
 
+    def test_level_2_allows_gws_cli_for_google_workspace_calls(self) -> None:
+        workspace = str(TEST_ROOT)
+        self.assertIsNone(
+            local_safety.validate_command(
+                'gws sheets spreadsheets values batchUpdate --params "{\\"spreadsheetId\\":\\"abc123\\"}" --json "{\\"valueInputOption\\":\\"USER_ENTERED\\",\\"data\\":[]}"',
+                workspace,
+                permission_level=2,
+                allowed_commands=[],
+            )
+        )
+        self.assertIsNone(
+            local_safety.validate_command(
+                'gws schema drive.files.list --resolve-refs',
+                workspace,
+                permission_level=2,
+                allowed_commands=[],
+            )
+        )
+
+    def test_level_2_blocks_gws_auth_and_outside_workspace_file_flags(self) -> None:
+        workspace = str(TEST_ROOT)
+        upload_path = TEST_ROOT / "input.txt"
+        upload_path.write_text("hello\n", encoding="utf-8")
+
+        self.assertIn(
+            "gws auth commands are not allowed",
+            local_safety.validate_command(
+                "gws auth login",
+                workspace,
+                permission_level=2,
+                allowed_commands=[],
+            ) or "",
+        )
+        self.assertIsNone(
+            local_safety.validate_command(
+                f'gws drive files create --upload "{upload_path}"',
+                workspace,
+                permission_level=2,
+                allowed_commands=[],
+            )
+        )
+        self.assertIn(
+            "outside workspace",
+            local_safety.validate_command(
+                'gws drive files get --output "/etc/out.json"',
+                workspace,
+                permission_level=2,
+                allowed_commands=[],
+            ) or "",
+        )
+
     def test_tool_access_level_2_denies_memory_and_filesystem_writes(self) -> None:
         allowed, message = tool_access.tool_access_decision(
             "filesystem__write_file",
@@ -2906,6 +2957,30 @@ class SecurityFixTests(unittest.TestCase):
         self.assertIn("# Apex Tool Guidance", ctx)
         self.assertIn("state/uploads", ctx)
         self.assertIn("apex-private/ops-docs/REPO_CONVENTIONS.md", ctx)
+
+    def test_workspace_context_lists_skills_from_secondary_workspace_root(self) -> None:
+        primary = TEST_ROOT / "primary-root"
+        secondary = TEST_ROOT / "workspace-root"
+        (primary / "memory").mkdir(parents=True, exist_ok=True)
+        primary.mkdir(parents=True, exist_ok=True)
+        secondary.mkdir(parents=True, exist_ok=True)
+        (secondary / "skills" / "demo-skill").mkdir(parents=True, exist_ok=True)
+        (secondary / "skills" / "demo-skill" / "SKILL.md").write_text(
+            '---\nname: demo-skill\ndescription: "Sample secondary-root skill for prompt catalog coverage."\n---\n',
+            encoding="utf-8",
+        )
+        dashboard_mod._config.update_section(
+            "workspace",
+            {"path": f"{primary}:{secondary}"},
+        )
+
+        chat_id = self._create_direct_chat()
+        context_mod._clear_session_context(chat_id)
+        ctx = context_mod._get_workspace_context(chat_id)
+
+        self.assertIn("`/demo-skill`", ctx)
+        self.assertIn("secondary-root skill", ctx)
+        self.assertIn("workspace-root/skills/demo-skill/SKILL.md", ctx)
 
     def test_sdk_pre_tool_hook_blocks_level_3_non_allowlisted_date(self) -> None:
         allowed, message = streaming_mod._sdk_pre_tool_use_decision(

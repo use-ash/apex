@@ -947,9 +947,10 @@ def _get_workspace_context(chat_id: str) -> str:
     )
     if memory_md.exists():
         parts.append(f"<system-reminder>\n# MEMORY.md (persistent memory)\n{memory_md.read_text()[:4000]}\n</system-reminder>")
-    if skills_dir.is_dir():
+    skill_files = env.iter_workspace_skill_files(env.get_runtime_workspace_paths_list())
+    if skill_files:
         skill_entries: list[str] = []
-        for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
+        for skill_md in skill_files:
             skill_name = skill_md.parent.name
             content = skill_md.read_text()
             desc = ""
@@ -957,14 +958,19 @@ def _get_workspace_context(chat_id: str) -> str:
                 if line.strip().startswith("description:"):
                     desc = line.split(":", 1)[1].strip().strip('"')
                     break
-            run_scripts = list(skill_md.parent.glob("run_*"))
-            if not run_scripts:
-                skill_entries.append(f"### /{skill_name}\n{content[:2000]}")
-            else:
-                skill_entries.append(f"- `/{skill_name}` — {desc}")
+            rel_path = str(skill_md.relative_to(workspace)) if skill_md.is_relative_to(workspace) else str(skill_md)
+            summary = desc or "No description provided."
+            skill_entries.append(f"- `/{skill_name}` — {summary} (`{rel_path}`)")
         if skill_entries:
             catalog = "\n".join(skill_entries)
-            parts.append(f"<system-reminder>\n# Available Skills\nYou can use these skills. For /recall, /codex, /grok the server handles dispatch automatically. For thinking skills, follow the instructions below.\n\n{catalog[:6000]}\n</system-reminder>")
+            parts.append(
+                "<system-reminder>\n"
+                "# Available Skills\n"
+                "You can use these skills. For `/recall`, `/codex`, `/grok` the server handles dispatch automatically. "
+                "For workspace skills, first read the referenced `SKILL.md`, then follow it.\n\n"
+                f"{catalog[:6000]}\n"
+                "</system-reminder>"
+            )
     live = _get_live_state_snapshot()
     if live:
         parts.append(live)
