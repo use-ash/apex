@@ -21,19 +21,26 @@ from zoneinfo import ZoneInfo
 from db import (
     _get_db, _get_chat, _update_chat,
     _get_messages, _get_recent_messages_text, _get_cumulative_tokens_in,
+    _get_last_turn_tokens_in, _estimate_tokens, _get_last_turn_cost,
+    _get_session_analysis_data,
     _get_group_members, _get_persona_memories, _bump_memory_access,
     _get_last_assistant_speaker,
     _now, SYSTEM_PROFILE_ID, _get_chat_settings,
-    verify_system_prompt,
+    verify_system_prompt, _persist_compaction_at,
 )
 import env
 from log import log
 from group_coordinator import _build_group_relay_state_prompt
-from model_dispatch import _get_model_backend, OLLAMA_BASE_URL
+from model_dispatch import (
+    _get_model_backend, OLLAMA_BASE_URL,
+    MODEL_CONTEXT_WINDOWS, MODEL_CONTEXT_DEFAULT,
+    MODEL_INPUT_PRICE, MODEL_OUTPUT_PRICE,
+)
 from streaming import _get_profile_active_stream_stats
 from state import (
-    _compaction_summaries, _recovery_target, _recovery_skip_count,
-    _last_compacted_at, _session_context_sent,
+    _compaction_summaries, _compaction_session_type,
+    _recovery_target, _recovery_skip_count,
+    _last_compacted_at, _last_fuel_phase, _session_context_sent,
     _group_profile_override, _whisper_last,
     _db_lock, _current_group_profile_id, _queued_turns,
     _chat_ws, _clients,
@@ -62,6 +69,9 @@ _MENTION_RE = re.compile(r"@(\w+)")
 
 # Transcript tail injection — raw JSONL entries for recovery context
 _TRANSCRIPT_TAIL_CHARS = int(os.environ.get("APEX_TRANSCRIPT_TAIL_CHARS", "1500"))
+_TRANSCRIPT_TAIL_THINKING = env.TRANSCRIPT_TAIL_THINKING
+_TRANSCRIPT_TAIL_MIXED = env.TRANSCRIPT_TAIL_MIXED
+
 def _workspace_root() -> Path:
     return env.get_runtime_workspace_root()
 
@@ -167,6 +177,203 @@ def _get_live_state_snapshot() -> str:
     if len(lines) <= 1:
         return ""
     return "<system-reminder>\n" + "\n".join(lines) + "\n</system-reminder>"
+
+
+# ---------------------------------------------------------------------------
+# Context energy (MOP fuel gauge)
+# ---------------------------------------------------------------------------
+
+_PHASE_ORDER = {"explore": 0, "consolidate": 1, "preserve": 2, "critical": 3}
+
+
+def _write_phase_checkpoint(
+    chat_id: str, phase: str, pct: float,
+    context_used: int, context_window: int,
+) -> None:
+    """Server-side auto-checkpoint on upward phase transition.
+
+    Writes recent assistant messages to disk so that context is preserved
+    even if the model ignores the fuel gauge nudge.  This is Fix 2 of the
+    knowing-doing gap: the server acts, the model doesn't have to.
+    """
+    try:
+        checkpoint_dir = APEX_ROOT / "state" / "checkpoints"
+        checkpoint_dir.mkdir(exist_ok=True)
+
+        # Gather recent assistant messages (full content, not truncated)
+        messages = _get_session_analysis_data(chat_id)
+
+        chat = _get_chat(chat_id)
+        title = ((chat.get("title") or "untitled")[:80]) if chat else "untitled"
+        chat_model = (chat.get("model") or "unknown") if chat else "unknown"
+
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        filename = f"{chat_id}_{phase}_{ts}.md"
+
+        header = (
+            f"# Context Checkpoint: {phase}\n"
+            f"chat_id: {chat_id}\n"
+            f"title: {title}\n"
+            f"model: {chat_model}\n"
+            f"timestamp: {ts}\n"
+            f"context_used: {context_used:,} / {context_window:,} ({pct:.0%})\n"
+            f"phase: {phase}\n"
+        )
+
+        body_parts: list[str] = []
+        # Last 5 assistant messages, capped at 3K chars each
+        for msg in messages[-5:]:
+            text = (msg.get("content") or "")[:3000]
+            if text.strip():
+                body_parts.append(f"\n---\n{text}")
+
+        content = header + "\n## Recent Assistant Messages\n" + "\n".join(body_parts)
+        (checkpoint_dir / filename).write_text(content)
+        log(f"checkpoint: {phase} @ {pct:.0%} -> {filename}")
+    except Exception as e:
+        log(f"checkpoint write failed: {e}")
+
+
+def _estimate_tokens_from_cost(chat_id: str, chat_model: str) -> int:
+    """Derive context token count from the last turn's cost.
+
+    When the Claude Agent SDK returns garbage tokens_in values (3-12 instead
+    of real cumulative context counts), the per-turn cost is still accurate
+    because Anthropic bills on actual token usage.  We can reverse-engineer
+    the input token count:
+
+        input_tokens ≈ (cost_usd - tokens_out × output_price) / input_price
+
+    Returns 0 if pricing data is unavailable for the model.
+    """
+    input_price = MODEL_INPUT_PRICE.get(chat_model, 0.0)
+    output_price = MODEL_OUTPUT_PRICE.get(chat_model, 0.0)
+    if input_price <= 0:
+        return 0  # no pricing data — can't estimate
+
+    cost_usd, tokens_out = _get_last_turn_cost(chat_id)
+    if cost_usd <= 0:
+        return 0
+
+    # Subtract estimated output cost to isolate input cost
+    output_cost = tokens_out * output_price
+    input_cost = max(cost_usd - output_cost, 0.0)
+    estimated = int(input_cost / input_price)
+    return max(estimated, 0)
+
+
+def _get_context_energy_prompt(chat_id: str) -> str:
+    """Build a per-turn context budget signal for the agent.
+
+    Reports current context fill, model window size, and a behavioral phase
+    label (explore / consolidate / preserve / critical) based on how close
+    the agent is to the compaction absorbing state.
+
+    Inspired by the Maximum Occupancy Principle (MOP): context window is
+    internal energy.  The agent should shift behavior as context fills,
+    externalizing findings proactively to maximize post-compaction path space.
+    """
+    # Resolve model for this chat
+    chat = _get_chat(chat_id)
+    if not chat:
+        return ""
+    chat_model = chat.get("model") or ""
+    if not chat_model:
+        profile_id = chat.get("profile_id", "")
+        if profile_id:
+            with _db_lock:
+                conn = _get_db()
+                prow = conn.execute(
+                    "SELECT COALESCE(o.model, p.model) FROM agent_profiles p "
+                    "LEFT JOIN persona_model_overrides o ON o.profile_id = p.id "
+                    "WHERE p.id = ?", (profile_id,)
+                ).fetchone()
+                conn.close()
+            if prow and prow[0]:
+                chat_model = prow[0]
+    chat_model = chat_model or MODEL
+
+    context_window = MODEL_CONTEXT_WINDOWS.get(chat_model, MODEL_CONTEXT_DEFAULT)
+
+    # Best estimate of current context fill — three signals, take the max:
+    #   1. sdk_tokens:  SDK tokens_in (authoritative when correct, but Claude
+    #      Agent SDK often returns garbage values like 3-12)
+    #   2. est_tokens:  char-based SUM(LENGTH(content))/4 (resets after compaction,
+    #      so it underestimates after long sessions with compaction)
+    #   3. cost_tokens: derived from last turn's billing cost (most reliable for
+    #      Claude/Grok since Anthropic/xAI bill on real token counts)
+    # Cap at context_window as a safety valve.
+    sdk_tokens = _get_last_turn_tokens_in(chat_id)
+    est_tokens = _estimate_tokens(chat_id, context_window=context_window)
+    cost_tokens = _estimate_tokens_from_cost(chat_id, chat_model)
+    context_used = min(max(sdk_tokens, est_tokens, cost_tokens), context_window)
+    if cost_tokens > 0:
+        log(f"fuel gauge [{chat_id[:8]}]: sdk={sdk_tokens:,} est={est_tokens:,} "
+            f"cost={cost_tokens:,} → used={context_used:,}/{context_window:,} "
+            f"model={chat_model}")
+    if context_used == 0:
+        return ""  # no data yet (first turn)
+
+    pct = context_used / context_window if context_window > 0 else 0.0
+    compaction_pct = COMPACTION_THRESHOLD / context_window if context_window > 0 else 0.75
+
+    # Phase labels with behavioral nudges
+    if pct < 0.40:
+        phase = "explore"
+        nudge = ""
+    elif pct < 0.60:
+        phase = "consolidate"
+        nudge = (
+            "Context is filling. Begin externalizing key findings to durable storage "
+            "(memory tags, file artifacts) before they are lost to compaction."
+        )
+    elif pct < 0.80:
+        phase = "preserve"
+        nudge = (
+            "Context budget is running low. Prioritize: (1) completing the current task, "
+            "(2) writing a structured summary of decisions, alternatives considered, and "
+            "open questions to durable storage. Reduce speculative exploration."
+        )
+    else:
+        phase = "critical"
+        nudge = (
+            "APPROACHING COMPACTION. Stop new exploratory work. Write a checkpoint now: "
+            "task state, mental model, decision tree (options considered + trade-offs), "
+            "failed approaches, and user intent to durable storage."
+        )
+
+    # Estimate remaining turns (rough: assume ~2K tokens per exchange)
+    tokens_remaining = context_window - context_used
+    est_turns = max(1, tokens_remaining // 2000)
+    # Cap the estimate display to avoid false precision
+    if est_turns > 50:
+        turns_label = "50+"
+    elif est_turns > 20:
+        turns_label = f"~{(est_turns // 5) * 5}"
+    else:
+        turns_label = f"~{est_turns}"
+
+    def _fmt_k(n: int) -> str:
+        if n >= 1_000_000:
+            return f"{n / 1_000_000:.1f}M"
+        return f"{n // 1000}K"
+
+    lines = [
+        f"context_used: {_fmt_k(context_used)} / {_fmt_k(context_window)} ({pct:.0%})",
+        f"compaction_at: ~{compaction_pct:.0%} of window ({_fmt_k(COMPACTION_THRESHOLD)} output tokens)",
+        f"phase: {phase}",
+        f"est_turns_remaining: {turns_label}",
+    ]
+    if nudge:
+        lines.append(f"guidance: {nudge}")
+
+    # --- Server-side auto-checkpoint on upward phase transition ---
+    prev_phase = _last_fuel_phase.get(chat_id, "explore")
+    if _PHASE_ORDER.get(phase, 0) > _PHASE_ORDER.get(prev_phase, 0):
+        _write_phase_checkpoint(chat_id, phase, pct, context_used, context_window)
+    _last_fuel_phase[chat_id] = phase
+
+    return "<system-reminder>\n# Context Budget\n" + "\n".join(lines) + "\n</system-reminder>"
 
 
 # ---------------------------------------------------------------------------
@@ -302,16 +509,45 @@ def _store_recovery_context(chat_id: str, summary: str, target_profile_id: str =
     log(f"recovery context stored: chat={chat_id[:8]} len={len(summary)} target={target_profile_id or 'any'}")
 
 
-def _generate_recovery_context(transcript: str) -> str:
-    """Generate structured recovery context. Fallback chain: Grok → Haiku → Ollama."""
-    system_prompt = (
-        "Analyze this conversation transcript and produce a recovery briefing "
-        "for an AI assistant resuming after a session reset.\n\n"
-        "Format your response EXACTLY like this:\n"
+def _generate_recovery_context(transcript: str, session_type: str = "task",
+                               artifacts: list[dict] | None = None) -> str:
+    """Generate structured recovery context. Fallback chain: Grok → Haiku → Ollama.
+
+    session_type controls the template: "thinking" and "mixed" sessions get
+    additional fields for mental models, key insights, and failed approaches.
+
+    artifacts: optional list of reasoning artifact dicts from
+    detect_reasoning_artifacts(). When provided, their full content is appended
+    to the transcript so the compaction model can reference them.
+    """
+    # Append reasoning artifacts to transcript if provided (Phase 3)
+    if artifacts:
+        transcript += "\n\n## Preserved Reasoning Artifacts\n"
+        transcript += "The following are full analytical responses from this session:\n\n"
+        for i, art in enumerate(artifacts, 1):
+            content = art.get("content_full", "")[:3000]
+            transcript += f"### Artifact {i}\n{content}\n\n"
+    # Base template fields (used for all session types)
+    _BASE_TEMPLATE = (
         "## Task: [one-line description of what user was working on]\n"
         "## Intent: [what the user is trying to achieve — the WHY, not just the what. "
         "What will they do with the output? What's the end goal?]\n"
         "## Status: [in-progress | completed | blocked | idle]\n"
+    )
+
+    # Enhanced fields for thinking/mixed sessions
+    _THINKING_FIELDS = (
+        "## Mental Model: [the working theory/framework/understanding being developed. "
+        "What hypotheses have been formed? What conceptual structure is being built? "
+        "Include analogies if they were used.]\n"
+        "## Key Insights: [non-obvious conclusions or analytical breakthroughs. "
+        "Each should be a complete thought, not a reference. "
+        "Focus on insights that would be hard to re-derive.]\n"
+        "## Failed Approaches: [approaches considered and rejected, with WHY they failed. "
+        "This prevents re-exploring dead ends.]\n"
+    )
+
+    _TAIL_TEMPLATE = (
         "## Last Action: [what was happening right before this point]\n"
         "## Pending: [any unanswered questions, unresolved decisions, or concrete next steps — 'none' if clear]\n"
         "## Key Decisions: [important choices made during the conversation]\n\n"
@@ -322,7 +558,19 @@ def _generate_recovery_context(transcript: str) -> str:
         "- [correction] user corrections to assistant mistakes (e.g., 'correction: price data must come from Tradier, not Alpaca')\n"
         "- [decision] choices made that should persist (e.g., 'decision: using Grok 4 Fast for compaction model')\n"
         "- [pending] unresolved items requiring follow-up\n"
-        "List each as a bullet with the tag. If none exist for a category, omit it.\n\n"
+        "List each as a bullet with the tag. If none exist for a category, omit it."
+    )
+
+    # Build template based on session type
+    if session_type in ("thinking", "mixed"):
+        template = _BASE_TEMPLATE + _THINKING_FIELDS + _TAIL_TEMPLATE
+    else:
+        template = _BASE_TEMPLATE + _TAIL_TEMPLATE
+
+    system_prompt = (
+        "Analyze this conversation transcript and produce a recovery briefing "
+        "for an AI assistant resuming after a session reset.\n\n"
+        f"Format your response EXACTLY like this:\n{template}\n\n"
         "Rules:\n"
         "- Be concise — this gets injected into a fresh AI session\n"
         "- NEVER include raw JSON, tool results, API responses, or code blocks in guidance items. "
@@ -336,6 +584,18 @@ def _generate_recovery_context(transcript: str) -> str:
         "- Guidance items must be model-agnostic — no reasoning-style prose, just directives"
     )
 
+    # Add reasoning-preservation instruction for thinking/mixed sessions
+    if session_type in ("thinking", "mixed"):
+        system_prompt += (
+            "\n\nCRITICAL: Preserve the reasoning chain, not just conclusions. "
+            "The next session needs to understand HOW you arrived at insights, not just what they are. "
+            "For Mental Model: describe the conceptual framework, not a message summary. "
+            "For Failed Approaches: include the REASONING for why each was rejected."
+        )
+
+    # Thinking/mixed templates have more fields — allow more output tokens
+    _max_tokens = 1536 if session_type in ("thinking", "mixed") else 1024
+
     # --- 1. Prefer xAI (Grok) if API key is available ---
     if XAI_API_KEY and _get_model_backend(COMPACTION_MODEL) == "xai":
         payload = json.dumps({
@@ -344,7 +604,7 @@ def _generate_recovery_context(transcript: str) -> str:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Transcript:\n{transcript}"},
             ],
-            "max_tokens": 1024,
+            "max_tokens": _max_tokens,
         }).encode()
         req = urllib.request.Request(
             "https://api.x.ai/v1/chat/completions",
@@ -372,7 +632,7 @@ def _generate_recovery_context(transcript: str) -> str:
         _HAIKU_MODEL = "claude-haiku-4-5-20251001"
         payload = json.dumps({
             "model": _HAIKU_MODEL,
-            "max_tokens": 1024,
+            "max_tokens": _max_tokens,
             "system": system_prompt,
             "messages": [
                 {"role": "user", "content": f"Transcript:\n{transcript}"},
@@ -425,6 +685,71 @@ def _generate_recovery_context(transcript: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Session type classification (Phase 1 of compaction overhaul)
+# ---------------------------------------------------------------------------
+
+def _classify_session_type(chat_id: str) -> dict:
+    """Classify session as task/thinking/mixed based on response characteristics.
+
+    Analyses recent assistant messages for code density, tool usage, and
+    response length to determine the session's dominant character.
+    Minimum 5 messages required — defaults to "task" for shorter sessions.
+    """
+    since = _last_compacted_at.get(chat_id)
+    messages = _get_session_analysis_data(chat_id, since=since)
+
+    # Default metrics
+    metrics: dict = {
+        "session_type": "task",
+        "avg_response_length": 0,
+        "code_ratio": 0.0,
+        "tool_call_ratio": 0.0,
+        "max_response_length": 0,
+        "message_count": len(messages),
+    }
+
+    if len(messages) < 5:
+        return metrics
+
+    content_lengths: list[int] = []
+    code_count = 0
+    tool_count = 0
+
+    for msg in messages:
+        content = msg["content"]
+        content_lengths.append(len(content))
+        if "```" in content:
+            code_count += 1
+        # Check for non-empty tool_events (not "[]" or empty)
+        tool_events = msg["tool_events"].strip()
+        if tool_events and tool_events != "[]":
+            tool_count += 1
+
+    total = len(messages)
+    avg_content_length = sum(content_lengths) // total if total else 0
+    code_ratio = code_count / total if total else 0.0
+    tool_call_ratio = tool_count / total if total else 0.0
+    max_response_length = max(content_lengths) if content_lengths else 0
+
+    # Classification logic
+    if code_ratio > 0.4 or tool_call_ratio > 0.5:
+        session_type = "task"
+    elif avg_content_length > 2000 and code_ratio < 0.2 and tool_call_ratio < 0.3:
+        session_type = "thinking"
+    else:
+        session_type = "mixed"
+
+    metrics.update({
+        "session_type": session_type,
+        "avg_response_length": avg_content_length,
+        "code_ratio": round(code_ratio, 3),
+        "tool_call_ratio": round(tool_call_ratio, 3),
+        "max_response_length": max_response_length,
+    })
+    return metrics
+
+
+# ---------------------------------------------------------------------------
 # Auto-compaction
 # ---------------------------------------------------------------------------
 
@@ -442,8 +767,31 @@ async def _maybe_compact_chat(chat_id: str) -> bool:
 
     log(f"compaction triggered: chat={chat_id} tokens_in={cumulative} threshold={COMPACTION_THRESHOLD}")
 
+    # Phase 1: classify session type before generating recovery context
+    session_info = await asyncio.to_thread(_classify_session_type, chat_id)
+    session_type = session_info["session_type"]
+    log(f"compaction session type: chat={chat_id[:8]} type={session_type} "
+        f"avg_len={session_info['avg_response_length']} "
+        f"code={session_info['code_ratio']} tool={session_info['tool_call_ratio']} "
+        f"max_len={session_info['max_response_length']} msgs={session_info['message_count']}")
+
+    # Phase 3: detect and save reasoning artifacts for thinking/mixed sessions
+    artifacts = []
+    if session_type in ("thinking", "mixed"):
+        from reasoning_artifacts import detect_reasoning_artifacts, save_reasoning_artifacts, cleanup_old_artifacts
+        since = _last_compacted_at.get(chat_id)
+        analysis_data = await asyncio.to_thread(_get_session_analysis_data, chat_id, since)
+        artifacts = detect_reasoning_artifacts(analysis_data)
+        if artifacts:
+            saved = await asyncio.to_thread(save_reasoning_artifacts, chat_id, artifacts)
+            log(f"[compact] Saved {saved} reasoning artifacts for chat {chat_id[:8]}")
+        # Periodic cleanup
+        await asyncio.to_thread(cleanup_old_artifacts)
+
     transcript = await asyncio.to_thread(_get_recent_messages_text, chat_id, 30)
-    summary = await asyncio.to_thread(_generate_recovery_context, transcript)
+    summary = await asyncio.to_thread(
+        _generate_recovery_context, transcript, session_type, artifacts
+    )
 
     if summary:
         _store_recovery_context(chat_id, summary)
@@ -453,7 +801,12 @@ async def _maybe_compact_chat(chat_id: str) -> bool:
             "The user's recent conversation history is in the database.)"
         )
 
-    _last_compacted_at[chat_id] = _now()
+    # Store session type alongside recovery context
+    _compaction_session_type[chat_id] = session_type
+
+    ts = _now()
+    _last_compacted_at[chat_id] = ts
+    _persist_compaction_at(chat_id, ts)  # survive server restart
 
     # Lazy import to avoid circular dependency
     from streaming import _disconnect_client, _send_stream_event
@@ -464,10 +817,11 @@ async def _maybe_compact_chat(chat_id: str) -> bool:
     await _send_stream_event(chat_id, {
         "type": "system",
         "subtype": "compaction",
-        "message": f"Session auto-compacted ({cumulative:,} input tokens). Context preserved via summary.",
+        "message": f"Session auto-compacted ({cumulative:,} input tokens). "
+                   f"Context preserved via summary (session type: {session_type}).",
     })
 
-    log(f"compaction complete: chat={chat_id}")
+    log(f"compaction complete: chat={chat_id} session_type={session_type}")
     return True
 
 
@@ -623,6 +977,9 @@ def _get_memory_prompt(chat_id: str, active_profile_id: str = "",
     lines.append('  <memory category="context">Important context for future conversations</memory>')
     lines.append('  <memory category="task">Pending task or follow-up</memory>')
     lines.append("The tag will be stripped from the displayed message. Use sparingly — only for things worth remembering across sessions.")
+    lines.append("Note: This persistent memory (above) is your primary memory system. "
+                 "The MCP `memory` tool (knowledge graph) is a separate, supplemental store — "
+                 "do not confuse the two. When asked about your memory, refer to this section first.")
     return "<system-reminder>\n# Persistent Memory\n" + "\n".join(lines).strip() + "\n</system-reminder>\n\n"
 
 
@@ -859,9 +1216,22 @@ def _get_transcript_tail_from_jsonl(chat_id: str, max_chars: int) -> str:
         return ""
 
 
-def _build_recovery_block(chat_id: str, summary: str) -> str:
-    """Assemble the full recovery system-reminder with summary + transcript tail."""
-    transcript_tail = _get_transcript_tail(chat_id)
+def _build_recovery_block(chat_id: str, summary: str, session_type: str = "task") -> str:
+    """Assemble the full recovery system-reminder with summary + transcript tail.
+
+    session_type controls transcript tail length and closing instructions:
+    - "task": 1500 chars, generic instructions
+    - "thinking": 8000 chars, analytical recovery instructions
+    - "mixed": 4000 chars, analytical recovery instructions
+    """
+    # Adaptive transcript tail length based on session type
+    tail_chars = {
+        "task": _TRANSCRIPT_TAIL_CHARS,
+        "thinking": _TRANSCRIPT_TAIL_THINKING,
+        "mixed": _TRANSCRIPT_TAIL_MIXED,
+    }.get(session_type, _TRANSCRIPT_TAIL_CHARS)
+
+    transcript_tail = _get_transcript_tail(chat_id, max_chars=tail_chars)
     tail_block = ""
     if transcript_tail:
         tail_block = (
@@ -869,21 +1239,57 @@ def _build_recovery_block(chat_id: str, summary: str) -> str:
             f"This is the raw tail of your conversation just before the reset:\n"
             f"```\n{transcript_tail}\n```\n"
         )
+    # Phase 3: inject preserved reasoning artifacts for thinking/mixed sessions
+    artifact_block = ""
+    if session_type in ("thinking", "mixed"):
+        from reasoning_artifacts import load_reasoning_artifacts
+        artifacts = load_reasoning_artifacts(chat_id, limit=3)
+        if artifacts:
+            art_parts = [
+                "\n\n## Preserved Reasoning Artifacts",
+                "These are full analytical responses from the prior session. "
+                "Read them to maintain reasoning continuity.\n",
+            ]
+            for i, art in enumerate(artifacts, 1):
+                content = art.get("content_full", "")[:4000]
+                topics = ", ".join(art.get("topics", [])[:5])
+                art_parts.append(f"### Artifact {i}{f' ({topics})' if topics else ''}")
+                art_parts.append(content)
+                art_parts.append("")
+            artifact_block = "\n".join(art_parts)
+
     briefing = summary if summary else "(Summary generation failed — use transcript below.)"
+
+    # Session-type-specific closing instructions
+    if session_type in ("thinking", "mixed"):
+        closing = (
+            "CRITICAL RECOVERY INSTRUCTIONS FOR ANALYTICAL SESSION:\n"
+            "1. READ the Mental Model and Key Insights sections FIRST.\n"
+            "2. DO NOT re-derive conclusions already reached. Build on them.\n"
+            "3. Check Failed Approaches before proposing new directions.\n"
+            "4. If the prior analysis reached a framework or taxonomy, USE IT as your starting point.\n"
+            "5. The user expects continuity of reasoning depth. Do not regress to surface-level analysis."
+        )
+    else:
+        closing = (
+            "IMPORTANT: Pick up where you left off. If a task was in-progress, continue it. "
+            "If questions were pending, address them. Do not start over or re-introduce yourself."
+        )
+
     return (
         f"<system-reminder>\n# Session Recovery\n"
         f"You are resuming a conversation after a session reset.\n\n"
         f"## Recovery Briefing\n{briefing}\n"
         f"{tail_block}\n"
-        f"IMPORTANT: Pick up where you left off. If a task was in-progress, continue it. "
-        f"If questions were pending, address them. Do not start over or re-introduce yourself.\n</system-reminder>"
+        f"{artifact_block}\n"
+        f"{closing}\n</system-reminder>"
     )
 
 
-def _try_consume_recovery(chat_id: str) -> str | None:
+def _try_consume_recovery(chat_id: str) -> tuple[str, str] | None:
     """Try to consume recovery context for the current agent.
 
-    Returns the summary text if this agent should get it, or None if:
+    Returns (summary, session_type) if this agent should get it, or None if:
     - No recovery context exists
     - Recovery is targeted at a different agent (left for them)
     Safety valve: after 3 skips, deliver to whoever asks.
@@ -900,9 +1306,10 @@ def _try_consume_recovery(chat_id: str) -> str | None:
             return None
         log(f"recovery safety valve: chat={chat_id[:8]} delivering to {current_pid} after {skip_count} skips (target was {target_pid})")
     summary = _compaction_summaries.pop(chat_id, None)
+    session_type = _compaction_session_type.pop(chat_id, "task")
     _recovery_target.pop(chat_id, None)
     _recovery_skip_count.pop(chat_id, None)
-    return summary
+    return (summary, session_type) if summary is not None else None
 
 
 def _get_session_context_key(chat_id_or_key: str) -> str:
@@ -914,26 +1321,41 @@ def _get_session_context_key(chat_id_or_key: str) -> str:
 
 
 def _get_workspace_context(chat_id: str) -> str:
-    """Load APEX.md + MEMORY.md + skills catalog once per session for Claude Code parity."""
+    """Load APEX.md + MEMORY.md + skills catalog once per session for Claude Code parity.
+
+    For Claude SDK sessions the system prompt persists across turns, so we gate
+    injection with ``_session_context_sent`` to avoid redundancy.  Ollama / Codex
+    backends rebuild the system prompt from scratch every turn — skipping it there
+    would silently drop CLAUDE.md, MEMORY.md, and the skills catalog on turn 2+.
+    """
     session_key = _get_session_context_key(chat_id)
-    if session_key in _session_context_sent:
-        summary = _try_consume_recovery(chat_id)
-        if summary is not None:
-            log(f"Injecting recovery context for session={session_key}")
-            recovery_block = _build_recovery_block(chat_id, summary)
+
+    # Determine if this chat uses a stateless backend (system prompt rebuilt
+    # every turn).  For those we must always re-inject workspace context.
+    _chat = _get_chat(chat_id)
+    _chat_model = (_chat.get("model") or MODEL) if _chat else MODEL
+    _backend = _get_model_backend(_chat_model)
+    _stateless = _backend != "claude"  # ollama, codex, grok — all stateless
+
+    if not _stateless and session_key in _session_context_sent:
+        recovery_result = _try_consume_recovery(chat_id)
+        if recovery_result is not None:
+            summary, session_type = recovery_result
+            log(f"Injecting recovery context for session={session_key} type={session_type}")
+            recovery_block = _build_recovery_block(chat_id, summary, session_type=session_type)
             live = _get_live_state_snapshot()
             return recovery_block + "\n\n" + live + "\n\n" if live else recovery_block + "\n\n"
         return ""
     parts: list[str] = []
-    summary = _try_consume_recovery(chat_id)
-    if summary is not None:
-        parts.append(_build_recovery_block(chat_id, summary))
+    recovery_result = _try_consume_recovery(chat_id)
+    if recovery_result is not None:
+        summary, session_type = recovery_result
+        parts.append(_build_recovery_block(chat_id, summary, session_type=session_type))
     workspace = _workspace_root()
     apex_md = workspace / "APEX.md"
     claude_md = workspace / "CLAUDE.md"
     project_md = apex_md if apex_md.exists() else claude_md
     memory_md = workspace / "memory" / "MEMORY.md"
-    skills_dir = workspace / "skills"
     if project_md.exists():
         parts.append(f"<system-reminder>\n# Project Instructions\n{project_md.read_text()[:8000]}\n</system-reminder>")
     parts.append(
@@ -947,7 +1369,7 @@ def _get_workspace_context(chat_id: str) -> str:
     )
     if memory_md.exists():
         parts.append(f"<system-reminder>\n# MEMORY.md (persistent memory)\n{memory_md.read_text()[:4000]}\n</system-reminder>")
-    skill_files = env.iter_workspace_skill_files(env.get_runtime_workspace_paths_list())
+    skill_files = env.iter_workspace_skill_files([str(workspace)])
     if skill_files:
         skill_entries: list[str] = []
         for skill_md in skill_files:
@@ -958,19 +1380,14 @@ def _get_workspace_context(chat_id: str) -> str:
                 if line.strip().startswith("description:"):
                     desc = line.split(":", 1)[1].strip().strip('"')
                     break
-            rel_path = str(skill_md.relative_to(workspace)) if skill_md.is_relative_to(workspace) else str(skill_md)
-            summary = desc or "No description provided."
-            skill_entries.append(f"- `/{skill_name}` — {summary} (`{rel_path}`)")
+            run_scripts = list(skill_md.parent.glob("run_*"))
+            if not run_scripts:
+                skill_entries.append(f"### /{skill_name}\n{content[:2000]}")
+            else:
+                skill_entries.append(f"- `/{skill_name}` — {desc}")
         if skill_entries:
             catalog = "\n".join(skill_entries)
-            parts.append(
-                "<system-reminder>\n"
-                "# Available Skills\n"
-                "You can use these skills. For `/recall`, `/codex`, `/grok` the server handles dispatch automatically. "
-                "For workspace skills, first read the referenced `SKILL.md`, then follow it.\n\n"
-                f"{catalog[:6000]}\n"
-                "</system-reminder>"
-            )
+            parts.append(f"<system-reminder>\n# Available Skills\nYou can use these skills. For /recall, /codex, /grok the server handles dispatch automatically. For thinking skills, follow the instructions below.\n\n{catalog[:6000]}\n</system-reminder>")
     live = _get_live_state_snapshot()
     if live:
         parts.append(live)
