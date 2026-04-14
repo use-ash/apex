@@ -981,6 +981,31 @@ def _seed_workspace(workspace: Path) -> None:
     else:
         print_info(f"Skills directory already exists — skipped")
 
+    # --- .subconscious/ directory (memory system state) ---
+    subconscious_dir = workspace / ".subconscious"
+    for sub in [subconscious_dir, subconscious_dir / "sessions", subconscious_dir / "digests"]:
+        sub.mkdir(parents=True, exist_ok=True)
+    # Initialize empty guidance.json so the system doesn't error on first read
+    guidance_file = subconscious_dir / "guidance.json"
+    if not guidance_file.exists():
+        guidance_file.write_text('{"items": [], "created_at": "' +
+                                 __import__("datetime").datetime.now(
+                                     __import__("datetime").timezone.utc
+                                 ).isoformat() + '"}\n')
+        print_success("Initialized memory system (.subconscious/)")
+    else:
+        print_info("Memory system already initialized — skipped")
+    # Ensure .subconscious/ is gitignored
+    gitignore = workspace / ".gitignore"
+    marker = ".subconscious/"
+    if gitignore.exists():
+        content = gitignore.read_text()
+        if marker not in content:
+            with open(gitignore, "a") as f:
+                f.write(f"\n{marker}\n")
+    else:
+        gitignore.write_text(f"{marker}\n")
+
     link_stats = _seed_workspace_links(workspace)
     if any(link_stats.values()):
         print_success(
