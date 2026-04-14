@@ -53,6 +53,7 @@ from log import log, LOG_PATH, LOG_MAX
 from db import (
     DB_PATH, _get_db, _init_db, _seed_default_profiles, seed_system_personas,
     _get_recent_messages_text, _get_recently_active_chats,
+    _load_compaction_timestamps,
 )
 from state import (
     _recovery_pending,
@@ -177,6 +178,7 @@ _license_mgr._premium_loader = _premium_loader
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     _init_db()
+    _load_compaction_timestamps()  # restore fuel gauge state before anything reads it
     _seed_default_profiles()
     seed_system_personas()
     _apex_config = ApexConfig(APEX_ROOT / "state")

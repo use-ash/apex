@@ -233,6 +233,9 @@ ENABLE_SUBCONSCIOUS_WHISPER: bool = (
 GROUPS_ENABLED: bool = (
     os.environ.get("APEX_GROUPS_ENABLED", "").lower() in {"1", "true", "yes"}
 )
+ENABLE_METACOGNITION: bool = (
+    os.environ.get("APEX_ENABLE_METACOGNITION", "").lower() in {"1", "true", "yes"}
+)
 
 # Dev mode — auto-True when running on a non-production port.
 # In dev mode, premium modules load from plaintext .py instead of encrypted .enc.

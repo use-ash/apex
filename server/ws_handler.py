@@ -77,6 +77,7 @@ from context import (
     _clear_session_context, _has_session_context,
     ENABLE_SUBCONSCIOUS_WHISPER,
 )
+ENABLE_METACOGNITION = env.ENABLE_METACOGNITION
 from skills import (
     _parse_skill_command, _run_recall, _run_improve, _handle_skill,
     _DIRECT_SKILL_HANDLERS, _CONTEXT_SKILLS, _THINKING_SKILLS,
@@ -1103,6 +1104,15 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                                         model_hint=chat_model)
             if whisper:
                 prompt = f"{whisper}{prompt}"
+
+        if ENABLE_METACOGNITION and backend in ("ollama", "xai", "mlx", "codex"):
+            try:
+                from metacognition import retrieve_prior_context
+                metacog = retrieve_prior_context(prompt)
+                if metacog:
+                    prompt = f"{metacog}{prompt}"
+            except Exception as e:
+                log(f"metacognition failed for {backend}: {e}")
 
         if group_agent:
             _group_profile_override[chat_id] = group_agent["profile_id"]

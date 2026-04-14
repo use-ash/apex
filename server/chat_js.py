@@ -2074,6 +2074,9 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
       break;
 
     case 'system':
+      if (msg.subtype === 'compaction') {
+        addSystemMsg('⚡ ' + (msg.message || 'Session compacted.'), {});
+      }
       break;
 
     case 'system_message':

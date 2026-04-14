@@ -59,7 +59,10 @@ docs/warroom.html
 scripts/gh_commit.sh
 scripts/license_keygen.py
 install-exif.sh
-skills/skill-improver/
+# Skills — private by default; only skill-improver and skill-builder are public OSS
+skills/*/
+!skills/skill-improver/
+!skills/skill-builder/
 deploy-phase3.sh
 claude-commands/
 mockups/

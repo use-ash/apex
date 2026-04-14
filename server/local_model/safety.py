@@ -510,12 +510,14 @@ def _validate_gws_command(argv: list[str], workspace: str | None) -> str | None:
             return "Error: gws schema requires a target like drive.files.list"
         index = 3
     else:
-        positional_count = 1
+        positional_count = 1  # service name
         while index < len(argv) and not argv[index].startswith("-"):
             positional_count += 1
             index += 1
         if positional_count < 3 or positional_count > 4:
-            return "Error: gws commands must use `gws <service> <resource> [sub-resource] <method>`"
+            return (
+                "Error: gws commands must use `gws <service> <resource> [sub-resource] <method>`"
+            )
 
     while index < len(argv):
         token = argv[index]

@@ -54,8 +54,9 @@ _compaction_summaries: dict[str, str] = {}    # chat_id -> summary text
 _compaction_session_type: dict[str, str] = {} # chat_id -> "task" | "thinking" | "mixed"
 _recovery_target: dict[str, str] = {}         # chat_id -> profile_id of agent that should get recovery
 _recovery_skip_count: dict[str, int] = {}     # chat_id -> times recovery was skipped (safety valve)
-_last_compacted_at: dict[str, str] = {}       # chat_id -> ISO timestamp
+_last_compacted_at: dict[str, str] = {}       # chat_id -> ISO timestamp (persisted via apex_meta, loaded at startup)
 _recovery_pending: dict[str, asyncio.Event] = {}  # chat_id -> set when ready
+_last_fuel_phase: dict[str, str] = {}            # chat_id -> last known phase (explore/consolidate/preserve/critical)
 
 # ---------------------------------------------------------------------------
 # Session context

@@ -40,6 +40,7 @@ DEFAULT_LEVEL2_TOOL_PATTERNS = (
     "bash",
     "execute_code",
     "ToolSearch",
+    "Skill",
     "read_file",
     "write_file",
     "edit_file",
@@ -59,6 +60,8 @@ DEFAULT_LEVEL2_TOOL_PATTERNS = (
     "filesystem__list_allowed_directories",
     "tradingview__*",
     "code-review-graph__*",
+    "google-drive__*",
+    "gdrive__*",
     "memory__*",
 )
 
@@ -128,6 +131,18 @@ TOOL_POLICY_CATALOG = {
         "description": "Query the code review graph MCP server for review and repository context.",
         "category": "mcp",
         "group": "analysis",
+    },
+    "google-drive__*": {
+        "name": "Google Drive MCP",
+        "description": "Search and read Google Drive documents through the Google Workspace MCP server.",
+        "category": "mcp",
+        "group": "productivity",
+    },
+    "gdrive__*": {
+        "name": "Google Drive MCP",
+        "description": "Search and read Google Drive documents through the Google Workspace MCP server.",
+        "category": "mcp",
+        "group": "productivity",
     },
     "filesystem__read_file": {
         "name": "Filesystem: Read File",

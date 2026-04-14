@@ -278,3 +278,53 @@ async def api_license_deactivate():
     if result["success"]:
         log(f"License deactivated, reverted to tier={result['tier']}")
     return JSONResponse(result)
+
+
+# ---------------------------------------------------------------------------
+# Metacognition test endpoint
+# ---------------------------------------------------------------------------
+
+@misc_router.post("/api/metacognition/test")
+async def api_metacognition_test(request: Request):
+    """Test the metacognition retrieval pipeline.
+
+    POST {"message": "what's left to build?"} → full diagnostic output.
+    """
+    try:
+        from metacognition import test_retrieval
+    except ImportError as e:
+        return JSONResponse({"error": f"metacognition module not available: {e}"}, status_code=500)
+
+    body = await request.json()
+    message = body.get("message", "")
+    if not message:
+        return JSONResponse({"error": "message field required"}, status_code=400)
+    verbose = body.get("verbose", False)
+
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, test_retrieval, message, verbose
+    )
+    return JSONResponse(result)
+
+
+@misc_router.get("/api/metacognition/status")
+async def api_metacognition_status():
+    """Return metacognition index status."""
+    import os as _os
+    status = {
+        "enabled": env.ENABLE_METACOGNITION,
+    }
+    try:
+        from metacognition import META_FILE, VECTORS_FILE
+        if _os.path.exists(META_FILE):
+            import json as _json
+            meta = _json.loads(Path(META_FILE).read_text())
+            status["index"] = {
+                "total_documents": len(meta),
+                "index_size_mb": round(_os.path.getsize(VECTORS_FILE) / 1024 / 1024, 2) if _os.path.exists(VECTORS_FILE) else 0,
+            }
+        else:
+            status["index"] = {"total_documents": 0, "error": "Index not built"}
+    except ImportError:
+        status["index"] = {"error": "metacognition module not available"}
+    return JSONResponse(status)

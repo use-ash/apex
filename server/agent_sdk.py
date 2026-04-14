@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 import env
 from db import _get_chat, _get_chat_tool_policy, _get_messages
 from log import log
-from model_dispatch import MODEL_CONTEXT_WINDOWS, MODEL_CONTEXT_DEFAULT
+from model_dispatch import MODEL_CONTEXT_WINDOWS, MODEL_CONTEXT_DEFAULT, MODEL_INPUT_PRICE, MODEL_OUTPUT_PRICE
 from state import _clients, _session_context_sent
 from tool_access import tool_access_decision
 from streaming import (
@@ -27,6 +27,7 @@ from streaming import (
 from context import (
     _get_profile_prompt, _get_group_roster_prompt,
     _get_memory_prompt, _get_workspace_context, _get_whisper_text,
+    _get_context_energy_prompt,
 )
 
 try:
@@ -54,6 +55,7 @@ SSL_CA = env.SSL_CA
 SDK_QUERY_TIMEOUT = env.SDK_QUERY_TIMEOUT
 SDK_STREAM_TIMEOUT = env.SDK_STREAM_TIMEOUT
 ENABLE_SUBCONSCIOUS_WHISPER = env.ENABLE_SUBCONSCIOUS_WHISPER
+ENABLE_METACOGNITION = env.ENABLE_METACOGNITION
 
 UPLOAD_DIR = APEX_ROOT / "state" / "uploads"
 
@@ -631,8 +633,17 @@ def _build_turn_payload(chat_id: str, prompt: str, attachments: list[dict]) -> t
     group_roster_prompt = _get_group_roster_prompt(chat_id, user_message=query_prompt)
     memory_prompt = "" if group_roster_prompt else _get_memory_prompt(chat_id, user_message=query_prompt)
     workspace_ctx = _get_workspace_context(chat_id)
-    whisper = _get_whisper_text(chat_id, current_prompt=query_prompt) if ENABLE_SUBCONSCIOUS_WHISPER else ""
-    prefix = f"{profile_prompt}{group_roster_prompt}{memory_prompt}{workspace_ctx}{whisper}".strip()
+    whisper = _get_whisper_text(chat_id, current_prompt=query_prompt,
+                               model_hint="claude-sdk") if ENABLE_SUBCONSCIOUS_WHISPER else ""
+    context_energy = _get_context_energy_prompt(chat_id)
+    metacog = ""
+    if ENABLE_METACOGNITION:
+        try:
+            from metacognition import retrieve_prior_context
+            metacog = retrieve_prior_context(query_prompt)
+        except Exception as e:
+            log.warning("metacognition import/call failed: %s", e)
+    prefix = f"{profile_prompt}{group_roster_prompt}{memory_prompt}{workspace_ctx}{context_energy}{whisper}{metacog}".strip()
     final_prompt = query_prompt or ("What do you see?" if image_blocks else "")
     if prefix:
         final_prompt = f"{prefix}\n\n{final_prompt}".strip() if final_prompt else prefix
@@ -974,6 +985,14 @@ async def _stream_response(
                 _chat = _get_chat(chat_id)
                 _ctx_model = (_chat.get("model") or MODEL) if _chat else MODEL
                 _ctx_window = MODEL_CONTEXT_WINDOWS.get(_ctx_model, MODEL_CONTEXT_DEFAULT)
+                # Cost-based context estimation — fixes SDK garbage tokens_in
+                _cost_usd = result_info["cost_usd"]
+                _tok_out = result_info["tokens_out"]
+                _ip = MODEL_INPUT_PRICE.get(_ctx_model, 0.0)
+                _op = MODEL_OUTPUT_PRICE.get(_ctx_model, 0.0)
+                if _ip > 0 and _cost_usd > 0:
+                    _cost_ctx = int(max(_cost_usd - _tok_out * _op, 0.0) / _ip)
+                    _ctx_in = max(_ctx_in, _cost_ctx)
                 await _send({
                     "type": "result",
                     "is_error": result_is_error,
