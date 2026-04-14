@@ -1103,10 +1103,18 @@ class SecurityFixTests(unittest.TestCase):
         self.assertTrue(tool_access.tool_allowed_for_level("fetch__fetch", 2))
         # Non-default tools not in saved config are still excluded
         self.assertFalse(tool_access.tool_allowed_for_level("filesystem__write_file", 2))
-        self.assertFalse(tool_access.tool_allowed_for_level("memory__read_graph", 2))
+        self.assertFalse(tool_access.tool_allowed_for_level("customdanger__wipe", 2))
         # Defaults are auto-merged even if not in saved config (prevents stale snapshots)
         self.assertTrue(tool_access.tool_allowed_for_level("bash", 2))
         self.assertTrue(tool_access.tool_allowed_for_level("execute_code", 2))
+
+    def test_tool_access_level_3_inherits_workspace_tool_patterns(self) -> None:
+        dashboard_mod._config.update_section(
+            "policy",
+            {"workspace_tools": "playwright__*\nfetch__*"},
+        )
+        self.assertTrue(tool_access.tool_allowed_for_level("playwright__browser_navigate", 3))
+        self.assertTrue(tool_access.tool_allowed_for_level("fetch__fetch", 3))
 
     def test_tool_access_level_2_denies_memory_and_filesystem_writes(self) -> None:
         allowed, message = tool_access.tool_access_decision(
@@ -1410,9 +1418,24 @@ class SecurityFixTests(unittest.TestCase):
         self.assertTrue(tool_access.tool_allowed_for_level("ToolSearch", 3))
         self.assertTrue(tool_access.tool_allowed_for_level("Agent", 3))
 
+    def test_tool_access_level_3_allows_catalogued_mcp_tool_families(self) -> None:
+        self.assertTrue(tool_access.tool_allowed_for_level("mcp__tradingview__chart_get_state", 3))
+        self.assertTrue(tool_access.tool_allowed_for_level("mcp__code-review-graph__search", 3))
+        self.assertTrue(tool_access.tool_allowed_for_level("mcp__tradingview__chart_get_state", 2))
+
     def test_sdk_pre_tool_hook_level_3_allows_agent_tool(self) -> None:
         allowed, message = streaming_mod._sdk_pre_tool_use_decision(
             "Agent",
+            {},
+            level=3,
+            allowed_commands=[],
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(message, "")
+
+    def test_sdk_pre_tool_hook_level_3_allows_tradingview_mcp_tool(self) -> None:
+        allowed, message = streaming_mod._sdk_pre_tool_use_decision(
+            "mcp__tradingview__chart_get_state",
             {},
             level=3,
             allowed_commands=[],
