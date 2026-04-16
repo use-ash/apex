@@ -167,7 +167,7 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
         },
         "allowed_bundle_ids": {
             "type": "str",
-            "default": "",
+            "default": "com.apple.TextEdit\ncom.apple.Safari\ncom.apple.finder\ncom.utmapp.UTM",
             "description": "Whitelist of allowed target bundle-IDs, one per line (empty = any)",
             "multiline": True,
             "placeholder": "com.apple.TextEdit\ncom.utmapp.UTM\ncom.apple.Safari",

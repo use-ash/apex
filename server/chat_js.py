@@ -6827,7 +6827,150 @@ async function cuSyncPauseUI(chatId) {
     // Only show the banner if computer_use is actually enabled for this chat
     // (no target bundle = no GUI automation, banner would be meaningless).
     cuEnsurePauseBanner(chatId, st.enabled && st.paused);
+    // Always mount/refresh the GUI toggle pill (label reflects current target).
+    cuMountToggle(chatId, st);
   } catch (e) { /* non-fatal */ }
+}
+
+// --- GUI toggle pill ---------------------------------------------------------
+// Persistent pill next to the chat title: shows current target (or "off"),
+// click opens a menu to pick from gui_automation.allowed_bundle_ids or disable.
+// Avoids the DevTools-console workaround that used to be the only way to
+// enable computer-use on a chat.
+
+function _cuFriendlyName(bundleId) {
+  if (!bundleId) return 'off';
+  // Strip com.vendor. prefix for readable labels: com.apple.TextEdit -> TextEdit
+  const parts = String(bundleId).split('.');
+  return parts.length >= 3 ? parts.slice(2).join('.') : bundleId;
+}
+
+function cuMountToggle(chatId, status) {
+  if (!chatId) return;
+  const anchor = document.getElementById('chatTitle');
+  if (!anchor || !anchor.parentNode) return;
+  let pill = document.getElementById('cuTogglePill');
+  if (!pill) {
+    pill = document.createElement('button');
+    pill.id = 'cuTogglePill';
+    pill.type = 'button';
+    pill.title = 'Toggle computer-use (GUI automation) for this chat';
+    pill.style.cssText = 'margin-left:8px;padding:3px 10px;border-radius:999px;border:1px solid #475569;background:#1e293b;color:#cbd5e1;font-size:11px;cursor:pointer;vertical-align:middle;font-weight:500;';
+    anchor.parentNode.insertBefore(pill, anchor.nextSibling);
+  }
+  // Ensure it still follows the title even if DOM re-rendered.
+  if (pill.previousSibling !== anchor) {
+    try { anchor.parentNode.insertBefore(pill, anchor.nextSibling); } catch (e) { /* ignore */ }
+  }
+  const enabled = !!(status && status.enabled);
+  const target = status ? status.target_bundle_id : null;
+  pill.textContent = enabled ? ('\\uD83D\\uDDB1 ' + _cuFriendlyName(target)) : '\\uD83D\\uDDB1 GUI: off';
+  pill.style.background = enabled ? '#16a34a' : '#1e293b';
+  pill.style.color = enabled ? '#fff' : '#cbd5e1';
+  pill.style.borderColor = enabled ? '#16a34a' : '#475569';
+  pill.onclick = (ev) => {
+    ev.stopPropagation();
+    cuOpenTogglePopover(chatId, pill, status || {});
+  };
+}
+
+function cuOpenTogglePopover(chatId, anchorEl, status) {
+  // Close any existing popover.
+  const prior = document.getElementById('cuTogglePopover');
+  if (prior) { prior.remove(); return; }  // toggle-close on re-click
+
+  const allowed = Array.isArray(status.allowed_bundle_ids) ? status.allowed_bundle_ids : [];
+  const currentTarget = status.target_bundle_id || '';
+
+  const pop = document.createElement('div');
+  pop.id = 'cuTogglePopover';
+  pop.style.cssText = 'position:absolute;z-index:9999;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:8px;min-width:220px;box-shadow:0 4px 18px rgba(0,0,0,0.5);font-size:12px;color:#e2e8f0;';
+
+  const rect = anchorEl.getBoundingClientRect();
+  pop.style.top = (window.scrollY + rect.bottom + 4) + 'px';
+  pop.style.left = (window.scrollX + rect.left) + 'px';
+
+  const header = document.createElement('div');
+  header.textContent = 'Computer-use target';
+  header.style.cssText = 'font-weight:600;margin-bottom:6px;color:#94a3b8;font-size:11px;text-transform:uppercase;letter-spacing:0.05em;';
+  pop.appendChild(header);
+
+  const makeRow = (label, bundleId, isActive) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.style.cssText = 'display:block;width:100%;text-align:left;padding:6px 8px;border:none;border-radius:4px;background:' + (isActive ? '#16a34a' : 'transparent') + ';color:' + (isActive ? '#fff' : '#e2e8f0') + ';cursor:pointer;font-size:12px;margin-bottom:2px;';
+    row.textContent = (isActive ? '\\u2713 ' : '  ') + label;
+    row.onmouseenter = () => { if (!isActive) row.style.background = '#1e293b'; };
+    row.onmouseleave = () => { if (!isActive) row.style.background = 'transparent'; };
+    row.onclick = async (ev) => {
+      ev.stopPropagation();
+      pop.remove();
+      if (bundleId === null) {
+        // Disable
+        await cuDisableForChat(chatId);
+      } else {
+        await cuEnableForChat(chatId, bundleId);
+      }
+      // Re-sync to refresh pill label.
+      cuSyncPauseUI(chatId);
+    };
+    return row;
+  };
+
+  // "Off" row
+  pop.appendChild(makeRow('Off (disable)', null, !currentTarget));
+
+  if (allowed.length === 0) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'padding:8px;color:#94a3b8;font-size:11px;line-height:1.4;';
+    empty.innerHTML = 'No allowed bundle IDs configured.<br>Add them in Dashboard \\u2192 Config \\u2192 gui_automation.allowed_bundle_ids (one per line).';
+    pop.appendChild(empty);
+  } else {
+    for (const bid of allowed) {
+      pop.appendChild(makeRow(_cuFriendlyName(bid) + ' (' + bid + ')', bid, bid === currentTarget));
+    }
+  }
+
+  // Custom entry (advanced)
+  const customWrap = document.createElement('div');
+  customWrap.style.cssText = 'border-top:1px solid #334155;margin-top:6px;padding-top:6px;';
+  const customLabel = document.createElement('div');
+  customLabel.textContent = 'Or enter bundle ID:';
+  customLabel.style.cssText = 'color:#94a3b8;font-size:10px;margin-bottom:4px;';
+  customWrap.appendChild(customLabel);
+  const customInput = document.createElement('input');
+  customInput.type = 'text';
+  customInput.placeholder = 'com.apple.Safari';
+  customInput.style.cssText = 'width:100%;box-sizing:border-box;padding:4px 6px;background:#1e293b;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:11px;font-family:monospace;';
+  customInput.onkeydown = async (ev) => {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      const val = customInput.value.trim();
+      if (!val) return;
+      if (!/^[a-zA-Z0-9._-]+$/.test(val)) {
+        alert('Invalid bundle ID. Must match ^[a-zA-Z0-9._-]+$');
+        return;
+      }
+      pop.remove();
+      await cuEnableForChat(chatId, val);
+      cuSyncPauseUI(chatId);
+    }
+  };
+  customWrap.appendChild(customInput);
+  pop.appendChild(customWrap);
+
+  document.body.appendChild(pop);
+
+  // Dismiss on outside click.
+  setTimeout(() => {
+    const onDoc = (ev) => {
+      if (!pop.contains(ev.target) && ev.target !== anchorEl) {
+        pop.remove();
+        document.removeEventListener('click', onDoc, true);
+      }
+    };
+    document.addEventListener('click', onDoc, true);
+  }, 0);
 }
 
 // Expose as window globals so openToolPanel (rendered from a different
@@ -6842,6 +6985,8 @@ window.cuGetStatus = cuGetStatus;
 window.cuMountPauseButton = cuMountPauseButton;
 window.cuEnsurePauseBanner = cuEnsurePauseBanner;
 window.cuSyncPauseUI = cuSyncPauseUI;
+window.cuMountToggle = cuMountToggle;
+window.cuOpenTogglePopover = cuOpenTogglePopover;
 """
 
 CHAT_JS = "\n".join([
