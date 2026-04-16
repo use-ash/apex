@@ -159,6 +159,32 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
             "description": "JSON-encoded sources found during setup (read-only reference)",
         },
     },
+    "gui_automation": {
+        "enabled": {
+            "type": "bool",
+            "default": False,
+            "description": "Global feature flag for macOS computer-use (GUI automation) MCP server",
+        },
+        "allowed_bundle_ids": {
+            "type": "str",
+            "default": "",
+            "description": "Whitelist of allowed target bundle-IDs, one per line (empty = any)",
+            "multiline": True,
+            "placeholder": "com.apple.TextEdit\ncom.utmapp.UTM\ncom.apple.Safari",
+        },
+        "screenshot_max_edge": {
+            "type": "int",
+            "default": 1568,
+            "min": 256,
+            "max": 4096,
+            "description": "Max edge (px) of screenshots before base64-encoding",
+        },
+        "require_frontmost": {
+            "type": "bool",
+            "default": True,
+            "description": "Require the target app to be frontmost before any write action",
+        },
+    },
     "policy": {
         "workspace_tools": {
             "type": "str",

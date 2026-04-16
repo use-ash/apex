@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 import env
@@ -26,6 +27,7 @@ from db import (
     _remove_group_member,
     _get_messages,
     _get_last_turn_tokens_in, _estimate_tokens,
+    set_computer_use_target,
 )
 from group_coordinator import _MAX_RELAY_ROUNDS, _clear_strict_group_relay, _get_strict_group_relay_state
 from license import get_license_manager
@@ -658,4 +660,93 @@ async def api_context(chat_id: str):
         "tokens_out": cumulative_out,
         "compaction_threshold": COMPACTION_THRESHOLD,
         "context_window": context_window,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Computer-use (macOS GUI automation) per-chat endpoints
+# ---------------------------------------------------------------------------
+
+_BUNDLE_ID_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
+
+
+def _computer_use_pause_path(chat_id: str):
+    return APEX_ROOT / "state" / "computer_use" / "pause" / chat_id
+
+
+@chat_router.post("/api/chats/{chat_id}/computer_use/enable")
+async def api_computer_use_enable(chat_id: str, request: Request):
+    """Enable computer-use on a chat by setting its target bundle-ID."""
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse({"error": "Request body must be a JSON object"}, status_code=400)
+    target = str(data.get("target_bundle_id") or "").strip()
+    if not target:
+        return JSONResponse({"error": "target_bundle_id is required"}, status_code=400)
+    if not _BUNDLE_ID_RE.match(target):
+        return JSONResponse(
+            {"error": "target_bundle_id must match ^[a-zA-Z0-9._-]+$"},
+            status_code=400,
+        )
+    set_computer_use_target(chat_id, target)
+    return JSONResponse({"ok": True, "target_bundle_id": target})
+
+
+@chat_router.post("/api/chats/{chat_id}/computer_use/disable")
+async def api_computer_use_disable(chat_id: str):
+    """Disable computer-use on a chat by clearing its target bundle-ID."""
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    set_computer_use_target(chat_id, None)
+    return JSONResponse({"ok": True})
+
+
+@chat_router.post("/api/chats/{chat_id}/computer_use/pause")
+async def api_computer_use_pause(chat_id: str):
+    """Create the pause flag file for the chat (MCP polls this)."""
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    path = _computer_use_pause_path(chat_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
+    except OSError as e:
+        return JSONResponse({"error": f"Failed to create pause flag: {e}"}, status_code=500)
+    return JSONResponse({"ok": True, "paused": True})
+
+
+@chat_router.post("/api/chats/{chat_id}/computer_use/resume")
+async def api_computer_use_resume(chat_id: str):
+    """Remove the pause flag file for the chat."""
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    path = _computer_use_pause_path(chat_id)
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError as e:
+        return JSONResponse({"error": f"Failed to remove pause flag: {e}"}, status_code=500)
+    return JSONResponse({"ok": True, "paused": False})
+
+
+@chat_router.get("/api/chats/{chat_id}/computer_use/status")
+async def api_computer_use_status(chat_id: str):
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    target = chat.get("computer_use_target") or None
+    paused = _computer_use_pause_path(chat_id).exists()
+    return JSONResponse({
+        "enabled": bool(target),
+        "target_bundle_id": target,
+        "paused": paused,
     })

@@ -1585,7 +1585,8 @@ function openToolPanel(pillEl) {
     }
 
     toolData.forEach((tool, idx) => {
-      const resultText = tool.result ? (typeof tool.result.content === 'string' ? tool.result.content : JSON.stringify(tool.result.content, null, 2)) : '';
+      const hasArrayContent = tool.result && Array.isArray(tool.result.content);
+      const resultText = tool.result ? (typeof tool.result.content === 'string' ? tool.result.content : (hasArrayContent ? '' : JSON.stringify(tool.result.content, null, 2))) : '';
       const summaryHtml = tool.summary || toolSummary(tool.name, tool.input) || '';
       const summaryText = _htmlToText(summaryHtml) || toolLabel(tool.name);
       const status = tool.status === 'error' ? '<span style="color:#ef4444">&#10007;</span>' : (tool.status === 'completed' ? '&#10003;' : '&#9203;');
@@ -1602,12 +1603,50 @@ function openToolPanel(pillEl) {
       if (inputText) {
         detailHtml += `<div class="spd-section"><div class="spd-label">Input</div><div class="spd-content"><pre>${escHtml(inputText)}</pre></div></div>`;
       }
-      if (resultText) {
+      if (hasArrayContent) {
+        // Rich content blocks (images + text) — used by computer_use screenshots.
+        const isErr = tool.result && tool.result.is_error;
+        const priorTool = idx > 0 ? toolData[idx - 1] : null;
+        const priorClick = (priorTool && priorTool.input && typeof priorTool.input === 'object'
+                            && (priorTool.name === 'mcp__computer_use__click' || priorTool.name === 'mcp__computer_use__scroll')
+                            && typeof priorTool.input.x === 'number' && typeof priorTool.input.y === 'number')
+          ? {x: priorTool.input.x, y: priorTool.input.y}
+          : null;
+        let blocksHtml = '';
+        for (const block of tool.result.content) {
+          if (block && block.type === 'image' && block.source && block.source.data) {
+            blocksHtml += (typeof cuRenderScreenshot === 'function')
+              ? cuRenderScreenshot(block, priorClick)
+              : `<img class="cu-screenshot" src="data:${escHtml(block.source.media_type || 'image/png')};base64,${block.source.data}" style="max-width:100%;border-radius:6px;cursor:zoom-in;">`;
+          } else if (block && block.type === 'text' && typeof block.text === 'string') {
+            const txt = block.text.substring(0, 5000);
+            blocksHtml += `<pre${isErr ? ' style="color:#ef4444"' : ''}>${escHtml(txt)}</pre>`;
+          }
+        }
+        if (blocksHtml) {
+          const resultNote = toolResultSummary(tool.name, '');
+          detailHtml += `<div class="spd-section"><div class="spd-label">${isErr ? 'Error' : 'Result'}${resultNote ? ` · ${escHtml(resultNote)}` : ''}</div><div class="spd-content">${blocksHtml}</div></div>`;
+        }
+      } else if (resultText) {
         const resultNote = toolResultSummary(tool.name, resultText);
         const isErr = tool.result && tool.result.is_error;
         detailHtml += `<div class="spd-section"><div class="spd-label">${isErr ? 'Error' : 'Result'}${resultNote ? ` · ${escHtml(resultNote)}` : ''}</div><div class="spd-content"><pre${isErr ? ' style="color:#ef4444"' : ''}>${escHtml(resultText.substring(0, 5000))}</pre></div></div>`;
       }
       detail.innerHTML = detailHtml;
+      // Wire up click-to-enlarge for screenshot images (delegated to avoid inline handlers).
+      detail.querySelectorAll('img.cu-screenshot').forEach((imgEl) => {
+        const src = imgEl.getAttribute('src') || '';
+        imgEl.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          if (typeof openImageViewer === 'function') openImageViewer(src, 'Screenshot');
+        });
+      });
+      // Position red-dot overlays once images have measured.
+      if (typeof cuWireOverlays === 'function') cuWireOverlays(detail);
+      // Mount pause button on the tool pill for any computer_use activity.
+      if (typeof cuMountPauseButton === 'function' && tool.name && tool.name.indexOf('mcp__computer_use__') === 0) {
+        try { cuMountPauseButton(pillEl, currentChat); } catch (e) { /* non-fatal */ }
+      }
       step.onclick = () => {
         step.classList.toggle('expanded');
         const expanded = _captureExpandedState();
@@ -6515,6 +6554,190 @@ msgEl.addEventListener('touchcancel', () => {
   }
 })();"""
 
+# --- Computer-use (GUI automation) frontend module ---
+# Inlined into CHAT_JS (no separate static route) to match the existing
+# chat_js.py pattern — every frontend module is a Python string constant
+# joined into CHAT_JS and served by chat_html.py at page render time.
+_JS_COMPUTER_USE = """// --- Computer-use (GUI automation) client module ---
+// Renders screenshots inline in the tool panel and provides pause/resume UI
+// for the per-chat GUI-control toggle. Exposed globals consumed by
+// openToolPanel: cuRenderScreenshot, cuMountPauseButton.
+
+// Tracks last GUI-tool activity per chat for auto-hiding the pause button.
+const _cuLastActivity = {};  // chat_id -> ms timestamp
+const _cuPauseState = {};    // chat_id -> 'active' | 'paused'
+const _cuButtonEls = {};     // chat_id -> button element
+
+function cuRenderScreenshot(block, priorClickCoords) {
+  // Builds the <img> (+ optional red-dot overlay) HTML string. The overlay
+  // uses percentage coords so it scales correctly with the displayed img,
+  // whose natural size is what the agent captured.
+  if (!block || !block.source || !block.source.data) return '';
+  const mt = (block.source.media_type || 'image/png').replace(/[^a-zA-Z0-9/+.-]/g, '');
+  const src = `data:${mt};base64,${block.source.data}`;
+  const imgHtml = `<img class="cu-screenshot" src="${src}" alt="screenshot" style="display:block;max-width:100%;width:100%;border-radius:6px;cursor:zoom-in;">`;
+  if (!priorClickCoords || typeof priorClickCoords.x !== 'number' || typeof priorClickCoords.y !== 'number') {
+    return imgHtml;
+  }
+  // The red-dot position is computed at render time against the image's
+  // natural dimensions, so we need an onload handler. We embed a tiny
+  // inline script via data-* attrs and wire up from openToolPanel's
+  // delegated handlers — but simpler: compute on the img's load event.
+  const cx = priorClickCoords.x;
+  const cy = priorClickCoords.y;
+  // Return a wrapper with the img + a dot positioned via a load callback.
+  // The dot starts hidden; a post-mount hook (see cuWireOverlays) sets
+  // its absolute pixel position once the image has measured.
+  return `<div class="cu-shot-wrap" style="position:relative;display:inline-block;max-width:100%;" data-cu-click-x="${cx}" data-cu-click-y="${cy}">${imgHtml}<span class="cu-click-dot" style="position:absolute;width:14px;height:14px;border-radius:50%;background:#ef4444;border:2px solid #fff;box-shadow:0 0 6px rgba(239,68,68,0.9);display:none;pointer-events:none;transform:translate(-50%,-50%);"></span></div>`;
+}
+
+// Post-render: position click dots once their image has measured.
+function cuWireOverlays(rootEl) {
+  if (!rootEl) return;
+  rootEl.querySelectorAll('.cu-shot-wrap').forEach((wrap) => {
+    const img = wrap.querySelector('img.cu-screenshot');
+    const dot = wrap.querySelector('.cu-click-dot');
+    if (!img || !dot) return;
+    const cx = parseFloat(wrap.getAttribute('data-cu-click-x'));
+    const cy = parseFloat(wrap.getAttribute('data-cu-click-y'));
+    if (!isFinite(cx) || !isFinite(cy)) return;
+    const place = () => {
+      const nw = img.naturalWidth || 0;
+      const nh = img.naturalHeight || 0;
+      if (!nw || !nh) return;
+      const dw = img.clientWidth || img.offsetWidth || 0;
+      const dh = img.clientHeight || img.offsetHeight || 0;
+      if (!dw || !dh) return;
+      const scaleX = dw / nw;
+      const scaleY = dh / nh;
+      dot.style.left = (cx * scaleX) + 'px';
+      dot.style.top  = (cy * scaleY) + 'px';
+      dot.style.display = 'block';
+    };
+    if (img.complete) place();
+    else img.addEventListener('load', place, {once: true});
+    // Reposition on window resize so the dot tracks the responsive img.
+    window.addEventListener('resize', place);
+  });
+}
+
+async function cuEnableForChat(chatId, targetBundleId) {
+  if (!chatId) return null;
+  const r = await fetch(`/api/chats/${chatId}/computer_use/enable`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({target_bundle_id: targetBundleId}),
+  });
+  return r.ok ? r.json() : null;
+}
+
+async function cuDisableForChat(chatId) {
+  if (!chatId) return null;
+  const r = await fetch(`/api/chats/${chatId}/computer_use/disable`, {
+    method: 'POST', credentials: 'same-origin',
+  });
+  return r.ok ? r.json() : null;
+}
+
+async function cuPause(chatId) {
+  if (!chatId) return null;
+  const r = await fetch(`/api/chats/${chatId}/computer_use/pause`, {
+    method: 'POST', credentials: 'same-origin',
+  });
+  _cuPauseState[chatId] = 'paused';
+  return r.ok ? r.json() : null;
+}
+
+async function cuResume(chatId) {
+  if (!chatId) return null;
+  const r = await fetch(`/api/chats/${chatId}/computer_use/resume`, {
+    method: 'POST', credentials: 'same-origin',
+  });
+  _cuPauseState[chatId] = 'active';
+  return r.ok ? r.json() : null;
+}
+
+async function cuGetStatus(chatId) {
+  if (!chatId) return null;
+  const r = await fetch(`/api/chats/${chatId}/computer_use/status`, {
+    credentials: 'same-origin',
+  });
+  return r.ok ? r.json() : null;
+}
+
+function cuMountPauseButton(toolPillEl, chatId) {
+  if (!toolPillEl || !chatId) return;
+  // Record activity; used to auto-hide 60s after last GUI tool.
+  _cuLastActivity[chatId] = Date.now();
+  // If a button is already attached to this pill, just keep it visible.
+  const existing = _cuButtonEls[chatId];
+  if (existing && existing.isConnected && existing._pillEl === toolPillEl) {
+    existing.style.display = '';
+    return;
+  }
+  // Local-const capture of DOM elements — avoid mutable globals in handler.
+  const pillEl = toolPillEl;
+  const cid = chatId;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'cu-pause-btn';
+  btn.style.cssText = 'margin-left:8px;padding:4px 10px;border-radius:999px;background:#ef4444;color:#fff;border:none;font-size:12px;cursor:pointer;font-weight:600;';
+  const setLabel = (paused) => {
+    btn.textContent = paused ? '\\u25B6 Resume GUI' : '\\u23F8 Pause GUI';
+    btn.style.background = paused ? '#22c55e' : '#ef4444';
+  };
+  setLabel(_cuPauseState[cid] === 'paused');
+  btn.addEventListener('click', async (ev) => {
+    ev.stopPropagation();  // don't open/close the tool panel
+    const wasPaused = _cuPauseState[cid] === 'paused';
+    btn.disabled = true;
+    try {
+      if (wasPaused) {
+        await cuResume(cid);
+        setLabel(false);
+      } else {
+        await cuPause(cid);
+        setLabel(true);
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  btn._pillEl = pillEl;
+  _cuButtonEls[cid] = btn;
+  // Insert the button right after the pill (sibling, not child — so
+  // pill onclick keeps its own hit area).
+  if (pillEl.parentNode) {
+    pillEl.parentNode.insertBefore(btn, pillEl.nextSibling);
+  }
+  // Auto-hide 60s after last activity — a single shared ticker, cheap enough.
+  if (!cuMountPauseButton._ticker) {
+    cuMountPauseButton._ticker = setInterval(() => {
+      const now = Date.now();
+      for (const k of Object.keys(_cuButtonEls)) {
+        const b = _cuButtonEls[k];
+        const last = _cuLastActivity[k] || 0;
+        if (b && b.isConnected && (now - last) > 60000) {
+          b.style.display = 'none';
+        }
+      }
+    }, 5000);
+  }
+}
+
+// Expose as window globals so openToolPanel (rendered from a different
+// Python string constant) can reach them.
+window.cuRenderScreenshot = cuRenderScreenshot;
+window.cuWireOverlays = cuWireOverlays;
+window.cuEnableForChat = cuEnableForChat;
+window.cuDisableForChat = cuDisableForChat;
+window.cuPause = cuPause;
+window.cuResume = cuResume;
+window.cuGetStatus = cuGetStatus;
+window.cuMountPauseButton = cuMountPauseButton;
+"""
+
 CHAT_JS = "\n".join([
     _JS_ERROR_HANDLER,
     _JS_STATE,
@@ -6543,4 +6766,5 @@ CHAT_JS = "\n".join([
     _JS_PROFILES,
     _JS_GROUP_SETTINGS,
     _JS_PERSONA_CARD,
+    _JS_COMPUTER_USE,
 ])

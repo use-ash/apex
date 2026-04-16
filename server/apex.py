@@ -150,6 +150,12 @@ UPLOAD_DIR = APEX_ROOT / "state" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 safe_chmod(UPLOAD_DIR, 0o700)
 
+# Computer-use (macOS GUI automation) runtime dirs
+_CU_STATE_DIR = APEX_ROOT / "state" / "computer_use"
+(_CU_STATE_DIR / "screenshots").mkdir(parents=True, exist_ok=True)
+(_CU_STATE_DIR / "pause").mkdir(parents=True, exist_ok=True)
+safe_chmod(_CU_STATE_DIR, 0o700)
+
 SDK_QUERY_TIMEOUT = env.SDK_QUERY_TIMEOUT
 
 # ---------------------------------------------------------------------------

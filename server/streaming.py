@@ -405,6 +405,40 @@ def _inject_execute_code_mcp(servers: dict, *, chat_id: str | None = None,
     return servers
 
 
+def _inject_computer_use_mcp(servers: dict, *, chat_id: str | None = None,
+                              permission_level: int = 2,
+                              computer_use_target: str | None = None) -> dict:
+    """Auto-inject the computer_use MCP server for macOS GUI automation.
+
+    Only injects when:
+      - platform is darwin
+      - computer_use_target is a non-empty string
+      - MCP script exists at server/local_model/mcp_computer_use.py
+    """
+    if sys.platform != "darwin":
+        return servers
+    if not (isinstance(computer_use_target, str) and computer_use_target.strip()):
+        return servers
+    if "computer_use" in servers:
+        return servers  # user already configured it manually
+    mcp_script = APEX_ROOT / "server" / "local_model" / "mcp_computer_use.py"
+    if not mcp_script.exists():
+        return servers
+    mcp_env = {
+        "APEX_CU_TARGET_BUNDLE": computer_use_target.strip(),
+        "APEX_CU_CHAT_ID": chat_id or "",
+        "APEX_CU_STATE_DIR": str(APEX_ROOT / "state" / "computer_use"),
+        "APEX_PERMISSION_LEVEL": str(permission_level),
+    }
+    servers = dict(servers)  # don't mutate caller's dict
+    servers["computer_use"] = {
+        "command": sys.executable,
+        "args": [str(mcp_script)],
+        "env": mcp_env,
+    }
+    return servers
+
+
 _GUIDE_PROFILE_ID = "sys-guide"
 
 
@@ -649,6 +683,20 @@ def _make_options(
     mcp_servers = _inject_execute_code_mcp(mcp_servers, chat_id=chat_id,
                                              workspace=str(workspace_root),
                                              permission_level=permission_level)
+    # Auto-inject computer_use MCP server when the chat has a target bundle-ID
+    # set (macOS only). Absence of a target means no injection, so the tools
+    # are simply unavailable — no chat-aware allowlist needed.
+    computer_use_target: str | None = None
+    if chat_id:
+        try:
+            _chat_row = _get_chat(chat_id)
+            if _chat_row:
+                computer_use_target = _chat_row.get("computer_use_target") or None
+        except Exception:
+            computer_use_target = None
+    mcp_servers = _inject_computer_use_mcp(mcp_servers, chat_id=chat_id,
+                                            permission_level=permission_level,
+                                            computer_use_target=computer_use_target)
     # Auto-inject guide config tools MCP server for guide sessions
     if extra_allowed_tools:
         mcp_servers = _inject_guide_tools_mcp(mcp_servers)

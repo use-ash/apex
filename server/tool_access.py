@@ -63,6 +63,7 @@ DEFAULT_LEVEL2_TOOL_PATTERNS = (
     "google-drive__*",
     "gdrive__*",
     "memory__*",
+    "computer_use__*",
 )
 
 TOOL_POLICY_CATALOG = {
@@ -233,6 +234,12 @@ TOOL_POLICY_CATALOG = {
         "description": "Read or mutate the shared structured memory graph.",
         "category": "mcp",
         "group": "memory",
+    },
+    "computer_use__*": {
+        "name": "Computer Use MCP",
+        "description": "macOS GUI automation (screenshot/click/type). Only attached when the chat has a target bundle-ID set; the MCP server enforces target-app match and a pause flag on every action.",
+        "category": "mcp",
+        "group": "gui",
     },
     "tool_search": {
         "name": "Tool Search",
