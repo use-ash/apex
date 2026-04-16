@@ -28,7 +28,7 @@ SYSTEM_PROFILE_ID = "_system"
 SYSTEM_PROFILE_NAME = "Open"
 SYSTEM_PROFILE_SLUG = "open"
 
-_CHAT_UPDATE_FIELDS = frozenset({"title", "model", "profile_id", "claude_session_id", "category", "type"})
+_CHAT_UPDATE_FIELDS = frozenset({"title", "model", "profile_id", "claude_session_id", "category", "type", "computer_use_target"})
 DEFAULT_TOOL_POLICY_LEVEL = 1
 LEGACY_TOOL_POLICY_LEVEL = 2
 MIN_TOOL_POLICY_LEVEL = 0
@@ -308,6 +308,11 @@ def _init_db() -> None:
     # Migration: add settings JSON column to chats (group settings, premium flags, etc.)
     with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("ALTER TABLE chats ADD COLUMN settings TEXT DEFAULT '{}'")
+    # Migration: add computer_use_target column to chats (GUI-automation target bundle-ID)
+    _chat_cols = {row[1] for row in conn.execute("PRAGMA table_info(chats)").fetchall()}
+    if "computer_use_target" not in _chat_cols:
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute("ALTER TABLE chats ADD COLUMN computer_use_target TEXT DEFAULT NULL")
     # Migration: persona_memories table (cross-group persistent memory for agents)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS persona_memories (
@@ -1081,14 +1086,27 @@ def _get_chats() -> list[dict]:
 def _get_chat(chat_id: str) -> dict | None:
     with _db_lock:
         conn = _get_db()
-        row = conn.execute("SELECT id, title, claude_session_id, created_at, updated_at, model, type, category, profile_id FROM chats WHERE id = ?",
+        row = conn.execute("SELECT id, title, claude_session_id, created_at, updated_at, model, type, category, profile_id, computer_use_target FROM chats WHERE id = ?",
                            (chat_id,)).fetchone()
         conn.close()
     if not row:
         return None
     return {"id": row[0], "title": row[1], "claude_session_id": row[2],
             "created_at": row[3], "updated_at": row[4], "model": row[5], "type": row[6], "category": row[7] or None,
-            "profile_id": row[8] or ""}
+            "profile_id": row[8] or "",
+            "computer_use_target": row[9] or None}
+
+
+def set_computer_use_target(chat_id: str, target: str | None) -> None:
+    """Set or clear the chat's computer-use target bundle-ID."""
+    with _db_lock:
+        conn = _get_db()
+        conn.execute(
+            "UPDATE chats SET computer_use_target = ?, updated_at = ? WHERE id = ?",
+            (target, _now(), chat_id),
+        )
+        conn.commit()
+        conn.close()
 
 
 def _update_chat(chat_id: str, **kwargs) -> None:
