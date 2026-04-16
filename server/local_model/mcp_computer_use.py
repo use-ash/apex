@@ -402,15 +402,16 @@ def _tool_click(args: dict) -> dict:
 def _tool_type_text(args: dict) -> dict:
     """Type text into the target app.
 
-    Chunks the input into small batches and re-checks frontmost between
-    batches. This protects against the race where the user clicks out of
-    the target app mid-type — without chunking, pyautogui blindly keeps
-    tapping the virtual keyboard and the keystrokes land wherever focus
-    currently is (e.g. the Apex URL bar), corrupting the stream.
+    NOTE: This is the pre-CGEventPostToPid implementation. Chunking was
+    tried (commit b1d613f) and reverted — it couldn't protect within a
+    single pyautogui.typewrite() call, which blocks for the batch
+    duration with no interruption hook. The right fix is to post
+    CGEvents scoped to the target app's PID so keystrokes land in the
+    target regardless of frontmost. Planned for a follow-up commit.
 
-    On mismatch, waits up to 30s for the user to click back in. If the
-    target doesn't return in time, aborts and returns the untyped suffix
-    as `remaining` so the agent can activate + retry just the leftover.
+    Current contract: gate-before-call only. If user clicks out during
+    typing, remaining keys will land on whatever app is frontmost.
+    Don't click out mid-type.
     """
     paused = _pause_check()
     if paused:
@@ -422,62 +423,16 @@ def _tool_type_text(args: dict) -> dict:
         return refusal
 
     text = str(args.get("text", ""))
-    if not text:
-        return {"ok": True, "chars": 0, "wrote_chars": 0}
-
-    CHUNK = 40            # ~0.4s per chunk at interval=0.01
-    WAIT_ON_MISMATCH = 30.0  # seconds to wait for user to click back in
-
-    written = 0
-    waits = 0
     try:
         pyautogui = _get_pyautogui()
-        while written < len(text):
-            # Pause check inside the loop so the UI pause button can interrupt.
-            if _is_paused():
-                _flog(logging.INFO, "type_text",
-                      f"paused mid-type after {written}/{len(text)} chars")
-                return {
-                    "ok": False,
-                    "reason": "paused by user mid-type",
-                    "wrote_chars": written,
-                    "remaining": text[written:],
-                }
-            # Verify target-app before each batch. If the user clicked out,
-            # block up to WAIT_ON_MISMATCH seconds for them to click back.
-            target = _target_bundle()
-            if target:
-                _name, bid = _frontmost_bundle()
-                if bid != target:
-                    waits += 1
-                    _flog(logging.INFO, "type_text",
-                          f"paused for target: frontmost={bid} wrote={written}/{len(text)}")
-                    if not _wait_for_target(timeout=WAIT_ON_MISMATCH):
-                        # Timed out OR user hit pause.
-                        _, bid2 = _frontmost_bundle()
-                        reason = (
-                            f"target {target} did not return to frontmost within "
-                            f"{WAIT_ON_MISMATCH:.0f}s (frontmost={bid2}). "
-                            f"Call activate_target_app, then type_text with the `remaining` value."
-                        ) if not _is_paused() else "paused by user mid-type"
-                        return {
-                            "ok": False,
-                            "reason": reason,
-                            "wrote_chars": written,
-                            "remaining": text[written:],
-                        }
-            batch = text[written:written + CHUNK]
-            pyautogui.typewrite(batch, interval=0.01)
-            written += len(batch)
+        pyautogui.typewrite(text, interval=0.01)
     except Exception as e:
         err = _permission_error("type_text", e)
-        err["wrote_chars"] = written
-        err["remaining"] = text[written:]
         _flog(logging.ERROR, "type_text", err["reason"])
         return err
 
-    _flog(logging.INFO, "type_text", f"ok chars={written} waits={waits}")
-    return {"ok": True, "chars": written, "wrote_chars": written, "waits": waits}
+    _flog(logging.INFO, "type_text", f"ok chars={len(text)}")
+    return {"ok": True, "chars": len(text)}
 
 
 def _tool_press_key(args: dict) -> dict:
