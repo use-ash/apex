@@ -306,6 +306,60 @@ def _estimate_tokens_from_cost(chat_id: str, chat_model: str) -> int:
     return max(estimated, 0)
 
 
+def _compute_context_used(
+    chat_id: str, context_window: int, chat_model: str
+) -> tuple[int, int, int, int]:
+    """Compute context fill from three independent signals.
+
+    Returns (sdk_tokens, est_tokens, cost_tokens, context_used).
+
+    Robust picker: any estimator that reads 0 (no data) or is saturated at
+    the context_window ceiling (meaning it was clamped and no longer tracks
+    reality) is excluded.  The result is the max of the remaining healthy
+    signals.  If all three are unhealthy, we fall back to the max of the raw
+    values (capped at the window) so we still produce *something* — and the
+    diagnostic log makes the failure mode obvious.
+
+    This replaces the old `min(max(sdk, est, cost), window)` pattern which
+    would pin at 100% forever once `_estimate_tokens` saturated its internal
+    clamp.  All three sites that report the fuel gauge (context.py energy
+    prompt, routes_chat `/api/chats/{id}/context`, agent_sdk SSE result)
+    must use this helper so they never drift.
+    """
+    sdk_tokens = _get_last_turn_tokens_in(chat_id)
+    est_tokens = _estimate_tokens(chat_id, context_window=context_window)
+    cost_tokens = _estimate_tokens_from_cost(chat_id, chat_model)
+
+    # An estimator is "healthy" if it reported data (> 0) and isn't saturated
+    # at the ceiling.  `_estimate_tokens` clamps internally to context_window,
+    # so equality there means it has lost resolution.
+    def healthy(v: int) -> bool:
+        return v > 0 and v < context_window
+
+    healthy_vals = [v for v in (sdk_tokens, est_tokens, cost_tokens) if healthy(v)]
+    if healthy_vals:
+        context_used = max(healthy_vals)
+    else:
+        # All signals missing or pinned — use raw max, capped at window.
+        raw_max = max(sdk_tokens, est_tokens, cost_tokens, 0)
+        context_used = min(raw_max, context_window) if context_window > 0 else raw_max
+
+    # Unconditional diagnostic: tells us which signal is driving the gauge
+    # (and which ones are saturated).  Include a saturation marker so tail -f
+    # pattern-matches quickly when someone asks "why is it stuck?".
+    sat_marker = "".join([
+        "S" if sdk_tokens >= context_window > 0 else ".",
+        "E" if est_tokens >= context_window > 0 else ".",
+        "C" if cost_tokens >= context_window > 0 else ".",
+    ])
+    log(
+        f"fuel gauge [{chat_id[:8]}]: sdk={sdk_tokens:,} est={est_tokens:,} "
+        f"cost={cost_tokens:,} sat={sat_marker} → used={context_used:,}/"
+        f"{context_window:,} model={chat_model}"
+    )
+    return sdk_tokens, est_tokens, cost_tokens, context_used
+
+
 def _get_context_energy_prompt(chat_id: str) -> str:
     """Build a per-turn context budget signal for the agent.
 
@@ -339,22 +393,10 @@ def _get_context_energy_prompt(chat_id: str) -> str:
 
     context_window = MODEL_CONTEXT_WINDOWS.get(chat_model, MODEL_CONTEXT_DEFAULT)
 
-    # Best estimate of current context fill — three signals, take the max:
-    #   1. sdk_tokens:  SDK tokens_in (authoritative when correct, but Claude
-    #      Agent SDK often returns garbage values like 3-12)
-    #   2. est_tokens:  char-based SUM(LENGTH(content))/4 (resets after compaction,
-    #      so it underestimates after long sessions with compaction)
-    #   3. cost_tokens: derived from last turn's billing cost (most reliable for
-    #      Claude/Grok since Anthropic/xAI bill on real token counts)
-    # Cap at context_window as a safety valve.
-    sdk_tokens = _get_last_turn_tokens_in(chat_id)
-    est_tokens = _estimate_tokens(chat_id, context_window=context_window)
-    cost_tokens = _estimate_tokens_from_cost(chat_id, chat_model)
-    context_used = min(max(sdk_tokens, est_tokens, cost_tokens), context_window)
-    if cost_tokens > 0:
-        log(f"fuel gauge [{chat_id[:8]}]: sdk={sdk_tokens:,} est={est_tokens:,} "
-            f"cost={cost_tokens:,} → used={context_used:,}/{context_window:,} "
-            f"model={chat_model}")
+    # Three-signal fuel gauge — see _compute_context_used() for the picker.
+    _sdk, _est, _cost, context_used = _compute_context_used(
+        chat_id, context_window, chat_model
+    )
     if context_used == 0:
         return ""  # no data yet (first turn)
 
