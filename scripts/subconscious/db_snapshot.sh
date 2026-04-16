@@ -37,10 +37,15 @@ if [ -z "$WORKSPACE" ]; then
     CONFIG_JSON="$HOME/.openclaw/apex/state/config.json"
     if [ -f "$CONFIG_JSON" ]; then
         WORKSPACE=$(python3 -c "
-import json
+import json, os
 with open('$CONFIG_JSON') as f:
     c = json.load(f)
-print(c.get('workspace',{}).get('path','').split(':')[0])
+# path is colon-separated; find the entry containing 'workspace'
+for p in c.get('workspace',{}).get('path','').split(':'):
+    if 'workspace' in os.path.basename(p):
+        print(p); break
+else:
+    print(os.path.expanduser('~/.openclaw/workspace'))
 " 2>/dev/null)
     fi
     WORKSPACE="${WORKSPACE:-$HOME/.openclaw/workspace}"

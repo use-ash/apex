@@ -58,6 +58,7 @@ import db as db_mod  # noqa: E402
 import env  # noqa: E402
 import memory_extract  # noqa: E402
 import context as context_mod  # noqa: E402
+import skills as skills_mod  # noqa: E402
 import premium_loader  # noqa: E402
 import routes_chat as routes_chat_mod  # noqa: E402
 import streaming as streaming_mod  # noqa: E402
@@ -3096,6 +3097,45 @@ class SecurityFixTests(unittest.TestCase):
         self.assertIn("`/portfolio-manager`", ctx)
         self.assertIn("portfolio sheet", ctx)
         self.assertIn("workspace-root/skills/portfolio-manager/SKILL.md", ctx)
+
+    def test_workspace_context_skill_catalog_keeps_last_skill_discoverable(self) -> None:
+        workspace = TEST_ROOT / "skill-tail-workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        for idx in range(26):
+            skill_dir = workspace / "skills" / f"skill-{idx:02d}"
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            skill_dir.joinpath("SKILL.md").write_text(
+                (
+                    f"---\nname: skill-{idx:02d}\n"
+                    f"description: \"This is deliberately verbose skill number {idx:02d} "
+                    "used to verify the available-skills catalog does not drop later entries.\"\n---\n"
+                ),
+                encoding="utf-8",
+            )
+        dashboard_mod._config.update_section("workspace", {"path": str(workspace)})
+
+        chat_id = self._create_direct_chat()
+        context_mod._clear_session_context(chat_id)
+        ctx = context_mod._get_workspace_context(chat_id)
+
+        self.assertIn("Named skills:", ctx)
+        self.assertIn("`/skill-25`", ctx)
+        self.assertIn("skills/skill-25/SKILL.md", ctx)
+
+    def test_load_thinking_skill_instructions_discovers_generic_workspace_skill(self) -> None:
+        workspace = TEST_ROOT / "generic-skill-workspace"
+        skill_dir = workspace / "skills" / "youtube"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        skill_dir.joinpath("SKILL.md").write_text(
+            "---\nname: youtube\ndescription: \"Fetch YouTube transcripts.\"\n---\n# YouTube Transcript Skill\n",
+            encoding="utf-8",
+        )
+        dashboard_mod._config.update_section("workspace", {"path": str(workspace)})
+
+        instructions = skills_mod._load_thinking_skill_instructions("youtube")
+
+        self.assertIsNotNone(instructions)
+        self.assertIn("YouTube Transcript Skill", instructions)
 
     def test_sdk_pre_tool_hook_blocks_level_3_non_allowlisted_date(self) -> None:
         allowed, message = streaming_mod._sdk_pre_tool_use_decision(

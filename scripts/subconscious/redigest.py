@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import config
 import state
 import llm
-from batch_digest import parse_transcript, TRANSCRIPTS_DIR
+from batch_digest import parse_transcript, TRANSCRIPTS_DIRS
 
 # ── Config ────────────────────────────────────────────────────────────
 
@@ -46,14 +46,15 @@ def find_heuristic_digests() -> list[tuple[str, Path, Path]]:
             d = json.loads(digest_path.read_text())
             if d.get("summary", {}).get("source") != "heuristic":
                 continue
-            transcript = TRANSCRIPTS_DIR / f"{session_id}.jsonl"
-            if not transcript.exists():
-                # Also check the non-workspace project dir
-                alt = Path.home() / ".claude/projects/-Users-dana--openclaw" / f"{session_id}.jsonl"
-                if alt.exists():
-                    transcript = alt
-                else:
-                    continue
+            # Search all transcript directories
+            transcript = None
+            for tdir in TRANSCRIPTS_DIRS:
+                candidate = tdir / f"{session_id}.jsonl"
+                if candidate.exists():
+                    transcript = candidate
+                    break
+            if transcript is None:
+                continue
             results.append((session_id, digest_path, transcript))
         except (json.JSONDecodeError, OSError):
             continue
@@ -103,7 +104,15 @@ def main():
             continue
 
         try:
-            messages, transcript_text = parse_transcript(transcript_path)
+            messages = parse_transcript(transcript_path)
+            transcript_text = "\n".join(
+                f"{m.get('role', '?')}: {m.get('content', '')}" for m in messages
+            )
+            # Truncate to last 15K chars — full transcripts can be 1MB+
+            # which exceeds model context. Last 15K captures the most
+            # actionable corrections and decisions from each session.
+            if len(transcript_text) > 15000:
+                transcript_text = transcript_text[-15000:]
             if not messages or len(transcript_text) < 50:
                 print("empty transcript")
                 skipped += 1
