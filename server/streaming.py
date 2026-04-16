@@ -606,10 +606,16 @@ def _make_options(
         resume=session_id,
         setting_sources=["user"],
         add_dirs=extra_dirs,
-        # Extended thinking: opt in so models that default to signature-only
-        # (e.g. Opus 4.7) also emit the human-readable summary — otherwise the
-        # UI renders empty thinking pills. 10k is a reasonable ceiling per turn.
-        thinking={"type": "enabled", "budget_tokens": 10000},
+        # Extended thinking for Opus 4.7:
+        #   - 4.7 defaults thinking.display="omitted" → empty pills.
+        #   - {"type":"enabled",budget_tokens:N} returns 400 on 4.7 — use
+        #     adaptive; effort="high" tunes depth (GA, no beta header).
+        #   - `display` isn't a first-class SDK field yet, so route via
+        #     extra_args → bundled CLI's hidden --thinking-display flag
+        #     (requires CLI >= 2.1.111 / claude-agent-sdk >= 0.1.60).
+        thinking={"type": "adaptive"},
+        effort="high",
+        extra_args={"thinking-display": "summarized"},
         can_use_tool=_make_sdk_tool_gate(
             permission_level,
             allowed_commands=allowed_commands,
