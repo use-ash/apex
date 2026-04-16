@@ -236,6 +236,12 @@ GROUPS_ENABLED: bool = (
 ENABLE_METACOGNITION: bool = (
     os.environ.get("APEX_ENABLE_METACOGNITION", "").lower() in {"1", "true", "yes"}
 )
+ENABLE_TYPE1_GUIDANCE: bool = (
+    os.environ.get("APEX_TYPE1_GUIDANCE", "true").lower() in {"1", "true", "yes"}
+)
+ENABLE_UNIFIED_MEMORY: bool = (
+    os.environ.get("APEX_UNIFIED_MEMORY", "true").lower() in {"1", "true", "yes"}
+)
 
 # Dev mode — auto-True when running on a non-production port.
 # In dev mode, premium modules load from plaintext .py instead of encrypted .enc.

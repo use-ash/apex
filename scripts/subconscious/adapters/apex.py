@@ -135,6 +135,85 @@ def _relevance_score(mem: Memory, query_tokens: set[str],
     return score
 
 
+def render_type1_whisper(envelope: ContextEnvelope,
+                         query: str = "",
+                         model_hint: str = "") -> str:
+    """Render Type 1 (procedural) guidance as a <subconscious_whisper> block.
+
+    Type 1 items are always-on, no cooldown.  They are invariants and
+    corrections that should fire every turn — the proceduralized knowledge
+    that operates "outside working memory."
+
+    Selection logic:
+      - Items with confidence >= 0.9 are always included (unconditional)
+      - Remaining items scored by 0.4*confidence + 0.6*relevance, top N
+      - Hard cap at TYPE1_MAX_CHARS / TYPE1_MAX_ITEMS
+
+    Returns formatted <subconscious_whisper> block (with XML tags) or "".
+    """
+    try:
+        from config import TYPE1_MAX_CHARS, TYPE1_MAX_ITEMS
+    except ImportError:
+        TYPE1_MAX_CHARS = 2000
+        TYPE1_MAX_ITEMS = 10
+
+    # Filter to invariants + corrections only (Type 1 pathway)
+    type1_items = [m for m in envelope.guidance
+                   if m.type in ("invariant", "correction")]
+    if not type1_items:
+        return ""
+
+    query_tokens = _tokenize(query) if query else set()
+
+    def _render_item(mem):
+        ctx = getattr(mem, "context_when", "")
+        enf = getattr(mem, "enforce", "")
+        avd = getattr(mem, "avoid", "")
+        tag = "invariant" if mem.type == "invariant" else "correction"
+        if ctx and enf and avd:
+            return f"- [{tag}] When {ctx}: enforce {enf}; avoid {avd}"
+        return f"- [{tag}] {mem.display_text()}"
+
+    # Score ALL items by blended confidence + relevance.
+    # With 40-50 items at high confidence, pure confidence ordering
+    # wastes budget on irrelevant invariants.  Relevance determines
+    # which high-confidence items matter for THIS turn.
+    if query_tokens or model_hint:
+        scored = []
+        for m in type1_items:
+            rel = _relevance_score(m, query_tokens, model_hint)
+            if rel < 0.0:
+                continue  # domain mismatch — hard exclude
+            combined = 0.4 * m.confidence + 0.6 * rel
+            scored.append((combined, m))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        ranked = [m for _, m in scored]
+    else:
+        # No query context — sort by confidence only
+        ranked = sorted(type1_items, key=lambda m: m.confidence, reverse=True)
+
+    # Build output lines within budget
+    lines = ["<subconscious_whisper>", "## Guidance"]
+    chars_used = 0
+    item_count = 0
+
+    for mem in ranked:
+        if item_count >= TYPE1_MAX_ITEMS:
+            break
+        line = _render_item(mem)
+        if chars_used + len(line) > TYPE1_MAX_CHARS:
+            break
+        lines.append(line)
+        chars_used += len(line)
+        item_count += 1
+
+    if item_count == 0:
+        return ""
+
+    lines.append("</subconscious_whisper>")
+    return "\n".join(lines) + "\n\n"
+
+
 def render_guidance_whisper(envelope: ContextEnvelope,
                             max_items: int = 10,
                             query: str = "",

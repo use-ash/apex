@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import env
-from db import _get_chat, _get_chat_tool_policy, _get_messages
+from db import _get_chat, _get_chat_tool_policy, _get_messages, _estimate_tokens
 from log import log
 from model_dispatch import MODEL_CONTEXT_WINDOWS, MODEL_CONTEXT_DEFAULT, MODEL_INPUT_PRICE, MODEL_OUTPUT_PRICE
 from state import _clients, _session_context_sent
@@ -56,6 +56,7 @@ SDK_QUERY_TIMEOUT = env.SDK_QUERY_TIMEOUT
 SDK_STREAM_TIMEOUT = env.SDK_STREAM_TIMEOUT
 ENABLE_SUBCONSCIOUS_WHISPER = env.ENABLE_SUBCONSCIOUS_WHISPER
 ENABLE_METACOGNITION = env.ENABLE_METACOGNITION
+ENABLE_UNIFIED_MEMORY = env.ENABLE_UNIFIED_MEMORY
 
 UPLOAD_DIR = APEX_ROOT / "state" / "uploads"
 
@@ -636,8 +637,11 @@ def _build_turn_payload(chat_id: str, prompt: str, attachments: list[dict]) -> t
     whisper = _get_whisper_text(chat_id, current_prompt=query_prompt,
                                model_hint="claude-sdk") if ENABLE_SUBCONSCIOUS_WHISPER else ""
     context_energy = _get_context_energy_prompt(chat_id)
+    # Metacognition: when unified memory is active, metacognition results
+    # are already merged into the whisper Type 2 path (context.py).
+    # Only call the separate metacognition system when unified memory is off.
     metacog = ""
-    if ENABLE_METACOGNITION:
+    if ENABLE_METACOGNITION and not ENABLE_UNIFIED_MEMORY:
         try:
             from metacognition import retrieve_prior_context
             metacog = retrieve_prior_context(query_prompt)
@@ -985,14 +989,18 @@ async def _stream_response(
                 _chat = _get_chat(chat_id)
                 _ctx_model = (_chat.get("model") or MODEL) if _chat else MODEL
                 _ctx_window = MODEL_CONTEXT_WINDOWS.get(_ctx_model, MODEL_CONTEXT_DEFAULT)
-                # Cost-based context estimation — fixes SDK garbage tokens_in
+                # 3-signal max — same logic as context.py fuel gauge.
+                # SDK tokens_in is often garbage (3-24), so cross-check with
+                # char-based estimation and cost-based reverse engineering.
+                _est_in = _estimate_tokens(chat_id, context_window=_ctx_window)
                 _cost_usd = result_info["cost_usd"]
                 _tok_out = result_info["tokens_out"]
                 _ip = MODEL_INPUT_PRICE.get(_ctx_model, 0.0)
                 _op = MODEL_OUTPUT_PRICE.get(_ctx_model, 0.0)
+                _cost_ctx = 0
                 if _ip > 0 and _cost_usd > 0:
                     _cost_ctx = int(max(_cost_usd - _tok_out * _op, 0.0) / _ip)
-                    _ctx_in = max(_ctx_in, _cost_ctx)
+                _ctx_in = min(max(_ctx_in, _est_in, _cost_ctx), _ctx_window)
                 await _send({
                     "type": "result",
                     "is_error": result_is_error,

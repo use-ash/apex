@@ -78,9 +78,11 @@ from context import (
     ENABLE_SUBCONSCIOUS_WHISPER,
 )
 ENABLE_METACOGNITION = env.ENABLE_METACOGNITION
+ENABLE_UNIFIED_MEMORY = env.ENABLE_UNIFIED_MEMORY
 from skills import (
     _parse_skill_command, _run_recall, _run_improve, _handle_skill,
     _DIRECT_SKILL_HANDLERS, _CONTEXT_SKILLS, _THINKING_SKILLS,
+    _load_thinking_skill_instructions,
     _GATE_ENABLED, _get_pending_approvals, _resolve_approval, _log_skill_invocation,
 )
 from agent_sdk import (
@@ -465,6 +467,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     if not _is_valid_chat_id(attach_id):
                         await websocket.send_json({"type": "error", "message": "Invalid chat_id"})
                         continue
+                    # Dedup: if this WS is already attached to this chat, skip the
+                    # expensive buffer replay. Prevents double-attach when iOS fires
+                    # both visibilitychange and pageshow on resume.
+                    already_attached = _ws_chat.get(websocket) == attach_id
                     _attach_ws(websocket, attach_id)  # B-42: move WS subscription immediately
                     lock = _chat_locks.get(attach_id)
                     if lock is None:
@@ -473,6 +479,10 @@ async def websocket_endpoint(websocket: WebSocket):
                                 lock = v
                                 break
                     stream_running = bool(_get_active_stream_entries(attach_id))
+                    if stream_running and already_attached:
+                        # Already subscribed and receiving live events — skip replay
+                        log(f"attach dedup: ws already on chat={attach_id[:8]}, skipping replay")
+                        continue
                     if stream_running:
                         send_lock = _get_chat_send_lock(attach_id)
                         replayed = len(_stream_buffers.get(attach_id, ()))
@@ -825,10 +835,13 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                         f"{instructions}\n</system-reminder>\n\n"
                     )
                     prompt = f"Analyze the skill '{skill_args.split()[0]}' and propose improvements based on the data above."
-            elif skill in _THINKING_SKILLS:
-                skill_md = WORKSPACE / "skills" / skill / "SKILL.md"
-                if skill_md.exists():
-                    instructions = skill_md.read_text()[:4000]
+            else:
+                instructions = _load_thinking_skill_instructions(skill)
+                if skill in _THINKING_SKILLS and not instructions:
+                    skill_md = WORKSPACE / "skills" / skill / "SKILL.md"
+                    if skill_md.exists():
+                        instructions = skill_md.read_text()[:4000]
+                if instructions:
                     _recall_context = (
                         f"<system-reminder>\nThe user invoked the /{skill} skill. "
                         f"Follow these instructions to execute it:\n\n{instructions}\n</system-reminder>\n\n"
@@ -836,10 +849,10 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                     prompt = skill_args or prompt
                     log(f"Thinking skill dispatch: /{skill} args={skill_args[:60]!r}")
                     _log_skill_invocation(skill, success=True, context=(skill_args or "")[:80], source="apex")
-            elif skill in _DIRECT_SKILL_HANDLERS:
-                handled = await _handle_skill(websocket, chat_id, skill, skill_args, prompt)
-                if handled:
-                    return
+                elif skill in _DIRECT_SKILL_HANDLERS:
+                    handled = await _handle_skill(websocket, chat_id, skill, skill_args, prompt)
+                    if handled:
+                        return
 
     chat = _get_chat(chat_id)
     if not chat:
@@ -1105,7 +1118,10 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             if whisper:
                 prompt = f"{whisper}{prompt}"
 
-        if ENABLE_METACOGNITION and backend in ("ollama", "xai", "mlx", "codex"):
+        # Metacognition: when unified memory is active, metacog results are
+        # already merged into the whisper Type 2 path above.
+        if ENABLE_METACOGNITION and not ENABLE_UNIFIED_MEMORY \
+                and backend in ("ollama", "xai", "mlx", "codex"):
             try:
                 from metacognition import retrieve_prior_context
                 metacog = retrieve_prior_context(prompt)
