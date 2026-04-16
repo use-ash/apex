@@ -142,6 +142,21 @@ def _get_appkit():
         return _AppKit
     import AppKit  # type: ignore
     _AppKit = AppKit
+    # Suppress the bouncing Python Dock icon: once AppKit is imported, the
+    # Python process becomes a regular GUI app and every NSWorkspace /
+    # activate call makes it fight TextEdit for frontmost. Setting activation
+    # policy to Prohibited before the shared NSApplication caches a Dock tile
+    # removes Python from Dock + Cmd+Tab entirely, so activate_target_app's
+    # NSRunningApplication.activateWithOptions_ calls on the *target* are no
+    # longer clobbered by the interpreter yanking itself forward.
+    try:
+        app = AppKit.NSApplication.sharedApplication()
+        if hasattr(app, "setActivationPolicy_"):
+            # NSApplicationActivationPolicyProhibited = 2
+            app.setActivationPolicy_(2)
+            _log_stderr("activation policy set to Prohibited (no Dock tile)")
+    except Exception as e:
+        _log_stderr(f"setActivationPolicy failed (non-fatal): {e}")
     return _AppKit
 
 
@@ -1035,6 +1050,16 @@ def main() -> None:
         f"APEX_CU_TARGET_BUNDLE={_target_bundle() or '(unset)'}, "
         f"APEX_CU_STATE_DIR={_state_dir()}"
     )
+
+    # Eagerly hide this Python process from Dock + Cmd+Tab. Without this, the
+    # interpreter bounces in the Dock whenever AppKit is touched and fights
+    # the target app for frontmost — which is exactly why activate_target_app
+    # was reporting now_frontmost=false despite running all three strategies.
+    # Must happen before any tool call that imports AppKit/pyautogui.
+    try:
+        _get_appkit()  # triggers setActivationPolicy_(Prohibited) inside
+    except Exception as e:
+        _log_stderr(f"early AppKit policy init failed (non-fatal): {e}")
 
     # Warm up file logger early so any init issues surface
     _get_file_logger()
