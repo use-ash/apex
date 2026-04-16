@@ -74,6 +74,48 @@ def _is_valid_chat_id(chat_id: str) -> bool:
 # WebSocket registry
 # ---------------------------------------------------------------------------
 
+def _ws_is_alive(ws: WebSocket) -> bool:
+    """Return True iff the WebSocket is still in CONNECTED state on both sides.
+
+    Starlette tracks client_state (what the client has sent us) and
+    application_state (what we have sent the client). Either side in
+    DISCONNECTED means any subsequent send_json will raise
+    RuntimeError("Cannot call 'send' once a close message has been sent").
+    We detect that here and refuse to register such sockets, so that
+    stream frames don't get wasted on zombies.
+    """
+    try:
+        from starlette.websockets import WebSocketState
+    except ImportError:
+        return True  # can't probe; assume alive and rely on reactive eviction
+    try:
+        client_ok = getattr(ws, "client_state", None) == WebSocketState.CONNECTED
+        app_ok = getattr(ws, "application_state", None) == WebSocketState.CONNECTED
+        return bool(client_ok and app_ok)
+    except Exception:
+        return True
+
+
+def _vacuum_dead_ws(chat_id: str) -> int:
+    """Drop any disconnected WebSockets from the chat's viewer set.
+
+    Returns count vacuumed. Keeps _ws_chat in sync. Called before a new
+    attach or the first send of a frame so zombies never absorb traffic.
+    """
+    ws_set = _chat_ws.get(chat_id)
+    if not ws_set:
+        return 0
+    dead = [w for w in list(ws_set) if not _ws_is_alive(w)]
+    for w in dead:
+        ws_set.discard(w)
+        _ws_chat.pop(w, None)
+    if not ws_set:
+        _chat_ws.pop(chat_id, None)
+    if dead:
+        log(f"WSDIAG vacuum chat={chat_id[:8]} dead={len(dead)} remaining={len(ws_set)}")
+    return len(dead)
+
+
 def _attach_ws(ws: WebSocket, chat_id: str) -> None:
     """Register ws for chat_id, removing it from any previous chat first."""
     old = _ws_chat.get(ws)
@@ -84,6 +126,13 @@ def _attach_ws(ws: WebSocket, chat_id: str) -> None:
             if not old_set:
                 _chat_ws.pop(old, None)
         log(f"ws detached from chat={old} -> attaching to chat={chat_id}")
+    # Vacuum any zombie WebSockets that never got cleanly detached (e.g.
+    # abrupt TCP drops from iOS cellular<->WiFi transitions, browser tab
+    # kill during send). Must happen BEFORE we add this ws, or the zombie
+    # will absorb seq=1 of the next stream and the real viewer misses
+    # the opening frame. See ws_send FAIL "Cannot call 'send' once a
+    # close message has been sent" in apex.log.
+    _vacuum_dead_ws(chat_id)
     _chat_ws.setdefault(chat_id, set()).add(ws)
     _ws_chat[ws] = chat_id
     # WSDIAG: observability for WS streaming race bug. Correlate by ws_id+chat.
@@ -1034,6 +1083,12 @@ async def _send_stream_event(chat_id: str, payload: dict) -> None:
             _should_log = True
     send_lock = _get_chat_send_lock(chat_id)
     async with send_lock:
+        # Vacuum zombie WebSockets (disconnected but still registered) before
+        # iterating, so the first frame of a new stream doesn't get wasted on
+        # a dead socket. This is the defense against the race where _detach_ws
+        # hasn't run yet (e.g. client closed during a prior send, iOS network
+        # transition, browser tab backgrounded).
+        _vacuum_dead_ws(chat_id)
         ws_set = _chat_ws.get(chat_id)
         if _should_log:
             _recips = len(ws_set) if ws_set else 0
