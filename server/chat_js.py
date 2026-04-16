@@ -2691,7 +2691,7 @@ function formatAlertMetadataValue(key, value, alert) {
   }
   return String(value ?? '');
 }
-const ALERT_BODY_ALLOWED_TAGS = new Set(['b', 'strong', 'em', 'i', 'code', 'br', 'ul', 'ol', 'li']);
+const ALERT_BODY_ALLOWED_TAGS = new Set(['b', 'strong', 'em', 'i', 'code', 'br', 'ul', 'ol', 'li', 'a']);
 function sanitizeAlertBodyNode(node) {
   Array.from(node.childNodes).forEach((child) => {
     if (child.nodeType === Node.TEXT_NODE) return;
@@ -2713,7 +2713,17 @@ function sanitizeAlertBodyNode(node) {
       sanitizeAlertBodyNode(node);
       return;
     }
-    Array.from(child.attributes).forEach((attr) => child.removeAttribute(attr.name));
+    if (tag === 'a') {
+      const href = child.getAttribute('href');
+      Array.from(child.attributes).forEach((attr) => child.removeAttribute(attr.name));
+      if (href && /^https?:\/\//.test(href)) {
+        child.setAttribute('href', href);
+        child.setAttribute('target', '_blank');
+        child.setAttribute('rel', 'noopener noreferrer');
+      }
+    } else {
+      Array.from(child.attributes).forEach((attr) => child.removeAttribute(attr.name));
+    }
     sanitizeAlertBodyNode(child);
   });
 }

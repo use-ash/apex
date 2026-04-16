@@ -12,6 +12,7 @@ import time
 import uuid
 from pathlib import Path
 
+import re
 import env
 
 from fastapi import APIRouter, Request
@@ -39,6 +40,15 @@ APNS_BUNDLE_ID = env.APNS_BUNDLE_ID
 APNS_USE_SANDBOX = env.APNS_USE_SANDBOX
 
 _apns_key_data: str | None = None
+
+
+def _strip_html(text: str) -> str:
+    """Strip HTML tags for plain-text contexts (APNs push notifications)."""
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
+    text = text.replace('&quot;', '"').replace('&#39;', "'")
+    return text.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -178,21 +188,22 @@ async def api_create_alert(request: Request):
     for evt in _alert_waiters:
         evt.set()
 
-    # Push notification — skip if any client is actively connected via WebSocket
-    has_active_session = any(bool(ws_set) for ws_set in _chat_ws.values())
-    if not has_active_session:
-        push_body = title if title else body
-        push_extra_body = body[:100] if body and title else ""
-        if push_extra_body:
-            push_body = f"{push_body} — {push_extra_body}"
-        asyncio.create_task(_push_to_all_devices(
-            title="ApexChat",
-            subtitle=f"[{severity.upper()}] {source}",
-            body=push_body[:200],
-            thread_id=f"alerts-{source}",
-            extra={"alert_id": alert["id"], "source": source,
-                   "chat_id": metadata.get("chat_id", "") if metadata else ""},
-        ))
+    # Push notification — always push for system/trading alerts even if a
+    # desktop WS session is open (user isn't necessarily watching the alerts tab)
+    plain_title = _strip_html(title)
+    plain_body = _strip_html(body)
+    push_body = plain_title if plain_title else plain_body
+    push_extra_body = plain_body[:100] if plain_body and plain_title else ""
+    if push_extra_body:
+        push_body = f"{push_body} — {push_extra_body}"
+    asyncio.create_task(_push_to_all_devices(
+        title="ApexChat",
+        subtitle=f"[{severity.upper()}] {source}",
+        body=push_body[:200],
+        thread_id=f"alerts-{source}",
+        extra={"alert_id": alert["id"], "source": source,
+               "chat_id": metadata.get("chat_id", "") if metadata else ""},
+    ))
     log(f"alert: id={alert['id']} src={source} sev={severity} title={title[:50]}")
     return JSONResponse(alert, status_code=201)
 
