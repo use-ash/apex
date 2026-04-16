@@ -86,6 +86,8 @@ def _attach_ws(ws: WebSocket, chat_id: str) -> None:
         log(f"ws detached from chat={old} -> attaching to chat={chat_id}")
     _chat_ws.setdefault(chat_id, set()).add(ws)
     _ws_chat[ws] = chat_id
+    # WSDIAG: observability for WS streaming race bug. Correlate by ws_id+chat.
+    log(f"WSDIAG attach ws={id(ws) & 0xFFFFFF:06x} old={(old or '_')[:8]} new={chat_id[:8]} set={len(_chat_ws.get(chat_id, ()))}")
 
 
 def _detach_ws(ws: WebSocket) -> None:
@@ -97,6 +99,8 @@ def _detach_ws(ws: WebSocket) -> None:
             old_set.discard(ws)
             if not old_set:
                 _chat_ws.pop(old, None)
+        # WSDIAG
+        log(f"WSDIAG detach ws={id(ws) & 0xFFFFFF:06x} was={old[:8]} set={len(_chat_ws.get(old, ()))}")
 
 
 # ---------------------------------------------------------------------------
@@ -955,6 +959,7 @@ def _buffer_stream_event(chat_id: str, payload: dict) -> None:
 # ---------------------------------------------------------------------------
 
 _drop_logged: set[str] = set()  # tracks (chat:stream) combos already logged as dropped
+_wsdiag_text_logged: set[str] = set()  # WSDIAG: first text frame per stream only (avoid flood)
 
 async def _send_stream_event(chat_id: str, payload: dict) -> None:
     payload = dict(payload)
@@ -968,9 +973,24 @@ async def _send_stream_event(chat_id: str, payload: dict) -> None:
             return
         payload["text"] = filtered_text
     _buffer_stream_event(chat_id, payload)
+    # WSDIAG: observability for WS streaming race bug. Log non-text frames
+    # always; text frames only on first-per-stream to avoid flooding.
+    _ptype = str(payload.get("type") or "")
+    _should_log = False
+    if _ptype != "text":
+        _should_log = True
+    elif payload_stream_id:
+        _tkey = f"{chat_id}:{payload_stream_id}"
+        if _tkey not in _wsdiag_text_logged:
+            _wsdiag_text_logged.add(_tkey)
+            _should_log = True
     send_lock = _get_chat_send_lock(chat_id)
     async with send_lock:
         ws_set = _chat_ws.get(chat_id)
+        if _should_log:
+            _recips = len(ws_set) if ws_set else 0
+            _seq = payload.get("seq", "_")
+            log(f"WSDIAG send chat={chat_id[:8]} type={_ptype} sid={payload_stream_id[:8]} seq={_seq} recips={_recips}")
         if not ws_set:
             drop_key = f"{chat_id}:{payload_stream_id}"
             if drop_key not in _drop_logged:

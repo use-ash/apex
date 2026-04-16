@@ -472,6 +472,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     # expensive buffer replay. Prevents double-attach when iOS fires
                     # both visibilitychange and pageshow on resume.
                     already_attached = _ws_chat.get(websocket) == attach_id
+                    # WSDIAG: observability for WS streaming race bug.
+                    _prev = _ws_chat.get(websocket) or "_"
+                    log(f"WSDIAG recv_attach ws={id(websocket) & 0xFFFFFF:06x} prev={_prev[:8]} new={attach_id[:8]} dedup={already_attached}")
                     _attach_ws(websocket, attach_id)  # B-42: move WS subscription immediately
                     lock = _chat_locks.get(attach_id)
                     if lock is None:
