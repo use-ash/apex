@@ -688,6 +688,42 @@ def _tool_activate_target_app(_args: dict) -> dict:
         was_running = running is not None and len(running) > 0
         steps_tried: list[str] = []
 
+        # --- Step 0 (TextEdit-specific preemptive): open a scratch doc ---
+        # `applescript activate + reopen` makes TextEdit frontmost but surfaces
+        # the iCloud Drive Open dialog when the user's TextEdit defaults are set
+        # that way. The Open dialog is a *sheet*, not a document — it looks
+        # frontmost (process is frontmost) but type_text keystrokes go into the
+        # dialog's search field, not a writable document. `open -e <path>`
+        # forces TextEdit to open a real RTF/TXT document window regardless.
+        # Runs BEFORE the ladder so we never confuse "TextEdit is frontmost"
+        # with "TextEdit has a writable document surfaced."
+        if target == "com.apple.TextEdit":
+            scratch = "/tmp/apex_textedit_scratch.txt"
+            try:
+                if not os.path.exists(scratch):
+                    with open(scratch, "w") as f:
+                        f.write("")
+            except OSError as e:
+                _log_stderr(f"scratch create failed: {e}")
+            _sp.run(
+                ["/usr/bin/open", "-e", scratch],
+                capture_output=True, timeout=5, check=False,
+            )
+            steps_tried.append("textedit-open-scratch")
+            if _poll_frontmost(tries=25, interval=0.2):
+                _flog(
+                    logging.INFO, "activate_target_app",
+                    f"ok via textedit-open-scratch (step 0) target={target} scratch={scratch}",
+                )
+                return {
+                    "ok": True,
+                    "bundle_id": target,
+                    "was_running": was_running,
+                    "now_frontmost": True,
+                    "method": "textedit-open-scratch",
+                    "scratch_path": scratch,
+                }
+
         # --- Step 1: AppleScript activate + reopen (Dock-click equivalent) ---
         # `reopen` tells the app to show a default window if none exist.
         # Most document-based apps support it (TextEdit, Finder, Preview, etc).
