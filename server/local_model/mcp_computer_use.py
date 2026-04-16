@@ -233,23 +233,34 @@ def _target_pid() -> int | None:
     return None
 
 
-def _post_unicode_to_pid(pid: int, text: str, interval: float = 0.012) -> None:
+def _post_unicode_to_pid(pid: int, text: str, interval: float = 0.012) -> int:
     """Post each char as keydown+keyup CGEvents scoped to `pid`, carrying the
     unicode code point via CGEventKeyboardSetUnicodeString.
 
     Focus-independent: keystrokes land in the target process regardless of
     which app is frontmost. Validated April 16 2026 via /tmp/cgevent_smoke.py
     — "HELLO FROM CGEVENT" delivered to TextEdit while Finder was frontmost.
+
+    Checks the pause flag between characters and bails out early if the user
+    pauses mid-type. Returns the number of characters actually posted.
     """
     Quartz = _get_quartz()
     src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
+    posted = 0
     for ch in text:
+        # Respect pause flag between chars — the primary reason we don't use
+        # pyautogui.typewrite here. File stat is cheap (<1ms) and lets the
+        # user interrupt an in-flight type_text at any character boundary.
+        if _is_paused():
+            break
         for is_down in (True, False):
             ev = Quartz.CGEventCreateKeyboardEvent(src, 0, is_down)
             Quartz.CGEventKeyboardSetUnicodeString(ev, 1, ch)
             Quartz.CGEventPostToPid(pid, ev)
+        posted += 1
         if interval > 0:
             time.sleep(interval)
+    return posted
 
 
 def _wait_for_target(timeout: float = 30.0, interval: float = 0.1) -> bool:
@@ -491,17 +502,37 @@ def _tool_type_text(args: dict) -> dict:
         return {"ok": False, "reason": msg}
 
     try:
-        _post_unicode_to_pid(pid, text)
+        posted = _post_unicode_to_pid(pid, text)
     except Exception as e:
         err = _permission_error("type_text", e)
         _flog(logging.ERROR, "type_text", err["reason"])
         return err
 
+    # Partial write if user hit pause mid-type. Report honestly so the agent
+    # knows the full string didn't land and can decide whether to retry after
+    # unpause, resume with the suffix, or ask the user.
+    requested = len(text)
+    paused_mid = posted < requested
+    if paused_mid:
+        _flog(logging.INFO, "type_text",
+              f"paused mid-type pid={pid} target={target} "
+              f"posted={posted}/{requested} remaining={text[posted:]!r}")
+        return {
+            "ok": False,
+            "reason": "paused by user mid-type",
+            "chars": posted,
+            "requested": requested,
+            "remaining": text[posted:],
+            "method": "cgevent-post-to-pid",
+            "pid": pid,
+            "target": target,
+        }
+
     _flog(logging.INFO, "type_text",
-          f"ok pid={pid} target={target} chars={len(text)} method=cgevent-post-to-pid")
+          f"ok pid={pid} target={target} chars={posted} method=cgevent-post-to-pid")
     return {
         "ok": True,
-        "chars": len(text),
+        "chars": posted,
         "method": "cgevent-post-to-pid",
         "pid": pid,
         "target": target,
