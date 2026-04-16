@@ -738,6 +738,34 @@ async def api_computer_use_resume(chat_id: str):
     return JSONResponse({"ok": True, "paused": False})
 
 
+_cu_config = None
+
+
+def _load_allowed_bundle_ids() -> list[str]:
+    """Parse gui_automation.allowed_bundle_ids (multiline) into a list.
+
+    Returns `[]` when the setting is empty (meaning: any bundle allowed).
+    Uses Config so schema defaults surface when config.json hasn't been
+    customized.
+    """
+    global _cu_config
+    try:
+        from config import Config
+        if _cu_config is None:
+            _cu_config = Config(APEX_ROOT / "state")
+        raw = _cu_config.get("gui_automation", "allowed_bundle_ids") or ""
+    except Exception:
+        raw = ""
+    if not isinstance(raw, str):
+        return []
+    out = []
+    for line in raw.splitlines():
+        bid = line.strip()
+        if bid and _BUNDLE_ID_RE.match(bid):
+            out.append(bid)
+    return out
+
+
 @chat_router.get("/api/chats/{chat_id}/computer_use/status")
 async def api_computer_use_status(chat_id: str):
     chat = _get_chat(chat_id)
@@ -749,4 +777,5 @@ async def api_computer_use_status(chat_id: str):
         "enabled": bool(target),
         "target_bundle_id": target,
         "paused": paused,
+        "allowed_bundle_ids": _load_allowed_bundle_ids(),
     })
