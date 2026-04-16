@@ -373,6 +373,28 @@ _CONTEXT_SKILLS = {"recall", "improve"}
 _THINKING_SKILLS = {"first-principles", "simplify"}
 
 
+def _find_skill_md(skill: str) -> Path | None:
+    """Return the SKILL.md path for a discovered skill, if present."""
+    skill_name = str(skill or "").strip().lower()
+    if not skill_name:
+        return None
+    for skill_md in env.iter_workspace_skill_files(env.get_runtime_workspace_paths_list()):
+        if skill_md.parent.name.lower() == skill_name:
+            return skill_md
+    return None
+
+
+def _load_thinking_skill_instructions(skill: str) -> str | None:
+    """Load SKILL.md instructions for an explicit non-direct skill invocation."""
+    skill_name = str(skill or "").strip().lower()
+    if not skill_name or skill_name in _CONTEXT_SKILLS or skill_name in _DIRECT_SKILL_HANDLERS:
+        return None
+    skill_md = _find_skill_md(skill_name)
+    if not skill_md or not skill_md.exists():
+        return None
+    return skill_md.read_text()[:4000]
+
+
 # ---------------------------------------------------------------------------
 # Background skill watcher
 # ---------------------------------------------------------------------------

@@ -344,11 +344,7 @@ async def _broadcast_alert(alert: dict) -> None:
         if not ok:
             dead.append((ws, chat_id))
     for ws, chat_id in dead:
-        ws_set = _chat_ws.get(chat_id)
-        if ws_set:
-            ws_set.discard(ws)
-            if not ws_set:
-                _chat_ws.pop(chat_id, None)
+        _detach_ws(ws)
 
 
 # ---------------------------------------------------------------------------

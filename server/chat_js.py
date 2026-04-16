@@ -196,6 +196,8 @@ let initDone = false;
 let initPromise = null;
 let initTrigger = 'boot';
 let reconnectTimer = null;
+let _resumeWaitInterval = null;
+let _resumeWaitTimeout = null;
 let knownChatCount = 0;
 let selectChatSeq = 0;
 let staleBarTick = null;
@@ -776,6 +778,11 @@ function resumeConnection(trigger) {
   const resumeAlertSince = lastAlertCheck;
   dbg(`${trigger}: resume state`, {wasStreaming, streamingChatId, resumeChat});
 
+  // Cancel any previous resume polling to prevent double-attach when both
+  // visibilitychange and pageshow fire in quick succession on iOS.
+  if (_resumeWaitInterval) { clearInterval(_resumeWaitInterval); _resumeWaitInterval = null; }
+  if (_resumeWaitTimeout) { clearTimeout(_resumeWaitTimeout); _resumeWaitTimeout = null; }
+
   clearTimeout(reconnectTimer);
   stopHeartbeat();
   clearStreamWatchdog();
@@ -795,18 +802,22 @@ function resumeConnection(trigger) {
 
   if (!resumeChat) return;
   let waitDone = false;
-  const waitTimeout = setTimeout(() => {
+  _resumeWaitTimeout = setTimeout(() => {
     if (waitDone) return;
     waitDone = true;
-    clearInterval(waitForOpen);
+    clearInterval(_resumeWaitInterval);
+    _resumeWaitInterval = null;
+    _resumeWaitTimeout = null;
     dbg(`${trigger}: timed out waiting for ws open after 15000ms`);
   }, 15000);
-  const waitForOpen = setInterval(() => {
+  _resumeWaitInterval = setInterval(() => {
     if (waitDone) return;
     if (ws && ws.readyState === WebSocket.OPEN) {
       waitDone = true;
-      clearInterval(waitForOpen);
-      clearTimeout(waitTimeout);
+      clearInterval(_resumeWaitInterval);
+      clearTimeout(_resumeWaitTimeout);
+      _resumeWaitInterval = null;
+      _resumeWaitTimeout = null;
       attachToStream(ws, resumeChat, {
         reloadBeforeAttach: wasStreaming,
         reason: trigger,

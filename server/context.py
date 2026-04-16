@@ -60,6 +60,8 @@ COMPACTION_OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/generate"
 COMPACTION_TIMEOUT = 30
 
 ENABLE_SUBCONSCIOUS_WHISPER = env.ENABLE_SUBCONSCIOUS_WHISPER
+ENABLE_TYPE1_GUIDANCE = env.ENABLE_TYPE1_GUIDANCE
+ENABLE_UNIFIED_MEMORY = env.ENABLE_UNIFIED_MEMORY
 WHISPER_INTERVAL = 300  # seconds between whisper injections (5 min)
 
 APEX_ROOT = env.APEX_ROOT
@@ -74,6 +76,48 @@ _TRANSCRIPT_TAIL_MIXED = env.TRANSCRIPT_TAIL_MIXED
 
 def _workspace_root() -> Path:
     return env.get_runtime_workspace_root()
+
+
+def _extract_skill_description(skill_md: Path) -> str:
+    try:
+        content = skill_md.read_text()
+    except Exception:
+        return "No description provided."
+    for line in content.split("\n"):
+        if line.strip().startswith("description:"):
+            value = line.split(":", 1)[1].strip().strip('"')
+            return value or "No description provided."
+    return "No description provided."
+
+
+def _format_skill_catalog(skill_files: list[Path], workspace: Path) -> str:
+    """Build a compact skill catalog without truncating tail skills."""
+    names: list[str] = []
+    detail_lines: list[str] = []
+    for skill_md in skill_files:
+        skill_name = skill_md.parent.name
+        names.append(f"`/{skill_name}`")
+        try:
+            rel_path = (
+                str(skill_md.relative_to(workspace))
+                if skill_md.is_relative_to(workspace)
+                else str(skill_md)
+            )
+        except Exception:
+            rel_path = str(skill_md)
+        desc = _extract_skill_description(skill_md)
+        if len(desc) > 96:
+            desc = desc[:93].rstrip() + "..."
+        detail_lines.append(f"- `/{skill_name}` — {desc} (`{rel_path}`)")
+    names_line = ", ".join(names)
+    details = "\n".join(detail_lines)
+    return (
+        "Named skills:\n"
+        f"{names_line}\n\n"
+        "If the user names a skill, invoke it explicitly with `/skill-name ...`, then read its `SKILL.md` and follow it.\n\n"
+        "Skill references:\n"
+        f"{details}"
+    )
 
 
 def _transcript_dirs() -> list[Path]:
@@ -1371,28 +1415,15 @@ def _get_workspace_context(chat_id: str) -> str:
         parts.append(f"<system-reminder>\n# MEMORY.md (persistent memory)\n{memory_md.read_text()[:4000]}\n</system-reminder>")
     skill_files = env.iter_workspace_skill_files(env.get_runtime_workspace_paths_list())
     if skill_files:
-        skill_entries: list[str] = []
-        for skill_md in skill_files:
-            skill_name = skill_md.parent.name
-            content = skill_md.read_text()
-            desc = ""
-            for line in content.split("\n"):
-                if line.strip().startswith("description:"):
-                    desc = line.split(":", 1)[1].strip().strip('"')
-                    break
-            rel_path = str(skill_md.relative_to(workspace)) if skill_md.is_relative_to(workspace) else str(skill_md)
-            summary = desc or "No description provided."
-            skill_entries.append(f"- `/{skill_name}` — {summary} (`{rel_path}`)")
-        if skill_entries:
-            catalog = "\n".join(skill_entries)
-            parts.append(
-                "<system-reminder>\n"
-                "# Available Skills\n"
-                "You can use these skills. For `/recall`, `/codex`, `/grok` the server handles dispatch automatically. "
-                "For workspace skills, first read the referenced `SKILL.md`, then follow it.\n\n"
-                f"{catalog[:6000]}\n"
-                "</system-reminder>"
-            )
+        catalog = _format_skill_catalog(skill_files, workspace)
+        parts.append(
+            "<system-reminder>\n"
+            "# Available Skills\n"
+            "You can use these skills. For `/recall`, `/codex`, `/grok` the server handles dispatch automatically. "
+            "For other named skills, read the referenced `SKILL.md` and follow it.\n\n"
+            f"{catalog}\n"
+            "</system-reminder>"
+        )
     live = _get_live_state_snapshot()
     if live:
         parts.append(live)
@@ -1461,21 +1492,80 @@ def _load_whisper_feedback():
     return None
 
 
-def _get_whisper_text(chat_id: str, current_prompt: str = "",
-                      model_hint: str = "") -> str:
-    """Inject relevant memories based on current conversation topic.
+# Cache for subconscious CanonicalStore — reloaded on guidance.json mtime change
+_type1_store_cache = {"store": None, "mtime": 0, "sub_path": None}
 
-    Combines two layers:
-      1. Canonical guidance (invariants, corrections) from the subconscious store
-      2. Embedding-based semantic search from memory files + transcripts
 
-    The canonical adapter (adapters/apex.py) merges both into a unified
-    <subconscious_whisper> block.
+def _load_subconscious_modules(sub_path: str):
+    """Swap sys.modules to load subconscious config/state without collisions.
+
+    The subconscious package uses bare `import config` and `import state` which
+    collide with the server's own modules.  This temporarily swaps them out,
+    loads the subconscious versions, and restores the server's modules.
+
+    Returns (CanonicalStore_class, render_type1_fn, render_guidance_fn, merge_fn)
+    or raises on failure.
     """
-    now = time.time()
-    last = _whisper_last.get(chat_id, 0)
-    if last and (now - last) < WHISPER_INTERVAL:
+    import importlib
+    import importlib.util
+
+    if sub_path not in sys.path:
+        sys.path.insert(0, sub_path)
+
+    _colliding = ("config", "state")
+    _saved = {name: sys.modules.pop(name, None) for name in _colliding}
+    try:
+        for name in _colliding:
+            mod_file = Path(sub_path) / f"{name}.py"
+            if mod_file.exists():
+                spec = importlib.util.spec_from_file_location(
+                    name, str(mod_file))
+                mod = importlib.util.module_from_spec(spec)
+                sys.modules[name] = mod
+                spec.loader.exec_module(mod)
+
+        # Force-reload canonical_store so it picks up the right deps
+        if "canonical_store" in sys.modules:
+            importlib.reload(sys.modules["canonical_store"])
+        from canonical_store import CanonicalStore
+        from adapters.apex import (
+            render_type1_whisper, render_guidance_whisper,
+            merge_with_embeddings,
+        )
+        return CanonicalStore, render_type1_whisper, render_guidance_whisper, merge_with_embeddings
+    finally:
+        for name in _colliding:
+            if _saved[name] is not None:
+                sys.modules[name] = _saved[name]
+            elif name in sys.modules:
+                del sys.modules[name]
+
+
+def _find_subconscious_path() -> str | None:
+    """Locate the scripts/subconscious directory from workspace paths."""
+    for wp in env.get_runtime_workspace_paths_list():
+        candidate = Path(wp) / "scripts" / "subconscious"
+        if (candidate / "canonical_store.py").exists():
+            return str(candidate)
+    fallback = str(_workspace_root() / "scripts" / "subconscious")
+    if Path(fallback).exists():
+        return fallback
+    return None
+
+
+def _get_type1_guidance(chat_id: str, current_prompt: str = "",
+                        model_hint: str = "") -> str:
+    """Inject Type 1 (procedural) guidance — always-on, no cooldown.
+
+    Type 1 items are invariants and corrections: well-validated rules that
+    should fire every turn.  They use word-overlap relevance (no embeddings,
+    no Ollama calls) so latency is <10ms.
+
+    Returns <subconscious_whisper> block or "".
+    """
+    if not ENABLE_TYPE1_GUIDANCE:
         return ""
+
     try:
         query = (current_prompt or "")[:500]
         if not query:
@@ -1486,14 +1576,94 @@ def _get_whisper_text(chat_id: str, current_prompt: str = "",
             query = (user_msgs[-1].get("content") or "")[:500]
 
         if not query or query.startswith("/") or len(query.strip()) < 10:
-            _whisper_last[chat_id] = now
             return ""
+
+        if "<system-reminder>" in query:
+            query = re.sub(
+                r"<system-reminder>.*?</system-reminder>", "",
+                query, flags=re.DOTALL).strip()
+            if len(query) < 10:
+                return ""
+
+        sub_path = _find_subconscious_path()
+        if not sub_path:
+            return ""
+
+        # Check guidance.json mtime — use cached store if unchanged
+        import os as _os
+        guidance_file = Path(sub_path).parent.parent / ".subconscious" / "guidance.json"
+        try:
+            current_mtime = guidance_file.stat().st_mtime if guidance_file.exists() else 0
+        except OSError:
+            current_mtime = 0
+
+        cache = _type1_store_cache
+        if cache["store"] is None or cache["mtime"] != current_mtime or cache["sub_path"] != sub_path:
+            CanonicalStore, render_type1_fn, _, _ = _load_subconscious_modules(sub_path)
+            cache["store"] = CanonicalStore()
+            cache["mtime"] = current_mtime
+            cache["sub_path"] = sub_path
+            cache["render_type1"] = render_type1_fn
+
+        store = cache["store"]
+        render_type1 = cache["render_type1"]
+
+        envelope = store.build_envelope(
+            backend="apex",
+            session_id=chat_id,
+        )
+
+        result = render_type1(envelope, query=query, model_hint=model_hint)
+        if result:
+            log(f"Type 1 guidance injected for chat={chat_id} "
+                f"({len(result)} chars)")
+        return result
+
+    except Exception as e:
+        log(f"Type 1 guidance error (non-fatal): {e}")
+        return ""
+
+
+def _get_whisper_text(chat_id: str, current_prompt: str = "",
+                      model_hint: str = "") -> str:
+    """Inject relevant memories based on current conversation topic.
+
+    Two-pathway architecture (when ENABLE_TYPE1_GUIDANCE is true):
+      Type 1 (procedural): Invariants + corrections → always-on, no cooldown.
+                           Fires every turn via _get_type1_guidance().
+      Type 2 (declarative): Embedding search + canonical guidance → 300s cooldown.
+                            Non-invariant guidance items + semantic memory search.
+
+    When ENABLE_TYPE1_GUIDANCE is false, falls back to legacy behavior
+    (everything gated behind a single 300s cooldown).
+    """
+    # --- Type 1: always fires (no cooldown) when enabled ---
+    type1 = _get_type1_guidance(chat_id, current_prompt, model_hint)
+
+    # --- Type 2: subject to 300s cooldown ---
+    now = time.time()
+    last = _whisper_last.get(chat_id, 0)
+    if last and (now - last) < WHISPER_INTERVAL:
+        return type1  # Type 1 only (or "" if Type 1 disabled)
+
+    try:
+        query = (current_prompt or "")[:500]
+        if not query:
+            recent = _get_messages(chat_id, days=1)["messages"]
+            user_msgs = [m for m in recent if m["role"] == "user"]
+            if not user_msgs:
+                return type1
+            query = (user_msgs[-1].get("content") or "")[:500]
+
+        if not query or query.startswith("/") or len(query.strip()) < 10:
+            _whisper_last[chat_id] = now
+            return type1
 
         if "<system-reminder>" in query:
             query = re.sub(r"<system-reminder>.*?</system-reminder>", "", query, flags=re.DOTALL).strip()
             if len(query) < 10:
                 _whisper_last[chat_id] = now
-                return ""
+                return type1
 
         # --- Feedback loop: evaluate previous turn's injected items ---
         try:
@@ -1509,58 +1679,26 @@ def _get_whisper_text(chat_id: str, current_prompt: str = "",
             pass  # never block whisper on feedback errors
 
         # --- Layer 1: Canonical guidance from subconscious store ---
+        # When Type 1 is active, invariants/corrections are already injected
+        # every turn by _get_type1_guidance(). This layer only runs in legacy
+        # mode (Type 1 disabled) to preserve backward compatibility.
         guidance_lines = []
-        try:
-            # Find the workspace root that contains the subconscious scripts
-            sub_path = None
-            for wp in env.get_runtime_workspace_paths_list():
-                candidate = Path(wp) / "scripts" / "subconscious"
-                if (candidate / "canonical_store.py").exists():
-                    sub_path = str(candidate)
-                    break
-            if sub_path is None:
-                sub_path = str(_workspace_root() / "scripts" / "subconscious")
-            if sub_path not in sys.path:
-                sys.path.insert(0, sub_path)
-
-            # The subconscious package uses bare `import config` and
-            # `import state` which collide with the server's own modules
-            # cached in sys.modules.  Temporarily swap them out.
-            import importlib.util
-            _colliding = ("config", "state")
-            _saved = {name: sys.modules.pop(name, None) for name in _colliding}
+        if not ENABLE_TYPE1_GUIDANCE:
             try:
-                for name in _colliding:
-                    mod_file = Path(sub_path) / f"{name}.py"
-                    if mod_file.exists():
-                        spec = importlib.util.spec_from_file_location(
-                            name, str(mod_file))
-                        mod = importlib.util.module_from_spec(spec)
-                        sys.modules[name] = mod
-                        spec.loader.exec_module(mod)
-
-                # Force-reload canonical_store so it picks up the right deps
-                if "canonical_store" in sys.modules:
-                    importlib.reload(sys.modules["canonical_store"])
-                from canonical_store import CanonicalStore
-                from adapters.apex import render_guidance_whisper, merge_with_embeddings
-            finally:
-                # Restore the server's modules
-                for name in _colliding:
-                    if _saved[name] is not None:
-                        sys.modules[name] = _saved[name]
-                    elif name in sys.modules:
-                        del sys.modules[name]
-
-            store = CanonicalStore()
-            envelope = store.build_envelope(
-                backend="apex",
-                session_id=chat_id,
-            )
-            guidance_lines = render_guidance_whisper(
-                envelope, max_items=5, query=query, model_hint=model_hint)
-        except Exception as e:
-            log(f"Whisper canonical guidance error (non-fatal): {e}")
+                sub_path = _find_subconscious_path()
+                if sub_path:
+                    CanonicalStore, _, render_guidance_fn, _ = \
+                        _load_subconscious_modules(sub_path)
+                    store = CanonicalStore()
+                    envelope = store.build_envelope(
+                        backend="apex",
+                        session_id=chat_id,
+                    )
+                    guidance_lines = render_guidance_fn(
+                        envelope, max_items=5, query=query,
+                        model_hint=model_hint)
+            except Exception as e:
+                log(f"Whisper canonical guidance error (non-fatal): {e}")
 
         # --- Layer 2: Embedding-based semantic search ---
         results = []
@@ -1596,20 +1734,56 @@ def _get_whisper_text(chat_id: str, current_prompt: str = "",
         except Exception as e:
             log(f"Whisper embedding search error (non-fatal): {e}")
 
-        # --- Merge both layers ---
+        # --- Unified memory: merge metacognition index results ---
+        # When enabled, metacognition results are merged into the same
+        # pool as embedding results, deduplicated, and ranked together.
+        # This replaces the separate metacognition injection in agent_sdk.py
+        # and ws_handler.py with a single unified retrieval path.
+        metacog_count = 0
+        if ENABLE_UNIFIED_MEMORY:
+            try:
+                from metacognition import retrieve_raw_results
+                raw_metacog = retrieve_raw_results(query)
+                if raw_metacog:
+                    # Convert metacognition results to embedding-compatible format
+                    existing_hashes = {r.get("_hash") for r in results if r.get("_hash")}
+                    for mr in raw_metacog:
+                        mhash = mr.get("hash", "")
+                        if mhash in existing_hashes:
+                            continue  # dedup
+                        existing_hashes.add(mhash)
+                        results.append({
+                            "file": f"metacog:{mr.get('source', 'unknown')}",
+                            "content": mr.get("content_preview", "")[:500],
+                            "score": mr.get("score", 0),
+                            "source": f"metacog/{mr.get('category', '')}",
+                            "_hash": mhash,
+                            "_metacog": True,
+                        })
+                        metacog_count += 1
+                    # Re-sort combined results
+                    results.sort(key=lambda x: x.get("score", 0), reverse=True)
+            except Exception as e:
+                log(f"Whisper unified metacognition error (non-fatal): {e}")
+
+        # --- Merge layers ---
         if not guidance_lines and not results:
             _whisper_last[chat_id] = now
-            return ""
+            return type1
 
         try:
-            from adapters.apex import merge_with_embeddings as _merge
-            output = _merge(guidance_lines, results)
+            sub_path = _find_subconscious_path()
+            if sub_path:
+                _, _, _, merge_fn = _load_subconscious_modules(sub_path)
+                output = merge_fn(guidance_lines, results)
+            else:
+                raise ImportError("subconscious path not found")
         except Exception:
             # Fallback: manual rendering
             relevant = [r for r in results if r.get("score", 0) >= 0.55][:3]
             if not relevant and not guidance_lines:
                 _whisper_last[chat_id] = now
-                return ""
+                return type1
             lines = ["<subconscious_whisper>"]
             if guidance_lines:
                 lines.append("Guidance:")
@@ -1628,7 +1802,9 @@ def _get_whisper_text(chat_id: str, current_prompt: str = "",
         if output:
             _whisper_last[chat_id] = now
             embed_count = len([r for r in results if r.get("score", 0) >= 0.55])
-            log(f"Whisper injected for chat={chat_id} (guidance={len(guidance_lines)}, embeddings={embed_count})")
+            log(f"Whisper Type 2 injected for chat={chat_id} "
+                f"(guidance={len(guidance_lines)}, embeddings={embed_count}"
+                f"{f', metacog={metacog_count}' if metacog_count else ''})")
 
             # --- Feedback loop: log what we injected for next-turn evaluation ---
             try:
@@ -1637,23 +1813,25 @@ def _get_whisper_text(chat_id: str, current_prompt: str = "",
                     injected = []
                     for line in guidance_lines:
                         injected.append({"text": line, "type": "guidance",
-                                         "source": "guidance"})
+                                         "source": "guidance",
+                                         "pathway": "type2"})
                     for r in results:
                         if r.get("score", 0) >= 0.55:
                             injected.append({
                                 "text": r.get("content", "")[:500],
                                 "type": "embedding", "source": "embedding",
                                 "relevance_score": r.get("score", 0),
+                                "pathway": "type2",
                             })
                     if injected:
                         wf.log_injection(chat_id, injected)
             except Exception:
                 pass  # never block whisper on feedback logging errors
 
-            return output
+            return f"{type1}{output}"
 
         _whisper_last[chat_id] = now
-        return ""
+        return type1
     except Exception as e:
         log(f"Whisper error: {e}")
-        return ""
+        return type1

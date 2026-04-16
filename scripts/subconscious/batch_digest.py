@@ -247,7 +247,11 @@ def _llm_extract_chunk(transcript: str, chunk_idx: int, total_chunks: int) -> di
     )
     payload = json.dumps({
         "model": config.OLLAMA_MODEL, "stream": False, "think": False,
-        "prompt": prompt, "format": "json",
+        "messages": [
+            {"role": "system", "content": "You are a JSON extraction engine. Return ONLY valid JSON, no prose, no markdown fencing, no explanation."},
+            {"role": "user", "content": prompt},
+        ],
+        "format": "json",
         "options": config.OLLAMA_OPTIONS,
     }).encode()
 
@@ -262,7 +266,7 @@ def _llm_extract_chunk(transcript: str, chunk_idx: int, total_chunks: int) -> di
             )
             resp = urllib.request.urlopen(req, timeout=effective_timeout)
             body = json.loads(resp.read().decode())
-            raw = body.get("response", "").strip()
+            raw = body.get("message", {}).get("content", "").strip()
             raw = re.sub(r"^```json\s*", "", raw)
             raw = re.sub(r"\s*```$", "", raw)
             # Fix unterminated strings: Qwen outputs literal newlines/tabs

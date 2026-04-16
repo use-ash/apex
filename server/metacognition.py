@@ -372,6 +372,33 @@ def retrieve_prior_context(user_message: str) -> str:
         return ""
 
 
+def retrieve_raw_results(user_message: str) -> list[dict]:
+    """Return raw search results for Type 2 unification.
+
+    Same pipeline as retrieve_prior_context() but returns raw dicts
+    instead of a formatted <prior_knowledge> block, so the caller
+    can merge metacognition results with other Type 2 sources before
+    final formatting.
+
+    Each result dict has: score, source, category, date, content_preview, hash.
+    Returns empty list on any error or if retrieval is not warranted.
+    """
+    try:
+        if not _should_retrieve(user_message):
+            return []
+        if not os.path.exists(VECTORS_FILE):
+            return []
+        search_query = _pre_think(user_message)
+        query_vec = _embed(search_query)
+        if query_vec is None:
+            return []
+        results = _search_index(query_vec, top_k=MAX_RESULTS)
+        return results or []
+    except Exception as e:
+        _apex_log("Metacognition raw retrieval error: %s" % e)
+        return []
+
+
 def test_retrieval(message: str, verbose: bool = False) -> dict:
     """Test endpoint helper — run the full pipeline and return diagnostics.
 

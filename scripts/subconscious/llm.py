@@ -32,6 +32,28 @@ def _normalize(text: str, max_len: int = 200) -> str:
     return text[:max_len] + "..." if len(text) > max_len else text
 
 
+def _clean_llm_json(raw: str) -> str:
+    """Clean LLM output: strip thinking token leaks, markdown fencing, etc.
+
+    Gemma 4 on /api/generate wraps output in {"type":"thought","content":"..."}.
+    This guard handles that plus standard markdown ```json fencing.
+    """
+    raw = raw.strip()
+    # Strip thinking token wrapper (Gemma 4 artifact)
+    try:
+        maybe = json.loads(raw)
+        if isinstance(maybe, dict) and maybe.get("type") == "thought" and "content" in maybe:
+            raw = maybe["content"]
+            # Content often starts with junk before the actual JSON
+            raw = re.sub(r'^[^[{]*', '', raw, count=1)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Strip markdown JSON fencing
+    raw = re.sub(r"^```json\s*", "", raw.strip())
+    raw = re.sub(r"\s*```\s*$", "", raw.strip())
+    return raw
+
+
 def extract_session(transcript: str, messages: list[dict]) -> dict:
     """Extract corrections, decisions, pending, summary, and invariants from a session."""
     try:
@@ -57,7 +79,12 @@ def _extract_via_llm(transcript: str) -> dict:
         f"Transcript:\n{clean}"
     )
     payload = json.dumps({
-        "model": OLLAMA_MODEL, "stream": False, "think": False, "prompt": prompt, "format": "json",
+        "model": OLLAMA_MODEL, "stream": False, "think": False,
+        "messages": [
+            {"role": "system", "content": "You are a JSON extraction engine. Return ONLY valid JSON, no prose, no markdown fencing, no explanation."},
+            {"role": "user", "content": prompt},
+        ],
+        "format": "json",
         "options": OLLAMA_OPTIONS,
     }).encode()
     req = urllib.request.Request(
@@ -66,10 +93,8 @@ def _extract_via_llm(transcript: str) -> dict:
     )
     resp = urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT)
     body = json.loads(resp.read().decode())
-    raw = body["response"]
-    # Strip JSON fencing if present
-    raw = re.sub(r"^```json\s*", "", raw.strip())
-    raw = re.sub(r"\s*```$", "", raw.strip())
+    raw = body["message"]["content"]
+    raw = _clean_llm_json(raw)
     parsed = json.loads(raw)
 
     def _tag(items):
@@ -134,7 +159,12 @@ def _extract_invariants_pass1(transcript: str) -> list[dict]:
         f"Transcript:\n{clean}"
     )
     payload = json.dumps({
-        "model": OLLAMA_MODEL, "stream": False, "think": False, "prompt": prompt, "format": "json",
+        "model": OLLAMA_MODEL, "stream": False, "think": False,
+        "messages": [
+            {"role": "system", "content": "You are a JSON extraction engine. Return ONLY a valid JSON array of objects. No prose, no markdown fencing, no explanation."},
+            {"role": "user", "content": prompt},
+        ],
+        "format": "json",
         "options": OLLAMA_OPTIONS,
     }).encode()
     req = urllib.request.Request(
@@ -143,9 +173,8 @@ def _extract_invariants_pass1(transcript: str) -> list[dict]:
     )
     resp = urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT)
     body = json.loads(resp.read().decode())
-    raw = body["response"]
-    raw = re.sub(r"^```json\s*", "", raw.strip())
-    raw = re.sub(r"\s*```$", "", raw.strip())
+    raw = body["message"]["content"]
+    raw = _clean_llm_json(raw)
     parsed = json.loads(raw)
 
     # Handle {"invariants": [...]}, direct [...], or single object {...}
@@ -214,7 +243,12 @@ def _validate_invariants_pass2(candidates: list[dict], transcript: str) -> list[
     )
     try:
         payload = json.dumps({
-            "model": OLLAMA_MODEL, "stream": False, "think": False, "prompt": prompt, "format": "json",
+            "model": OLLAMA_MODEL, "stream": False, "think": False,
+            "messages": [
+                {"role": "system", "content": "You are a JSON validation engine. Return ONLY a valid JSON array. No prose, no markdown fencing, no explanation."},
+                {"role": "user", "content": prompt},
+            ],
+            "format": "json",
             "options": OLLAMA_OPTIONS,
         }).encode()
         req = urllib.request.Request(
@@ -223,9 +257,8 @@ def _validate_invariants_pass2(candidates: list[dict], transcript: str) -> list[
         )
         resp = urllib.request.urlopen(req, timeout=OLLAMA_VALIDATION_TIMEOUT)
         body = json.loads(resp.read().decode())
-        raw = body["response"]
-        raw = re.sub(r"^```json\s*", "", raw.strip())
-        raw = re.sub(r"\s*```$", "", raw.strip())
+        raw = body["message"]["content"]
+        raw = _clean_llm_json(raw)
         parsed = json.loads(raw)
 
         # Flexible key discovery: find the list of items in the response

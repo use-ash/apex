@@ -132,14 +132,16 @@ def set_model(model: str):
 
 def _llm_call(prompt: str, use_json: bool = True, timeout: int | None = None) -> dict | None:
     import time
-    payload = {"model": OLLAMA_MODEL, "stream": False, "prompt": prompt}
+    payload = {
+        "model": OLLAMA_MODEL, "stream": False, "think": False,
+        "messages": [
+            {"role": "system", "content": "You are a JSON extraction engine. Return ONLY valid JSON, no prose, no markdown fencing, no explanation."},
+            {"role": "user", "content": prompt},
+        ],
+    }
     if use_json:
         payload["format"] = "json"
-    # Gemma 4 needs repeat_penalty to avoid loops with format:json
-    payload["options"] = {"num_predict": 512, "temperature": 0.1, "repeat_penalty": 1.3}
-    # Qwen models need thinking mode disabled for clean JSON output
-    if "qwen" in OLLAMA_MODEL.lower():
-        payload["think"] = False
+    payload["options"] = {"num_predict": 1024, "temperature": 0.1, "repeat_penalty": 1.3}
     data = json.dumps(payload).encode()
     effective_timeout = timeout if timeout is not None else OLLAMA_TIMEOUT
 
@@ -149,7 +151,7 @@ def _llm_call(prompt: str, use_json: bool = True, timeout: int | None = None) ->
             req = urllib.request.Request(OLLAMA_URL, data=data, headers={"Content-Type": "application/json"})
             resp = urllib.request.urlopen(req, timeout=effective_timeout)
             body = json.loads(resp.read().decode())
-            raw = body.get("response", "").strip()
+            raw = body.get("message", {}).get("content", "").strip()
             raw = re.sub(r"^```json\s*", "", raw)
             raw = re.sub(r"\s*```$", "", raw)
             return json.loads(raw)

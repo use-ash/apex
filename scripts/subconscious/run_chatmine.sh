@@ -37,7 +37,7 @@ case "$MODE" in
             echo "$(date): chatmine-prod skipped — no snapshot available" >> "$LOG_FILE"
             exit 0
         fi
-        CMD="$PYTHON $SCRIPT --all --model qwen3.5:9b-fast $EXTRA_ARGS"
+        CMD="$PYTHON $SCRIPT --all --model gemma4:26b $EXTRA_ARGS"
         LABEL="chatmine-prod"
         ;;
     dev)
@@ -50,21 +50,21 @@ case "$MODE" in
             echo "$(date): chatmine-dev skipped — no snapshot available" >> "$LOG_FILE"
             exit 0
         fi
-        CMD="$PYTHON $SCRIPT --all --model qwen3.5:9b-fast $EXTRA_ARGS"
+        CMD="$PYTHON $SCRIPT --all --model gemma4:26b $EXTRA_ARGS"
         LABEL="chatmine-dev"
         ;;
     claude)
         LOCK_FILE="$LOCK_DIR/chatmine_claude.lock"
         LOG_FILE="$LOG_DIR/chatmine_claude.log"
         SCRIPT="$SCRIPT_DIR/chatmine_claude.py"
-        CMD="$PYTHON $SCRIPT --all --model qwen3.5:9b-fast $EXTRA_ARGS"
+        CMD="$PYTHON $SCRIPT --all --model gemma4:26b $EXTRA_ARGS"
         LABEL="chatmine-claude"
         ;;
     codex)
         LOCK_FILE="$LOCK_DIR/chatmine_codex.lock"
         LOG_FILE="$LOG_DIR/chatmine_codex.log"
         SCRIPT="$SCRIPT_DIR/chatmine_codex.py"
-        CMD="$PYTHON $SCRIPT --all --model qwen3.5:9b-fast $EXTRA_ARGS"
+        CMD="$PYTHON $SCRIPT --all --model gemma4:26b $EXTRA_ARGS"
         LABEL="chatmine-codex"
         ;;
     *)

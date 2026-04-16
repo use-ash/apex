@@ -58,13 +58,14 @@ GUIDANCE_FILE = os.path.join(STATE_DIR, "guidance.json")
 LOCK_FILE = os.path.join(STATE_DIR, ".lock")
 
 # ── Ollama ─────────────────────────────────────────────────────────
-# qwen3.5:35b-a3b — Qwen 3.5 35B MoE (3B active), 23GB
-# Reads 100% of files under context pressure (unlike Gemma which stops at 24%).
-# Must pass think=False in API calls — thinking tokens eat the num_predict budget.
-OLLAMA_MODEL = "qwen3.5:35b-a3b"
-OLLAMA_URL = "http://localhost:11434/api/generate"
+# gemma4:26b — Gemma 4 26B MoE (4B active), 17GB
+# Fastest extraction model tested (12.1s total for both tasks).
+# MUST use /api/chat endpoint — /api/generate leaks thinking tokens despite think=False.
+# Must pass think=False + system message for clean JSON output.
+OLLAMA_MODEL = "gemma4:26b"
+OLLAMA_URL = "http://localhost:11434/api/chat"
 OLLAMA_TIMEOUT = 120  # 60s was too tight for big prompts; chunks use their own timeout
-OLLAMA_OPTIONS = {"num_predict": 512, "temperature": 0.1, "repeat_penalty": 1.3}
+OLLAMA_OPTIONS = {"num_predict": 1024, "temperature": 0.1, "repeat_penalty": 1.3}
 
 # ── Guidance limits ────────────────────────────────────────────────
 GUIDANCE_MAX_CHARS = 32000  # was 4000→20000→32000; 27 items = ~29K chars
@@ -74,8 +75,15 @@ GUIDANCE_MAX_AGE_DAYS = 7
 INVARIANT_CONFIDENCE_THRESHOLD = 0.75
 INVARIANT_TTL_DAYS = 30
 INVARIANT_MAX_PER_SESSION = 3
-OLLAMA_VALIDATION_MODEL = "qwen3.5:35b-a3b"
+OLLAMA_VALIDATION_MODEL = "gemma4:26b"
 OLLAMA_VALIDATION_TIMEOUT = 30
+
+# ── Type 1 / Type 2 pathway thresholds ─────────────────────────────
+TYPE1_MAX_ITEMS = 10           # max invariants injected per turn
+TYPE1_MAX_CHARS = 2000         # hard char budget for Type 1 block
+TYPE2_MAX_CHARS = 4000         # hard char budget for Type 2 block
+PROMOTION_MIN_INJECTIONS = 20  # minimum times injected before eligible
+PROMOTION_MIN_HIT_RATE = 0.60  # minimum usefulness rate for promotion
 
 # ── Contradiction detection ────────────────────────────────────────
 CONTRADICTION_SIMILARITY_THRESHOLD = 0.45  # items about the same topic

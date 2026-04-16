@@ -84,10 +84,35 @@ def list_recent_sessions(limit: int = 5) -> list[dict]:
     return sessions[:limit]
 
 
+def _migrate_item(item: dict) -> dict:
+    """Ensure item has Type 1/Type 2 pathway fields (transparent migration).
+
+    New fields (defaults):
+      - pathway: "type1" for invariants/corrections, "type2" for everything else
+      - injection_count: 0
+      - promotion_score: 0.0
+
+    Existing guidance.json loads without manual editing — fields are added
+    on read, written back on next write_guidance() call.
+    """
+    if "pathway" not in item:
+        itype = item.get("type", "")
+        if itype in ("invariant", "correction"):
+            item["pathway"] = "type1"
+        else:
+            item["pathway"] = "type2"
+    if "injection_count" not in item:
+        item["injection_count"] = 0
+    if "promotion_score" not in item:
+        item["promotion_score"] = 0.0
+    return item
+
+
 def read_guidance() -> dict:
     """Read guidance, pruning items by per-type TTL.
 
     Invariants use their own ttl_days (default 30), other types use GUIDANCE_MAX_AGE_DAYS (7).
+    Items are transparently migrated to include Type 1/Type 2 pathway fields.
     """
     with _lock():
         data = _read_json(GUIDANCE_FILE)
@@ -106,7 +131,7 @@ def read_guidance() -> dict:
                         continue
                 except ValueError:
                     pass
-            pruned.append(item)
+            pruned.append(_migrate_item(item))
         data["items"] = pruned
         return data
 

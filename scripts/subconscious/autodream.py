@@ -147,7 +147,10 @@ def consolidate_file(content: str, filename: str, staleness: dict) -> str | None
     opts["num_predict"] = 2048
     payload = json.dumps({
         "model": OLLAMA_MODEL, "stream": False, "think": False,
-        "prompt": prompt,
+        "messages": [
+            {"role": "system", "content": "You are a memory file consolidator. Return ONLY the rewritten file content, no explanation, no markdown fencing."},
+            {"role": "user", "content": prompt},
+        ],
         "options": opts,
     }).encode()
 
@@ -158,7 +161,7 @@ def consolidate_file(content: str, filename: str, staleness: dict) -> str | None
     try:
         resp = urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT)
         body = json.loads(resp.read().decode())
-        result = body.get("response", "").strip()
+        result = body.get("message", {}).get("content", "").strip()
 
         # Strip markdown fencing if model wrapped it
         result = re.sub(r'^```(?:markdown|md)?\s*\n?', '', result)
