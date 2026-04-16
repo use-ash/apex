@@ -769,27 +769,14 @@ def _tool_activate_target_app(_args: dict) -> dict:
         # which always surfaces a real document window in TextEdit.
         if target == "com.apple.TextEdit":
             try:
-                pid = None
-                if running2 is not None and len(running2) > 0:
-                    pid = int(running2[0].processIdentifier())
-                has_window = False
-                if pid is not None:
-                    Quartz = _get_quartz()
-                    opts = (
-                        Quartz.kCGWindowListOptionOnScreenOnly
-                        | Quartz.kCGWindowListExcludeDesktopElements
-                    )
-                    infos = Quartz.CGWindowListCopyWindowInfo(
-                        opts, Quartz.kCGNullWindowID
-                    ) or []
-                    for info in infos:
-                        if int(info.get("kCGWindowOwnerPID", -1)) == pid:
-                            # Layer 0 = normal document window (vs menu bars,
-                            # dock, floating panels which are higher layers).
-                            if int(info.get("kCGWindowLayer", 99)) == 0:
-                                has_window = True
-                                break
-                if not has_window:
+                # Gate removed (Apr 16): the has_window check was skipping the
+                # scratch fallback when TextEdit showed the iCloud Open dialog
+                # (counted as a layer-0 window) or had a minimized doc on
+                # another Space. If the three prior steps all failed to reach
+                # frontmost, *always* try `open -e` — it's idempotent, and if
+                # TextEdit already has a usable doc the scratch just becomes
+                # an extra tab which poll_frontmost will still see.
+                if True:
                     scratch = "/tmp/apex_textedit_scratch.txt"
                     try:
                         if not os.path.exists(scratch):

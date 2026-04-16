@@ -6820,6 +6820,20 @@ function cuEnsurePauseBanner(chatId, paused) {
 // whenever the user switches to (or reloads) a chat.
 async function cuSyncPauseUI(chatId) {
   if (!chatId) return;
+  // Evict any stale pause buttons + banners from OTHER chats — they have no
+  // reason to persist in the DOM when user switches chats. Without this, the
+  // pill from chat A lingers in chat B until chat B's first tool call mounts
+  // its own pill and displaces it.
+  try {
+    for (const k of Object.keys(_cuButtonEls || {})) {
+      if (k === chatId) continue;
+      const b = _cuButtonEls[k];
+      if (b && b.isConnected) { try { b.remove(); } catch (e) { /* ignore */ } }
+      delete _cuButtonEls[k];
+    }
+    const banner = document.getElementById('cuPauseBanner');
+    if (banner) banner.remove();  // cuEnsurePauseBanner will re-mount below if needed.
+  } catch (e) { /* non-fatal */ }
   try {
     const st = await cuGetStatus(chatId);
     if (!st) return;
