@@ -254,10 +254,136 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
             "description": "Display label for interactive usage in the admin usage report",
         },
     },
+    "memory": {
+        # --- Feature Toggles ---
+        "enable_type1": {
+            "type": "bool",
+            "default": True,
+            "env": "APEX_TYPE1_GUIDANCE",
+            "description": "Type 1 (procedural) pathway — always-on invariants",
+        },
+        "enable_unified_memory": {
+            "type": "bool",
+            "default": True,
+            "env": "APEX_UNIFIED_MEMORY",
+            "description": "Unified memory — merge Type 2 sources",
+        },
+        "enable_metacognition": {
+            "type": "bool",
+            "default": True,
+            "env": "APEX_ENABLE_METACOGNITION",
+            "description": "Metacognition — embedding-based retrieval from index",
+        },
+        # --- Type 1 ---
+        "type1_max_items": {
+            "type": "int",
+            "default": 10,
+            "min": 1,
+            "max": 50,
+            "description": "Max invariants injected per turn",
+        },
+        "type1_max_chars": {
+            "type": "int",
+            "default": 2000,
+            "min": 500,
+            "max": 8000,
+            "description": "Character budget for Type 1 block",
+        },
+        # --- Type 2 ---
+        "type2_max_chars": {
+            "type": "int",
+            "default": 4000,
+            "min": 1000,
+            "max": 16000,
+            "description": "Character budget for Type 2 block",
+        },
+        "whisper_interval": {
+            "type": "int",
+            "default": 300,
+            "min": 30,
+            "max": 3600,
+            "description": "Cooldown between Type 2 injections (seconds)",
+        },
+        # --- Promotion ---
+        "promotion_min_injections": {
+            "type": "int",
+            "default": 20,
+            "min": 5,
+            "max": 100,
+            "description": "Min injections before promotion eligible",
+        },
+        "promotion_min_hit_rate": {
+            "type": "int",
+            "default": 60,
+            "min": 10,
+            "max": 100,
+            "description": "Min usefulness rate for promotion (%)",
+        },
+        # --- Guidance Lifecycle ---
+        "guidance_max_chars": {
+            "type": "int",
+            "default": 32000,
+            "min": 4000,
+            "max": 100000,
+            "description": "Max total characters in guidance store",
+        },
+        "guidance_max_age_days": {
+            "type": "int",
+            "default": 7,
+            "min": 1,
+            "max": 90,
+            "description": "TTL for non-invariant guidance items (days)",
+        },
+        "invariant_ttl_days": {
+            "type": "int",
+            "default": 30,
+            "min": 7,
+            "max": 365,
+            "description": "TTL for invariant items (days)",
+        },
+        "invariant_confidence_threshold": {
+            "type": "int",
+            "default": 75,
+            "min": 50,
+            "max": 100,
+            "description": "Min confidence for invariant validation (%)",
+        },
+        # --- Metacognition ---
+        "similarity_threshold": {
+            "type": "int",
+            "default": 35,
+            "min": 10,
+            "max": 90,
+            "description": "Min similarity for metacognition retrieval (%)",
+        },
+        "metacog_max_results": {
+            "type": "int",
+            "default": 3,
+            "min": 1,
+            "max": 10,
+            "description": "Max results per metacognition query",
+        },
+        "embedding_backend": {
+            "type": "str",
+            "default": "gemini",
+            "description": "Embedding backend for metacognition",
+            "choices": ["gemini", "ollama"],
+        },
+        "extraction_model": {
+            "type": "str",
+            "default": "gemma4:26b",
+            "description": "Ollama model for guidance extraction",
+        },
+        "prethinker_model": {
+            "type": "str",
+            "default": "qwen3:8b",
+            "description": "Ollama model for keyword extraction (pre-thinker)",
+        },
+    },
 }
 
 # Sections that require a server restart when changed
-RESTART_REQUIRED_SECTIONS = {"server"}
+RESTART_REQUIRED_SECTIONS = {"server", "memory"}
 
 
 # ---------------------------------------------------------------------------

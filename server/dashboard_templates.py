@@ -123,6 +123,15 @@ DASHBOARD_BODY_HTML = r"""<body>
                 </svg>
                 Workspace
             </div>
+            <!-- Memory -->
+            <div class="nav-item" data-page="memory">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 2a7 7 0 0 0-7 7c0 2.5 1.5 4.5 3 5.5V17a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-2.5c1.5-1 3-3 3-5.5a7 7 0 0 0-7-7z"/>
+                    <line x1="10" y1="21" x2="14" y2="21"/>
+                    <line x1="9" y1="17" x2="15" y2="17"/>
+                </svg>
+                Memory
+            </div>
             <!-- Logs -->
             <div class="nav-item" data-page="logs">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1077,6 +1086,188 @@ DASHBOARD_BODY_HTML = r"""<body>
                     <span class="config-section-title">Active Sessions</span>
                 </div>
                 <div id="ws-sessions-content">
+                    <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- =========================================================
+             MEMORY PAGE
+             ========================================================= -->
+        <div class="page" id="page-memory">
+            <div class="page-header">
+                <h2>Memory</h2>
+                <button class="btn btn-ghost" id="btn-memory-refresh">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="23 4 23 10 17 10"/>
+                        <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+                    </svg>
+                    Refresh
+                </button>
+            </div>
+
+            <!-- Status Banner -->
+            <div id="memory-status-banner" class="health-banner banner-ok" style="margin-bottom:20px">
+                <div class="banner-left">
+                    <span class="banner-dot"></span>
+                    <span id="memory-status-text">Loading memory status...</span>
+                </div>
+                <div class="banner-right" id="memory-status-meta"></div>
+            </div>
+
+            <!-- Overview Cards -->
+            <div class="card-grid" id="memory-overview-cards">
+                <div class="card" id="card-memory-type1">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
+                            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                        </svg>
+                        Type 1 &mdash; Procedural
+                    </div>
+                    <div id="memory-type1-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+                <div class="card" id="card-memory-type2">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
+                            <circle cx="12" cy="12" r="10"/>
+                            <path d="M12 16v-4"/>
+                            <path d="M12 8h.01"/>
+                        </svg>
+                        Type 2 &mdash; Declarative
+                    </div>
+                    <div id="memory-type2-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+                <div class="card" id="card-memory-metacog">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
+                            <circle cx="11" cy="11" r="8"/>
+                            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                        </svg>
+                        Metacognition Index
+                    </div>
+                    <div id="memory-metacog-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+                <div class="card" id="card-memory-feedback">
+                    <div class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
+                            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                        </svg>
+                        Whisper Feedback
+                    </div>
+                    <div id="memory-feedback-content">
+                        <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Guidance Items -->
+            <div class="config-section" style="margin-bottom:20px;">
+                <div class="config-section-header">
+                    <span class="config-section-title">Guidance Items</span>
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <select id="memory-guidance-filter" style="font-size:12px; padding:3px 8px; background:var(--surface); border:1px solid var(--card); border-radius:4px; color:var(--text);">
+                            <option value="all">All Types</option>
+                            <option value="invariant">Invariants</option>
+                            <option value="correction">Corrections</option>
+                            <option value="decision">Decisions</option>
+                            <option value="context">Context</option>
+                            <option value="pending">Pending</option>
+                        </select>
+                        <select id="memory-pathway-filter" style="font-size:12px; padding:3px 8px; background:var(--surface); border:1px solid var(--card); border-radius:4px; color:var(--text);">
+                            <option value="all">All Pathways</option>
+                            <option value="type1">Type 1</option>
+                            <option value="type2">Type 2</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="memory-guidance-content">
+                    <div class="loading-overlay"><div class="spinner"></div> Loading guidance...</div>
+                </div>
+            </div>
+
+            <!-- Contradictions -->
+            <div class="config-section" style="margin-bottom:20px;">
+                <div class="config-section-header">
+                    <span class="config-section-title">Pending Contradictions</span>
+                    <span class="text-dim" id="memory-contradiction-count" style="font-size:12px;"></span>
+                </div>
+                <div id="memory-contradictions-content">
+                    <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                </div>
+            </div>
+
+            <!-- Metacognition Search -->
+            <div class="config-section" style="margin-bottom:20px;">
+                <div class="config-section-header">
+                    <span class="config-section-title">Metacognition Search</span>
+                </div>
+                <div class="form-field">
+                    <label class="form-label" for="memory-search-input">Test retrieval query</label>
+                    <div class="form-help">Enter a message to test what prior knowledge would be retrieved</div>
+                    <div style="display:flex; gap:8px;">
+                        <input type="text" id="memory-search-input" placeholder="e.g. How should I handle error recovery?" style="flex:1;">
+                        <button class="btn btn-primary" id="btn-memory-search">Search</button>
+                    </div>
+                </div>
+                <div id="memory-search-results"></div>
+            </div>
+
+            <!-- Operations -->
+            <div class="config-section" style="margin-bottom:20px;">
+                <div class="config-section-header">
+                    <span class="config-section-title">Operations</span>
+                </div>
+                <div class="form-help" style="margin-bottom:12px;">
+                    Manual triggers for background memory processes. These normally run automatically via cron.
+                </div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <button class="btn btn-ghost" id="btn-memory-rebuild-index">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+                            <polyline points="23 4 23 10 17 10"/>
+                            <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+                        </svg>
+                        Rebuild Index
+                    </button>
+                    <button class="btn btn-ghost" id="btn-memory-consolidation">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+                            <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>
+                        </svg>
+                        Consolidation (dry-run)
+                    </button>
+                    <button class="btn btn-ghost" id="btn-memory-promotion">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+                            <line x1="12" y1="19" x2="12" y2="5"/>
+                            <polyline points="5 12 12 5 19 12"/>
+                        </svg>
+                        Check Promotions
+                    </button>
+                </div>
+                <div id="memory-operations-output"></div>
+            </div>
+
+            <!-- Extraction Schedule -->
+            <div class="config-section">
+                <div class="config-section-header">
+                    <span class="config-section-title">Extraction Schedule</span>
+                    <span class="text-dim" style="font-size:11px;">crontab</span>
+                </div>
+                <div id="memory-schedule-content">
+                    <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
+                </div>
+            </div>
+
+            <!-- Configuration -->
+            <div class="config-section">
+                <div class="config-section-header">
+                    <span class="config-section-title">Memory Configuration</span>
+                </div>
+                <div id="memory-config-content">
                     <div class="loading-overlay"><div class="spinner"></div> Loading...</div>
                 </div>
             </div>

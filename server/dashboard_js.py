@@ -1,5 +1,7 @@
 # Auto-extracted from dashboard_html.py during modular split.
 
+from dashboard_memory_js import DASHBOARD_MEMORY_JS
+
 _JS_PREAMBLE = r"""/* =====================================================================
    Apex Dashboard — Client-Side Application
    ===================================================================== */
@@ -41,7 +43,7 @@ function parseDashboardHash(rawHash) {
     if (personaMatch) {
         return { page: "personas", personaId: personaMatch[1] };
     }
-    if (hash === "config" || hash === "tls" || hash === "models" || hash === "personas" || hash === "policy" || hash === "database" || hash === "usage" || hash === "workspace" || hash === "logs" || hash === "license") {
+    if (hash === "config" || hash === "tls" || hash === "models" || hash === "personas" || hash === "policy" || hash === "database" || hash === "usage" || hash === "workspace" || hash === "memory" || hash === "logs" || hash === "license") {
         return { page: hash, personaId: "" };
     }
     return { page: "", personaId: "" };
@@ -111,6 +113,7 @@ function navigateTo(page) {
         if (page === "database") loadDatabasePage();
         if (page === "usage") loadUsagePage();
         if (page === "workspace") loadWorkspace();
+        if (page === "memory") loadMemory();
         if (page === "logs") loadLogsPage();
         if (page === "license") loadLicense();
     }
@@ -4714,6 +4717,15 @@ function init() {
     bindClick("btn-persona-delete", deletePersona);
     bindClick("btn-policy-refresh", loadPolicies);
     bindClick("btn-workspace-refresh", loadWorkspace);
+    bindClick("btn-memory-refresh", loadMemory);
+    bindClick("btn-memory-search", memorySearch);
+    bindClick("btn-memory-rebuild-index", function() { memoryOperation("rebuild_index"); });
+    bindClick("btn-memory-consolidation", function() { memoryOperation("run_consolidation"); });
+    bindClick("btn-memory-promotion", function() { memoryOperation("promotion_dryrun"); });
+    var memGF = document.getElementById("memory-guidance-filter");
+    if (memGF) memGF.addEventListener("change", filterAndRenderGuidance);
+    var memPF = document.getElementById("memory-pathway-filter");
+    if (memPF) memPF.addEventListener("change", filterAndRenderGuidance);
     bindClick("btn-projectmd-load", loadProjectMd);
     bindClick("btn-projectmd-save", saveProjectMd);
     bindClick("btn-mcp-cancel", function() {
@@ -4810,6 +4822,7 @@ DASHBOARD_JS = (
     + _JS_PERSONAS
     + _JS_POLICY
     + _JS_WORKSPACE
+    + DASHBOARD_MEMORY_JS
     + _JS_REFRESH_TIMER
     + _JS_FORMATTERS
     + _JS_LOGS

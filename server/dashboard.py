@@ -264,6 +264,9 @@ _ADMIN_READ_ONLY = frozenset({
     "/api/db/stats", "/api/backups",
     "/api/admin/usage", "/api/admin/usage/config", "/api/admin/usage/export",
     "/api/docs",
+    "/api/memory/status", "/api/memory/guidance", "/api/memory/contradictions",
+    "/api/memory/metacognition", "/api/memory/feedback", "/api/memory/backends",
+    "/api/memory/schedule",
 })
 
 
@@ -5571,6 +5574,905 @@ async def api_plan_m_results():
     except Exception as exc:
         return _error(str(exc), "PARSE_ERROR", status=500)
 
+
+# ---------------------------------------------------------------------------
+# Memory Admin — Subconscious Memory System
+# ---------------------------------------------------------------------------
+
+def _subconscious_dir() -> Path | None:
+    """Resolve .subconscious state directory from workspace paths."""
+    for p in env.get_runtime_workspace_paths_list():
+        sub = Path(p) / ".subconscious"
+        if sub.is_dir():
+            return sub
+    root = _workspace_root()
+    sub = root / ".subconscious"
+    return sub if sub.is_dir() else None
+
+
+def _read_subconscious_json(filename: str) -> dict | list | None:
+    """Read a JSON file from .subconscious/ with error handling."""
+    sub = _subconscious_dir()
+    if not sub:
+        return None
+    path = sub / filename
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _write_subconscious_json(filename: str, data: Any) -> bool:
+    """Atomic write to .subconscious/ with file locking."""
+    sub = _subconscious_dir()
+    if not sub:
+        return False
+    path = sub / filename
+    lock_path = sub / ".lock"
+    lock_path.touch(exist_ok=True)
+    import fcntl
+    fd = open(lock_path, "w")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=str(sub), suffix=".tmp")
+        try:
+            os.write(tmp_fd, json.dumps(data, indent=2).encode())
+        finally:
+            os.close(tmp_fd)
+        os.replace(tmp_path, str(path))
+        return True
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        fd.close()
+
+
+def _migrate_guidance_item(item: dict) -> dict:
+    """Add Type 1/Type 2 fields if missing (transparent migration)."""
+    if "pathway" not in item:
+        t = item.get("type", "")
+        if t in ("invariant", "correction"):
+            item["pathway"] = "type1"
+        else:
+            item["pathway"] = "type2"
+    if "injection_count" not in item:
+        item["injection_count"] = 0
+    if "promotion_score" not in item:
+        item["promotion_score"] = 0.0
+    return item
+
+
+@dashboard_app.get("/api/memory/status")
+async def api_memory_status():
+    """Aggregated memory system health status."""
+    sub = _subconscious_dir()
+
+    # Feature flags
+    type1_enabled = getattr(env, "ENABLE_TYPE1_GUIDANCE", False)
+    unified_enabled = getattr(env, "ENABLE_UNIFIED_MEMORY", False)
+    metacog_enabled = getattr(env, "ENABLE_METACOGNITION", False)
+
+    # Guidance counts
+    guidance = _read_subconscious_json("guidance.json") or {}
+    items = guidance.get("items", [])
+    items = [_migrate_guidance_item(it) for it in items]
+    type1_count = sum(1 for it in items if it.get("pathway") == "type1")
+    type2_count = sum(1 for it in items if it.get("pathway") == "type2")
+    total_chars = sum(len(it.get("text", "")) for it in items)
+
+    # Contradiction count
+    contradictions = _read_subconscious_json("pending_review.json") or []
+    if isinstance(contradictions, dict):
+        contradictions = contradictions.get("items", [])
+    pending_count = sum(
+        1 for c in contradictions if c.get("status", "pending") == "pending"
+    )
+
+    # Metacognition index
+    metacog_docs = 0
+    metacog_size = 0
+    metacog_last_built = None
+    if sub:
+        meta_path = sub / "metacognition" / "metacognition_meta.json"
+        vec_path = sub / "metacognition" / "metacognition_vectors.npy"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text())
+                metacog_docs = len(meta) if isinstance(meta, list) else 0
+                metacog_last_built = datetime.fromtimestamp(
+                    meta_path.stat().st_mtime, tz=timezone.utc
+                ).isoformat()
+            except Exception:
+                pass
+        if vec_path.exists():
+            try:
+                metacog_size = vec_path.stat().st_size
+            except OSError:
+                pass
+
+    # Feedback stats
+    feedback_evals = 0
+    if sub:
+        fb_index = sub / "whisper_feedback" / "index.json"
+        if fb_index.exists():
+            try:
+                fb = json.loads(fb_index.read_text())
+                feedback_evals = fb.get("total_evaluations", 0)
+            except Exception:
+                pass
+
+    # Last extraction / consolidation timestamps
+    last_extraction = None
+    last_consolidation = None
+    if sub:
+        guidance_path = sub / "guidance.json"
+        if guidance_path.exists():
+            try:
+                last_extraction = datetime.fromtimestamp(
+                    guidance_path.stat().st_mtime, tz=timezone.utc
+                ).isoformat()
+            except OSError:
+                pass
+        autodream_log = sub / "autodream.log"
+        if autodream_log.exists():
+            try:
+                last_consolidation = datetime.fromtimestamp(
+                    autodream_log.stat().st_mtime, tz=timezone.utc
+                ).isoformat()
+            except OSError:
+                pass
+
+    return JSONResponse({
+        "status": "ok",
+        "type1_enabled": type1_enabled,
+        "unified_enabled": unified_enabled,
+        "metacog_enabled": metacog_enabled,
+        "guidance_count": len(items),
+        "type1_count": type1_count,
+        "type2_count": type2_count,
+        "total_chars": total_chars,
+        "contradiction_count": pending_count,
+        "metacog_doc_count": metacog_docs,
+        "metacog_size_bytes": metacog_size,
+        "metacog_last_built": metacog_last_built,
+        "feedback_evaluations": feedback_evals,
+        "last_extraction": last_extraction,
+        "last_consolidation": last_consolidation,
+        "initialized": sub is not None,
+    })
+
+
+@dashboard_app.get("/api/memory/guidance")
+async def api_memory_guidance():
+    """List all guidance items with full metadata."""
+    guidance = _read_subconscious_json("guidance.json") or {}
+    items = guidance.get("items", [])
+    items = [_migrate_guidance_item(it) for it in items]
+    total_chars = sum(len(it.get("text", "")) for it in items)
+
+    return JSONResponse({
+        "status": "ok",
+        "items": items,
+        "count": len(items),
+        "total_chars": total_chars,
+    })
+
+
+@dashboard_app.delete("/api/memory/guidance/{index}")
+async def api_memory_guidance_delete(index: int):
+    """Delete a guidance item by index."""
+    sub = _subconscious_dir()
+    if not sub:
+        return _error("Memory system not initialized", "NOT_INITIALIZED", 503)
+
+    guidance = _read_subconscious_json("guidance.json")
+    if not guidance or not isinstance(guidance, dict):
+        return _error("No guidance data", "NOT_FOUND", 404)
+
+    items = guidance.get("items", [])
+    if index < 0 or index >= len(items):
+        return _error(
+            f"Index {index} out of range (0-{len(items)-1})",
+            "OUT_OF_RANGE",
+            status=400,
+        )
+
+    removed = items.pop(index)
+    guidance["items"] = items
+
+    if _write_subconscious_json("guidance.json", guidance):
+        return JSONResponse({
+            "status": "ok",
+            "removed": removed,
+            "remaining": len(items),
+        })
+    return _error("Failed to write guidance", "WRITE_ERROR")
+
+
+@dashboard_app.put("/api/memory/guidance/{index}")
+async def api_memory_guidance_update(index: int, request: Request):
+    """Update a guidance item's editable fields."""
+    sub = _subconscious_dir()
+    if not sub:
+        return _error("Memory system not initialized", "NOT_INITIALIZED", 503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _error("Invalid JSON", "INVALID_JSON", status=400)
+
+    guidance = _read_subconscious_json("guidance.json")
+    if not guidance or not isinstance(guidance, dict):
+        return _error("No guidance data", "NOT_FOUND", 404)
+
+    items = guidance.get("items", [])
+    if index < 0 or index >= len(items):
+        return _error(
+            f"Index {index} out of range (0-{len(items)-1})",
+            "OUT_OF_RANGE",
+            status=400,
+        )
+
+    item = items[index]
+    # Editable fields
+    for field in ("text", "confidence", "pathway", "type"):
+        if field in body:
+            item[field] = body[field]
+    items[index] = item
+    guidance["items"] = items
+
+    if _write_subconscious_json("guidance.json", guidance):
+        return JSONResponse({"status": "ok", "item": item})
+    return _error("Failed to write guidance", "WRITE_ERROR")
+
+
+@dashboard_app.get("/api/memory/contradictions")
+async def api_memory_contradictions():
+    """List pending contradictions."""
+    contradictions = _read_subconscious_json("pending_review.json") or []
+    if isinstance(contradictions, dict):
+        contradictions = contradictions.get("items", [])
+
+    pending = [c for c in contradictions if c.get("status", "pending") == "pending"]
+    return JSONResponse({
+        "status": "ok",
+        "contradictions": contradictions,
+        "count": len(contradictions),
+        "pending_count": len(pending),
+    })
+
+
+@dashboard_app.post("/api/memory/contradictions/{index}/resolve")
+async def api_memory_contradiction_resolve(index: int, request: Request):
+    """Resolve a contradiction: keep_a, keep_b, keep_both, dismiss."""
+    sub = _subconscious_dir()
+    if not sub:
+        return _error("Memory system not initialized", "NOT_INITIALIZED", 503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _error("Invalid JSON", "INVALID_JSON", status=400)
+
+    action = body.get("action", "")
+    if action not in ("keep_a", "keep_b", "keep_both", "dismiss"):
+        return _error(
+            "Invalid action. Must be: keep_a, keep_b, keep_both, dismiss",
+            "INVALID_ACTION",
+            status=400,
+        )
+
+    contradictions = _read_subconscious_json("pending_review.json") or []
+    if isinstance(contradictions, dict):
+        contradictions = contradictions.get("items", [])
+
+    if index < 0 or index >= len(contradictions):
+        return _error(
+            f"Index {index} out of range",
+            "OUT_OF_RANGE",
+            status=400,
+        )
+
+    contradictions[index]["status"] = "resolved"
+    contradictions[index]["resolution"] = action
+
+    if _write_subconscious_json("pending_review.json", contradictions):
+        return JSONResponse({
+            "status": "ok",
+            "resolution": action,
+            "remaining_pending": sum(
+                1 for c in contradictions
+                if c.get("status", "pending") == "pending"
+            ),
+        })
+    return _error("Failed to write contradictions", "WRITE_ERROR")
+
+
+@dashboard_app.get("/api/memory/metacognition")
+async def api_memory_metacognition():
+    """Metacognition index status and summary."""
+    sub = _subconscious_dir()
+    if not sub:
+        return JSONResponse({
+            "status": "ok",
+            "doc_count": 0,
+            "categories": {},
+            "index_size_bytes": 0,
+            "last_built": None,
+            "initialized": False,
+        })
+
+    meta_path = sub / "metacognition" / "metacognition_meta.json"
+    vec_path = sub / "metacognition" / "metacognition_vectors.npy"
+
+    doc_count = 0
+    categories: dict[str, int] = {}
+    index_size = 0
+    last_built = None
+
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text())
+            if isinstance(meta, list):
+                doc_count = len(meta)
+                for doc in meta:
+                    cat = doc.get("category", "unknown")
+                    categories[cat] = categories.get(cat, 0) + 1
+            last_built = datetime.fromtimestamp(
+                meta_path.stat().st_mtime, tz=timezone.utc
+            ).isoformat()
+        except Exception:
+            pass
+
+    if vec_path.exists():
+        try:
+            index_size = vec_path.stat().st_size
+        except OSError:
+            pass
+
+    return JSONResponse({
+        "status": "ok",
+        "doc_count": doc_count,
+        "categories": categories,
+        "index_size_bytes": index_size,
+        "last_built": last_built,
+        "initialized": meta_path.exists(),
+    })
+
+
+@dashboard_app.post("/api/memory/metacognition/search")
+async def api_memory_metacognition_search(request: Request):
+    """Test metacognition retrieval for a query."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _error("Invalid JSON", "INVALID_JSON", status=400)
+
+    query = body.get("query", "").strip()
+    if not query:
+        return _error("Missing 'query' field", "BAD_REQUEST", status=400)
+
+    try:
+        from metacognition import test_retrieval
+        result = await asyncio.to_thread(test_retrieval, query, verbose=True)
+        return JSONResponse({"status": "ok", **result})
+    except ImportError:
+        return _error("Metacognition module not available", "NOT_AVAILABLE", 503)
+    except Exception as e:
+        _log.error(f"Metacognition search error: {e}")
+        return _error(f"Search failed: {e}", "SEARCH_ERROR")
+
+
+@dashboard_app.get("/api/memory/feedback")
+async def api_memory_feedback():
+    """Whisper feedback stats."""
+    sub = _subconscious_dir()
+    if not sub:
+        return JSONResponse({
+            "status": "ok",
+            "items": [],
+            "total_evaluations": 0,
+            "initialized": False,
+        })
+
+    fb_index_path = sub / "whisper_feedback" / "index.json"
+    if not fb_index_path.exists():
+        return JSONResponse({
+            "status": "ok",
+            "items": [],
+            "total_evaluations": 0,
+            "initialized": True,
+        })
+
+    try:
+        fb = json.loads(fb_index_path.read_text())
+        items_raw = fb.get("items", {})
+        total = fb.get("total_evaluations", 0)
+
+        items = []
+        for hash_key, info in items_raw.items():
+            items.append({
+                "hash": hash_key,
+                "injection_count": info.get("injection_count", 0),
+                "useful_count": info.get("useful_count", 0),
+                "hit_rate": round(info.get("hit_rate", 0.0), 3),
+                "last_evaluated": info.get("last_evaluated", ""),
+                "text_preview": info.get("text_preview", "")[:120],
+            })
+
+        items.sort(key=lambda x: x["injection_count"], reverse=True)
+        return JSONResponse({
+            "status": "ok",
+            "items": items,
+            "total_evaluations": total,
+            "initialized": True,
+        })
+    except Exception as e:
+        _log.error(f"Feedback read error: {e}")
+        return _error(f"Failed to read feedback: {e}", "READ_ERROR")
+
+
+@dashboard_app.post("/api/memory/operations/{action}")
+async def api_memory_operations(action: str):
+    """Trigger memory operations: rebuild_index, run_consolidation, promotion_dryrun."""
+    valid_actions = ("rebuild_index", "run_consolidation", "promotion_dryrun")
+    if action not in valid_actions:
+        return _error(
+            f"Invalid action. Must be one of: {', '.join(valid_actions)}",
+            "INVALID_ACTION",
+            status=400,
+        )
+
+    # Find scripts directory
+    scripts_dir: Path | None = None
+    for p in env.get_runtime_workspace_paths_list():
+        candidate = Path(p) / "scripts" / "subconscious"
+        if candidate.is_dir():
+            scripts_dir = candidate
+            break
+    if not scripts_dir:
+        # Also check inside the apex repo
+        apex_root = env.APEX_ROOT
+        candidate = apex_root / "scripts" / "subconscious"
+        if candidate.is_dir():
+            scripts_dir = candidate
+
+    if not scripts_dir:
+        return _error(
+            "Subconscious scripts directory not found",
+            "NOT_FOUND",
+            status=404,
+        )
+
+    script_map = {
+        "rebuild_index": ("build_index.py", ["build", "--force"], 300),
+        "run_consolidation": ("autodream.py", ["--dry-run"], 120),
+        "promotion_dryrun": (None, [], 0),  # handled inline
+    }
+
+    if action == "promotion_dryrun":
+        # Read feedback index and find promotion candidates
+        sub = _subconscious_dir()
+        if not sub:
+            return JSONResponse({
+                "status": "ok",
+                "action": action,
+                "output": "No subconscious directory found.",
+                "candidates": [],
+            })
+
+        fb_path = sub / "whisper_feedback" / "index.json"
+        if not fb_path.exists():
+            return JSONResponse({
+                "status": "ok",
+                "action": action,
+                "output": "No feedback index. Need more sessions for data.",
+                "candidates": [],
+            })
+
+        try:
+            fb = json.loads(fb_path.read_text())
+            items = fb.get("items", {})
+            candidates = []
+            for hash_key, info in items.items():
+                inj = info.get("injection_count", 0)
+                hit = info.get("hit_rate", 0.0)
+                if inj >= 20 and hit >= 0.60:
+                    candidates.append({
+                        "hash": hash_key,
+                        "injection_count": inj,
+                        "hit_rate": round(hit, 3),
+                        "text_preview": info.get("text_preview", "")[:200],
+                    })
+
+            output = (
+                f"Found {len(candidates)} promotion candidate(s) "
+                f"(min injections: 20, min hit rate: 60%)"
+            )
+            return JSONResponse({
+                "status": "ok",
+                "action": action,
+                "output": output,
+                "candidates": candidates,
+            })
+        except Exception as e:
+            return _error(f"Failed to analyze: {e}", "ANALYSIS_ERROR")
+
+    # Run script as subprocess
+    script_name, args, timeout = script_map[action]
+    script_path = scripts_dir / script_name
+    if not script_path.exists():
+        return _error(
+            f"Script not found: {script_name}",
+            "SCRIPT_NOT_FOUND",
+            status=404,
+        )
+
+    def _run_script():
+        result = subprocess.run(
+            [sys.executable, str(script_path)] + args,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(scripts_dir),
+        )
+        return result.stdout + result.stderr
+
+    try:
+        output = await asyncio.to_thread(_run_script)
+        return JSONResponse({
+            "status": "ok",
+            "action": action,
+            "output": output[-4000:] if len(output) > 4000 else output,
+        })
+    except subprocess.TimeoutExpired:
+        return _error(
+            f"Operation timed out after {timeout}s",
+            "TIMEOUT",
+            status=504,
+        )
+    except Exception as e:
+        _log.error(f"Memory operation {action} failed: {e}")
+        return _error(f"Operation failed: {e}", "OPERATION_ERROR")
+
+
+# GET /api/memory/backends — discover available embedding/model backends
+@dashboard_app.get("/api/memory/backends")
+async def api_memory_backends():
+    """Return available backends and models for memory config dropdowns."""
+    # --- Gemini ---
+    gemini_available = False
+    env_text = ""
+    try:
+        env_text = ENV_PATH.read_text()
+    except FileNotFoundError:
+        pass
+    for line in env_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("GOOGLE_API_KEY=") and len(stripped) > 16:
+            gemini_available = True
+            break
+    if not gemini_available and os.environ.get("GOOGLE_API_KEY"):
+        gemini_available = True
+
+    # --- Ollama ---
+    ollama_url = "http://localhost:11434"
+    if _config:
+        ollama_url = _config.get("models", "ollama_url") or ollama_url
+    ollama_info = _ping_ollama(ollama_url)
+    ollama_available = ollama_info.get("status") == "reachable"
+    ollama_models = ollama_info.get("models", [])
+
+    # Resolve the specific embedding model names
+    gemini_embed_model = "gemini-embedding-2-preview"
+    ollama_embed_model = os.environ.get("APEX_OLLAMA_EMBED_MODEL", "nomic-embed-text")
+
+    # Build embedding backend choices (only available ones)
+    embedding_choices = []
+    if gemini_available:
+        embedding_choices.append({
+            "value": "gemini",
+            "label": f"Gemini — {gemini_embed_model}",
+            "available": True,
+        })
+    else:
+        embedding_choices.append({
+            "value": "gemini",
+            "label": f"Gemini — not configured (needs GOOGLE_API_KEY)",
+            "available": False,
+        })
+    if ollama_available:
+        # Check if the embedding model is actually pulled
+        embed_installed = ollama_embed_model in ollama_models or f"{ollama_embed_model}:latest" in ollama_models
+        suffix = "" if embed_installed else " (not installed)"
+        embedding_choices.append({
+            "value": "ollama",
+            "label": f"Ollama — {ollama_embed_model}{suffix}",
+            "available": True,
+        })
+    else:
+        embedding_choices.append({
+            "value": "ollama",
+            "label": f"Ollama — not reachable",
+            "available": False,
+        })
+
+    return JSONResponse({
+        "gemini_available": gemini_available,
+        "ollama_available": ollama_available,
+        "ollama_url": ollama_url,
+        "ollama_models": ollama_models,
+        "embedding_choices": embedding_choices,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Memory extraction schedule — crontab management
+# ---------------------------------------------------------------------------
+
+# Canonical pipeline jobs. The "pattern" matches existing crontab lines.
+# "script" + "args" are used to CREATE new entries when none exist.
+# Scripts are resolved relative to the subconscious scripts directory.
+_MEMORY_PIPELINE_JOBS = [
+    {
+        "key": "db_snapshot",
+        "label": "DB Snapshot",
+        "description": "Safe backup of database before mining",
+        "pattern": "db_snapshot.sh",
+        "script": "db_snapshot.sh",
+        "args": [],
+        "default_hour": 22, "default_minute": 50,
+    },
+    {
+        "key": "chatmine",
+        "label": "Chatmine (extraction)",
+        "description": "Extract knowledge from conversation transcripts",
+        "pattern": "run_chatmine.sh",
+        "script": "run_chatmine.sh",
+        "args": [],
+        "default_hour": 23, "default_minute": 0,
+    },
+    {
+        "key": "batch_digest",
+        "label": "Batch Digest",
+        "description": "Catch-all session digestion into guidance",
+        "pattern": "batch_digest.py",
+        "script": "batch_digest.py",
+        "args": ["--days", "3"],
+        "default_hour": 2, "default_minute": 30,
+    },
+    {
+        "key": "autodream",
+        "label": "Autodream (consolidation)",
+        "description": "Nightly memory consolidation and pruning",
+        "pattern": "run_autodream.sh",
+        "script": "run_autodream.sh",
+        "args": [],
+        "default_hour": 3, "default_minute": 0,
+    },
+]
+
+
+def _find_scripts_dir() -> Path | None:
+    """Find the subconscious scripts directory."""
+    for p in env.get_runtime_workspace_paths_list():
+        candidate = Path(p) / "scripts" / "subconscious"
+        if candidate.is_dir():
+            return candidate
+    candidate = env.APEX_ROOT / "scripts" / "subconscious"
+    if candidate.is_dir():
+        return candidate
+    return None
+
+
+def _read_crontab() -> str:
+    """Read current user crontab, returning empty string on error."""
+    try:
+        result = subprocess.run(
+            ["crontab", "-l"], capture_output=True, text=True, timeout=5,
+        )
+        return result.stdout if result.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _parse_memory_schedule() -> tuple[list[dict], str]:
+    """Parse crontab and build schedule status for each pipeline job."""
+    raw = _read_crontab()
+    scripts_dir = _find_scripts_dir()
+
+    jobs = []
+    for spec in _MEMORY_PIPELINE_JOBS:
+        # Check if the script actually exists in this install
+        script_exists = False
+        if scripts_dir:
+            script_exists = (scripts_dir / spec["script"]).exists()
+
+        # Find ALL crontab lines matching this job's pattern (may be multiple)
+        entries = []
+        for line in raw.splitlines():
+            stripped = line.strip()
+            # Skip pure comment lines (prose descriptions mentioning scripts)
+            if stripped.startswith("#"):
+                # Only match if the comment contains an actual cron schedule
+                # (i.e., uncommented form starts with a number)
+                bare = stripped.lstrip("#").strip()
+                if not bare or not bare[0].isdigit():
+                    continue
+            else:
+                bare = stripped
+            if spec["pattern"] in bare:
+                is_active = not stripped.startswith("#")
+                parts = bare.split(None, 5)
+                if len(parts) >= 6:
+                    # Extract variant suffix from command (e.g., "prod", "dev")
+                    cmd = parts[5]
+                    variant = ""
+                    for token in cmd.split():
+                        if token in ("prod", "dev", "claude", "codex"):
+                            variant = token
+                    entries.append({
+                        "enabled": is_active,
+                        "hour": parts[1],
+                        "minute": parts[0],
+                        "variant": variant,
+                        "cron_line": bare,
+                    })
+
+        if entries:
+            # Group into one job per variant
+            for entry in entries:
+                suffix = f" ({entry['variant']})" if entry["variant"] else ""
+                jobs.append({
+                    "key": spec["key"] + ("_" + entry["variant"] if entry["variant"] else ""),
+                    "label": spec["label"] + suffix,
+                    "description": spec["description"],
+                    "enabled": entry["enabled"],
+                    "hour": entry["hour"],
+                    "minute": entry["minute"],
+                    "installed": True,
+                    "script_exists": script_exists,
+                    "cron_line": entry["cron_line"],
+                })
+        else:
+            # No crontab entry — show as not installed (available to create)
+            jobs.append({
+                "key": spec["key"],
+                "label": spec["label"],
+                "description": spec["description"],
+                "enabled": False,
+                "hour": str(spec["default_hour"]),
+                "minute": str(spec["default_minute"]),
+                "installed": False,
+                "script_exists": script_exists,
+                "cron_line": "",
+            })
+
+    return jobs, raw
+
+
+@dashboard_app.get("/api/memory/schedule")
+async def api_memory_schedule():
+    """Return current extraction schedule from crontab."""
+    jobs, _ = _parse_memory_schedule()
+    return JSONResponse({"jobs": jobs})
+
+
+@dashboard_app.put("/api/memory/schedule")
+async def api_memory_schedule_update(request: Request):
+    """Update extraction schedule in crontab."""
+    body = await request.json()
+    updates = body.get("jobs", {})
+    if not updates:
+        return _error("No updates provided", "EMPTY_UPDATE", status=400)
+
+    raw = _read_crontab()
+    scripts_dir = _find_scripts_dir()
+    lines = raw.splitlines()
+    new_lines = []
+    handled_keys: set[str] = set()
+
+    # Phase 1: Update existing lines
+    for line in lines:
+        stripped = line.strip()
+        bare = stripped.lstrip("#").strip()
+
+        matched_spec = None
+        matched_key = None
+        for spec in _MEMORY_PIPELINE_JOBS:
+            if spec["pattern"] in bare:
+                # Determine variant
+                variant = ""
+                for token in bare.split():
+                    if token in ("prod", "dev", "claude", "codex"):
+                        variant = token
+                matched_spec = spec
+                matched_key = spec["key"] + ("_" + variant if variant else "")
+                break
+
+        if matched_spec and matched_key in updates:
+            update = updates[matched_key]
+            handled_keys.add(matched_key)
+            parts = bare.split(None, 5)
+            if len(parts) >= 6:
+                new_min = str(update.get("minute", parts[0]))
+                new_hour = str(update.get("hour", parts[1]))
+                new_cron = f"{new_min} {new_hour} {parts[2]} {parts[3]} {parts[4]} {parts[5]}"
+                if update.get("enabled", True):
+                    new_lines.append(new_cron)
+                else:
+                    new_lines.append(f"# {new_cron}")
+            else:
+                new_lines.append(line)
+        else:
+            new_lines.append(line)
+
+    # Phase 2: Create new entries for jobs that don't exist yet
+    for key, update in updates.items():
+        if key in handled_keys:
+            continue
+        if not update.get("enabled", False):
+            continue
+        # Find the matching spec
+        base_key = key.split("_")[0] if "_" in key else key
+        spec = next((s for s in _MEMORY_PIPELINE_JOBS if s["key"] == base_key), None)
+        if not spec or not scripts_dir:
+            continue
+        script_path = scripts_dir / spec["script"]
+        if not script_path.exists():
+            continue
+        hour = str(update.get("hour", spec["default_hour"]))
+        minute = str(update.get("minute", spec["default_minute"]))
+        if spec["script"].endswith(".py"):
+            cmd = f"{sys.executable} {script_path}"
+            if spec["args"]:
+                cmd += " " + " ".join(spec["args"])
+        else:
+            cmd = f"/bin/bash {script_path}"
+            if spec["args"]:
+                cmd += " " + " ".join(spec["args"])
+        new_lines.append("")
+        new_lines.append(f"# Apex memory — {spec['label']}")
+        new_lines.append(f"{minute} {hour} * * * {cmd}")
+
+    new_crontab = "\n".join(new_lines)
+    if not new_crontab.endswith("\n"):
+        new_crontab += "\n"
+
+    try:
+        result = subprocess.run(
+            ["crontab", "-"],
+            input=new_crontab,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return _error(
+                f"crontab update failed: {result.stderr}",
+                "CRONTAB_ERROR",
+            )
+    except Exception as e:
+        return _error(f"Failed to update crontab: {e}", "CRONTAB_ERROR")
+
+    jobs, _ = _parse_memory_schedule()
+    return JSONResponse({"status": "ok", "jobs": jobs})
+
+
+# PUT /api/config/memory — route through standard config updater
+@dashboard_app.put("/api/config/memory")
+async def api_config_update_memory(request: Request):
+    """Update memory configuration."""
+    return await _update_config_section("memory", request)
+
+
+# ---------------------------------------------------------------------------
+# Catch-all — must remain last
+# ---------------------------------------------------------------------------
 
 @dashboard_app.api_route(
     "/api/{path:path}",
