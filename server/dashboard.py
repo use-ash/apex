@@ -4050,11 +4050,11 @@ async def api_sessions():
 async def api_sessions_compact(chat_id: str):
     """Force compaction on a chat session."""
     try:
-        import apex as lc
-        result = await lc._maybe_compact_chat(chat_id)
-    except AttributeError:
+        from context import _maybe_compact_chat
+        result = await _maybe_compact_chat(chat_id)
+    except (ImportError, AttributeError):
         return _error(
-            "_maybe_compact_chat not available in apex module",
+            "_maybe_compact_chat not available in context module",
             "NOT_IMPLEMENTED",
             status=501,
         )
