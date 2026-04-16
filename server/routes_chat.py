@@ -34,7 +34,11 @@ from streaming import (
     _cancel_chat_streams, _disconnect_client, _finalize_stream, _safe_ws_send_json,
     _has_client, _get_all_stream_task_entries,
 )
-from context import _clear_session_context, _estimate_tokens_from_cost
+from context import (
+    _clear_session_context,
+    _estimate_tokens_from_cost,
+    _compute_context_used,
+)
 from state import (
     _db_lock, _last_compacted_at,
     _chat_ws, _ws_chat,
@@ -628,13 +632,10 @@ async def api_context(chat_id: str):
                 chat_model = prow[0]
     chat_model = chat_model or MODEL
     context_window = MODEL_CONTEXT_WINDOWS.get(chat_model, MODEL_CONTEXT_DEFAULT)
-    # 3-signal max — same logic as context.py fuel gauge.
-    # SDK tokens_in is often garbage (3-24), so always cross-check with
-    # char-based estimation and cost-based reverse engineering.
-    sdk_tokens = _get_last_turn_tokens_in(chat_id)
-    est_tokens = _estimate_tokens(chat_id, context_window=context_window)
-    cost_tokens = _estimate_tokens_from_cost(chat_id, chat_model)
-    context_used = min(max(sdk_tokens, est_tokens, cost_tokens), context_window)
+    # Three-signal fuel gauge — shared helper handles saturation + logging.
+    _sdk, _est, _cost, context_used = _compute_context_used(
+        chat_id, context_window, chat_model
+    )
     since = _last_compacted_at.get(chat_id)
     with _db_lock:
         conn = _get_db()

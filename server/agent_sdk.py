@@ -27,7 +27,7 @@ from streaming import (
 from context import (
     _get_profile_prompt, _get_group_roster_prompt,
     _get_memory_prompt, _get_workspace_context, _get_whisper_text,
-    _get_context_energy_prompt,
+    _get_context_energy_prompt, _compute_context_used,
 )
 
 try:
@@ -985,22 +985,13 @@ async def _stream_response(
                     "is_error": bool(msg.is_error or blocked_tools),
                 }
                 result_is_error = bool(result_info["is_error"])
-                _ctx_in = result_info["tokens_in"]
                 _chat = _get_chat(chat_id)
                 _ctx_model = (_chat.get("model") or MODEL) if _chat else MODEL
                 _ctx_window = MODEL_CONTEXT_WINDOWS.get(_ctx_model, MODEL_CONTEXT_DEFAULT)
-                # 3-signal max — same logic as context.py fuel gauge.
-                # SDK tokens_in is often garbage (3-24), so cross-check with
-                # char-based estimation and cost-based reverse engineering.
-                _est_in = _estimate_tokens(chat_id, context_window=_ctx_window)
-                _cost_usd = result_info["cost_usd"]
-                _tok_out = result_info["tokens_out"]
-                _ip = MODEL_INPUT_PRICE.get(_ctx_model, 0.0)
-                _op = MODEL_OUTPUT_PRICE.get(_ctx_model, 0.0)
-                _cost_ctx = 0
-                if _ip > 0 and _cost_usd > 0:
-                    _cost_ctx = int(max(_cost_usd - _tok_out * _op, 0.0) / _ip)
-                _ctx_in = min(max(_ctx_in, _est_in, _cost_ctx), _ctx_window)
+                # Three-signal fuel gauge — shared helper, same logic every site.
+                _, _, _, _ctx_in = _compute_context_used(
+                    chat_id, _ctx_window, _ctx_model
+                )
                 await _send({
                     "type": "result",
                     "is_error": result_is_error,

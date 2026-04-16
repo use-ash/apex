@@ -1669,9 +1669,22 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
   const el = document.getElementById('messages');
   // B-42: drop stream events that belong to a different chat
   const _B42_STREAM = new Set(['stream_start','stream_ack','stream_queued','text','thinking','tool_use','tool_result','stream_end','active_streams','queue_update']);
-  if (_B42_STREAM.has(msg.type) && msg.chat_id && currentChat && msg.chat_id !== currentChat) {
-    dbg('B42: drop cross-chat', msg.type, msg.chat_id);
+  // B-42b: fall back to sessionStorage so a transiently-nulled currentChat
+  // (init race, tab refocus, stream teardown sweep) doesn't silently drop
+  // our own in-flight stream events.
+  const _activeChat = currentChat || sessionStorage.getItem('currentChatId') || '';
+  if (_B42_STREAM.has(msg.type) && msg.chat_id && _activeChat && msg.chat_id !== _activeChat) {
+    dbg('B42: drop cross-chat', msg.type, msg.chat_id, 'vs', _activeChat);
     return;
+  }
+  // B-42c: self-heal currentChat if it was nulled but the event matches sessionStorage
+  if (_B42_STREAM.has(msg.type) && msg.chat_id && !currentChat && msg.chat_id === _activeChat) {
+    currentChat = msg.chat_id;
+    dbg('B42: restored currentChat', msg.chat_id);
+  }
+  // B-42d: diagnostic log for stream routing
+  if (_B42_STREAM.has(msg.type)) {
+    dbg('WS evt', msg.type, 'chat', msg.chat_id, 'curr', currentChat, 'sid', msg.stream_id || '', 'hasCtx', !!(msg.stream_id && _streamCtx[msg.stream_id]));
   }
   // Seq-based dedup: server stamps every stream event with {seq, epoch}.
   // Drop events we've already processed. Reset on epoch mismatch (server restart).
@@ -1776,7 +1789,15 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
 
     case 'text': {
       _removeThinkingIndicator();
-      const ctx = _getCtx(msg);
+      let ctx = _getCtx(msg);
+      // B-42e: salvage — if stream_start was dropped but chat_id matches our
+      // active chat, synthesize a ctx so tokens aren't silently discarded.
+      if (!ctx && msg.stream_id && (!msg.chat_id || msg.chat_id === currentChat)) {
+        const speaker = msg.speaker_name ? {name: msg.speaker_name, avatar: msg.speaker_avatar || '', id: msg.speaker_id || ''} : null;
+        ctx = _upsertStreamCtx(msg.stream_id, speaker);
+        _activateStream(ctx, {chatId: msg.chat_id || currentChat || ''});
+        dbg('B42e: salvaged text ctx', msg.stream_id);
+      }
       if (!ctx) break;
       _ensureCtxBubble(ctx);
       _activateStream(ctx);
@@ -1818,7 +1839,13 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
 
     case 'thinking': {
       _removeThinkingIndicator();
-      const ctx = _getCtx(msg);
+      let ctx = _getCtx(msg);
+      if (!ctx && msg.stream_id && (!msg.chat_id || msg.chat_id === currentChat)) {
+        const speaker = msg.speaker_name ? {name: msg.speaker_name, avatar: msg.speaker_avatar || '', id: msg.speaker_id || ''} : null;
+        ctx = _upsertStreamCtx(msg.stream_id, speaker);
+        _activateStream(ctx, {chatId: msg.chat_id || currentChat || ''});
+        dbg('B42e: salvaged thinking ctx', msg.stream_id);
+      }
       if (!ctx) break;
       _ensureCtxBubble(ctx);
       _activateStream(ctx);
@@ -1837,7 +1864,13 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
 
     case 'tool_use': {
       _removeThinkingIndicator();
-      const ctx = _getCtx(msg);
+      let ctx = _getCtx(msg);
+      if (!ctx && msg.stream_id && (!msg.chat_id || msg.chat_id === currentChat)) {
+        const speaker = msg.speaker_name ? {name: msg.speaker_name, avatar: msg.speaker_avatar || '', id: msg.speaker_id || ''} : null;
+        ctx = _upsertStreamCtx(msg.stream_id, speaker);
+        _activateStream(ctx, {chatId: msg.chat_id || currentChat || ''});
+        dbg('B42e: salvaged tool_use ctx', msg.stream_id);
+      }
       if (!ctx) break;
       _ensureCtxBubble(ctx);
       _activateStream(ctx);
