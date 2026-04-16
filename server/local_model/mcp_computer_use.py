@@ -649,8 +649,13 @@ def _tool_activate_target_app(_args: dict) -> dict:
          without a visible document).
       2. If still not frontmost, NSRunningApplication.activateWithOptions_
          with NSApplicationActivateIgnoringOtherApps.
-      3. If still not frontmost, send Cmd+Tab via the CGEvent path as a last
-         resort (only works after step 2 registers the app as user-reachable).
+      3. If still not frontmost, AppleScript via System Events clicking the
+         app's Dock tile.
+      4. TextEdit-specific: if target is com.apple.TextEdit and the process
+         has no layer-0 window, `open -e /tmp/apex_textedit_scratch.txt`
+         which force-surfaces a real document window. Handles the iCloud
+         Drive "Show Open dialog on launch" setting where `reopen` is a
+         no-op because TextEdit has no default doc to reopen.
     """
     target = (os.environ.get("APEX_CU_TARGET_BUNDLE") or "").strip()
     if not target:
@@ -753,6 +758,66 @@ def _tool_activate_target_app(_args: dict) -> dict:
         if proc3.returncode == 0 and _poll_frontmost(tries=15, interval=0.2):
             _flog(logging.INFO, "activate_target_app", f"ok via dock-click target={target}")
             return {"ok": True, "bundle_id": target, "was_running": was_running, "now_frontmost": True, "method": "dock-click"}
+
+        # --- Step 4 (TextEdit-specific): force a document window open ---
+        # When TextEdit is running but has no open document (fresh launch with
+        # the iCloud Drive "Show Open dialog on launch" setting enabled, or
+        # just a dockless launch), `reopen` is a no-op because TextEdit has
+        # no default window to reopen — so all three prior steps can succeed
+        # at activating the *process* without surfacing a *window*. Frontmost
+        # stays on whatever it was. The cheap fix: `open -e <scratch_file>`
+        # which always surfaces a real document window in TextEdit.
+        if target == "com.apple.TextEdit":
+            try:
+                pid = None
+                if running2 is not None and len(running2) > 0:
+                    pid = int(running2[0].processIdentifier())
+                has_window = False
+                if pid is not None:
+                    Quartz = _get_quartz()
+                    opts = (
+                        Quartz.kCGWindowListOptionOnScreenOnly
+                        | Quartz.kCGWindowListExcludeDesktopElements
+                    )
+                    infos = Quartz.CGWindowListCopyWindowInfo(
+                        opts, Quartz.kCGNullWindowID
+                    ) or []
+                    for info in infos:
+                        if int(info.get("kCGWindowOwnerPID", -1)) == pid:
+                            # Layer 0 = normal document window (vs menu bars,
+                            # dock, floating panels which are higher layers).
+                            if int(info.get("kCGWindowLayer", 99)) == 0:
+                                has_window = True
+                                break
+                if not has_window:
+                    scratch = "/tmp/apex_textedit_scratch.txt"
+                    try:
+                        if not os.path.exists(scratch):
+                            with open(scratch, "w") as f:
+                                f.write("")
+                    except OSError as e:
+                        _log_stderr(f"scratch create failed: {e}")
+                    _sp.run(
+                        ["/usr/bin/open", "-e", scratch],
+                        capture_output=True, timeout=5, check=False,
+                    )
+                    steps_tried.append("textedit-open-scratch")
+                    # `open -e` takes a beat to surface the window; poll longer.
+                    if _poll_frontmost(tries=20, interval=0.2):
+                        _flog(
+                            logging.INFO, "activate_target_app",
+                            f"ok via textedit-open-scratch target={target} scratch={scratch}",
+                        )
+                        return {
+                            "ok": True,
+                            "bundle_id": target,
+                            "was_running": was_running,
+                            "now_frontmost": True,
+                            "method": "textedit-open-scratch",
+                            "scratch_path": scratch,
+                        }
+            except Exception as e:
+                _log_stderr(f"textedit scratch fallback failed: {e}")
 
         _, bid = _frontmost_bundle()
         _flog(logging.WARNING, "activate_target_app", f"all steps failed tried={steps_tried} frontmost={bid} target={target}")
