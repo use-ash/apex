@@ -218,6 +218,33 @@ def _target_app_check() -> dict | None:
     return None
 
 
+def _wait_for_target(timeout: float = 30.0, interval: float = 0.1) -> bool:
+    """Poll frontmost up to `timeout` seconds waiting for target to match.
+
+    Returns True as soon as frontmost bundle-id equals APEX_CU_TARGET_BUNDLE,
+    False on timeout. If no target is configured, returns True immediately
+    (the gate is open). Also respects the pause flag — if user pauses while
+    we're waiting, returns False right away.
+
+    This lets the user click out of the target app (e.g. to watch the agent
+    from the Apex window) without corrupting an in-progress write action.
+    The tool blocks until the user clicks back in, up to `timeout`.
+    """
+    target = _target_bundle()
+    if not target:
+        return True
+    deadline = time.monotonic() + max(0.0, timeout)
+    while time.monotonic() < deadline:
+        if _is_paused():
+            return False
+        _name, bid = _frontmost_bundle()
+        if bid == target:
+            return True
+        time.sleep(interval)
+    _name, bid = _frontmost_bundle()
+    return bid == target
+
+
 def _pause_check() -> dict | None:
     if _is_paused():
         return {"ok": False, "reason": "paused by user"}
@@ -344,10 +371,14 @@ def _tool_click(args: dict) -> dict:
     if paused:
         _flog(logging.INFO, "click", "refused: paused")
         return paused
-    refusal = _target_app_check()
-    if refusal:
-        _flog(logging.INFO, "click", f"refused: target mismatch {refusal['frontmost']}")
-        return refusal
+    if not _wait_for_target(timeout=10.0):
+        _, bid = _frontmost_bundle()
+        _flog(logging.INFO, "click", f"refused: target mismatch {bid}")
+        return {
+            "ok": False,
+            "reason": f"frontmost is {bid}, target is {_target_bundle()}. Refusing.",
+            "frontmost": bid,
+        }
 
     x = int(args.get("x", 0))
     y = int(args.get("y", 0))
@@ -369,6 +400,18 @@ def _tool_click(args: dict) -> dict:
 
 
 def _tool_type_text(args: dict) -> dict:
+    """Type text into the target app.
+
+    Chunks the input into small batches and re-checks frontmost between
+    batches. This protects against the race where the user clicks out of
+    the target app mid-type — without chunking, pyautogui blindly keeps
+    tapping the virtual keyboard and the keystrokes land wherever focus
+    currently is (e.g. the Apex URL bar), corrupting the stream.
+
+    On mismatch, waits up to 30s for the user to click back in. If the
+    target doesn't return in time, aborts and returns the untyped suffix
+    as `remaining` so the agent can activate + retry just the leftover.
+    """
     paused = _pause_check()
     if paused:
         _flog(logging.INFO, "type_text", "refused: paused")
@@ -379,16 +422,62 @@ def _tool_type_text(args: dict) -> dict:
         return refusal
 
     text = str(args.get("text", ""))
+    if not text:
+        return {"ok": True, "chars": 0, "wrote_chars": 0}
+
+    CHUNK = 40            # ~0.4s per chunk at interval=0.01
+    WAIT_ON_MISMATCH = 30.0  # seconds to wait for user to click back in
+
+    written = 0
+    waits = 0
     try:
         pyautogui = _get_pyautogui()
-        pyautogui.typewrite(text, interval=0.01)
+        while written < len(text):
+            # Pause check inside the loop so the UI pause button can interrupt.
+            if _is_paused():
+                _flog(logging.INFO, "type_text",
+                      f"paused mid-type after {written}/{len(text)} chars")
+                return {
+                    "ok": False,
+                    "reason": "paused by user mid-type",
+                    "wrote_chars": written,
+                    "remaining": text[written:],
+                }
+            # Verify target-app before each batch. If the user clicked out,
+            # block up to WAIT_ON_MISMATCH seconds for them to click back.
+            target = _target_bundle()
+            if target:
+                _name, bid = _frontmost_bundle()
+                if bid != target:
+                    waits += 1
+                    _flog(logging.INFO, "type_text",
+                          f"paused for target: frontmost={bid} wrote={written}/{len(text)}")
+                    if not _wait_for_target(timeout=WAIT_ON_MISMATCH):
+                        # Timed out OR user hit pause.
+                        _, bid2 = _frontmost_bundle()
+                        reason = (
+                            f"target {target} did not return to frontmost within "
+                            f"{WAIT_ON_MISMATCH:.0f}s (frontmost={bid2}). "
+                            f"Call activate_target_app, then type_text with the `remaining` value."
+                        ) if not _is_paused() else "paused by user mid-type"
+                        return {
+                            "ok": False,
+                            "reason": reason,
+                            "wrote_chars": written,
+                            "remaining": text[written:],
+                        }
+            batch = text[written:written + CHUNK]
+            pyautogui.typewrite(batch, interval=0.01)
+            written += len(batch)
     except Exception as e:
         err = _permission_error("type_text", e)
+        err["wrote_chars"] = written
+        err["remaining"] = text[written:]
         _flog(logging.ERROR, "type_text", err["reason"])
         return err
 
-    _flog(logging.INFO, "type_text", f"ok chars={len(text)}")
-    return {"ok": True, "chars": len(text)}
+    _flog(logging.INFO, "type_text", f"ok chars={written} waits={waits}")
+    return {"ok": True, "chars": written, "wrote_chars": written, "waits": waits}
 
 
 def _tool_press_key(args: dict) -> dict:
@@ -396,10 +485,16 @@ def _tool_press_key(args: dict) -> dict:
     if paused:
         _flog(logging.INFO, "press_key", "refused: paused")
         return paused
-    refusal = _target_app_check()
-    if refusal:
-        _flog(logging.INFO, "press_key", f"refused: target mismatch {refusal['frontmost']}")
-        return refusal
+    # Brief wait on mismatch so "click out to watch, click back in" doesn't
+    # require the agent to re-fire.
+    if not _wait_for_target(timeout=10.0):
+        _, bid = _frontmost_bundle()
+        _flog(logging.INFO, "press_key", f"refused: target mismatch {bid}")
+        return {
+            "ok": False,
+            "reason": f"frontmost is {bid}, target is {_target_bundle()}. Refusing.",
+            "frontmost": bid,
+        }
 
     key = str(args.get("key", "")).strip()
     if not key:
@@ -426,10 +521,14 @@ def _tool_scroll(args: dict) -> dict:
     if paused:
         _flog(logging.INFO, "scroll", "refused: paused")
         return paused
-    refusal = _target_app_check()
-    if refusal:
-        _flog(logging.INFO, "scroll", f"refused: target mismatch {refusal['frontmost']}")
-        return refusal
+    if not _wait_for_target(timeout=10.0):
+        _, bid = _frontmost_bundle()
+        _flog(logging.INFO, "scroll", f"refused: target mismatch {bid}")
+        return {
+            "ok": False,
+            "reason": f"frontmost is {bid}, target is {_target_bundle()}. Refusing.",
+            "frontmost": bid,
+        }
 
     x = int(args.get("x", 0))
     y = int(args.get("y", 0))
@@ -469,6 +568,15 @@ def _tool_activate_target_app(_args: dict) -> dict:
     where every write tool requires target-app frontmost but the agent had no
     way to bring it forward. The target is chat-scoped and set by the user via
     POST /api/chats/{id}/computer_use/enable; the agent cannot change it.
+
+    Strategy (handles macOS Sonoma+ focus-stealing prevention):
+      1. AppleScript `activate` + `reopen` (Dock-click equivalent: creates a
+         window if none exist; required for apps like TextEdit that start
+         without a visible document).
+      2. If still not frontmost, NSRunningApplication.activateWithOptions_
+         with NSApplicationActivateIgnoringOtherApps.
+      3. If still not frontmost, send Cmd+Tab via the CGEvent path as a last
+         resort (only works after step 2 registers the app as user-reachable).
     """
     target = (os.environ.get("APEX_CU_TARGET_BUNDLE") or "").strip()
     if not target:
@@ -478,34 +586,114 @@ def _tool_activate_target_app(_args: dict) -> dict:
     # macOS Mojave+ blocks cross-process focus steal via NSRunningApplication
     # .activateWithOptions:. AppleScript's `tell app id "..." to activate` has
     # the privileged path. Bundle ID is sanitized via a character whitelist so
-    # it cannot break out of the single-quoted AppleScript literal.
+    # it cannot break out of the double-quoted AppleScript literal.
     import re as _re
     import subprocess as _sp
     if not _re.match(r"^[A-Za-z0-9._-]+$", target):
         return {"ok": False, "reason": f"target bundle-ID {target!r} contains unsafe characters; refusing"}
+
+    def _check_frontmost() -> bool:
+        _, bid = _frontmost_bundle()
+        return bid == target
+
+    def _poll_frontmost(tries: int = 10, interval: float = 0.15) -> bool:
+        for _ in range(tries):
+            time.sleep(interval)
+            if _check_frontmost():
+                return True
+        return False
+
     try:
         AppKit = _get_appkit()
         running = AppKit.NSRunningApplication.runningApplicationsWithBundleIdentifier_(target)
         was_running = running is not None and len(running) > 0
-        script = f'tell application id "{target}" to activate'
+        steps_tried: list[str] = []
+
+        # --- Step 1: AppleScript activate + reopen (Dock-click equivalent) ---
+        # `reopen` tells the app to show a default window if none exist.
+        # Most document-based apps support it (TextEdit, Finder, Preview, etc).
+        # The `try` inside AppleScript swallows NotHandled errors for apps that
+        # don't implement reopen so `activate` still fires.
+        script = (
+            f'tell application id "{target}"\n'
+            f'  activate\n'
+            f'  try\n'
+            f'    reopen\n'
+            f'  end try\n'
+            f'end tell'
+        )
         proc = _sp.run(
             ["/usr/bin/osascript", "-e", script],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=8,
         )
+        steps_tried.append("applescript")
         if proc.returncode != 0:
             err = (proc.stderr or "").strip()[:200]
             _flog(logging.WARNING, "activate_target_app", f"osascript failed rc={proc.returncode} err={err}")
             return {"ok": False, "reason": f"osascript activate failed for {target}: {err}. Check the bundle-ID is correct and the app is installed."}
-        # Give the app a moment to come forward, then verify.
-        for _ in range(10):
-            time.sleep(0.15)
-            _, bid = _frontmost_bundle()
-            if bid == target:
-                _flog(logging.INFO, "activate_target_app", f"ok target={target} was_running={was_running}")
-                return {"ok": True, "bundle_id": target, "was_running": was_running, "now_frontmost": True}
+
+        if _poll_frontmost():
+            _flog(logging.INFO, "activate_target_app", f"ok via applescript target={target} was_running={was_running}")
+            return {"ok": True, "bundle_id": target, "was_running": was_running, "now_frontmost": True, "method": "applescript"}
+
+        # --- Step 2: NSRunningApplication activateWithOptions ignoring others ---
+        # Re-fetch running apps because step 1 may have just launched the app.
+        running2 = AppKit.NSRunningApplication.runningApplicationsWithBundleIdentifier_(target)
+        if running2 is not None and len(running2) > 0:
+            # NSApplicationActivateIgnoringOtherApps = 1 << 1 = 2
+            # NSApplicationActivateAllWindows        = 1 << 0 = 1
+            opts = 2 | 1
+            for app_ref in running2:
+                try:
+                    app_ref.activateWithOptions_(opts)
+                except Exception as e:
+                    _log_stderr(f"activateWithOptions exception: {e}")
+            steps_tried.append("activateWithOptions")
+            if _poll_frontmost():
+                _flog(logging.INFO, "activate_target_app", f"ok via activateWithOptions target={target}")
+                return {"ok": True, "bundle_id": target, "was_running": was_running, "now_frontmost": True, "method": "activateWithOptions"}
+
+        # --- Step 3: AppleScript via System Events (click Dock tile) ---
+        # If the app is running but still not frontmost, it likely has no
+        # visible window and reopen was a no-op. Try System Events to click
+        # the Dock tile, which is the single most reliable macOS surface-app
+        # primitive. Requires Accessibility permission (already granted for
+        # this tool to do anything useful).
+        dock_script = (
+            f'tell application id "{target}" to activate\n'
+            f'delay 0.2\n'
+            f'tell application "System Events"\n'
+            f'  tell process "Dock"\n'
+            f'    try\n'
+            f'      set appName to name of first application process whose bundle identifier is "{target}"\n'
+            f'      click UI element appName of list 1\n'
+            f'    end try\n'
+            f'  end tell\n'
+            f'end tell'
+        )
+        proc3 = _sp.run(
+            ["/usr/bin/osascript", "-e", dock_script],
+            capture_output=True, text=True, timeout=8,
+        )
+        steps_tried.append("dock-click")
+        if proc3.returncode == 0 and _poll_frontmost(tries=15, interval=0.2):
+            _flog(logging.INFO, "activate_target_app", f"ok via dock-click target={target}")
+            return {"ok": True, "bundle_id": target, "was_running": was_running, "now_frontmost": True, "method": "dock-click"}
+
         _, bid = _frontmost_bundle()
-        _flog(logging.WARNING, "activate_target_app", f"activated but frontmost={bid} not {target}")
-        return {"ok": False, "bundle_id": target, "was_running": was_running, "now_frontmost": False, "reason": f"launched/activated {target} but frontmost is still {bid}. Try again, or bring the app forward manually."}
+        _flog(logging.WARNING, "activate_target_app", f"all steps failed tried={steps_tried} frontmost={bid} target={target}")
+        return {
+            "ok": False,
+            "bundle_id": target,
+            "was_running": was_running,
+            "now_frontmost": False,
+            "methods_tried": steps_tried,
+            "reason": (
+                f"launched/activated {target} via {', '.join(steps_tried)} but frontmost is still {bid}. "
+                f"The app may have no visible window and not support `reopen`. "
+                f"Ask the user to Cmd+Tab to the app or click its Dock icon, then retry."
+            ),
+        }
     except Exception as e:
         _flog(logging.ERROR, "activate_target_app", f"exception: {e}")
         return {"ok": False, "reason": f"activate_target_app failed: {e}"}
