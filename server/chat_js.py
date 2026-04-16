@@ -768,6 +768,8 @@ async function attachToStream(socket, chatId, options = {}) {
     return;
   }
   dbg('sending attach:', chatId, 'reason=', reason, 'reloadBeforeAttach=', reloadBeforeAttach);
+  // WSDIAG
+  console.log('WSDIAG attach chat=' + (chatId || '').slice(0,8) + ' reason=' + (reason || '_') + ' site=attachToStream');
   socket.send(JSON.stringify({action: 'attach', chat_id: chatId}));
 }
 
@@ -952,6 +954,21 @@ function connect() {
       const msg = JSON.parse(e.data);
       if (msg.type === 'pong') { lastPong = Date.now(); return; }
       dbg(' event:', msg.type, msg);
+      // WSDIAG: observability for WS streaming race bug. Text frames sampled
+      // (first-per-stream) so we don't flood console on streaming responses.
+      if (msg && msg.type && msg.type !== 'text') {
+        var _cc = (currentChat || '').slice(0,8);
+        var _sid = (msg.stream_id || '').slice(0,8);
+        var _mc = (msg.chat_id || '').slice(0,8);
+        console.log('WSDIAG recv type=' + msg.type + ' chat=' + _mc + ' sid=' + _sid + ' seq=' + (msg.seq == null ? '_' : msg.seq) + ' curr=' + _cc);
+      } else if (msg && msg.type === 'text' && msg.stream_id) {
+        window._wsdiagTextSeen = window._wsdiagTextSeen || {};
+        var _tk = (msg.chat_id || '') + ':' + msg.stream_id;
+        if (!window._wsdiagTextSeen[_tk]) {
+          window._wsdiagTextSeen[_tk] = 1;
+          console.log('WSDIAG recv type=text chat=' + (msg.chat_id || '').slice(0,8) + ' sid=' + msg.stream_id.slice(0,8) + ' seq=' + (msg.seq == null ? '_' : msg.seq) + ' curr=' + (currentChat || '').slice(0,8) + ' (first)');
+        }
+      }
       handleEvent(msg);
     } catch (err) {
       reportError('ws message parse', err);
@@ -1674,7 +1691,9 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
   // our own in-flight stream events.
   const _activeChat = currentChat || sessionStorage.getItem('currentChatId') || '';
   if (_B42_STREAM.has(msg.type) && msg.chat_id && _activeChat && msg.chat_id !== _activeChat) {
-    dbg('B42: drop cross-chat', msg.type, msg.chat_id, 'vs', _activeChat);
+    // WSDIAG: always surface cross-chat drops (not just dbg) — this is the
+    // symptom of the streaming race bug we're hunting.
+    console.log('WSDIAG drop type=' + msg.type + ' chat=' + (msg.chat_id || '').slice(0,8) + ' vs curr=' + (_activeChat || '').slice(0,8) + ' sid=' + (msg.stream_id || '').slice(0,8) + ' reason=cross-chat');
     return;
   }
   // B-42c: self-heal currentChat if it was nulled but the event matches sessionStorage
@@ -3834,6 +3853,10 @@ async function send(options = {}) {
   lastSubmittedPrompt = text;
   hideStopMenu();
   clearComposerDraft({keepFocus: true});
+  // WSDIAG: log at send boundary so we can correlate with server recv_attach
+  // and the subsequent stream_start frame. ws_chat_attached mismatch here is
+  // a smoking gun.
+  console.log('WSDIAG send chat=' + (currentChat || '').slice(0,8) + ' len=' + (text || '').length + ' wsState=' + (ws && ws.readyState));
   try {
     ws.send(JSON.stringify(msg));
   } catch (err) {
@@ -4144,6 +4167,8 @@ async function selectChat(id, title, chatType, category, options) {
   closeSidebar();
   // Attach WS to the selected chat so we receive live stream events
   if (!skipAttach && ws && ws.readyState === WebSocket.OPEN) {
+    // WSDIAG
+    console.log('WSDIAG attach chat=' + (id || '').slice(0,8) + ' site=selectChat');
     ws.send(JSON.stringify({action: 'attach', chat_id: id}));
   }
 
