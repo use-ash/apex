@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """MCP server that exposes macOS GUI automation to the Claude SDK.
 
-Tools: screenshot, click, type_text, press_key, scroll, wait, get_frontmost.
+Tools: screenshot, click, type_text, press_key, scroll, wait, get_frontmost,
+activate_target_app.
 
 Protocol: newline-delimited JSON-RPC over stdin/stdout (MCP stdio transport),
 matching mcp_execute_code.py exactly.
@@ -460,6 +461,56 @@ def _tool_wait(args: dict) -> dict:
     return {"ok": True, "waited": secs}
 
 
+def _tool_activate_target_app(_args: dict) -> dict:
+    """Launch (if needed) and bring the configured target bundle-ID frontmost.
+
+    Security: only activates the app whose bundle-ID is in APEX_CU_TARGET_BUNDLE.
+    This is the single permitted way for the agent to break the chicken-and-egg
+    where every write tool requires target-app frontmost but the agent had no
+    way to bring it forward. The target is chat-scoped and set by the user via
+    POST /api/chats/{id}/computer_use/enable; the agent cannot change it.
+    """
+    target = (os.environ.get("APEX_CU_TARGET_BUNDLE") or "").strip()
+    if not target:
+        return {"ok": False, "reason": "APEX_CU_TARGET_BUNDLE not set; target-app gate is open but nothing to activate"}
+    if _is_paused():
+        return {"ok": False, "reason": "paused by user"}
+    # macOS Mojave+ blocks cross-process focus steal via NSRunningApplication
+    # .activateWithOptions:. AppleScript's `tell app id "..." to activate` has
+    # the privileged path. Bundle ID is sanitized via a character whitelist so
+    # it cannot break out of the single-quoted AppleScript literal.
+    import re as _re
+    import subprocess as _sp
+    if not _re.match(r"^[A-Za-z0-9._-]+$", target):
+        return {"ok": False, "reason": f"target bundle-ID {target!r} contains unsafe characters; refusing"}
+    try:
+        AppKit = _get_appkit()
+        running = AppKit.NSRunningApplication.runningApplicationsWithBundleIdentifier_(target)
+        was_running = running is not None and len(running) > 0
+        script = f'tell application id "{target}" to activate'
+        proc = _sp.run(
+            ["/usr/bin/osascript", "-e", script],
+            capture_output=True, text=True, timeout=5,
+        )
+        if proc.returncode != 0:
+            err = (proc.stderr or "").strip()[:200]
+            _flog(logging.WARNING, "activate_target_app", f"osascript failed rc={proc.returncode} err={err}")
+            return {"ok": False, "reason": f"osascript activate failed for {target}: {err}. Check the bundle-ID is correct and the app is installed."}
+        # Give the app a moment to come forward, then verify.
+        for _ in range(10):
+            time.sleep(0.15)
+            _, bid = _frontmost_bundle()
+            if bid == target:
+                _flog(logging.INFO, "activate_target_app", f"ok target={target} was_running={was_running}")
+                return {"ok": True, "bundle_id": target, "was_running": was_running, "now_frontmost": True}
+        _, bid = _frontmost_bundle()
+        _flog(logging.WARNING, "activate_target_app", f"activated but frontmost={bid} not {target}")
+        return {"ok": False, "bundle_id": target, "was_running": was_running, "now_frontmost": False, "reason": f"launched/activated {target} but frontmost is still {bid}. Try again, or bring the app forward manually."}
+    except Exception as e:
+        _flog(logging.ERROR, "activate_target_app", f"exception: {e}")
+        return {"ok": False, "reason": f"activate_target_app failed: {e}"}
+
+
 def _tool_get_frontmost(_args: dict) -> dict:
     name, bid = _frontmost_bundle()
     title: str | None = None
@@ -588,6 +639,19 @@ _TOOLS: list[dict[str, Any]] = [
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "activate_target_app",
+        "description": (
+            "Launch (if not running) and bring the configured target app frontmost "
+            "so that write tools (click/type_text/press_key/scroll) will be allowed. "
+            "Only activates the bundle-ID the user set for this chat via the enable "
+            "endpoint — cannot switch to arbitrary apps. Call this FIRST if "
+            "get_frontmost shows a different app, then verify with get_frontmost or "
+            "proceed directly to screenshot. Returns {ok, bundle_id, was_running, "
+            "now_frontmost}."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 
@@ -599,6 +663,7 @@ _DISPATCH = {
     "scroll": _tool_scroll,
     "wait": _tool_wait,
     "get_frontmost": _tool_get_frontmost,
+    "activate_target_app": _tool_activate_target_app,
 }
 
 
