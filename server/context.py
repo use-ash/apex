@@ -22,6 +22,7 @@ from db import (
     _get_db, _get_chat, _update_chat,
     _get_messages, _get_recent_messages_text, _get_cumulative_tokens_in,
     _get_last_turn_tokens_in, _estimate_tokens, _get_last_turn_cost,
+    _get_last_turn_cost_delta,
     _get_session_analysis_data,
     _get_group_members, _get_persona_memories, _bump_memory_access,
     _get_last_assistant_speaker,
@@ -278,31 +279,61 @@ def _write_phase_checkpoint(
         log(f"checkpoint write failed: {e}")
 
 
+# Effective blended input-token price factor for Anthropic-style prompt caching.
+# Cache reads bill at ~10% of input price, cache writes at ~125%, fresh input at
+# 100%.  On a stable session most of the prompt is cache reads, so the effective
+# per-token cost sits closer to cache_read than fresh input.  A 0.3 blend
+# approximates "70% cache reads, 30% fresh + cache writes":
+#   - Turn 1 (all fresh, actual ratio ~1.0×): 0.3 gives ~3× overestimate, capped
+#     by context_window in the helper.
+#   - Warm turn (mostly cache reads, actual ratio ~0.1×): 0.3 gives ~3× under-
+#     estimate but still a useful signal.
+# This is a heuristic — when Apex records cache_read_tokens in the messages
+# table we can replace this with exact math.
+_COST_CACHE_BLEND_FACTOR = 0.3
+
+
 def _estimate_tokens_from_cost(chat_id: str, chat_model: str) -> int:
-    """Derive context token count from the last turn's cost.
+    """Derive context token count from the last turn's DELTA cost.
 
-    When the Claude Agent SDK returns garbage tokens_in values (3-12 instead
-    of real cumulative context counts), the per-turn cost is still accurate
-    because Anthropic bills on actual token usage.  We can reverse-engineer
-    the input token count:
+    SDK `tokens_in` is often garbage (3-24), so we reverse-engineer tokens from
+    billed cost.  Two gotchas matter:
 
-        input_tokens ≈ (cost_usd - tokens_out × output_price) / input_price
+      1. Cumulative cost: Claude Agent SDK stores session-run cumulative
+         `total_cost_usd` per assistant message.  Dividing that by input price
+         grows monotonically and pins the fuel gauge at 100%.  We use
+         `_get_last_turn_cost_delta` to isolate the current turn's cost.
+      2. Prompt caching: for Anthropic models, most prompt tokens are cache
+         reads billed at 10% of the input price.  Dividing by the base input
+         price undercounts context size on warm turns.  We apply a blended
+         factor (see _COST_CACHE_BLEND_FACTOR) that assumes a mix of cache
+         reads and fresh input.
 
-    Returns 0 if pricing data is unavailable for the model.
+    Formula:
+        per_turn_cost - tokens_out × output_price
+        ─────────────────────────────────────────  ≈  context tokens
+              input_price × blend_factor
+
+    Returns 0 if pricing data is unavailable for the model or there is no
+    usable cost history yet.
     """
     input_price = MODEL_INPUT_PRICE.get(chat_model, 0.0)
     output_price = MODEL_OUTPUT_PRICE.get(chat_model, 0.0)
     if input_price <= 0:
         return 0  # no pricing data — can't estimate
 
-    cost_usd, tokens_out = _get_last_turn_cost(chat_id)
-    if cost_usd <= 0:
+    per_turn_cost, tokens_out = _get_last_turn_cost_delta(chat_id)
+    if per_turn_cost <= 0:
         return 0
 
-    # Subtract estimated output cost to isolate input cost
+    # Subtract estimated output cost to isolate input-side cost
     output_cost = tokens_out * output_price
-    input_cost = max(cost_usd - output_cost, 0.0)
-    estimated = int(input_cost / input_price)
+    input_cost = max(per_turn_cost - output_cost, 0.0)
+
+    effective_price = input_price * _COST_CACHE_BLEND_FACTOR
+    if effective_price <= 0:
+        return 0
+    estimated = int(input_cost / effective_price)
     return max(estimated, 0)
 
 
