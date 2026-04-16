@@ -463,6 +463,8 @@ text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
 .alert-detail-card .ad-title{font-size:16px;font-weight:600;color:var(--panel-text)}
 .alert-detail-card .ad-body{font-size:13px;color:var(--panel-muted);
 overflow-wrap:break-word;word-break:break-word;line-height:1.6}
+.alert-detail-card .ad-body a{color:#3b82f6;text-decoration:underline;cursor:pointer;word-break:break-all}
+.alert-detail-card .ad-body a:hover{color:#60a5fa}
 .alert-detail-card .ad-body ul,.alert-detail-card .ad-body ol{margin:8px 0 0;padding-left:20px}
 .alert-detail-card .ad-body li+li{margin-top:4px}
 .alert-detail-card .ad-body code{display:block;background:rgba(255,255,255,0.04);

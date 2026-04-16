@@ -2727,11 +2727,39 @@ function sanitizeAlertBodyNode(node) {
     sanitizeAlertBodyNode(child);
   });
 }
+function linkifyTextNodes(node) {
+  const urlRe = /https?:\/\/[^\s<>"')\]]+/g;
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+  textNodes.forEach((tn) => {
+    if (tn.parentNode && tn.parentNode.tagName && tn.parentNode.tagName.toLowerCase() === 'a') return;
+    const val = tn.nodeValue;
+    if (!urlRe.test(val)) return;
+    urlRe.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    let m;
+    while ((m = urlRe.exec(val)) !== null) {
+      if (m.index > last) frag.appendChild(document.createTextNode(val.slice(last, m.index)));
+      const a = document.createElement('a');
+      a.href = m[0];
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.textContent = m[0];
+      frag.appendChild(a);
+      last = m.index + m[0].length;
+    }
+    if (last < val.length) frag.appendChild(document.createTextNode(val.slice(last)));
+    tn.parentNode.replaceChild(frag, tn);
+  });
+}
 function renderAlertBody(raw) {
   const text = String(raw || '').split('\\\\n').join('\\n');
   const doc = new DOMParser().parseFromString('<div>' + text + '</div>', 'text/html');
   const root = doc.body.firstElementChild || doc.body;
   sanitizeAlertBodyNode(root);
+  linkifyTextNodes(root);
   root.querySelectorAll('code').forEach((codeEl) => {
     codeEl.setAttribute('role', 'button');
     codeEl.setAttribute('tabindex', '0');
