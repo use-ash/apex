@@ -593,6 +593,9 @@ background:var(--bg);opacity:1;max-height:480px;overflow:hidden;transition:max-h
 .gs-relay-agent.is-abstained .gs-relay-agent-icon{color:color-mix(in srgb, var(--dim) 60%, transparent)}
 .gs-relay-agent.is-abstained .gs-relay-agent-name,.gs-relay-agent.is-abstained .gs-relay-agent-label{color:var(--dim)}
 .gs-relay-agent.is-abstained .gs-relay-agent-label{font-style:italic}
+.gs-relay-agent.is-paused .gs-relay-agent-icon,.gs-relay-agent.is-paused .gs-relay-agent-name,.gs-relay-agent.is-paused .gs-relay-agent-label{color:var(--yellow,#facc15)}
+.gs-relay-agent.is-paused .gs-relay-agent-name{font-weight:600}
+.gs-relay-paused{padding:6px 8px;margin:6px 0;border-radius:6px;background:color-mix(in srgb, var(--yellow,#facc15) 12%, transparent);color:var(--yellow,#facc15);font-size:11px;text-align:center;font-weight:500}
 .gs-add-picker{padding:8px 0}
 .gs-add-picker .profile-card{margin-bottom:4px;padding:8px 10px}
 .gs-add-picker .profile-card .profile-avatar{font-size:22px;width:32px}

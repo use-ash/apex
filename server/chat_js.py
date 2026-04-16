@@ -3115,6 +3115,7 @@ function updateChatModelSelect() {
 
   // Build option list: cloud models + local models
   const cloudModels = [
+    {id: 'claude-opus-4-7', name: 'Claude Opus 4.7'},
     {id: 'claude-opus-4-6', name: 'Claude Opus 4.6'},
     {id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6'},
     {id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5'},
@@ -4969,6 +4970,7 @@ async function showNewChatProfilePicker() {
 
   function getNewChatModelOptions() {
     const cloudModels = [
+      {id: 'claude-opus-4-7', name: 'Claude Opus 4.7'},
       {id: 'claude-opus-4-6', name: 'Claude Opus 4.6'},
       {id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6'},
       {id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5'},
@@ -5329,7 +5331,10 @@ async function showGroupSettings() {
     const card = document.createElement('div');
     card.className = 'gs-relay-status';
     if (relayState.active !== true) {
-      card.innerHTML = `<div class="gs-relay-ready"><div class="gs-relay-ready-icon">◎</div><div><div class="gs-relay-ready-title">Ready</div><div class="gs-relay-ready-copy">Relay starts on your next message.<br>Agents will respond one at a time.</div></div></div>`;
+      const stepHint = relayState && relayState.step_mode
+        ? 'One agent per message — you speak between each turn.'
+        : 'Agents will respond one at a time.';
+      card.innerHTML = `<div class="gs-relay-ready"><div class="gs-relay-ready-icon">◎</div><div><div class="gs-relay-ready-title">Ready</div><div class="gs-relay-ready-copy">Relay starts on your next message.<br>${stepHint}</div></div></div>`;
       return card;
     }
     const agents = Array.isArray(relayState.agents) ? relayState.agents : [];
@@ -5340,13 +5345,17 @@ async function showGroupSettings() {
       responded: { icon: '✓', label: 'responded', cls: 'is-responded' },
       abstained: { icon: '⊘', label: 'passed', cls: 'is-abstained' },
       next: { icon: '▸', label: 'up next', cls: 'is-next' },
+      paused: { icon: '⏸', label: 'your turn', cls: 'is-paused' },
       waiting: { icon: '○', label: 'waiting', cls: 'is-waiting' },
     };
     const rows = agents.map(agent => {
       const meta = statusMeta[agent.status] || statusMeta.waiting;
       return `<div class="gs-relay-agent ${meta.cls}"><div class="gs-relay-agent-emoji">${escHtml(agent.emoji || '🤖')}</div><div class="gs-relay-agent-icon">${meta.icon}</div><div class="gs-relay-agent-name">${escHtml(agent.name || agent.profile_id || 'Agent')}</div><div class="gs-relay-agent-label">${meta.label}</div></div>`;
     }).join('');
-    card.innerHTML = `<div class="gs-relay-header"><div class="gs-relay-round">Round ${Number(relayState.round_number || 1)} <span class="gs-relay-round-max">· ${Number(relayState.max_rounds || 10)} max</span></div><div class="gs-relay-count">${completed}/${total}</div></div><div class="gs-relay-progress"><div class="gs-relay-progress-fill" style="width:${pct}%"></div></div><div class="gs-relay-agents">${rows}</div>`;
+    const pausedBanner = relayState.paused
+      ? '<div class="gs-relay-paused">Waiting for you — send a message to continue</div>'
+      : '';
+    card.innerHTML = `<div class="gs-relay-header"><div class="gs-relay-round">Round ${Number(relayState.round_number || 1)} <span class="gs-relay-round-max">· ${Number(relayState.max_rounds || 10)} max</span></div><div class="gs-relay-count">${completed}/${total}</div></div><div class="gs-relay-progress"><div class="gs-relay-progress-fill" style="width:${pct}%"></div></div>${pausedBanner}<div class="gs-relay-agents">${rows}</div>`;
     return card;
   }
 
@@ -5733,6 +5742,45 @@ async function showGroupSettings() {
     };
     seqRow.appendChild(seqToggle);
     setSection.appendChild(seqRow);
+
+    if (seqOn) {
+      const stepRow = document.createElement('div');
+      stepRow.className = 'gs-toggle-row';
+      stepRow.style.borderTop = '1px solid var(--bg)';
+      stepRow.style.paddingTop = '10px';
+      stepRow.style.marginTop = '6px';
+      const stepOn = !!settings.relay_step_mode;
+      const stepCopy = document.createElement('div');
+      stepCopy.className = 'gs-toggle-copy';
+      stepCopy.innerHTML = `<span class="gs-toggle-label">Human in the Loop</span>
+        <div class="gs-toggle-hint" style="margin-top:2px">One agent responds per message. You speak between each agent turn.</div>`;
+      stepRow.appendChild(stepCopy);
+      const stepToggle = document.createElement('button');
+      stepToggle.className = 'gs-toggle ' + (stepOn ? 'on' : 'off');
+      stepToggle.onclick = async () => {
+        const newStepVal = !stepOn;
+        try {
+          const resp = await fetch(`/api/chats/${chatId}/settings`, {
+            method: 'PATCH', credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({relay_step_mode: newStepVal})
+          });
+          if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            gsToast(err.error || 'Setting update failed');
+            return;
+          }
+          const payload = await resp.json().catch(() => ({}));
+          settings = payload.settings || settings;
+          settings.relay_step_mode = newStepVal;
+          gsToast(newStepVal ? 'Human-in-the-loop enabled' : 'Auto-relay restored');
+          render();
+        } catch(e) { dbg('setting update error:', e); }
+      };
+      stepRow.appendChild(stepToggle);
+      setSection.appendChild(stepRow);
+    }
+
     const relayCard = renderRelayStatus(relayState);
     if (relayCard) setSection.appendChild(relayCard);
 

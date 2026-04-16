@@ -39,6 +39,7 @@ from group_coordinator import (
     _clear_strict_group_relay,
     _find_invalid_group_mentions,
     _get_multi_dispatch_targets_fallback,
+    _get_strict_group_relay_state,
     _merge_group_dispatch_targets,
     _resolve_direct_group_agent,
     _resolve_group_agent_fallback,

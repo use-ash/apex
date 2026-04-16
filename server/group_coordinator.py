@@ -458,7 +458,8 @@ def _advance_strict_group_relay(
         coord_protocol = _get_chat_settings(chat_id).get("coordination_protocol", "freeform")
         all_abstained = set(round_abstentions) >= set(state.ordered_profile_ids)
         at_max_rounds = state.round_number >= _MAX_RELAY_ROUNDS
-        if coord_protocol == "sequential" and not all_abstained and not at_max_rounds:
+        step_mode = bool(_get_chat_settings(chat_id).get("relay_step_mode"))
+        if coord_protocol == "sequential" and not all_abstained and not at_max_rounds and not step_mode:
             # Start new round
             _set_strict_relay_payload(
                 chat_id,
@@ -858,6 +859,17 @@ def _build_group_relay_plan(
                 sender_name=str(group_agent.get("name") or group_agent.get("profile_id") or "agent"),
             )
             strict_relay_feedback_message = _build_strict_group_relay_feedback_message(strict_relay)
+    # Step mode: when relay round completed (cleared), suppress ALL dispatch
+    # to force human input before the next round begins.  The relay was just
+    # cleared by _advance_strict_group_relay because step_mode prevented a
+    # new round from auto-starting, but the fallback relay still has actions
+    # from the last agent's @mentions — those must be blocked.
+    if not strict_relay.active and bool(_get_chat_settings(chat_id).get("relay_step_mode")):
+        relay = {**relay, "actions": []}
+        if not strict_relay_feedback_message:
+            strict_relay_feedback_message = (
+                "Round complete — waiting for your input before the next round."
+            )
     sender_profile_id = str(group_agent.get("profile_id") or "")
     actionable_relay_actions = [
         action

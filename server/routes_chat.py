@@ -67,15 +67,19 @@ def _serialize_relay_state(chat_id: str, chat: dict | None = None) -> dict | Non
         for member in members
         if str(member.get("profile_id") or "")
     }
+    step_mode = bool(settings.get("relay_step_mode"))
     if not relay_state.active:
         return {
             "active": False,
             "round_number": int(relay_state.round_number or 1),
             "max_rounds": _MAX_RELAY_ROUNDS,
+            "step_mode": step_mode,
+            "paused": False,
             "agents": [],
         }
     abstained = set(relay_state.round_abstentions or ())
     completed = set(relay_state.completed_profile_ids or [])
+    paused = step_mode and bool(relay_state.next_profile_id)
     agents: list[dict] = []
     for profile_id in relay_state.ordered_profile_ids:
         member = member_map.get(profile_id) or {}
@@ -84,7 +88,7 @@ def _serialize_relay_state(chat_id: str, chat: dict | None = None) -> dict | Non
         elif profile_id in completed:
             status = "responded"
         elif profile_id == relay_state.next_profile_id:
-            status = "next"
+            status = "paused" if paused else "next"
         else:
             status = "waiting"
         agents.append({
@@ -97,6 +101,8 @@ def _serialize_relay_state(chat_id: str, chat: dict | None = None) -> dict | Non
         "active": True,
         "round_number": int(relay_state.round_number or 1),
         "max_rounds": _MAX_RELAY_ROUNDS,
+        "step_mode": step_mode,
+        "paused": paused,
         "agents": agents,
     }
 
@@ -445,7 +451,7 @@ async def api_update_chat_settings(chat_id: str, request: Request):
         return JSONResponse({"error": "Chat not found"}, status_code=404)
     current_settings = _get_chat_settings(chat_id)
     data = await request.json()
-    allowed = {"agent_mentions_enabled", "auto_title", "notification_level", "auto_reply", "shared_memory", "coordination_protocol"}
+    allowed = {"agent_mentions_enabled", "auto_title", "notification_level", "auto_reply", "shared_memory", "coordination_protocol", "relay_step_mode"}
     filtered = {k: v for k, v in data.items() if k in allowed}
     if not filtered:
         return JSONResponse({"error": f"No valid settings. Allowed: {', '.join(sorted(allowed))}"}, status_code=400)
