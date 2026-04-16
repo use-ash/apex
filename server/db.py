@@ -810,6 +810,9 @@ def _get_last_turn_cost(chat_id: str) -> tuple[float, int]:
     """Return (cost_usd, tokens_out) for the most recent assistant message.
 
     Used by the cost-based context estimator when SDK tokens_in is unreliable.
+    NOTE: For the Claude Agent SDK, cost_usd is cumulative from the session
+    run start (ResultMessage.total_cost_usd).  Prefer `_get_last_turn_cost_delta`
+    for per-turn cost.
     """
     since = _last_compacted_at.get(chat_id)
     with _db_lock:
@@ -832,6 +835,57 @@ def _get_last_turn_cost(chat_id: str) -> tuple[float, int]:
     if row:
         return (row[0] or 0.0, row[1] or 0)
     return (0.0, 0)
+
+
+def _get_last_turn_cost_delta(chat_id: str) -> tuple[float, int]:
+    """Return (per_turn_cost_usd, tokens_out) for the most recent assistant turn.
+
+    Computes the delta between the last two cumulative cost_usd values so the
+    fuel-gauge cost estimator isn't fed a monotonically-growing number.  Claude
+    Agent SDK stores cumulative `total_cost_usd` from session-run start; after
+    many turns that easily exceeds any per-turn interpretation.
+
+    Handles three cases:
+      - 2+ assistant messages with cost_usd > 0: return (last - prev, last.tokens_out)
+      - 1 assistant message: return that turn's raw cost (first turn of session)
+      - 0 messages: return (0.0, 0)
+
+    If the backend stores per-turn cost (Codex/Grok/Ollama), the last two
+    values won't be monotonically increasing; we still return a non-negative
+    delta (or 0) so the helper degrades gracefully.
+    """
+    since = _last_compacted_at.get(chat_id)
+    with _db_lock:
+        conn = _get_db()
+        if since:
+            rows = conn.execute(
+                "SELECT cost_usd, tokens_out FROM messages "
+                "WHERE chat_id = ? AND role = 'assistant' AND cost_usd > 0 AND created_at > ? "
+                "ORDER BY created_at DESC LIMIT 2",
+                (chat_id, since),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT cost_usd, tokens_out FROM messages "
+                "WHERE chat_id = ? AND role = 'assistant' AND cost_usd > 0 "
+                "ORDER BY created_at DESC LIMIT 2",
+                (chat_id,),
+            ).fetchall()
+        conn.close()
+    if not rows:
+        return (0.0, 0)
+    last_cost = rows[0][0] or 0.0
+    last_tok_out = rows[0][1] or 0
+    if len(rows) < 2:
+        # First assistant turn in session — no prior to diff against; treat
+        # the whole cost as this turn's cost.
+        return (last_cost, last_tok_out)
+    prev_cost = rows[1][0] or 0.0
+    delta = last_cost - prev_cost
+    if delta < 0:
+        # Non-cumulative backend; cost went down. Treat as "no usable delta".
+        return (0.0, last_tok_out)
+    return (delta, last_tok_out)
 
 
 # ---------------------------------------------------------------------------
