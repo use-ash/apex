@@ -886,12 +886,7 @@ async def _stream_response(
                         await _send({"type": "text", "text": block.text})
 
                     elif isinstance(block, ThinkingBlock):
-                        # B47-diag: capture 4.7 thinking-block shape to diagnose empty pills
-                        # (unconditional — short line, fires a few times per turn)
                         _tk = block.thinking or ""
-                        _sg = getattr(block, "signature", "") or ""
-                        _mn = locals().get("model_name", MODEL)
-                        log(f"B47DIAG ThinkingBlock model={_mn} thinking_len={len(_tk)} sig_len={len(_sg)} preview={_tk[:80]!r}")
                         thinking_text += _tk
                         _partial_results[chat_id]["thinking"] = thinking_text
                         await _send({"type": "thinking", "text": _tk})
