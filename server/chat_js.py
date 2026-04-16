@@ -861,6 +861,12 @@ function setCurrentChat(id, title) {
   startUsagePolling();
   updateSendBtn();
   refreshDebugState('chat-selected');
+  // Computer-use: sync the persistent resume banner with server pause state.
+  // If this chat has GUI automation enabled AND the pause flag is set on disk,
+  // surface a resume button in the header so the user always has a way out.
+  if (typeof cuSyncPauseUI === 'function' && currentChat) {
+    try { cuSyncPauseUI(currentChat); } catch (e) { /* non-fatal */ }
+  }
 }
 """
 
@@ -1307,6 +1313,17 @@ function _updateToolPillProgress(ctx) {
     const pct = total > 0 ? Math.max(8, Math.round((completed / total) * 100)) : 8;
     bar.style.width = pct + '%';
   }
+  // Mount the inline pause button as soon as any computer_use tool lands in
+  // this pill — do not wait for the user to expand the side panel. Without
+  // this, when the agent starts a new turn after a pause, the new turn's
+  // pill has no inline pause control and the stale button clings to the
+  // previous turn's bubble.
+  if (typeof cuMountPauseButton === 'function' && currentChat) {
+    const hasCU = ctx.toolCalls.some(t => t && t.name && t.name.indexOf('mcp__computer_use__') === 0);
+    if (hasCU) {
+      try { cuMountPauseButton(pill, currentChat); } catch (e) { /* non-fatal */ }
+    }
+  }
 }
 
 function _finalizeToolPill(ctx, totalTime) {
@@ -1326,6 +1343,15 @@ function _finalizeToolPill(ctx, totalTime) {
   const dimText = errors > 0 ? `${errors} failed` : (_formatDuration(totalTime) || 'Complete');
   pill.innerHTML = `<span class="pill-icon">${errors > 0 ? '&#9888;' : '&#128295;'}</span><span class="pill-label">${total === 1 ? '1 tool call' : `${total} tool calls`}</span><span class="pill-dim">${dimText}</span><span class="pill-counts">${completed}/${total}</span><span class="pill-chevron">&#8250;</span>`;
   pill.onclick = () => openToolPanel(pill);
+  // Re-attach the inline pause button on finalize — innerHTML rewrite above
+  // doesn't touch siblings, but in case the button was never mounted (e.g.
+  // the progress updater missed the window), guarantee it here for CU tools.
+  if (typeof cuMountPauseButton === 'function' && currentChat) {
+    const hasCU = ctx.toolCalls.some(t => t && t.name && t.name.indexOf('mcp__computer_use__') === 0);
+    if (hasCU) {
+      try { cuMountPauseButton(pill, currentChat); } catch (e) { /* non-fatal */ }
+    }
+  }
   return pill;
 }
 
@@ -6646,6 +6672,10 @@ async function cuPause(chatId) {
     method: 'POST', credentials: 'same-origin',
   });
   _cuPauseState[chatId] = 'paused';
+  // Surface the persistent header banner immediately — without this, if the
+  // current tool pill ages out or a new turn renders without re-mounting the
+  // inline button, the user has no way to resume from the UI.
+  try { cuEnsurePauseBanner(chatId, true); } catch (e) { /* non-fatal */ }
   return r.ok ? r.json() : null;
 }
 
@@ -6655,6 +6685,8 @@ async function cuResume(chatId) {
     method: 'POST', credentials: 'same-origin',
   });
   _cuPauseState[chatId] = 'active';
+  // Remove the header banner now that we're active again.
+  try { cuEnsurePauseBanner(chatId, false); } catch (e) { /* non-fatal */ }
   return r.ok ? r.json() : null;
 }
 
@@ -6676,6 +6708,12 @@ function cuMountPauseButton(toolPillEl, chatId) {
     existing.style.display = '';
     return;
   }
+  // A stale button from a previous turn's pill would otherwise linger
+  // forever (auto-hide ticker skips paused buttons). Evict it from DOM
+  // before we create the replacement on the current turn's pill.
+  if (existing && existing.isConnected && existing._pillEl !== toolPillEl) {
+    try { existing.remove(); } catch (e) { /* non-fatal */ }
+  }
   // Local-const capture of DOM elements — avoid mutable globals in handler.
   const pillEl = toolPillEl;
   const cid = chatId;
@@ -6688,6 +6726,15 @@ function cuMountPauseButton(toolPillEl, chatId) {
     btn.style.background = paused ? '#22c55e' : '#ef4444';
   };
   setLabel(_cuPauseState[cid] === 'paused');
+  // Sync label from server truth — in-memory _cuPauseState is lost on page
+  // refresh, but the flag file on disk persists. Without this, after a
+  // reload the button shows "Pause" even though the server is still paused,
+  // and clicking it would POST /pause (no-op) instead of /resume.
+  cuGetStatus(cid).then((st) => {
+    if (!st) return;
+    _cuPauseState[cid] = st.paused ? 'paused' : 'active';
+    setLabel(!!st.paused);
+  }).catch(() => {});
   btn.addEventListener('click', async (ev) => {
     ev.stopPropagation();  // don't open/close the tool panel
     const wasPaused = _cuPauseState[cid] === 'paused';
@@ -6712,18 +6759,75 @@ function cuMountPauseButton(toolPillEl, chatId) {
     pillEl.parentNode.insertBefore(btn, pillEl.nextSibling);
   }
   // Auto-hide 60s after last activity — a single shared ticker, cheap enough.
+  // EXCEPTION: never auto-hide while paused; otherwise user loses the only
+  // way to resume from the UI once the tool pill ages out.
   if (!cuMountPauseButton._ticker) {
     cuMountPauseButton._ticker = setInterval(() => {
       const now = Date.now();
       for (const k of Object.keys(_cuButtonEls)) {
         const b = _cuButtonEls[k];
         const last = _cuLastActivity[k] || 0;
-        if (b && b.isConnected && (now - last) > 60000) {
+        const paused = _cuPauseState[k] === 'paused';
+        if (b && b.isConnected && !paused && (now - last) > 60000) {
           b.style.display = 'none';
         }
       }
     }, 5000);
   }
+}
+
+// Persistent resume banner: when a chat has computer_use enabled AND is
+// paused, surface a resume pill in the chat header even when no tool pill
+// is visible. Solves the "paused → no new tool calls → button ages out →
+// no way to unpause from UI" dead-end.
+function cuEnsurePauseBanner(chatId, paused) {
+  if (!chatId) return;
+  // Anchor: the chat title element (always present while a chat is open).
+  const anchor = document.getElementById('chatTitle');
+  if (!anchor || !anchor.parentNode) return;
+  let banner = document.getElementById('cuPauseBanner');
+  if (!paused) {
+    if (banner) banner.remove();
+    return;
+  }
+  if (!banner) {
+    banner = document.createElement('button');
+    banner.id = 'cuPauseBanner';
+    banner.type = 'button';
+    banner.style.cssText = 'margin-left:10px;padding:4px 12px;border-radius:999px;background:#22c55e;color:#fff;border:none;font-size:12px;cursor:pointer;font-weight:600;vertical-align:middle;';
+    banner.textContent = '\\u25B6 Resume GUI';
+    banner.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      banner.disabled = true;
+      try {
+        await cuResume(chatId);
+        banner.remove();
+        // Also sync the inline tool-pill button label if present.
+        const b = _cuButtonEls[chatId];
+        if (b && b.isConnected) {
+          b.textContent = '\\u23F8 Pause GUI';
+          b.style.background = '#ef4444';
+        }
+      } finally {
+        banner.disabled = false;
+      }
+    });
+    anchor.parentNode.insertBefore(banner, anchor.nextSibling);
+  }
+}
+
+// Called from setCurrentChat — syncs the resume banner with server truth
+// whenever the user switches to (or reloads) a chat.
+async function cuSyncPauseUI(chatId) {
+  if (!chatId) return;
+  try {
+    const st = await cuGetStatus(chatId);
+    if (!st) return;
+    _cuPauseState[chatId] = st.paused ? 'paused' : 'active';
+    // Only show the banner if computer_use is actually enabled for this chat
+    // (no target bundle = no GUI automation, banner would be meaningless).
+    cuEnsurePauseBanner(chatId, st.enabled && st.paused);
+  } catch (e) { /* non-fatal */ }
 }
 
 // Expose as window globals so openToolPanel (rendered from a different
@@ -6736,6 +6840,8 @@ window.cuPause = cuPause;
 window.cuResume = cuResume;
 window.cuGetStatus = cuGetStatus;
 window.cuMountPauseButton = cuMountPauseButton;
+window.cuEnsurePauseBanner = cuEnsurePauseBanner;
+window.cuSyncPauseUI = cuSyncPauseUI;
 """
 
 CHAT_JS = "\n".join([

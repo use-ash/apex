@@ -142,6 +142,21 @@ def _get_appkit():
         return _AppKit
     import AppKit  # type: ignore
     _AppKit = AppKit
+    # Suppress the bouncing Python Dock icon: once AppKit is imported, the
+    # Python process becomes a regular GUI app and every NSWorkspace /
+    # activate call makes it fight TextEdit for frontmost. Setting activation
+    # policy to Prohibited before the shared NSApplication caches a Dock tile
+    # removes Python from Dock + Cmd+Tab entirely, so activate_target_app's
+    # NSRunningApplication.activateWithOptions_ calls on the *target* are no
+    # longer clobbered by the interpreter yanking itself forward.
+    try:
+        app = AppKit.NSApplication.sharedApplication()
+        if hasattr(app, "setActivationPolicy_"):
+            # NSApplicationActivationPolicyProhibited = 2
+            app.setActivationPolicy_(2)
+            _log_stderr("activation policy set to Prohibited (no Dock tile)")
+    except Exception as e:
+        _log_stderr(f"setActivationPolicy failed (non-fatal): {e}")
     return _AppKit
 
 
@@ -216,6 +231,51 @@ def _target_app_check() -> dict | None:
             "frontmost": bid,
         }
     return None
+
+
+def _target_pid() -> int | None:
+    """Return the PID of the first running instance of APEX_CU_TARGET_BUNDLE, else None."""
+    target = _target_bundle()
+    if not target:
+        return None
+    try:
+        AppKit = _get_appkit()
+        apps = AppKit.NSRunningApplication.runningApplicationsWithBundleIdentifier_(target)
+        if apps and len(apps) > 0:
+            return int(apps[0].processIdentifier())
+    except Exception as e:
+        _log_stderr(f"target_pid lookup failed: {e}")
+    return None
+
+
+def _post_unicode_to_pid(pid: int, text: str, interval: float = 0.012) -> int:
+    """Post each char as keydown+keyup CGEvents scoped to `pid`, carrying the
+    unicode code point via CGEventKeyboardSetUnicodeString.
+
+    Focus-independent: keystrokes land in the target process regardless of
+    which app is frontmost. Validated April 16 2026 via /tmp/cgevent_smoke.py
+    — "HELLO FROM CGEVENT" delivered to TextEdit while Finder was frontmost.
+
+    Checks the pause flag between characters and bails out early if the user
+    pauses mid-type. Returns the number of characters actually posted.
+    """
+    Quartz = _get_quartz()
+    src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
+    posted = 0
+    for ch in text:
+        # Respect pause flag between chars — the primary reason we don't use
+        # pyautogui.typewrite here. File stat is cheap (<1ms) and lets the
+        # user interrupt an in-flight type_text at any character boundary.
+        if _is_paused():
+            break
+        for is_down in (True, False):
+            ev = Quartz.CGEventCreateKeyboardEvent(src, 0, is_down)
+            Quartz.CGEventKeyboardSetUnicodeString(ev, 1, ch)
+            Quartz.CGEventPostToPid(pid, ev)
+        posted += 1
+        if interval > 0:
+            time.sleep(interval)
+    return posted
 
 
 def _wait_for_target(timeout: float = 30.0, interval: float = 0.1) -> bool:
@@ -400,39 +460,98 @@ def _tool_click(args: dict) -> dict:
 
 
 def _tool_type_text(args: dict) -> dict:
-    """Type text into the target app.
+    """Type text scoped to the target app's PID via CGEventPostToPid.
 
-    NOTE: This is the pre-CGEventPostToPid implementation. Chunking was
-    tried (commit b1d613f) and reverted — it couldn't protect within a
-    single pyautogui.typewrite() call, which blocks for the batch
-    duration with no interruption hook. The right fix is to post
-    CGEvents scoped to the target app's PID so keystrokes land in the
-    target regardless of frontmost. Planned for a follow-up commit.
+    Focus-independent: keystrokes are posted directly to the target
+    process, so they land in the target regardless of which app is
+    frontmost. If the user clicks out (e.g. into Apex to watch the agent
+    work), typing continues uninterrupted in the target app. No chunking,
+    no wait-for-frontmost, no pyautogui-follows-focus hazard.
 
-    Current contract: gate-before-call only. If user clicks out during
-    typing, remaining keys will land on whatever app is frontmost.
-    Don't click out mid-type.
+    Mechanism: for each character, create a CGEventKeyboardEvent with
+    virtual keycode 0, call CGEventKeyboardSetUnicodeString(ev, 1, ch)
+    to stamp the actual unicode code point onto the event, then
+    CGEventPostToPid(pid, ev). The target app sees it as a normal
+    keystroke at its current keyboard focus inside its window.
+
+    Fallbacks:
+      * APEX_CU_TARGET_BUNDLE not set  → pyautogui.typewrite (legacy).
+      * Target app not running         → refuse with hint to call
+                                         activate_target_app first.
+
+    Validated end-to-end April 16 2026 (/tmp/cgevent_smoke.py). Replaces
+    the pyautogui.typewrite path that leaked keystrokes into whichever
+    app the user clicked into mid-type (the bug reported April 16).
     """
     paused = _pause_check()
     if paused:
         _flog(logging.INFO, "type_text", "refused: paused")
         return paused
-    refusal = _target_app_check()
-    if refusal:
-        _flog(logging.INFO, "type_text", f"refused: target mismatch {refusal['frontmost']}")
-        return refusal
 
     text = str(args.get("text", ""))
+    if not text:
+        _flog(logging.INFO, "type_text", "ok chars=0 (empty)")
+        return {"ok": True, "chars": 0}
+
+    target = _target_bundle()
+    if not target:
+        # No target configured — fall back to legacy pyautogui path (follows focus).
+        try:
+            pyautogui = _get_pyautogui()
+            pyautogui.typewrite(text, interval=0.01)
+        except Exception as e:
+            err = _permission_error("type_text", e)
+            _flog(logging.ERROR, "type_text", err["reason"])
+            return err
+        _flog(logging.INFO, "type_text",
+              f"ok (no target, pyautogui) chars={len(text)}")
+        return {"ok": True, "chars": len(text), "method": "pyautogui"}
+
+    pid = _target_pid()
+    if pid is None:
+        msg = (
+            f"target app {target} is not running; call activate_target_app "
+            f"first, then retry type_text."
+        )
+        _flog(logging.INFO, "type_text", f"refused: {msg}")
+        return {"ok": False, "reason": msg}
+
     try:
-        pyautogui = _get_pyautogui()
-        pyautogui.typewrite(text, interval=0.01)
+        posted = _post_unicode_to_pid(pid, text)
     except Exception as e:
         err = _permission_error("type_text", e)
         _flog(logging.ERROR, "type_text", err["reason"])
         return err
 
-    _flog(logging.INFO, "type_text", f"ok chars={len(text)}")
-    return {"ok": True, "chars": len(text)}
+    # Partial write if user hit pause mid-type. Report honestly so the agent
+    # knows the full string didn't land and can decide whether to retry after
+    # unpause, resume with the suffix, or ask the user.
+    requested = len(text)
+    paused_mid = posted < requested
+    if paused_mid:
+        _flog(logging.INFO, "type_text",
+              f"paused mid-type pid={pid} target={target} "
+              f"posted={posted}/{requested} remaining={text[posted:]!r}")
+        return {
+            "ok": False,
+            "reason": "paused by user mid-type",
+            "chars": posted,
+            "requested": requested,
+            "remaining": text[posted:],
+            "method": "cgevent-post-to-pid",
+            "pid": pid,
+            "target": target,
+        }
+
+    _flog(logging.INFO, "type_text",
+          f"ok pid={pid} target={target} chars={posted} method=cgevent-post-to-pid")
+    return {
+        "ok": True,
+        "chars": posted,
+        "method": "cgevent-post-to-pid",
+        "pid": pid,
+        "target": target,
+    }
 
 
 def _tool_press_key(args: dict) -> dict:
@@ -721,8 +840,13 @@ _TOOLS: list[dict[str, Any]] = [
     {
         "name": "type_text",
         "description": (
-            "Type a string at current keyboard focus. Respects target-app check "
-            "and pause flag. Returns {ok, chars}."
+            "Type a string into the configured target app. Uses CGEventPostToPid "
+            "scoped to the target process, so keystrokes land in the target "
+            "regardless of which app is frontmost — the user can click around "
+            "without corrupting the stream. Requires the target app to be "
+            "running; call activate_target_app first if get_frontmost shows a "
+            "different app or the target isn't launched. Respects the pause "
+            "flag. Returns {ok, chars, method, pid, target}."
         ),
         "inputSchema": {
             "type": "object",
@@ -926,6 +1050,16 @@ def main() -> None:
         f"APEX_CU_TARGET_BUNDLE={_target_bundle() or '(unset)'}, "
         f"APEX_CU_STATE_DIR={_state_dir()}"
     )
+
+    # Eagerly hide this Python process from Dock + Cmd+Tab. Without this, the
+    # interpreter bounces in the Dock whenever AppKit is touched and fights
+    # the target app for frontmost — which is exactly why activate_target_app
+    # was reporting now_frontmost=false despite running all three strategies.
+    # Must happen before any tool call that imports AppKit/pyautogui.
+    try:
+        _get_appkit()  # triggers setActivationPolicy_(Prohibited) inside
+    except Exception as e:
+        _log_stderr(f"early AppKit policy init failed (non-fatal): {e}")
 
     # Warm up file logger early so any init issues surface
     _get_file_logger()
