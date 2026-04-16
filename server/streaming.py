@@ -606,6 +606,10 @@ def _make_options(
         resume=session_id,
         setting_sources=["user"],
         add_dirs=extra_dirs,
+        # Extended thinking: opt in so models that default to signature-only
+        # (e.g. Opus 4.7) also emit the human-readable summary — otherwise the
+        # UI renders empty thinking pills. 10k is a reasonable ceiling per turn.
+        thinking={"type": "enabled", "budget_tokens": 10000},
         can_use_tool=_make_sdk_tool_gate(
             permission_level,
             allowed_commands=allowed_commands,
