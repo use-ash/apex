@@ -29,6 +29,7 @@ const _lastSeenSeq = {};  // chat_id -> {epoch, seq}
 function _newStreamCtx(streamId, speaker) {
   return {
     id: streamId,
+    chatId: '',  // stamped from stream_start/stream_ack; used to gate DOM mutation on chat switch
     bubble: null,
     speaker: speaker,
     toolPill: null,
@@ -52,19 +53,36 @@ function _newStreamCtx(streamId, speaker) {
     watchdogLastReason: '',
   };
 }
-function _upsertStreamCtx(streamId, speaker = null) {
+function _upsertStreamCtx(streamId, speaker = null, chatId = '') {
   let ctx = _streamCtx[streamId];
   if (!ctx) {
     ctx = _newStreamCtx(streamId, speaker);
+    if (chatId) ctx.chatId = chatId;
     _streamCtx[streamId] = ctx;
     return ctx;
   }
   ctx.id = streamId;
   if (speaker) ctx.speaker = speaker;
+  // Only stamp chatId once — first writer wins. Guards against a late event
+  // for stream S carrying chat_id=A overwriting a ctx already bound to B.
+  if (chatId && !ctx.chatId) ctx.chatId = chatId;
   return ctx;
 }
 function _activeStreamIds() {
   return Object.keys(_streamCtx);
+}
+// B-5: chat-scoped variant — since _streamCtx now persists across chat
+// switches so background streams keep buffering, callers that care about
+// "is the viewer's current chat streaming" must filter by ctx.chatId.
+// Untagged ctxs (no chatId) are treated as belonging to the current chat
+// so legacy code paths still work.
+function _activeStreamIdsForChat(chatId) {
+  if (!chatId) return _activeStreamIds();
+  return Object.keys(_streamCtx).filter(sid => {
+    const ctx = _streamCtx[sid];
+    if (!ctx) return false;
+    return !ctx.chatId || ctx.chatId === chatId;
+  });
 }
 function _resolveStreamId(input = null, options = {}) {
   const allowFocusedFallback = Boolean(options.allowFocusedFallback);
@@ -73,7 +91,10 @@ function _resolveStreamId(input = null, options = {}) {
   // B-19v2: if message explicitly names a stream that's already finalized,
   // don't fall through to heuristics — return empty so caller no-ops
   if (requested) return '';
-  const ids = _activeStreamIds();
+  // Fallback is chat-scoped: if no stream_id was supplied, only consider
+  // streams belonging to the currently-viewed chat. Otherwise a background
+  // foreign-chat stream could be picked up for events aimed at currentChat.
+  const ids = _activeStreamIdsForChat(currentChat);
   if (ids.length === 1) return ids[0];
   if (allowFocusedFallback && currentStreamId && _streamCtx[currentStreamId]) return currentStreamId;
   return requested || '';
@@ -82,16 +103,22 @@ function _getCtx(input = null, options = {}) {
   const sid = _resolveStreamId(input, options);
   return sid ? (_streamCtx[sid] || null) : null;
 }
+// B-5: chat-scoped — "is the CURRENT chat streaming?" for send-button /
+// compose-locked decisions. Use _activeStreamIds() directly for global
+// concerns like the stall watchdog.
 function _isAnyStreamActive() {
-  return _activeStreamIds().length > 0;
+  return _activeStreamIdsForChat(currentChat).length > 0;
 }
 function _syncLegacyStreamGlobals(preferredSid = '', options = {}) {
   const clearSessionWhenIdle = options.clearSessionWhenIdle !== false;
-  const ids = _activeStreamIds();
+  // Only surface streams belonging to the current chat in the legacy globals
+  // (currentStreamId, currentBubble, streaming). Foreign-chat ctxs persist in
+  // _streamCtx but must not leak into this chat's UI state.
+  const ids = _activeStreamIdsForChat(currentChat);
   let sid = '';
-  if (preferredSid && _streamCtx[preferredSid]) {
+  if (preferredSid && _streamCtx[preferredSid] && ids.includes(preferredSid)) {
     sid = preferredSid;
-  } else if (currentStreamId && _streamCtx[currentStreamId]) {
+  } else if (currentStreamId && _streamCtx[currentStreamId] && ids.includes(currentStreamId)) {
     sid = currentStreamId;
   } else {
     sid = ids[ids.length - 1] || '';
@@ -158,7 +185,16 @@ function _finalizeStream(streamId, options = {}) {
 }
 function _resetAllStreamState(options = {}) {
   const removeBubbles = Boolean(options.removeBubbles);
+  // B-5: optional chat scope. When `chatId` is provided, only reset streams
+  // belonging to that chat — preserves background streams on other chats
+  // (required now that _streamCtx persists across chat switches).
+  const scopeChatId = options.chatId || '';
+  const matches = (ctx) => {
+    if (!scopeChatId) return true;
+    return !ctx.chatId || ctx.chatId === scopeChatId;
+  };
   Object.values(_streamCtx).forEach(ctx => {
+    if (!matches(ctx)) return;
     clearTimeout(ctx._mdTimer);
     ctx._mdTimer = null;
     _teardownThinking(ctx);
@@ -169,8 +205,18 @@ function _resetAllStreamState(options = {}) {
       if (ctx.bubble && ctx.bubble.isConnected) ctx.bubble.remove();
     }
   });
-  Object.keys(_streamCtx).forEach(k => delete _streamCtx[k]);
-  activeStreams.clear();
+  Object.keys(_streamCtx).forEach(k => {
+    if (matches(_streamCtx[k])) delete _streamCtx[k];
+  });
+  if (scopeChatId) {
+    // Only drop activeStreams entries that belong to ctxs we just removed
+    // (best-effort — activeStreams has no chat_id so we prune by _streamCtx key absence).
+    Array.from(activeStreams.keys()).forEach(sid => {
+      if (!_streamCtx[sid]) activeStreams.delete(sid);
+    });
+  } else {
+    activeStreams.clear();
+  }
   _clearStreamingBubbleState('', null, true);
   _syncLegacyStreamGlobals('', {clearSessionWhenIdle: options.clearSessionWhenIdle !== false});
 }
@@ -729,7 +775,10 @@ function _registerWatchdogEvent(ctxOrSid, reason = '') {
 }
 
 function markStreamActivity(ctxOrSid, reason = '') {
-  if (!_isAnyStreamActive()) return;
+  // B-5: _isAnyStreamActive is now chat-scoped; watchdog activity must
+  // register globally or a foreground-chat switch would stall background
+  // watchdogs. Gate on any ctx in _streamCtx instead.
+  if (_activeStreamIds().length === 0) return;
   _registerWatchdogEvent(ctxOrSid, reason);
 }
 
@@ -1760,10 +1809,25 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
   // our own in-flight stream events.
   const _activeChat = currentChat || sessionStorage.getItem('currentChatId') || '';
   if (_B42_STREAM.has(msg.type) && msg.chat_id && _activeChat && msg.chat_id !== _activeChat) {
-    // WSDIAG: always surface cross-chat drops (not just dbg) — this is the
-    // symptom of the streaming race bug we're hunting.
-    console.log('WSDIAG drop type=' + msg.type + ' chat=' + (msg.chat_id || '').slice(0,8) + ' vs curr=' + (_activeChat || '').slice(0,8) + ' sid=' + (msg.stream_id || '').slice(0,8) + ' reason=cross-chat');
-    return;
+    // B-5: if we have a preserved ctx for this stream (user switched away
+    // mid-stream), allow the event through so its buffer can keep
+    // accumulating. Per-handler cross-chat guards still prevent DOM
+    // mutations against the current transcript. Without this, the outer
+    // drop kills the event before ctx.textContent can fill, and switching
+    // back to the originating chat rebuilds an empty bubble.
+    const _hasPreservedCtx = msg.stream_id && _streamCtx[msg.stream_id];
+    if (!_hasPreservedCtx) {
+      // WSDIAG: always surface cross-chat drops (not just dbg) — this is the
+      // symptom of the streaming race bug we're hunting.
+      console.log('WSDIAG drop type=' + msg.type + ' chat=' + (msg.chat_id || '').slice(0,8) + ' vs curr=' + (_activeChat || '').slice(0,8) + ' sid=' + (msg.stream_id || '').slice(0,8) + ' reason=cross-chat');
+      return;
+    }
+    // WSDIAG: tag the pass-through so we can trace preserved-ctx routing in logs.
+    if (msg.type === 'text' || msg.type === 'thinking') {
+      // (text/thinking events are the hot path; drop-log noise for others only)
+    } else {
+      console.log('WSDIAG pass-thru type=' + msg.type + ' chat=' + (msg.chat_id || '').slice(0,8) + ' vs curr=' + (_activeChat || '').slice(0,8) + ' sid=' + (msg.stream_id || '').slice(0,8) + ' reason=preserved-ctx');
+    }
   }
   // B-42c: self-heal currentChat if it was nulled but the event matches sessionStorage
   if (_B42_STREAM.has(msg.type) && msg.chat_id && !currentChat && msg.chat_id === _activeChat) {
@@ -1800,9 +1864,20 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
       break;
 
     case 'stream_start': {
+      // Cross-chat leak guard: drop stream_start destined for a chat we're not
+      // viewing. Without this gate, a stream_start arriving after the user
+      // switched chats (either via late delivery or buffer replay for a
+      // foreign chat) would create a bubble in the current chat's transcript.
+      // The ctx then becomes the permanent home for the stream's subsequent
+      // thinking/text/tool_use events (which don't carry chat_id), so the
+      // thinking pill stays pinned to the wrong chat for the rest of the turn.
+      if (msg.chat_id && currentChat && msg.chat_id !== currentChat) {
+        console.log('WSDIAG drop stream_start chat=' + String(msg.chat_id).slice(0,8) + ' current=' + String(currentChat).slice(0,8) + ' sid=' + String(msg.stream_id || '').slice(0,8));
+        break;
+      }
       const sid = msg.stream_id || ('_s' + Date.now());
       const speaker = msg.speaker_name ? {name: msg.speaker_name, avatar: msg.speaker_avatar || '', id: msg.speaker_id || ''} : null;
-      const ctx = _upsertStreamCtx(sid, speaker);
+      const ctx = _upsertStreamCtx(sid, speaker, msg.chat_id || currentChat || '');
       ctx.awaitingAck = false;
       _clearQueuedState(ctx);
       _activateStream(ctx, {chatId: msg.chat_id || currentChat || ''});
@@ -1824,9 +1899,14 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
     }
 
     case 'stream_ack': {
+      // Cross-chat leak guard — see stream_start above.
+      if (msg.chat_id && currentChat && msg.chat_id !== currentChat) {
+        console.log('WSDIAG drop stream_ack chat=' + String(msg.chat_id).slice(0,8) + ' current=' + String(currentChat).slice(0,8) + ' sid=' + String(msg.stream_id || '').slice(0,8));
+        break;
+      }
       const sid = msg.stream_id || ('_s' + Date.now());
       const speaker = msg.speaker_name ? {name: msg.speaker_name, avatar: msg.speaker_avatar || '', id: msg.speaker_id || ''} : null;
-      const ctx = _upsertStreamCtx(sid, speaker);
+      const ctx = _upsertStreamCtx(sid, speaker, msg.chat_id || currentChat || '');
       ctx.awaitingAck = true;
       _clearQueuedState(ctx);
       if (!ctx.thinkingStart) ctx.thinkingStart = Date.now();
@@ -1850,10 +1930,15 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
     }
 
     case 'stream_queued': {
+      // Cross-chat leak guard — see stream_start above.
+      if (msg.chat_id && currentChat && msg.chat_id !== currentChat) {
+        console.log('WSDIAG drop stream_queued chat=' + String(msg.chat_id).slice(0,8) + ' current=' + String(currentChat).slice(0,8) + ' sid=' + String(msg.stream_id || '').slice(0,8));
+        break;
+      }
       _removeThinkingIndicator();
       const sid = msg.stream_id || ('_s' + Date.now());
       const speaker = msg.speaker_name ? {name: msg.speaker_name, avatar: msg.speaker_avatar || '', id: msg.speaker_id || ''} : null;
-      const ctx = _upsertStreamCtx(sid, speaker);
+      const ctx = _upsertStreamCtx(sid, speaker, msg.chat_id || currentChat || '');
       ctx.awaitingAck = false;
       _renderQueuedState(ctx, msg);
       if (document.getElementById('stopMenu')?.classList.contains('show')) renderStopMenu();
@@ -1882,14 +1967,27 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
       // active chat, synthesize a ctx so tokens aren't silently discarded.
       if (!ctx && msg.stream_id && (!msg.chat_id || msg.chat_id === currentChat)) {
         const speaker = msg.speaker_name ? {name: msg.speaker_name, avatar: msg.speaker_avatar || '', id: msg.speaker_id || ''} : null;
-        ctx = _upsertStreamCtx(msg.stream_id, speaker);
+        ctx = _upsertStreamCtx(msg.stream_id, speaker, msg.chat_id || currentChat || '');
         _activateStream(ctx, {chatId: msg.chat_id || currentChat || ''});
         dbg('B42e: salvaged text ctx', msg.stream_id);
       }
       if (!ctx) break;
+      // B-5: ALWAYS accumulate tokens into ctx.textContent — buffer must fill
+      // even when the viewer is on a different chat, so when they switch back
+      // _rebuildActiveStreamUi can restore the bubble from this buffer. The
+      // cross-chat guard below only skips DOM mutations for the foreign-chat view.
+      const _wasAwaitingAck = ctx.awaitingAck;
+      if (!ctx.textContent) ctx.textContent = '';
+      ctx.textContent += msg.text;
+      ctx.awaitingAck = false;
+      markStreamActivity(ctx, 'text');
+      // Cross-chat leak guard: ctx was born under a different chat — don't
+      // let its tokens render into currentChat's transcript. Buffer is already
+      // filled above, so switching back rebuilds the bubble correctly.
+      if (ctx.chatId && currentChat && ctx.chatId !== currentChat) break;
       _ensureCtxBubble(ctx);
       _activateStream(ctx);
-      if (ctx.awaitingAck && !ctx.thinkingText) {
+      if (_wasAwaitingAck && !ctx.thinkingText) {
         // No thinking events before first text — convert live pill to static with TTFT
         // duration so it persists during streaming. _finalizeThinking will update it
         // with the correct full duration from result.duration_ms.
@@ -1909,9 +2007,6 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
           durationMs: ctx.thinkingStart ? (Date.now() - ctx.thinkingStart) : 0,
         });
       }
-      ctx.awaitingAck = false;
-      if (!ctx.textContent) ctx.textContent = '';
-      ctx.textContent += msg.text;
       // Debounced incremental markdown render — replaces raw textContent append.
       // Fires at most every 80ms so the user sees formatted text while streaming,
       // not a raw wall that only formats on stream completion.
@@ -1920,7 +2015,6 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
         const bEl = ctx.bubble && ctx.bubble.querySelector('.bubble');
         if (bEl) renderMarkdown(bEl, ctx.textContent);
       }, 80);
-      markStreamActivity(ctx, 'text');
       scrollBottom();
       break;
     }
@@ -1930,22 +2024,27 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
       let ctx = _getCtx(msg);
       if (!ctx && msg.stream_id && (!msg.chat_id || msg.chat_id === currentChat)) {
         const speaker = msg.speaker_name ? {name: msg.speaker_name, avatar: msg.speaker_avatar || '', id: msg.speaker_id || ''} : null;
-        ctx = _upsertStreamCtx(msg.stream_id, speaker);
+        ctx = _upsertStreamCtx(msg.stream_id, speaker, msg.chat_id || currentChat || '');
         _activateStream(ctx, {chatId: msg.chat_id || currentChat || ''});
         dbg('B42e: salvaged thinking ctx', msg.stream_id);
       }
       if (!ctx) break;
+      // B-5: always accumulate into ctx.thinkingText so buffer survives
+      // chat-switch; only skip DOM work when viewer is on a different chat.
+      if (!ctx.thinkingStart) ctx.thinkingStart = Date.now();
+      if (!ctx.thinkingText) ctx.thinkingText = '';
+      ctx.thinkingText += msg.text || '';
+      ctx.awaitingAck = false;
+      markStreamActivity(ctx, 'thinking');
+      // Cross-chat leak guard: ctx was born under a different chat.
+      if (ctx.chatId && currentChat && ctx.chatId !== currentChat) break;
       _ensureCtxBubble(ctx);
       _activateStream(ctx);
-      if (!ctx.thinkingStart) ctx.thinkingStart = Date.now();
-      ctx.awaitingAck = false;
-      ctx.thinkingText += msg.text || '';
       if (ctx.thinkingPill && ctx.thinkingPill.isConnected) {
         ctx.thinkingPill.remove();
       }
       ctx.thinkingPill = null;
       _thinkingPill(ctx, {live: true});
-      markStreamActivity(ctx, 'thinking');
       scrollBottom();
       break;
     }
@@ -2080,9 +2179,16 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
       // Server confirmed we re-attached to an active stream after replaying
       // the buffered events that were missed while the socket was down.
       dbg('stream re-attached for chat:', msg.chat_id);
+      // Cross-chat leak guard — see stream_start above. Buffer replay can race
+      // with a rapid chat switch; without this gate the replayed stream rebuilds
+      // its thinking pill inside the wrong chat's transcript.
+      if (msg.chat_id && currentChat && msg.chat_id !== currentChat) {
+        console.log('WSDIAG drop stream_reattached chat=' + String(msg.chat_id).slice(0,8) + ' current=' + String(currentChat).slice(0,8) + ' sid=' + String(msg.stream_id || '').slice(0,8));
+        break;
+      }
       const sid = msg.stream_id || ('_s' + Date.now());
       const speaker = msg.speaker_name ? {name: msg.speaker_name, avatar: msg.speaker_avatar || '', id: msg.speaker_id || ''} : null;
-      const ctx = _upsertStreamCtx(sid, speaker);
+      const ctx = _upsertStreamCtx(sid, speaker, msg.chat_id || currentChat || '');
       // B-24: Reset accumulated text before buffer replay so replayed text
       // chunks are not appended on top of already-rendered content, which
       // would produce duplicated sentences/paragraphs in the live bubble.
@@ -2133,7 +2239,8 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
       // This fires when the client thought a stream might be running
       // (sessionStorage had streamingChatId) but it already finished.
       dbg('attach ok, no active stream for chat:', msg.chat_id);
-      _resetAllStreamState();
+      // B-5: scope reset to msg.chat_id so background streams on other chats survive.
+      _resetAllStreamState({chatId: msg.chat_id || currentChat || ''});
       hideStaleBar({immediate: true});
       hideStopMenu();
       updateSendBtn();
@@ -2157,7 +2264,8 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
       // B-19: only reload if no other streams are still active — reloading
       // during an active stream kills its context and makes it invisible
       if (msg.chat_id && msg.chat_id === currentChat && !_isAnyStreamActive()) {
-        _resetAllStreamState();
+        // B-5: scope to msg.chat_id so background streams on other chats survive.
+        _resetAllStreamState({chatId: msg.chat_id});
         // Reconnect-triggered reloads often arrive immediately after the same
         // chat was selected/attached, so bypass the normal 500ms debounce
         // without triggering another attach/reload cycle.
@@ -4215,7 +4323,31 @@ async function selectChat(id, title, chatType, category, options) {
     activeStreams.clear();
     queuedMessages = [];
     _stopMenuConfirmKey = '';
-    Object.keys(_streamCtx).forEach(sid => { delete _streamCtx[sid]; });
+    // B-5: PRESERVE _streamCtx across chat switches — dropping it causes
+    // bubbles to follow the viewport (a stream that started in chat A
+    // renders into whichever chat is currently focused). We only release
+    // per-chat DOM refs + timers here; text/thinking buffers, chatId, and
+    // tool call state stay intact so _rebuildActiveStreamUi can restore the
+    // bubble when the user switches back to the originating chat.
+    Object.keys(_streamCtx).forEach(sid => {
+      const ctx = _streamCtx[sid];
+      if (!ctx) { delete _streamCtx[sid]; return; }
+      try { clearTimeout(ctx._mdTimer); } catch (e) {}
+      ctx._mdTimer = null;
+      try { _teardownThinking(ctx, {resetCollapsed: false}); } catch (e) {}
+      // Drop DOM refs — the upcoming innerHTML='' detaches them. Buffers
+      // (textContent, thinkingText, thinkingStart, toolCalls, chatId,
+      // speaker, awaitingAck, queued*) are intentionally preserved.
+      ctx.bubble = null;
+      ctx.toolPill = null;
+      ctx.thinkingPill = null;
+      ctx.thinkingBlock = null;
+      ctx.liveThinkingPill = null;
+    });
+    // Defensive DOM sweep — any .pill--thinking.streaming or .msg.assistant.streaming
+    // still lingering in the prior transcript gets its live class stripped so the
+    // upcoming innerHTML='' has nothing to leak past.
+    try { _clearStreamingBubbleState('', null, true); } catch (e) {}
     clearComposerDraft();
     // Reset history pagination for new chat
     _historyHasMore = false;
@@ -4324,10 +4456,16 @@ async function selectChat(id, title, chatType, category, options) {
   scrollBottomForce();
   fetchContext(id);
 
-  // After DOM rebuild, restore any active streaming state.
-  // Buffer replay events may have created DOM elements that innerHTML=''
-  // just wiped. Re-create every active streaming bubble from accumulated context.
-  const activeIds = _activeStreamIds();
+  // After DOM rebuild, restore any active streaming state for this chat.
+  // B-5: only rebuild ctxs whose chatId matches the chat we just loaded —
+  // background streams belonging to other chats keep their buffers in
+  // _streamCtx but must not render into this transcript.
+  const allActiveIds = _activeStreamIds();
+  const activeIds = allActiveIds.filter(sid => {
+    const ctx = _streamCtx[sid];
+    if (!ctx) return false;
+    return !ctx.chatId || ctx.chatId === id;
+  });
   if (activeIds.length > 0) {
     activeIds.forEach(sid => {
       const ctx = _streamCtx[sid];
@@ -4337,7 +4475,12 @@ async function selectChat(id, title, chatType, category, options) {
     const preferredSid = activeIds.includes(currentStreamId) ? currentStreamId : activeIds[activeIds.length - 1];
     _syncLegacyStreamGlobals(preferredSid, {clearSessionWhenIdle: false});
     scrollBottomForce();
-    dbg('streaming state restored after message load, streams:', activeIds.join(','));
+    dbg('streaming state restored after message load, streams:', activeIds.join(','), 'skipped-foreign:', (allActiveIds.length - activeIds.length));
+  } else {
+    // No streams belong to this chat — but preserved foreign-chat ctxs still
+    // exist in _streamCtx. Clear legacy globals so currentBubble doesn't point
+    // at a foreign ctx's (now-null) bubble.
+    _syncLegacyStreamGlobals('', {clearSessionWhenIdle: false});
   }
 
   refreshDebugState('messages-loaded');
