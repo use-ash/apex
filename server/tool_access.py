@@ -64,6 +64,7 @@ DEFAULT_LEVEL2_TOOL_PATTERNS = (
     "gdrive__*",
     "memory__*",
     "computer_use__*",
+    "interceptor__*",
 )
 
 TOOL_POLICY_CATALOG = {
@@ -240,6 +241,12 @@ TOOL_POLICY_CATALOG = {
         "description": "macOS GUI automation (screenshot/click/type). Only attached when the chat has a target bundle-ID set; the MCP server enforces target-app match and a pause flag on every action.",
         "category": "mcp",
         "group": "gui",
+    },
+    "interceptor__*": {
+        "name": "Interceptor (Browser) MCP",
+        "description": "Authenticated-Chrome browser control via the Interceptor extension + CLI. Only attached when the chat has interceptor_enabled=1. Supports open/read/click/type/screenshot/net-log/eval and record-and-replay workflows.",
+        "category": "mcp",
+        "group": "browser",
     },
     "tool_search": {
         "name": "Tool Search",

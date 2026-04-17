@@ -569,6 +569,50 @@ def _inject_computer_use_mcp(servers: dict, *, chat_id: str | None = None,
     return servers
 
 
+def _inject_interceptor_mcp(servers: dict, *, chat_id: str | None = None,
+                             interceptor_enabled: bool = False) -> dict:
+    """Auto-inject the Interceptor (browser-agent) MCP server.
+
+    Only injects when:
+      - interceptor_enabled is truthy on the chat row
+      - MCP script exists at server/local_model/mcp_interceptor.py
+      - The interceptor binary exists (~/.interceptor/bin/interceptor by
+        default; override via env APEX_INTERCEPTOR_BIN)
+
+    The MCP server itself is platform-agnostic, but Interceptor is macOS-only
+    today so we skip on non-darwin to avoid spawning a doomed subprocess.
+    """
+    if not interceptor_enabled:
+        return servers
+    if sys.platform != "darwin":
+        return servers
+    if "interceptor" in servers:
+        return servers
+    mcp_script = APEX_ROOT / "server" / "local_model" / "mcp_interceptor.py"
+    if not mcp_script.exists():
+        return servers
+    bin_path = os.environ.get("APEX_INTERCEPTOR_BIN") or str(
+        (APEX_ROOT.parent.parent / ".interceptor" / "bin" / "interceptor").resolve()
+        if False else os.path.expanduser("~/.interceptor/bin/interceptor")
+    )
+    if not os.path.exists(bin_path):
+        # No binary installed — skip rather than injecting a guaranteed-fail tool.
+        log(f"interceptor MCP skipped: binary missing at {bin_path}")
+        return servers
+    mcp_env = {
+        "APEX_INT_CHAT_ID": chat_id or "",
+        "APEX_INT_STATE_DIR": str(APEX_ROOT / "state" / "interceptor"),
+        "APEX_INTERCEPTOR_BIN": bin_path,
+    }
+    servers = dict(servers)
+    servers["interceptor"] = {
+        "command": sys.executable,
+        "args": [str(mcp_script)],
+        "env": mcp_env,
+    }
+    return servers
+
+
 _GUIDE_PROFILE_ID = "sys-guide"
 
 
@@ -827,6 +871,17 @@ def _make_options(
     mcp_servers = _inject_computer_use_mcp(mcp_servers, chat_id=chat_id,
                                             permission_level=permission_level,
                                             computer_use_target=computer_use_target)
+    # Auto-inject Interceptor (browser-agent) MCP when the chat has opted in.
+    interceptor_enabled = False
+    if chat_id:
+        try:
+            _chat_row2 = _get_chat(chat_id)
+            if _chat_row2:
+                interceptor_enabled = bool(_chat_row2.get("interceptor_enabled"))
+        except Exception:
+            interceptor_enabled = False
+    mcp_servers = _inject_interceptor_mcp(mcp_servers, chat_id=chat_id,
+                                           interceptor_enabled=interceptor_enabled)
     # Auto-inject guide config tools MCP server for guide sessions
     if extra_allowed_tools:
         mcp_servers = _inject_guide_tools_mcp(mcp_servers)
