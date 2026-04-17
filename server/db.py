@@ -28,7 +28,7 @@ SYSTEM_PROFILE_ID = "_system"
 SYSTEM_PROFILE_NAME = "Open"
 SYSTEM_PROFILE_SLUG = "open"
 
-_CHAT_UPDATE_FIELDS = frozenset({"title", "model", "profile_id", "claude_session_id", "category", "type", "computer_use_target"})
+_CHAT_UPDATE_FIELDS = frozenset({"title", "model", "profile_id", "claude_session_id", "category", "type", "computer_use_target", "interceptor_enabled"})
 DEFAULT_TOOL_POLICY_LEVEL = 1
 LEGACY_TOOL_POLICY_LEVEL = 2
 MIN_TOOL_POLICY_LEVEL = 0
@@ -313,6 +313,10 @@ def _init_db() -> None:
     if "computer_use_target" not in _chat_cols:
         with contextlib.suppress(sqlite3.OperationalError):
             conn.execute("ALTER TABLE chats ADD COLUMN computer_use_target TEXT DEFAULT NULL")
+    # Migration: add interceptor_enabled column to chats (browser-agent opt-in, 0/1)
+    if "interceptor_enabled" not in _chat_cols:
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute("ALTER TABLE chats ADD COLUMN interceptor_enabled INTEGER DEFAULT 0")
     # Migration: persona_memories table (cross-group persistent memory for agents)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS persona_memories (
@@ -1086,7 +1090,7 @@ def _get_chats() -> list[dict]:
 def _get_chat(chat_id: str) -> dict | None:
     with _db_lock:
         conn = _get_db()
-        row = conn.execute("SELECT id, title, claude_session_id, created_at, updated_at, model, type, category, profile_id, computer_use_target FROM chats WHERE id = ?",
+        row = conn.execute("SELECT id, title, claude_session_id, created_at, updated_at, model, type, category, profile_id, computer_use_target, interceptor_enabled FROM chats WHERE id = ?",
                            (chat_id,)).fetchone()
         conn.close()
     if not row:
@@ -1094,7 +1098,8 @@ def _get_chat(chat_id: str) -> dict | None:
     return {"id": row[0], "title": row[1], "claude_session_id": row[2],
             "created_at": row[3], "updated_at": row[4], "model": row[5], "type": row[6], "category": row[7] or None,
             "profile_id": row[8] or "",
-            "computer_use_target": row[9] or None}
+            "computer_use_target": row[9] or None,
+            "interceptor_enabled": bool(row[10])}
 
 
 def set_computer_use_target(chat_id: str, target: str | None) -> None:
@@ -1104,6 +1109,18 @@ def set_computer_use_target(chat_id: str, target: str | None) -> None:
         conn.execute(
             "UPDATE chats SET computer_use_target = ?, updated_at = ? WHERE id = ?",
             (target, _now(), chat_id),
+        )
+        conn.commit()
+        conn.close()
+
+
+def set_interceptor_enabled(chat_id: str, enabled: bool) -> None:
+    """Enable or disable the Interceptor (browser-agent) MCP for a chat."""
+    with _db_lock:
+        conn = _get_db()
+        conn.execute(
+            "UPDATE chats SET interceptor_enabled = ?, updated_at = ? WHERE id = ?",
+            (1 if enabled else 0, _now(), chat_id),
         )
         conn.commit()
         conn.close()

@@ -28,6 +28,7 @@ from db import (
     _get_messages,
     _get_last_turn_tokens_in, _estimate_tokens,
     set_computer_use_target,
+    set_interceptor_enabled,
 )
 from group_coordinator import _MAX_RELAY_ROUNDS, _clear_strict_group_relay, _get_strict_group_relay_state
 from license import get_license_manager
@@ -778,4 +779,83 @@ async def api_computer_use_status(chat_id: str):
         "target_bundle_id": target,
         "paused": paused,
         "allowed_bundle_ids": _load_allowed_bundle_ids(),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Interceptor (browser-agent) per-chat endpoints
+# ---------------------------------------------------------------------------
+
+
+def _interceptor_pause_path(chat_id: str):
+    return APEX_ROOT / "state" / "interceptor" / "pause" / chat_id
+
+
+def _interceptor_bin_path() -> str:
+    import os as _os
+    return _os.environ.get("APEX_INTERCEPTOR_BIN") or _os.path.expanduser(
+        "~/.interceptor/bin/interceptor"
+    )
+
+
+@chat_router.post("/api/chats/{chat_id}/interceptor/enable")
+async def api_interceptor_enable(chat_id: str):
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    set_interceptor_enabled(chat_id, True)
+    return JSONResponse({"ok": True, "enabled": True})
+
+
+@chat_router.post("/api/chats/{chat_id}/interceptor/disable")
+async def api_interceptor_disable(chat_id: str):
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    set_interceptor_enabled(chat_id, False)
+    return JSONResponse({"ok": True, "enabled": False})
+
+
+@chat_router.post("/api/chats/{chat_id}/interceptor/pause")
+async def api_interceptor_pause(chat_id: str):
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    path = _interceptor_pause_path(chat_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
+    except OSError as e:
+        return JSONResponse({"error": f"Failed to create pause flag: {e}"}, status_code=500)
+    return JSONResponse({"ok": True, "paused": True})
+
+
+@chat_router.post("/api/chats/{chat_id}/interceptor/resume")
+async def api_interceptor_resume(chat_id: str):
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    path = _interceptor_pause_path(chat_id)
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError as e:
+        return JSONResponse({"error": f"Failed to remove pause flag: {e}"}, status_code=500)
+    return JSONResponse({"ok": True, "paused": False})
+
+
+@chat_router.get("/api/chats/{chat_id}/interceptor/status")
+async def api_interceptor_status(chat_id: str):
+    import os as _os
+    chat = _get_chat(chat_id)
+    if not chat:
+        return JSONResponse({"error": "Chat not found"}, status_code=404)
+    enabled = bool(chat.get("interceptor_enabled"))
+    paused = _interceptor_pause_path(chat_id).exists()
+    bin_path = _interceptor_bin_path()
+    return JSONResponse({
+        "enabled": enabled,
+        "paused": paused,
+        "binary_path": bin_path,
+        "binary_installed": _os.path.exists(bin_path),
     })

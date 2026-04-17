@@ -867,6 +867,10 @@ function setCurrentChat(id, title) {
   if (typeof cuSyncPauseUI === 'function' && currentChat) {
     try { cuSyncPauseUI(currentChat); } catch (e) { /* non-fatal */ }
   }
+  // Interceptor: sync the browser toggle pill on every chat activation.
+  if (typeof intSyncToggle === 'function' && currentChat) {
+    try { intSyncToggle(currentChat); } catch (e) { /* non-fatal */ }
+  }
 }
 """
 
@@ -3124,10 +3128,13 @@ function toggleAlertsPanel() {
 }
 
 function toggleSettings() {
-  // For group chats, redirect to group settings instead of model selector
-  if (currentChatType === 'group') {
-    document.getElementById('settingsPanel').classList.remove('show');
-    showGroupSettings();
+  // Unified modal for individual chats + group chats. The legacy right-side
+  // slide panel (model selector / build info / etc.) is still reachable via
+  // the global settings button in contexts without a currentChat, but the
+  // gear icon from within a chat always opens the per-chat modal.
+  if (currentChat) {
+    document.getElementById('settingsPanel')?.classList.remove('show');
+    showChatSettings();
     return;
   }
   const panel = document.getElementById('settingsPanel');
@@ -5391,10 +5398,15 @@ async function newGroup(title, members) {
 }
 """
 
-_JS_GROUP_SETTINGS = """// --- Group Settings Modal ---
-async function showGroupSettings() {
-  if (!currentChat || currentChatType !== 'group') return;
+_JS_GROUP_SETTINGS = """// --- Chat / Group Settings Modal ---
+// One modal shape for both individual chats and group chats. Branch on
+// currentChatType inside renderChannelTab / renderPreferencesTab where the
+// content actually differs (groups have members + sequential relay; individual
+// chats have just a name). Preferences tab is identical for both types.
+async function showChatSettings() {
+  if (!currentChat) return;
   const chatId = currentChat;
+  const isGroup = currentChatType === 'group';
   document.getElementById('settingsPanel')?.classList.remove('show');
 
   // Remove any existing modal
@@ -5411,7 +5423,7 @@ async function showGroupSettings() {
   // Header
   const header = document.createElement('div');
   header.className = 'profile-modal-header';
-  header.innerHTML = '<h3>Group Settings</h3>';
+  header.innerHTML = '<h3>' + (isGroup ? 'Group Settings' : 'Chat Settings') + '</h3>';
   const closeBtn = document.createElement('button');
   closeBtn.innerHTML = '&times;';
   closeBtn.onclick = () => overlay.remove();
@@ -5425,19 +5437,53 @@ async function showGroupSettings() {
   // State
   let members = [];
   let settings = {};
+  let cuStatus = null;       // computer-use (GUI) status for this chat
+  let intStatus = null;      // interceptor (Browser) status for this chat
   let addMode = false;
   let activeTab = 'channel';
 
-  // Fetch data
+  // Fetch data — members/group-settings only meaningful for groups; CU + int
+  // status is per-chat for both types. Tolerant of individual-chat 4xx on
+  // group-only endpoints.
   async function loadData() {
+    // Warm the local-models cache so the Model picker in Preferences can list
+    // Ollama models. Fire-and-forget; the picker will populate from the cache
+    // synchronously on render — if the fetch is still in flight the picker
+    // falls back to cloud-only, which is fine (change takes effect next open).
     try {
-      const [mr, sr] = await Promise.all([
-        fetch(`/api/chats/${chatId}/members`, {credentials: 'same-origin'}),
-        fetch(`/api/chats/${chatId}/settings`, {credentials: 'same-origin'})
-      ]);
-      if (mr.ok) { const d = await mr.json(); members = d.members || []; }
-      if (sr.ok) { const d = await sr.json(); settings = d.settings || {}; }
-    } catch(e) { dbg('group settings load error:', e); }
+      const mr = await fetch('/api/models/local', {credentials: 'same-origin'});
+      if (mr && mr.ok) {
+        const models = await mr.json();
+        if (typeof _settingsModels !== 'undefined') {
+          // eslint-disable-next-line no-global-assign
+          _settingsModels = models;
+        }
+      }
+    } catch(e) { /* non-fatal */ }
+    try {
+      const fetches = [
+        fetch(`/api/chats/${chatId}/computer_use/status`, {credentials: 'same-origin'}).catch(() => null),
+        fetch(`/api/chats/${chatId}/interceptor/status`, {credentials: 'same-origin'}).catch(() => null),
+      ];
+      if (isGroup) {
+        fetches.unshift(
+          fetch(`/api/chats/${chatId}/members`, {credentials: 'same-origin'}).catch(() => null),
+          fetch(`/api/chats/${chatId}/settings`, {credentials: 'same-origin'}).catch(() => null),
+        );
+      }
+      const results = await Promise.all(fetches);
+      if (isGroup) {
+        const [mr, sr, cr, ir] = results;
+        if (mr && mr.ok) { const d = await mr.json(); members = d.members || []; }
+        if (sr && sr.ok) { const d = await sr.json(); settings = d.settings || {}; }
+        if (cr && cr.ok) { cuStatus = await cr.json(); }
+        if (ir && ir.ok) { intStatus = await ir.json(); }
+      } else {
+        const [cr, ir] = results;
+        if (cr && cr.ok) { cuStatus = await cr.json(); }
+        if (ir && ir.ok) { intStatus = await ir.json(); }
+      }
+    } catch(e) { dbg('chat settings load error:', e); }
   }
 
   function gsToast(msg) {
@@ -5486,7 +5532,7 @@ async function showGroupSettings() {
     const tabs = document.createElement('div');
     tabs.className = 'gs-tabs';
     [
-      ['channel', 'Channel'],
+      ['channel', isGroup ? 'Channel' : 'Chat'],
       ['preferences', 'Preferences'],
     ].forEach(([key, label]) => {
       const btn = document.createElement('button');
@@ -5504,6 +5550,244 @@ async function showGroupSettings() {
   }
 
   function renderPreferencesTab(content) {
+    // --- Model (per-chat override) ---
+    // Mirrors the old right-side settings panel's Chat Model picker. Locked
+    // when a persona profile is attached (profile is source of truth for
+    // model). Update via ws 'set_chat_model' same as legacy handler.
+    const modelSection = document.createElement('div');
+    modelSection.className = 'gs-section';
+    modelSection.innerHTML = `<div class="gs-section-title">Model</div>`;
+
+    const modelCard = document.createElement('div');
+    modelCard.className = 'gs-pref-card';
+
+    const hasProfile = !!(typeof _currentChatProfileId !== 'undefined' && _currentChatProfileId);
+    const modelLabel = document.createElement('div');
+    modelLabel.className = 'gs-pref-label';
+    modelLabel.textContent = hasProfile ? 'Locked by persona' : 'Chat Model';
+    modelCard.appendChild(modelLabel);
+
+    const modelHint = document.createElement('div');
+    modelHint.className = 'gs-pref-hint';
+    const sidebarItemM = document.querySelector(`.chat-item[data-id="${chatId}"]`);
+    const chatTitleForHint = sidebarItemM?.dataset?.title || 'this chat';
+    modelHint.textContent = hasProfile
+      ? ('Persona: ' + (_currentChatProfileName || _currentChatProfileId) + ' — change model by editing the persona.')
+      : ('Model for: ' + chatTitleForHint);
+    modelCard.appendChild(modelHint);
+
+    const modelSelect = document.createElement('select');
+    modelSelect.className = 'gs-select';
+    modelSelect.disabled = hasProfile;
+
+    const cloudModels = [
+      {id: 'claude-opus-4-7', name: 'Claude Opus 4.7'},
+      {id: 'claude-opus-4-6', name: 'Claude Opus 4.6'},
+      {id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6'},
+      {id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5'},
+      {id: 'grok-4', name: 'Grok 4'},
+      {id: 'grok-4-fast', name: 'Grok 4 Fast'},
+      {id: 'codex:gpt-5.4', name: 'GPT-5.4'},
+      {id: 'codex:gpt-5.4-mini', name: 'GPT-5.4 Mini'},
+      {id: 'codex:gpt-5.3-codex', name: 'GPT-5.3'},
+      {id: 'codex:gpt-5.2', name: 'GPT-5.2'},
+      {id: 'codex:gpt-5.1-codex-max', name: 'GPT-5.1 Max'},
+    ];
+    cloudModels.forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.id; opt.textContent = m.name;
+      modelSelect.appendChild(opt);
+    });
+    const localModels = (typeof _settingsModels !== 'undefined' && Array.isArray(_settingsModels)) ? _settingsModels : [];
+    if (localModels.length) {
+      const sep = document.createElement('option');
+      sep.disabled = true; sep.textContent = '── Local Models ──';
+      modelSelect.appendChild(sep);
+      localModels.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.id; opt.textContent = m.displayName || m.id;
+        modelSelect.appendChild(opt);
+      });
+    }
+
+    // Populate current model from chat context endpoint.
+    fetch(`/api/chats/${chatId}/context`, {credentials: 'same-origin'})
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d && d.model) modelSelect.value = d.model; })
+      .catch(() => {});
+
+    modelSelect.onchange = () => {
+      const val = modelSelect.value;
+      if (!val) return;
+      try {
+        if (typeof changeChatModel === 'function') {
+          changeChatModel(val);
+        } else if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({action: 'set_chat_model', chat_id: chatId, model: val}));
+        }
+        gsToast('Model → ' + val);
+      } catch(e) { dbg('model change error:', e); }
+    };
+    modelCard.appendChild(modelSelect);
+
+    // If there are local Ollama models, surface the list as a hint — parity
+    // with the old slide panel's "Local Models" section.
+    if (localModels.length) {
+      const localHint = document.createElement('div');
+      localHint.className = 'gs-pref-hint';
+      localHint.style.marginTop = '6px';
+      localHint.textContent = 'Local: ' + localModels.map(m => (m.id + (m.sizeGb ? ' (' + m.sizeGb + 'GB)' : ''))).join(', ');
+      modelCard.appendChild(localHint);
+    }
+
+    modelSection.appendChild(modelCard);
+    content.appendChild(modelSection);
+
+    // --- Agent Tools (per-chat) ---
+    // GUI control = computer-use MCP (click/type in a specific Mac app).
+    // Browser control = Interceptor MCP (authenticated-browser control via Chrome extension).
+    // Both live here so per-chat capabilities are in per-chat settings, not
+    // polluting the chat header with always-visible pills.
+    const toolsSection = document.createElement('div');
+    toolsSection.className = 'gs-section';
+    toolsSection.innerHTML = `<div class="gs-section-title">Agent Tools</div>`;
+
+    // --- GUI Control row ---
+    const cuRow = document.createElement('div');
+    cuRow.className = 'gs-toggle-row';
+    const cuEnabled = !!(cuStatus && cuStatus.enabled);
+    const cuTarget = cuStatus ? cuStatus.target_bundle_id : null;
+    const cuAllowed = (cuStatus && Array.isArray(cuStatus.allowed_bundle_ids)) ? cuStatus.allowed_bundle_ids : [];
+    const cuFriendly = (bid) => {
+      if (!bid) return 'off';
+      const parts = String(bid).split('.');
+      return parts.length >= 3 ? parts.slice(2).join('.') : bid;
+    };
+    const cuCopy = document.createElement('div');
+    cuCopy.className = 'gs-toggle-copy';
+    cuCopy.innerHTML = `<span class="gs-toggle-label">\\uD83D\\uDDB1 GUI Control</span>
+      <div class="gs-toggle-hint" style="margin-top:2px">Let the agent click and type in a specific Mac app.${cuEnabled && cuTarget ? ' Target: <code>' + escHtml(cuTarget) + '</code>' : ''}</div>`;
+    cuRow.appendChild(cuCopy);
+    const cuToggle = document.createElement('button');
+    cuToggle.className = 'gs-toggle ' + (cuEnabled ? 'on' : 'off');
+    cuToggle.onclick = async () => {
+      if (cuEnabled) {
+        try {
+          await fetch(`/api/chats/${chatId}/computer_use/disable`, {method: 'POST', credentials: 'same-origin'});
+          gsToast('GUI Control disabled');
+          await loadData(); render();
+        } catch(e) { dbg('cu disable error:', e); }
+        return;
+      }
+      // Turning on — need a target bundle ID. Prefer first allowed; else prompt.
+      let pick = cuAllowed[0] || null;
+      if (!pick) {
+        pick = prompt('Enter Mac app bundle ID (e.g. com.apple.TextEdit):', 'com.apple.TextEdit');
+        if (!pick) return;
+        if (!/^[a-zA-Z0-9._-]+$/.test(pick)) { gsToast('Invalid bundle ID'); return; }
+      }
+      try {
+        await fetch(`/api/chats/${chatId}/computer_use/enable`, {
+          method: 'POST', credentials: 'same-origin',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({target_bundle_id: pick}),
+        });
+        gsToast('GUI Control → ' + cuFriendly(pick));
+        await loadData(); render();
+      } catch(e) { dbg('cu enable error:', e); }
+    };
+    cuRow.appendChild(cuToggle);
+    toolsSection.appendChild(cuRow);
+
+    // GUI target picker — shown inline when enabled OR when there are allowed
+    // bundles available (user can pre-pick a target before enabling). Only
+    // render the dropdown when it would actually carry options.
+    if (cuAllowed.length > 0 || cuEnabled) {
+      const pickerWrap = document.createElement('div');
+      pickerWrap.className = 'gs-pref-card';
+      pickerWrap.style.marginTop = '6px';
+      const pickerLabel = document.createElement('div');
+      pickerLabel.className = 'gs-pref-label';
+      pickerLabel.textContent = 'Target App';
+      pickerWrap.appendChild(pickerLabel);
+      const pickerHint = document.createElement('div');
+      pickerHint.className = 'gs-pref-hint';
+      pickerHint.innerHTML = cuAllowed.length > 0
+        ? 'Pick which app the agent is allowed to drive.'
+        : 'No allowed bundle IDs configured. Add them in Admin → Config → gui_automation.allowed_bundle_ids.';
+      pickerWrap.appendChild(pickerHint);
+      if (cuAllowed.length > 0) {
+        const sel = document.createElement('select');
+        sel.className = 'gs-select';
+        const offOpt = document.createElement('option');
+        offOpt.value = ''; offOpt.textContent = '— Off —';
+        sel.appendChild(offOpt);
+        for (const bid of cuAllowed) {
+          const opt = document.createElement('option');
+          opt.value = bid; opt.textContent = cuFriendly(bid) + ' (' + bid + ')';
+          if (bid === cuTarget) opt.selected = true;
+          sel.appendChild(opt);
+        }
+        sel.onchange = async () => {
+          const val = sel.value;
+          try {
+            if (!val) {
+              await fetch(`/api/chats/${chatId}/computer_use/disable`, {method: 'POST', credentials: 'same-origin'});
+              gsToast('GUI Control disabled');
+            } else {
+              await fetch(`/api/chats/${chatId}/computer_use/enable`, {
+                method: 'POST', credentials: 'same-origin',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({target_bundle_id: val}),
+              });
+              gsToast('GUI Control → ' + cuFriendly(val));
+            }
+            await loadData(); render();
+          } catch(e) { dbg('cu change error:', e); }
+        };
+        pickerWrap.appendChild(sel);
+      }
+      toolsSection.appendChild(pickerWrap);
+    }
+
+    // --- Browser Control row ---
+    const intRow = document.createElement('div');
+    intRow.className = 'gs-toggle-row';
+    intRow.style.borderTop = '1px solid var(--bg)';
+    intRow.style.paddingTop = '10px';
+    intRow.style.marginTop = '6px';
+    const intEnabled = !!(intStatus && intStatus.enabled);
+    const intInstalled = !!(intStatus && intStatus.binary_installed);
+    const intCopy = document.createElement('div');
+    intCopy.className = 'gs-toggle-copy';
+    const intHint = intInstalled
+      ? 'Let the agent drive Chrome via the Interceptor extension.'
+      : '<span style="color:#fca5a5">Interceptor binary not installed. Install from the DMG or set <code>APEX_INTERCEPTOR_BIN</code>.</span>';
+    intCopy.innerHTML = `<span class="gs-toggle-label">\\uD83C\\uDF10 Browser Control</span>
+      <div class="gs-toggle-hint" style="margin-top:2px">${intHint}</div>`;
+    intRow.appendChild(intCopy);
+    const intToggle = document.createElement('button');
+    intToggle.className = 'gs-toggle ' + (intEnabled ? 'on' : 'off');
+    if (!intInstalled) {
+      intToggle.style.opacity = '0.4';
+      intToggle.style.cursor = 'not-allowed';
+    }
+    intToggle.onclick = async () => {
+      if (!intInstalled) { gsToast('Interceptor not installed'); return; }
+      try {
+        const url = intEnabled
+          ? `/api/chats/${chatId}/interceptor/disable`
+          : `/api/chats/${chatId}/interceptor/enable`;
+        await fetch(url, {method: 'POST', credentials: 'same-origin'});
+        gsToast(intEnabled ? 'Browser Control disabled' : 'Browser Control enabled');
+        await loadData(); render();
+      } catch(e) { dbg('int toggle error:', e); }
+    };
+    intRow.appendChild(intToggle);
+    toolsSection.appendChild(intRow);
+
+    content.appendChild(toolsSection);
+
     const appearanceSection = document.createElement('div');
     appearanceSection.className = 'gs-section';
     appearanceSection.innerHTML = `<div class="gs-section-title">Appearance</div>`;
@@ -5597,12 +5881,12 @@ async function showGroupSettings() {
 
   function renderChannelTab(content) {
     const sidebarItem = document.querySelector(`.chat-item[data-id="${chatId}"]`);
-    const currentTitle = sidebarItem?.dataset?.title || 'Group';
+    const currentTitle = sidebarItem?.dataset?.title || (isGroup ? 'Group' : 'Chat');
 
-    // --- Channel Name ---
+    // --- Name (Channel for groups, Chat for individual) ---
     const nameSection = document.createElement('div');
     nameSection.className = 'gs-section';
-    nameSection.innerHTML = `<div class="gs-section-title">Channel Name</div>`;
+    nameSection.innerHTML = `<div class="gs-section-title">${isGroup ? 'Channel Name' : 'Chat Name'}</div>`;
     const nameInput = document.createElement('input');
     nameInput.className = 'gs-name-input';
     nameInput.type = 'text';
@@ -5630,6 +5914,26 @@ async function showGroupSettings() {
     };
     nameSection.appendChild(nameInput);
     content.appendChild(nameSection);
+
+    // Individual chats skip group-only sections (members, mention/autoreply/
+    // shared-memory/sequential-relay toggles) and jump straight to the
+    // danger zone. Keeps the modal shape identical between the two types.
+    if (!isGroup) {
+      const dangerSection = document.createElement('div');
+      dangerSection.className = 'gs-danger';
+      const delBtn = document.createElement('button');
+      delBtn.className = 'gs-danger-btn';
+      delBtn.textContent = 'Delete Chat';
+      delBtn.onclick = async () => {
+        if (!confirm(`Delete "${currentTitle}"? This will remove all messages and cannot be undone.`)) return;
+        overlay.remove();
+        const ok = await deleteChat(chatId);
+        if (!ok) gsToast('Failed to delete chat');
+      };
+      dangerSection.appendChild(delBtn);
+      content.appendChild(dangerSection);
+      return;
+    }
 
     // --- Members ---
     const memSection = document.createElement('div');
@@ -5954,6 +6258,12 @@ async function showGroupSettings() {
     }
   };
 }
+
+// Expose on window so handlers defined in other JS-string blocks can reach it.
+// Back-compat alias: legacy callers (title click, etc.) still invoke
+// showGroupSettings; both point at the same unified modal now.
+window.showChatSettings = showChatSettings;
+window.showGroupSettings = showChatSettings;
 
 function updateTopbarProfile(profileName, profileAvatar) {
   const el = document.getElementById('topbarProfile');
@@ -6860,32 +7170,13 @@ function _cuFriendlyName(bundleId) {
 }
 
 function cuMountToggle(chatId, status) {
-  if (!chatId) return;
-  const anchor = document.getElementById('chatTitle');
-  if (!anchor || !anchor.parentNode) return;
-  let pill = document.getElementById('cuTogglePill');
-  if (!pill) {
-    pill = document.createElement('button');
-    pill.id = 'cuTogglePill';
-    pill.type = 'button';
-    pill.title = 'Toggle computer-use (GUI automation) for this chat';
-    pill.style.cssText = 'margin-left:8px;padding:3px 10px;border-radius:999px;border:1px solid #475569;background:#1e293b;color:#cbd5e1;font-size:11px;cursor:pointer;vertical-align:middle;font-weight:500;';
-    anchor.parentNode.insertBefore(pill, anchor.nextSibling);
-  }
-  // Ensure it still follows the title even if DOM re-rendered.
-  if (pill.previousSibling !== anchor) {
-    try { anchor.parentNode.insertBefore(pill, anchor.nextSibling); } catch (e) { /* ignore */ }
-  }
-  const enabled = !!(status && status.enabled);
-  const target = status ? status.target_bundle_id : null;
-  pill.textContent = enabled ? ('\\uD83D\\uDDB1 ' + _cuFriendlyName(target)) : '\\uD83D\\uDDB1 GUI: off';
-  pill.style.background = enabled ? '#16a34a' : '#1e293b';
-  pill.style.color = enabled ? '#fff' : '#cbd5e1';
-  pill.style.borderColor = enabled ? '#16a34a' : '#475569';
-  pill.onclick = (ev) => {
-    ev.stopPropagation();
-    cuOpenTogglePopover(chatId, pill, status || {});
-  };
+  // Header pill is retired: GUI Control lives in the per-chat settings modal
+  // (Preferences tab → Agent Tools). This function is kept as a no-op so any
+  // caller that still invokes it (e.g. cuSyncPauseUI) continues to work, and
+  // it also evicts any stale pill left in the DOM from a prior version.
+  const stale = document.getElementById('cuTogglePill');
+  if (stale) { try { stale.remove(); } catch (e) { /* ignore */ } }
+  return;
 }
 
 function cuOpenTogglePopover(chatId, anchorEl, status) {
@@ -7001,6 +7292,58 @@ window.cuEnsurePauseBanner = cuEnsurePauseBanner;
 window.cuSyncPauseUI = cuSyncPauseUI;
 window.cuMountToggle = cuMountToggle;
 window.cuOpenTogglePopover = cuOpenTogglePopover;
+
+// --- Interceptor (browser-agent) toggle pill --------------------------------
+// Mirrors cuMountToggle: persistent pill next to the chat title that toggles
+// the interceptor_enabled flag on the chat row. Unlike CU (which picks a
+// bundle-ID), this is a simple on/off.
+
+async function intEnableForChat(chatId) {
+  if (!chatId) return null;
+  const r = await fetch(`/api/chats/${chatId}/interceptor/enable`, {
+    method: 'POST', credentials: 'same-origin',
+  });
+  return r.ok ? r.json() : null;
+}
+
+async function intDisableForChat(chatId) {
+  if (!chatId) return null;
+  const r = await fetch(`/api/chats/${chatId}/interceptor/disable`, {
+    method: 'POST', credentials: 'same-origin',
+  });
+  return r.ok ? r.json() : null;
+}
+
+async function intGetStatus(chatId) {
+  if (!chatId) return null;
+  const r = await fetch(`/api/chats/${chatId}/interceptor/status`, {
+    credentials: 'same-origin',
+  });
+  return r.ok ? r.json() : null;
+}
+
+function intMountToggle(chatId, status) {
+  // Header pill is retired: Browser Control lives in the per-chat settings
+  // modal (Preferences tab → Agent Tools). Kept as a no-op so any caller
+  // (e.g. intSyncToggle) still works; also evicts stale pills from the DOM.
+  const stale = document.getElementById('intTogglePill');
+  if (stale) { try { stale.remove(); } catch (e) { /* ignore */ } }
+  return;
+}
+
+async function intSyncToggle(chatId) {
+  if (!chatId) return;
+  try {
+    const st = await intGetStatus(chatId);
+    if (st) intMountToggle(chatId, st);
+  } catch (e) { /* non-fatal */ }
+}
+
+window.intEnableForChat = intEnableForChat;
+window.intDisableForChat = intDisableForChat;
+window.intGetStatus = intGetStatus;
+window.intMountToggle = intMountToggle;
+window.intSyncToggle = intSyncToggle;
 """
 
 CHAT_JS = "\n".join([
