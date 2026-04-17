@@ -266,6 +266,14 @@ async def lifespan(app: FastAPI):
             log(f"embedding reindex failed (non-fatal): {e}")
     asyncio.create_task(_startup_recovery())
     asyncio.create_task(_license_mgr.run_check_in_loop())
+    # Kick off active WS liveness probe to catch silently-dead TCP sockets
+    # (iOS cellular↔WiFi handoff, NAT rebind, laptop lid close). Complements
+    # the reactive zombie vacuum in _vacuum_dead_ws.
+    try:
+        from streaming import start_liveness_prober
+        start_liveness_prober()
+    except Exception as e:
+        log(f"liveness prober start failed (non-fatal): {e}")
 
     # Initialize MCP bridge for local model tool loop
     try:
