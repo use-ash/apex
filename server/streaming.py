@@ -153,6 +153,87 @@ def _detach_ws(ws: WebSocket) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Active WS liveness probe
+# ---------------------------------------------------------------------------
+#
+# Starlette's client_state is REACTIVE — it only flips to DISCONNECTED when
+# an I/O call raises. TCP connections that die silently (iOS cellular↔WiFi
+# handoff, NAT rebind, laptop lid close) leave client_state == CONNECTED
+# until the next send fails. Between fan-out frames the viewer set can go
+# to 0 before the client reconnects, so subsequent sends fall into the void.
+#
+# Fix: periodic server→client ping. A successful send keeps the socket warm
+# and detects dead sockets via the send exception. Evict on failure.
+
+_LIVENESS_INTERVAL_SEC = 15
+_liveness_task: asyncio.Task | None = None
+
+
+async def _probe_one_ws(ws: WebSocket) -> bool:
+    """Send a server_ping frame. Return True if the send succeeded."""
+    try:
+        await ws.send_json({"type": "server_ping", "ts": int(time.time())})
+        return True
+    except Exception:
+        return False
+
+
+async def _ws_liveness_prober() -> None:
+    """Periodically probe every attached WebSocket with a JSON ping.
+
+    Runs forever. Each tick: snapshot _chat_ws, try send_json on each ws,
+    evict any that fail. The send itself is the liveness signal — we don't
+    need a pong because the client already tolerates unknown {type:...}
+    messages and starlette raises immediately on a dead socket.
+    """
+    log("WSDIAG liveness prober started")
+    while True:
+        try:
+            await asyncio.sleep(_LIVENESS_INTERVAL_SEC)
+            # Snapshot to avoid mutating during iteration
+            snapshot: list[tuple[str, WebSocket]] = []
+            for chat_id, ws_set in list(_chat_ws.items()):
+                for ws in list(ws_set):
+                    snapshot.append((chat_id, ws))
+            if not snapshot:
+                continue
+            evicted = 0
+            for chat_id, ws in snapshot:
+                # Skip if ws is clearly dead by state check (reactive path)
+                if not _ws_is_alive(ws):
+                    _vacuum_dead_ws(chat_id)
+                    evicted += 1
+                    continue
+                ok = await _probe_one_ws(ws)
+                if not ok:
+                    # Send failed — ws is dead. Remove now, before a real
+                    # stream frame gets wasted on it.
+                    ws_set = _chat_ws.get(chat_id)
+                    if ws_set:
+                        ws_set.discard(ws)
+                        if not ws_set:
+                            _chat_ws.pop(chat_id, None)
+                    _ws_chat.pop(ws, None)
+                    evicted += 1
+                    log(f"WSDIAG probe_evict ws={id(ws) & 0xFFFFFF:06x} chat={chat_id[:8]}")
+            if evicted:
+                log(f"WSDIAG liveness tick probed={len(snapshot)} evicted={evicted}")
+        except asyncio.CancelledError:
+            log("WSDIAG liveness prober cancelled")
+            raise
+        except Exception as e:
+            log(f"WSDIAG liveness prober error (non-fatal): {e}")
+
+
+def start_liveness_prober() -> None:
+    """Kick off the liveness prober exactly once. Idempotent."""
+    global _liveness_task
+    if _liveness_task is not None and not _liveness_task.done():
+        return
+    _liveness_task = asyncio.create_task(_ws_liveness_prober())
+
+
+# ---------------------------------------------------------------------------
 # Stream task tracking
 # ---------------------------------------------------------------------------
 
