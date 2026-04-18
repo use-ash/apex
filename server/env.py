@@ -295,7 +295,31 @@ WHISPER_BIN: str = os.environ.get(
 # Storage names — override to run multiple instances side by side
 # ---------------------------------------------------------------------------
 
-DB_NAME: str = os.environ.get("APEX_DB_NAME", "apex.db")
+# Resolve DB name with a port-derived fallback. Prevents a dev process that
+# was launched without `APEX_DB_NAME=apex_dev.db` (e.g. manual `python apex.py`
+# from a fresh shell, an auto-respawn, an env file that forgot to set it)
+# from silently opening the prod DB. That bug let dev's iOS PWA show prod
+# chats on Apr 17 2026 — the only thing keeping the two DBs apart was the
+# env var, since `~/.apex-prod/state` is a symlink into the dev repo's state
+# dir and both `apex.db` and `apex_dev.db` live in one directory.
+#
+# Resolution order:
+#   1. APEX_DB_NAME if explicitly set (any value, trusted)
+#   2. Derive from APEX_PORT — 8301 → apex_dev.db, 8300 → apex.db
+#   3. Refuse to start: a custom port with no DB name is ambiguous, fail loud.
+_apex_db_name_explicit = os.environ.get("APEX_DB_NAME")
+if _apex_db_name_explicit:
+    DB_NAME = _apex_db_name_explicit
+elif PORT == 8301:
+    DB_NAME = "apex_dev.db"
+elif PORT == 8300:
+    DB_NAME = "apex.db"
+else:
+    raise RuntimeError(
+        f"APEX_DB_NAME is unset and APEX_PORT={PORT} has no default mapping. "
+        f"Known mappings: 8300 -> apex.db (prod), 8301 -> apex_dev.db (dev). "
+        f"Set APEX_DB_NAME explicitly or use a known port."
+    )
 LOG_NAME: str = os.environ.get("APEX_LOG_NAME", "apex.log")
 
 # ---------------------------------------------------------------------------
