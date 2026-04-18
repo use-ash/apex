@@ -5546,6 +5546,250 @@ _JS_GROUP_SETTINGS = """// --- Chat / Group Settings Modal ---
 // currentChatType inside renderChannelTab / renderPreferencesTab where the
 // content actually differs (groups have members + sequential relay; individual
 // chats have just a name). Preferences tab is identical for both types.
+
+// --- 5-level tool_policy permissions picker ---
+// Reference: server/routes_chat.py tool-policy endpoints. Applies ONLY to
+// direct 1:1 chats without an attached persona profile (backend returns 400
+// otherwise). Groups + profile-backed chats see an explanatory hint instead.
+const TOOL_POLICY_LEVELS = [
+  {level: 0, name: 'Chat Only',        hint: 'No tools. Pure conversation.'},
+  {level: 1, name: 'Read Only',        hint: 'Reads, search, list. No writes, no shell.'},
+  {level: 2, name: 'Workspace + Browser', hint: 'Playwright, fetch, Python scratch. Sandboxed.'},
+  {level: 3, name: 'Admin Allowlist',  hint: 'FS writes, shell — prefix-allowlisted only.'},
+  {level: 4, name: 'Full Admin',       hint: 'All tools. Timeboxed sudo recommended.'},
+];
+
+// Hoisted so renderPermissionsCard (which lives outside showChatSettings's
+// closure) can reach it. Previously the inner gsToast inside showChatSettings
+// was invisible here, so every permission-tile click threw ReferenceError after
+// a successful PUT, landing in the catch block and showing a bogus "Save
+// failed" badge despite the server returning 200 OK.
+function gsToast(msg) {
+  let t = document.querySelector('.gs-toast');
+  if (!t) { t = document.createElement('div'); t.className = 'gs-toast'; document.body.appendChild(t); }
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.classList.remove('show'), 2000);
+}
+
+async function renderPermissionsCard(card, chatId, isGroup) {
+  card.innerHTML = '<div class="gs-pref-hint">Loading…</div>';
+  // Profile-backed or group chats: inherited, explain and link to admin.
+  const hasProfile = !!(typeof _currentChatProfileId !== 'undefined' && _currentChatProfileId);
+  if (isGroup || hasProfile) {
+    card.innerHTML = '';
+    const h = document.createElement('div');
+    h.className = 'gs-pref-hint';
+    h.textContent = isGroup
+      ? 'Group chats inherit permissions from each member\\'s persona. Edit tool access on the persona page.'
+      : ('Permissions are inherited from the attached persona (' + (_currentChatProfileName || _currentChatProfileId) + '). Edit the persona to change tool access.');
+    card.appendChild(h);
+    // Deep-link to the admin personas page. For profile-backed chats we jump
+    // straight to that persona's editor; for groups we land on the list.
+    // Use gs-inline-btn style so typography matches other inline modal links
+    // (accent color, 12px weight 600, no underline, inherits font-family).
+    const link = document.createElement('a');
+    link.className = 'gs-inline-btn';
+    link.style.textDecoration = 'none';
+    link.style.display = 'inline-block';
+    link.href = hasProfile
+      ? ('/admin/#personas/' + encodeURIComponent(_currentChatProfileId))
+      : '/admin/#personas';
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = hasProfile ? 'Edit persona →' : 'Open personas →';
+    card.appendChild(link);
+    return;
+  }
+  let resp;
+  try {
+    resp = await fetch(`/api/chats/${chatId}/tool-policy`, {credentials: 'same-origin'});
+  } catch(e) {
+    card.innerHTML = '<div class="gs-pref-hint">Failed to load permissions.</div>';
+    return;
+  }
+  if (!resp || !resp.ok) {
+    card.innerHTML = '<div class="gs-pref-hint">Failed to load permissions (' + (resp && resp.status) + ').</div>';
+    return;
+  }
+  const data = await resp.json();
+  const policy = (data && data.tool_policy) || {};
+  const currentLevel = Math.max(0, Math.min(4, parseInt(policy.level ?? policy.default_level ?? 2, 10)));
+  const defaultLevel = Math.max(0, Math.min(4, parseInt(policy.default_level ?? currentLevel, 10)));
+  const elevatedUntil = policy.elevated_until || null;
+  const allowed = Array.isArray(policy.allowed_commands) ? policy.allowed_commands : [];
+
+  card.innerHTML = '';
+
+  // Header label + subtitle showing elevation state. The label row also hosts
+  // an inline status badge ("Saving…" / "Saved ✓ Level N") so the user gets
+  // unambiguous in-modal feedback when they tap a level — toast alone gets
+  // visually lost on the bottom-sheet mobile layout.
+  const labelRow = document.createElement('div');
+  labelRow.className = 'gs-pref-label-row';
+  const label = document.createElement('div');
+  label.className = 'gs-pref-label';
+  label.textContent = 'Tool policy level';
+  labelRow.appendChild(label);
+  const status = document.createElement('span');
+  status.className = 'gs-pref-status';
+  status.dataset.state = 'idle';
+  labelRow.appendChild(status);
+  card.appendChild(labelRow);
+  const hint = document.createElement('div');
+  hint.className = 'gs-pref-hint';
+  hint.textContent = 'Controls which tools the agent can invoke. Default applies always; elevation is temporary.';
+  card.appendChild(hint);
+
+  let activeLevel = currentLevel;
+
+  // Level picker (5 buttons). Stacks on mobile via .gs-level-picker CSS.
+  const picker = document.createElement('div');
+  picker.className = 'gs-level-picker';
+  const buttons = [];
+  TOOL_POLICY_LEVELS.forEach((lvl) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'gs-level-opt' + (lvl.level === currentLevel ? ' selected' : '');
+    btn.dataset.level = String(lvl.level);
+    btn.innerHTML = '<strong>' + lvl.level + '</strong><span class="gs-level-name">' + escHtml(lvl.name) + '</span><span class="gs-level-hint">' + escHtml(lvl.hint) + '</span>';
+    btn.onclick = async () => {
+      if (lvl.level === activeLevel) return;
+      // Optimistic visual update — flip selection immediately so the user
+      // never sees both old + new highlighted at once during the network
+      // round-trip. Reverts on failure.
+      const prevLevel = activeLevel;
+      activeLevel = lvl.level;
+      buttons.forEach(b => b.classList.toggle('selected', parseInt(b.dataset.level, 10) === activeLevel));
+      status.dataset.state = 'saving';
+      status.textContent = 'Saving…';
+      try {
+        const r = await fetch(`/api/chats/${chatId}/tool-policy`, {
+          method: 'PUT', credentials: 'same-origin',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({default_level: lvl.level, level: lvl.level, elevated_until: null}),
+        });
+        if (!r.ok) {
+          // Revert
+          activeLevel = prevLevel;
+          buttons.forEach(b => b.classList.toggle('selected', parseInt(b.dataset.level, 10) === activeLevel));
+          status.dataset.state = 'error';
+          status.textContent = 'Save failed';
+          gsToast('Permission update failed (' + r.status + ')');
+          return;
+        }
+        status.dataset.state = 'saved';
+        status.textContent = '✓ Saved · L' + lvl.level + ' ' + lvl.name;
+        gsToast('Level ' + lvl.level + ' · ' + lvl.name);
+        // Soft re-render only if level transition gates additional UI
+        // (Level 3 shows the shell allowlist, others hide it). Skip the
+        // flicker-y full reload otherwise.
+        if (lvl.level === 3 || prevLevel === 3) {
+          renderPermissionsCard(card, chatId, isGroup);
+        }
+      } catch(e) {
+        dbg('perm set error:', e);
+        activeLevel = prevLevel;
+        buttons.forEach(b => b.classList.toggle('selected', parseInt(b.dataset.level, 10) === activeLevel));
+        status.dataset.state = 'error';
+        status.textContent = 'Save failed';
+        gsToast('Permission update failed');
+      }
+    };
+    buttons.push(btn);
+    picker.appendChild(btn);
+  });
+  card.appendChild(picker);
+
+  // Elevation controls (JIT sudo).
+  const elevRow = document.createElement('div');
+  elevRow.className = 'gs-perm-elev';
+  const elevLabel = document.createElement('div');
+  elevLabel.className = 'gs-pref-label';
+  elevLabel.textContent = 'Temporary elevation';
+  elevRow.appendChild(elevLabel);
+  const elevHint = document.createElement('div');
+  elevHint.className = 'gs-pref-hint';
+  if (elevatedUntil) {
+    const when = new Date(elevatedUntil);
+    elevHint.textContent = 'Elevated until ' + when.toLocaleString() + ' — revoke to drop back to Level ' + defaultLevel + '.';
+  } else {
+    elevHint.textContent = 'Raise the current level for a limited time. Auto-reverts when it expires.';
+  }
+  elevRow.appendChild(elevHint);
+  const elevControls = document.createElement('div');
+  elevControls.className = 'gs-perm-elev-controls';
+  const elevSel = document.createElement('select');
+  elevSel.className = 'gs-select';
+  [[15,'15 minutes'],[60,'1 hour'],[240,'4 hours'],[720,'12 hours']].forEach(([m, lbl]) => {
+    const o = document.createElement('option'); o.value = String(m); o.textContent = lbl;
+    elevSel.appendChild(o);
+  });
+  elevControls.appendChild(elevSel);
+  const elevBtn = document.createElement('button');
+  elevBtn.type = 'button';
+  elevBtn.className = 'gs-inline-btn';
+  elevBtn.textContent = elevatedUntil ? 'Revoke' : 'Elevate to L4';
+  elevBtn.onclick = async () => {
+    try {
+      if (elevatedUntil) {
+        const r = await fetch(`/api/chats/${chatId}/tool-policy/revoke`, {method: 'POST', credentials: 'same-origin'});
+        if (!r.ok) { gsToast('Revoke failed'); return; }
+        gsToast('Elevation revoked');
+      } else {
+        const r = await fetch(`/api/chats/${chatId}/tool-policy/elevate`, {
+          method: 'POST', credentials: 'same-origin',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({minutes: parseInt(elevSel.value, 10) || 15, level: 4}),
+        });
+        if (!r.ok) { gsToast('Elevate failed'); return; }
+        gsToast('Elevated to L4');
+      }
+      renderPermissionsCard(card, chatId, isGroup);
+    } catch(e) { dbg('perm elev error:', e); gsToast('Elevation failed'); }
+  };
+  elevControls.appendChild(elevBtn);
+  elevRow.appendChild(elevControls);
+  card.appendChild(elevRow);
+
+  // Shell allowlist (Level 3 only).
+  if (currentLevel === 3) {
+    const listRow = document.createElement('div');
+    listRow.className = 'gs-perm-allowlist';
+    const listLabel = document.createElement('div');
+    listLabel.className = 'gs-pref-label';
+    listLabel.textContent = 'Shell prefix allowlist';
+    listRow.appendChild(listLabel);
+    const listHint = document.createElement('div');
+    listHint.className = 'gs-pref-hint';
+    listHint.textContent = 'One per line. Shell calls must start with one of these prefixes (e.g. `git`, `ls`, `pytest`).';
+    listRow.appendChild(listHint);
+    const ta = document.createElement('textarea');
+    ta.className = 'gs-name-input';
+    ta.rows = 4;
+    ta.value = allowed.join('\\n');
+    ta.style.fontFamily = 'ui-monospace,Menlo,monospace';
+    let saveTimer = null;
+    ta.oninput = () => {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(async () => {
+        const lines = ta.value.split('\\n').map(s => s.trim()).filter(Boolean);
+        try {
+          const r = await fetch(`/api/chats/${chatId}/tool-policy`, {
+            method: 'PUT', credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({level: currentLevel, default_level: defaultLevel, allowed_commands: lines, elevated_until: elevatedUntil}),
+          });
+          if (r.ok) gsToast('Allowlist saved (' + lines.length + ')');
+        } catch(e) { dbg('allowlist save error:', e); }
+      }, 700);
+    };
+    listRow.appendChild(ta);
+    card.appendChild(listRow);
+  }
+}
+
 async function showChatSettings() {
   if (!currentChat) return;
   const chatId = currentChat;
@@ -5629,6 +5873,9 @@ async function showChatSettings() {
     } catch(e) { dbg('chat settings load error:', e); }
   }
 
+  // Note: a module-scope gsToast is also defined above TOOL_POLICY_LEVELS so
+  // that renderPermissionsCard (which isn't in this closure) can use it. The
+  // two copies are deliberately identical.
   function gsToast(msg) {
     let t = document.querySelector('.gs-toast');
     if (!t) { t = document.createElement('div'); t.className = 'gs-toast'; document.body.appendChild(t); }
@@ -5697,6 +5944,11 @@ async function showChatSettings() {
     // Mirrors the old right-side settings panel's Chat Model picker. Locked
     // when a persona profile is attached (profile is source of truth for
     // model). Update via ws 'set_chat_model' same as legacy handler.
+    // Skip entirely for group chats: per-member personas drive model, so a
+    // group-level override is meaningless and confusing.
+    if (isGroup) {
+      // Jump straight to permissions card below.
+    } else {
     const modelSection = document.createElement('div');
     modelSection.className = 'gs-section';
     modelSection.innerHTML = `<div class="gs-section-title">Model</div>`;
@@ -5785,6 +6037,7 @@ async function showChatSettings() {
 
     modelSection.appendChild(modelCard);
     content.appendChild(modelSection);
+    } // end !isGroup block (model section)
 
     // --- Agent Tools (per-chat) ---
     // GUI control = computer-use MCP (click/type in a specific Mac app).
@@ -5930,6 +6183,19 @@ async function showChatSettings() {
     toolsSection.appendChild(intRow);
 
     content.appendChild(toolsSection);
+
+    // --- Permissions (5-level tool_policy) ---
+    // Only surfaces for 1:1 chats without an attached profile. Group chats +
+    // profile-backed chats inherit from the agent_profile's tool_policy and
+    // must be edited there (backend enforces via _direct_chat_tool_policy_error).
+    const permSection = document.createElement('div');
+    permSection.className = 'gs-section';
+    permSection.innerHTML = `<div class="gs-section-title">Permissions</div>`;
+    const permCard = document.createElement('div');
+    permCard.className = 'gs-pref-card';
+    permSection.appendChild(permCard);
+    content.appendChild(permSection);
+    renderPermissionsCard(permCard, chatId, isGroup).catch((e) => { dbg('perm render error:', e); });
 
     const appearanceSection = document.createElement('div');
     appearanceSection.className = 'gs-section';
@@ -7017,6 +7283,10 @@ msgEl.addEventListener('touchcancel', () => {
     _w('topbarProfile',    'click',  (e) => showProfileDropdown(e));
     _w('alertBadge',       'click',  () => toggleAlertsPanel());
     _w('settingsBtn',      'click',  () => toggleSettings());
+    // Clicking the chat title/model name in the header opens per-chat settings
+    // (mirrors mobile mockup + webapp-pattern convention). Falls through to the
+    // global settings panel when no chat is active via toggleSettings() below.
+    _w('chatTitle',        'click',  () => { if (typeof currentChat !== 'undefined' && currentChat) toggleSettings(); });
     _w('refreshBtn',       'click',  () => window.location.reload());
     _w('clearAlertsBtn',   'click',  () => clearAllAlerts());
     _w('settingsCloseBtn', 'click',  () => toggleSettings());
