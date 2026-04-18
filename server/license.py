@@ -481,8 +481,9 @@ class LicenseManager:
     def _get_trial_start_safe(self) -> datetime | None:
         """Read trial start from DB with error handling."""
         try:
-            conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+            conn = sqlite3.connect(str(self._db_path), check_same_thread=False, timeout=30.0)
             conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
             try:
                 return _get_trial_start(conn)
             finally:
@@ -494,8 +495,9 @@ class LicenseManager:
     def _set_trial_start_safe(self, when: datetime) -> None:
         """Write trial start to DB with error handling."""
         try:
-            conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+            conn = sqlite3.connect(str(self._db_path), check_same_thread=False, timeout=30.0)
             conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
             try:
                 _set_trial_start(conn, when)
             finally:

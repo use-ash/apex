@@ -188,8 +188,17 @@ def _migrate_tool_policy_levels(conn: sqlite3.Connection) -> None:
 
 
 def _get_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    # timeout=30.0 also sets sqlite3_busy_timeout under the hood; we additionally
+    # set the PRAGMA explicitly for visibility and to survive any connection
+    # path that might override the ctor arg. Under high-volume writers (e.g. the
+    # chatmine extractor streaming thousands of events/turn through an SDK
+    # subprocess that opens apex.db independently of the main server's
+    # _db_lock), the Python-default 5s busy_timeout is exhausted and callers
+    # see "database is locked" on stream_end persistence. See April 17 2026
+    # investigation.
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=30.0)
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
