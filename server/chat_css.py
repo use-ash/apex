@@ -24,7 +24,9 @@ body.theme-light{--bg:#F8FAFC;--surface:#FFFFFF;--card:#D8E1EB;--text:#0F172A;--
 .topbar{background:var(--surface);padding:12px 16px;padding-top:calc(12px + var(--sat));
 display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--card);min-height:52px;flex-shrink:0;
 transition:margin-left .2s ease}
-.topbar h1{font-size:16px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.topbar h1{font-size:16px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+cursor:pointer;user-select:none;border-radius:6px;padding:2px 6px;margin:-2px -6px;transition:background .12s}
+.topbar h1:hover{background:var(--card)}
 .status{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .status.ok{background:var(--green)}
 .status.err{background:var(--red)}
@@ -498,10 +500,14 @@ display:flex;align-items:center;justify-content:center;padding:20px}
 .profile-modal{background:var(--surface);border-radius:16px;max-width:480px;width:100%;
 max-height:80vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.5)}
 .profile-modal-header{display:flex;align-items:center;justify-content:space-between;
-padding:16px 20px;border-bottom:1px solid var(--card)}
+padding:16px 20px;border-bottom:1px solid var(--card);
+padding-top:max(16px,calc(env(safe-area-inset-top,0px) + 8px))}
 .profile-modal-header h3{font-size:16px;font-weight:600}
 .profile-modal-header button{background:none;border:none;color:var(--dim);
-font-size:20px;cursor:pointer;padding:4px 8px}
+font-size:24px;line-height:1;cursor:pointer;padding:0;
+min-width:44px;min-height:44px;display:flex;align-items:center;justify-content:center;
+border-radius:10px;-webkit-tap-highlight-color:rgba(255,255,255,.08);touch-action:manipulation}
+.profile-modal-header button:active{background:var(--card)}
 .profile-modal-body{padding:12px 16px;overflow-y:auto;flex:1;min-height:0}
 .profile-card{display:flex;align-items:center;gap:12px;padding:12px 14px;
 border-radius:12px;cursor:pointer;border:2px solid transparent;
@@ -617,11 +623,22 @@ font-weight:600;cursor:pointer;padding:0}
 font-weight:600;color:var(--red,#ef4444);background:rgba(239,68,68,.1);border:none;
 border-radius:8px;cursor:pointer;transition:background .15s}
 .gs-danger-btn:hover{background:rgba(239,68,68,.2)}
-.gs-toast{position:fixed;bottom:60px;left:50%;transform:translateX(-50%) translateY(20px);
+.gs-toast{position:fixed;left:50%;transform:translateX(-50%) translateY(20px);
+bottom:max(60px,calc(env(safe-area-inset-bottom,0px) + 20px));
 background:var(--card);color:var(--text);padding:10px 20px;border-radius:20px;font-size:13px;
 font-weight:500;opacity:0;transition:all .25s ease;pointer-events:none;z-index:9999;
 box-shadow:0 4px 16px rgba(0,0,0,.4)}
 .gs-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+/* Inline save-status badge for the permissions picker (and any future
+   gs-pref-card that reuses this pattern). Lives next to the section label
+   so feedback is always visible inside the modal, not just via toast which
+   gets covered by the bottom-sheet on phones. */
+.gs-pref-label-row{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.gs-pref-status{font-size:11px;font-weight:600;padding:3px 8px;border-radius:10px;
+opacity:0;transition:opacity .2s ease;letter-spacing:.02em}
+.gs-pref-status[data-state="saving"]{opacity:1;color:var(--dim);background:var(--card)}
+.gs-pref-status[data-state="saved"]{opacity:1;color:#10b981;background:rgba(16,185,129,.12)}
+.gs-pref-status[data-state="error"]{opacity:1;color:#ef4444;background:rgba(239,68,68,.12)}
 
 /* Profile indicator in topbar */
 .topbar-profile{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--dim);
@@ -817,4 +834,38 @@ opacity:0;transition:opacity 0.3s ease;pointer-events:none}
   .sp-backdrop{display:block}
   /* Remove min-width hardcodes set for desktop */
   .sp-header,.sp-body,.sp-thinking{min-width:0}
-}"""
+  /* Settings modal becomes a bottom sheet on mobile — matches the
+     /tmp/apex_ui_mockup/index.html reference design. */
+  .profile-modal-overlay{padding:0;align-items:stretch}
+  .profile-modal{max-width:100%;border-radius:14px 14px 0 0;max-height:95vh;
+  min-height:80vh;margin-top:auto}
+  .gs-tabs{padding:10px 12px}
+  .gs-section{padding:12px 14px}
+  .gs-level-picker{grid-template-columns:1fr!important}
+  .gs-level-opt{flex-direction:row!important;align-items:center!important;gap:10px!important;
+  text-align:left!important}
+  .gs-level-opt strong{width:26px;height:26px;border-radius:50%;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;font-size:12px}
+  .gs-perm-elev-controls{flex-direction:column;align-items:stretch}
+}
+
+/* ═══════════════════════════════════════════════════
+   5-level permissions picker (per-chat tool_policy)
+   ═══════════════════════════════════════════════════ */
+.gs-level-picker{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-top:8px}
+.gs-level-opt{display:flex;flex-direction:column;align-items:flex-start;gap:4px;
+padding:10px;border:1px solid var(--card);border-radius:10px;background:var(--bg);
+color:var(--text);cursor:pointer;text-align:left;transition:all .15s ease;min-width:0}
+.gs-level-opt:hover{border-color:var(--accent);background:var(--card)}
+.gs-level-opt.selected{border-color:var(--accent);background:color-mix(in srgb, var(--accent) 14%, var(--bg))}
+.gs-level-opt strong{font-size:13px;font-weight:700;color:var(--accent)}
+.gs-level-opt .gs-level-name{font-size:12px;font-weight:600;color:var(--text);line-height:1.2}
+.gs-level-opt .gs-level-hint{font-size:10px;color:var(--dim);line-height:1.3}
+.gs-perm-elev{margin-top:12px;padding-top:12px;border-top:1px solid var(--bg)}
+.gs-perm-elev-controls{display:flex;gap:8px;align-items:center;margin-top:6px}
+.gs-perm-elev-controls .gs-select{flex:1}
+.gs-perm-allowlist{margin-top:12px;padding-top:12px;border-top:1px solid var(--bg)}
+.gs-inline-btn{padding:8px 14px;border-radius:8px;border:1px solid var(--card);
+background:var(--bg);color:var(--text);font-size:12px;font-weight:600;cursor:pointer;
+transition:all .12s ease;white-space:nowrap}
+.gs-inline-btn:hover{border-color:var(--accent);color:var(--accent)}"""
