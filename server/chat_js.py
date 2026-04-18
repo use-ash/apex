@@ -3758,6 +3758,44 @@ function renderMarkdown(el, rawText) {
     codeBlocks.push(`<pre><code>${escHtml(code.trimEnd())}</code></pre>`);
     return `@@CODEBLOCK_${codeBlocks.length - 1}@@`;
   });
+
+  // --- GFM table pre-extraction (header row + separator row + body rows) ---
+  const tableBlocks = [];
+  {
+    const _tLines = text.split('\\n');
+    const _outLines = [];
+    const _sepRe = /^\\s*\\|?\\s*:?-{2,}:?\\s*(\\|\\s*:?-{2,}:?\\s*)+\\|?\\s*$/;
+    const _parseCells = (row) => row.trim().replace(/^\\||\\|$/g, '').split('|').map(c => c.trim());
+    for (let i = 0; i < _tLines.length; i++) {
+      const line = _tLines[i];
+      const next = (i + 1 < _tLines.length) ? _tLines[i + 1] : '';
+      if (line.includes('|') && _sepRe.test(next)) {
+        const headers = _parseCells(line);
+        const aligns = _parseCells(next).map(s => {
+          const L = s.startsWith(':'); const R = s.endsWith(':');
+          return (L && R) ? 'center' : R ? 'right' : L ? 'left' : '';
+        });
+        const rows = [];
+        let j = i + 2;
+        while (j < _tLines.length) {
+          const r = _tLines[j];
+          if (!r.trim() || !r.includes('|')) break;
+          rows.push(_parseCells(r));
+          j++;
+        }
+        const alignStyle = (a) => a ? ' style="text-align:' + a + '"' : '';
+        const thead = '<thead><tr>' + headers.map((h, k) => '<th' + alignStyle(aligns[k] || '') + '>' + renderInlineMarkdown(h) + '</th>').join('') + '</tr></thead>';
+        const tbody = '<tbody>' + rows.map(cells => '<tr>' + cells.map((c, k) => '<td' + alignStyle(aligns[k] || '') + '>' + renderInlineMarkdown(c) + '</td>').join('') + '</tr>').join('') + '</tbody>';
+        tableBlocks.push('<table class="md-table">' + thead + tbody + '</table>');
+        _outLines.push('@@TABLEBLOCK_' + (tableBlocks.length - 1) + '@@');
+        i = j - 1;
+        continue;
+      }
+      _outLines.push(line);
+    }
+    text = _outLines.join('\\n');
+  }
+
   const lines = text.split('\\n');
   const html = [];
   let listType = null;
@@ -3780,6 +3818,13 @@ function renderMarkdown(el, rawText) {
     if (codeMatch) {
       closeList();
       html.push(codeBlocks[Number(codeMatch[1])] || '');
+      continue;
+    }
+
+    const tableMatch = trimmed.match(/^@@TABLEBLOCK_(\\d+)@@$/);
+    if (tableMatch) {
+      closeList();
+      html.push(tableBlocks[Number(tableMatch[1])] || '');
       continue;
     }
 
