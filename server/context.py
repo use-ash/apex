@@ -509,14 +509,39 @@ def _parse_iso(s: str) -> datetime:
 
 
 def _apply_superseded_penalty(memories: list[dict]) -> None:
-    """Deprecated. Superseded by hard status='active' filter in db._get_persona_memories.
+    """NULL-subject safety net — nudges older duplicate rows that lack a `subject`.
 
-    Kept as no-op stub so git-bisect can pinpoint the 2026-04-18 memory refactor
-    (see scripts/migrations/2026_04_18_memory_refactor.py) if a regression surfaces.
-    The old 60%-overlap penalty was lossy (rephrased subjects bypassed it) and
-    never fully retired stale entries — only nudged their score by -0.05.
+    Post-2026-04-18 refactor, subject-having rows are hard-filtered at the DB
+    (superseded rows excluded by default). But uncurated legacy rows still have
+    subject IS NULL and no supersession path, so they can show up as near-dupes
+    in the injected blob. For each pair of NULL-subject rows with >=50% word
+    overlap, knock the older one's score by -0.05 so the newer phrasing wins
+    on ties. Rows with any subject skip this — the hard filter is authoritative.
     """
-    return None
+    # Bucket by (profile-implicit) category: only compare same-category rows so a
+    # task doesn't suppress a correction.
+    null_rows = [m for m in memories if not (m.get("subject") or "").strip()]
+    if len(null_rows) < 2:
+        return
+    # Cache word sets + created timestamps once per row.
+    for m in null_rows:
+        m.setdefault("_words", set((m.get("content") or "").lower().split()))
+    for i, a in enumerate(null_rows):
+        for b in null_rows[i + 1:]:
+            if a.get("category") != b.get("category"):
+                continue
+            wa, wb = a["_words"], b["_words"]
+            if len(wa) < 4 or len(wb) < 4:
+                continue
+            overlap = len(wa & wb) / min(len(wa), len(wb))
+            if overlap < 0.5:
+                continue
+            # Penalize the older row (by created_at).
+            older = a if _parse_iso(a.get("created_at", "")) \
+                <= _parse_iso(b.get("created_at", "")) else b
+            older["_score"] = max(0.0, older.get("_score", 0.0) - 0.05)
+    for m in null_rows:
+        m.pop("_words", None)
 
 
 # Injection weight by category. Decisions/corrections outrank task/context on
