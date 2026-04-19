@@ -1054,6 +1054,55 @@ def _get_profile_prompt(chat_id: str) -> str:
     return f"<system-reminder>\n# Agent Profile: {name}\n{effective}\n</system-reminder>\n\n"
 
 
+_ISOLATED_PROFILE_SLUGS_DEFAULT = frozenset({"chatmine-extractor"})
+
+
+def _get_isolated_profile_slugs() -> frozenset[str]:
+    """Profile slugs that run with system_prompt ONLY — no memory, no whisper,
+    no workspace context, no metacognition, no fuel gauge. For single-shot
+    worker personas whose task would be contaminated by cross-session context.
+
+    Configured via policy.isolated_profile_slugs (list or comma-separated string).
+    Always includes 'chatmine-extractor' as a baked-in default.
+    """
+    try:
+        cfg_path = Path(str(env.APEX_ROOT)) / "state" / "config.json"
+        if cfg_path.exists():
+            data = json.loads(cfg_path.read_text())
+            raw = (data.get("policy") or {}).get("isolated_profile_slugs", "")
+            items: list[str] = []
+            if isinstance(raw, list):
+                items = [str(x).strip() for x in raw if str(x).strip()]
+            elif isinstance(raw, str):
+                for chunk in raw.replace("\n", ",").split(","):
+                    s = chunk.strip()
+                    if s:
+                        items.append(s)
+            if items:
+                return frozenset(items) | _ISOLATED_PROFILE_SLUGS_DEFAULT
+    except Exception:
+        pass
+    return _ISOLATED_PROFILE_SLUGS_DEFAULT
+
+
+def profile_is_isolated(chat_id: str) -> bool:
+    """True when the chat's bound profile is in the isolation set."""
+    try:
+        with _db_lock:
+            conn = _get_db()
+            row = conn.execute(
+                "SELECT ap.slug FROM agent_profiles ap "
+                "INNER JOIN chats c ON c.profile_id = ap.id "
+                "WHERE c.id = ?", (chat_id,)
+            ).fetchone()
+            conn.close()
+    except Exception:
+        return False
+    if not row or not row[0]:
+        return False
+    return str(row[0]).strip() in _get_isolated_profile_slugs()
+
+
 def _get_profile_prompt_by_id(profile_id: str) -> str:
     """Get the agent profile system prompt by profile_id directly."""
     with _db_lock:
@@ -1092,7 +1141,18 @@ def _resolve_memory_profile_id(chat_id: str, active_profile_id: str = "") -> str
 
 def _get_memory_prompt(chat_id: str, active_profile_id: str = "",
                        limit: int = 30, user_message: str = "") -> str:
-    """Build persistent memory instructions for the effective profile of this chat."""
+    """Build persistent memory instructions for the effective profile of this chat.
+
+    Honors chats.settings.subconscious_disabled as a single killswitch for
+    ALL memory/whisper injection paths (Type 1, Type 2, persona_memories).
+    """
+    # Killswitch: one flag disables every memory injection into this chat
+    try:
+        if bool(_get_chat_settings(chat_id).get("subconscious_disabled")):
+            return ""
+    except Exception:
+        pass
+
     memory_profile_id = _resolve_memory_profile_id(chat_id, active_profile_id=active_profile_id)
     if not memory_profile_id:
         return ""
@@ -1591,22 +1651,54 @@ _whisper_feedback_mod = None
 
 
 def _load_whisper_feedback():
-    """Lazily import whisper_feedback.py from workspace (no sys.modules collision)."""
+    """Lazily import whisper_feedback.py from workspace (no sys.modules collision).
+
+    IMPORTANT: module file and state dir are resolved independently.  Earlier
+    logic picked the first workspace path with the script and assumed the same
+    path's `.subconscious/` was the state dir — but the apex install dir also
+    carries a script copy yet has a near-empty sibling `.subconscious/`, so
+    evaluations wrote to a stray directory that the dashboard never read from.
+    Now: load the module from anywhere it exists, but point `_WS_STATE_DIR` at
+    whichever workspace `.subconscious/` actually contains `guidance.json`
+    (same marker the dashboard's `_subconscious_dir()` uses to resolve state).
+    """
     global _whisper_feedback_mod
     if _whisper_feedback_mod is not None:
         return _whisper_feedback_mod
     try:
         import importlib.util as _ilu
-        for wp in env.get_runtime_workspace_paths_list():
+        paths = env.get_runtime_workspace_paths_list()
+
+        # (1) Module file: first hit wins (script is idempotent).
+        mod_path = None
+        for wp in paths:
             candidate = Path(wp) / "scripts" / "subconscious" / "whisper_feedback.py"
             if candidate.exists():
-                spec = _ilu.spec_from_file_location("_whisper_feedback", str(candidate))
-                mod = _ilu.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-                # Inject correct state dir (workspace path, not symlink-resolved)
-                mod._WS_STATE_DIR = str(Path(wp) / ".subconscious")
-                _whisper_feedback_mod = mod
-                return mod
+                mod_path = candidate
+                break
+        if not mod_path:
+            return None
+
+        # (2) State dir: prefer the `.subconscious/` that has real state.
+        state_dir = None
+        for wp in paths:
+            sub = Path(wp) / ".subconscious"
+            if (sub / "guidance.json").exists():
+                state_dir = sub
+                break
+        if state_dir is None:
+            for wp in paths:
+                sub = Path(wp) / ".subconscious"
+                if sub.is_dir():
+                    state_dir = sub
+                    break
+
+        spec = _ilu.spec_from_file_location("_whisper_feedback", str(mod_path))
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod._WS_STATE_DIR = str(state_dir) if state_dir else None
+        _whisper_feedback_mod = mod
+        return mod
     except Exception:
         pass
     return None
@@ -1686,6 +1778,13 @@ def _get_type1_guidance(chat_id: str, current_prompt: str = "",
     if not ENABLE_TYPE1_GUIDANCE:
         return ""
 
+    # Per-chat opt-out: honor chats.settings.subconscious_disabled
+    try:
+        if bool(_get_chat_settings(chat_id).get("subconscious_disabled")):
+            return ""
+    except Exception:
+        pass
+
     try:
         query = (current_prompt or "")[:500]
         if not query:
@@ -1757,6 +1856,14 @@ def _get_whisper_text(chat_id: str, current_prompt: str = "",
     When ENABLE_TYPE1_GUIDANCE is false, falls back to legacy behavior
     (everything gated behind a single 300s cooldown).
     """
+    # Per-chat opt-out: honor chats.settings.subconscious_disabled
+    # (short-circuits both Type 1 and Type 2 pathways)
+    try:
+        if bool(_get_chat_settings(chat_id).get("subconscious_disabled")):
+            return ""
+    except Exception:
+        pass
+
     # --- Type 1: always fires (no cooldown) when enabled ---
     type1 = _get_type1_guidance(chat_id, current_prompt, model_hint)
 

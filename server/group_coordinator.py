@@ -457,7 +457,9 @@ def _advance_strict_group_relay(
         # Round complete — check if we should wrap around
         coord_protocol = _get_chat_settings(chat_id).get("coordination_protocol", "freeform")
         all_abstained = set(round_abstentions) >= set(state.ordered_profile_ids)
-        at_max_rounds = state.round_number >= _MAX_RELAY_ROUNDS
+        chat_cap = _get_chat_settings(chat_id).get("max_relay_rounds")
+        max_rounds = int(chat_cap) if isinstance(chat_cap, (int, float)) and chat_cap > 0 else _MAX_RELAY_ROUNDS
+        at_max_rounds = state.round_number >= max_rounds
         step_mode = bool(_get_chat_settings(chat_id).get("relay_step_mode"))
         if coord_protocol == "sequential" and not all_abstained and not at_max_rounds and not step_mode:
             # Start new round
