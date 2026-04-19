@@ -12,7 +12,10 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from compat import safe_chmod
-from db import _add_persona_memory, _get_persona_memories, _bump_memory_violation
+from db import (
+    _add_persona_memory, _get_persona_memories, _bump_memory_violation,
+    _retire_persona_memories,
+)
 from env import APEX_ROOT
 from log import log
 from state import _STREAM_TEXT_FILTERS
@@ -22,10 +25,40 @@ GUARDRAIL_WHITELIST = APEX_ROOT / "state" / "guardrail_whitelist.json"
 # ---------------------------------------------------------------------------
 # Memory tag regex
 # ---------------------------------------------------------------------------
+# Tags now carry optional attributes in any order:
+#   <memory category="decision" subject="scope.topic">body</memory>
+#   <memory category="task" subject="x" ttl="14d">body</memory>
+#   <memory action="retire" id="mem_abc123">reason</memory>
+#   <memory action="retire" subject="x" status="superseded">reason</memory>
+# _MEMORY_TAG_RE captures the whole opening-tag attrs blob + body; attribute
+# parsing is a second pass via _ATTR_RE.
 _MEMORY_TAG_RE = re.compile(
-    r'<memory\s+category="([^"]*)">(.*?)</memory>',
+    r'<memory\s+([^>]*)>(.*?)</memory>',
     re.DOTALL,
 )
+_ATTR_RE = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
+_TTL_RE = re.compile(r'^\s*(\d+)\s*([smhdw]?)\s*$', re.IGNORECASE)
+_TTL_MULT = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400, "w": 7 * 86400}
+
+
+def _parse_ttl(raw: str) -> int | None:
+    """Parse '14d', '7d', '3600s', '2w'. Returns seconds, or None on bad input."""
+    if not raw:
+        return None
+    m = _TTL_RE.match(raw)
+    if not m:
+        return None
+    n = int(m.group(1))
+    unit = (m.group(2) or "").lower()
+    return n * _TTL_MULT.get(unit, 1)
+
+
+def _parse_memory_attrs(blob: str) -> dict:
+    """Parse the space-separated `key="value"` blob inside <memory ...>."""
+    out = {}
+    for k, v in _ATTR_RE.findall(blob):
+        out[k.lower()] = v
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -134,28 +167,67 @@ def _check_and_bump_violations(profile_id: str, new_content: str) -> None:
 # ---------------------------------------------------------------------------
 
 def _extract_and_save_memories(text: str, profile_id: str, chat_id: str) -> str:
-    """Parse <memory category="...">...</memory> tags from agent response.
+    """Parse <memory ...>body</memory> tags from agent response.
 
-    Saves each memory to persona_memories, strips tags from displayed text.
-    Returns the cleaned text with memory tags removed.
+    Two tag shapes:
+      <memory category="..." [subject="..."] [ttl="14d"]>body</memory>
+        -> insert row; auto-supersede older same-subject rows of equal/lower rank.
+
+      <memory action="retire" [id="..."] [subject="..."] [status="retired|superseded"]>reason</memory>
+        -> retire one row by id, or all active same-subject rows. `status` selects
+           between 'retired' (deemed wrong) and 'superseded' (replaced elsewhere);
+           defaults to 'retired'.
+
+    Saves each memory, strips tags from displayed text.
     """
     if not profile_id or "<memory" not in text:
         return text
 
-    matches = _MEMORY_TAG_RE.findall(text)
-    for category, content in matches:
-        content = content.strip()
-        if content:
-            # If saving a correction, check for existing corrections on the same topic.
-            # A re-correction implies the agent violated the earlier rule — bump violation_count.
-            if category == "correction":
-                _check_and_bump_violations(profile_id, content)
-            mid = _add_persona_memory(
-                profile_id, content,
-                category=category or "note",
-                source_chat_id=chat_id,
-            )
-            log(f"persona memory saved: profile={profile_id} cat={category} id={mid} len={len(content)}")
+    for attr_blob, body in _MEMORY_TAG_RE.findall(text):
+        attrs = _parse_memory_attrs(attr_blob)
+        body = body.strip()
+        action = (attrs.get("action") or "").lower()
+
+        if action == "retire":
+            subj = attrs.get("subject")
+            mid_arg = attrs.get("id")
+            status = (attrs.get("status") or "retired").lower()
+            if status not in ("retired", "superseded"):
+                log(f"memory retire skipped: bad status={status!r}")
+                continue
+            if not (subj or mid_arg):
+                log("memory retire skipped: neither id nor subject given")
+                continue
+            try:
+                affected = _retire_persona_memories(
+                    profile_id, memory_id=mid_arg, subject=subj,
+                    status=status, reason=body,
+                )
+                log(f"persona memory retired: profile={profile_id} status={status} "
+                    f"id={mid_arg} subject={subj} affected={len(affected)}")
+            except Exception as e:
+                log(f"memory retire error (non-fatal): {e}")
+            continue
+
+        # Normal save path.
+        category = (attrs.get("category") or "").lower() or "note"
+        subject = attrs.get("subject")
+        ttl_seconds = _parse_ttl(attrs.get("ttl", ""))
+        if not body:
+            continue
+
+        # Corrections: bump violation_count on existing overlapping corrections.
+        if category == "correction":
+            _check_and_bump_violations(profile_id, body)
+        mid = _add_persona_memory(
+            profile_id, body,
+            category=category,
+            source_chat_id=chat_id,
+            subject=subject,
+            ttl_seconds=ttl_seconds,
+        )
+        log(f"persona memory saved: profile={profile_id} cat={category} "
+            f"subject={subject!r} ttl={ttl_seconds} id={mid} len={len(body)}")
 
     # Strip memory tags from displayed text
     cleaned = _MEMORY_TAG_RE.sub("", text).strip()

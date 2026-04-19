@@ -347,6 +347,22 @@ def _init_db() -> None:
         with contextlib.suppress(sqlite3.OperationalError):
             conn.execute(col_sql)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_persona_memories_profile ON persona_memories(profile_id)")
+    # Migration (2026-04-18): subject-based supersession + status lifecycle.
+    # CHECK constraints cannot be added via ALTER in SQLite, so status is a
+    # plain TEXT column with DEFAULT 'active'; validity enforced at write time.
+    # See scripts/migrations/2026_04_18_memory_refactor.py for spec + backfill.
+    for col_sql in [
+        "ALTER TABLE persona_memories ADD COLUMN subject TEXT",
+        "ALTER TABLE persona_memories ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+        "ALTER TABLE persona_memories ADD COLUMN superseded_by TEXT REFERENCES persona_memories(id)",
+        "ALTER TABLE persona_memories ADD COLUMN retired_at TEXT",
+        "ALTER TABLE persona_memories ADD COLUMN retire_reason TEXT",
+        "ALTER TABLE persona_memories ADD COLUMN ttl_seconds INTEGER",
+    ]:
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute(col_sql)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pm_subject_status ON persona_memories(subject, status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pm_status_created ON persona_memories(status, created_at DESC)")
     # Per-persona model overrides (runtime, cleared on restart if desired)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS persona_model_overrides (
@@ -1404,39 +1420,135 @@ def _remove_group_member(channel_id: str, profile_id: str) -> bool:
 # Persona memories
 # ---------------------------------------------------------------------------
 
+_MEMORY_CATEGORY_RANK = {"decision": 3, "correction": 3, "task": 2, "context": 1}
+_MEMORY_STATUS_VALID = ("active", "retired", "superseded")
+
+
 def _add_persona_memory(profile_id: str, content: str, category: str = "decision",
-                        source_chat_id: str = "") -> str:
-    """Store a memory entry for a persona. Memories persist across all groups."""
+                        source_chat_id: str = "", subject: str | None = None,
+                        ttl_seconds: int | None = None) -> str:
+    """Store a memory entry for a persona. Memories persist across all groups.
+
+    If `subject` is provided, auto-supersede prior active same-subject rows of
+    equal-or-lower category rank (decision=correction=3, task=2, context=1).
+    A new Task cannot retire an older Decision on the same subject.
+    """
     mid = str(uuid.uuid4())[:12]
     token_count = max(1, len(content.split()) * 4 // 3)
+    now = _now()
+    # Normalize subject to lowercase to avoid accidental case-splits (spec Q3).
+    norm_subject = subject.strip().lower() if isinstance(subject, str) and subject.strip() else None
+    # Default TTL: task = 14d if unspecified; everything else = NULL.
+    if ttl_seconds is None and category == "task":
+        ttl_seconds = 14 * 86400
     with _db_lock:
         conn = _get_db()
         conn.execute(
-            "INSERT INTO persona_memories (id, profile_id, content, category, source_chat_id, created_at, token_count) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (mid, profile_id, content, category, source_chat_id, _now(), token_count),
+            "INSERT INTO persona_memories (id, profile_id, content, category, "
+            "source_chat_id, created_at, token_count, subject, status, ttl_seconds) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)",
+            (mid, profile_id, content, category, source_chat_id, now, token_count,
+             norm_subject, ttl_seconds),
         )
+        if norm_subject is not None:
+            new_rank = _MEMORY_CATEGORY_RANK.get(category, 0)
+            prior = conn.execute(
+                "SELECT id, category FROM persona_memories "
+                "WHERE profile_id = ? AND subject = ? AND status = 'active' AND id != ?",
+                (profile_id, norm_subject, mid),
+            ).fetchall()
+            for pid, pcat in prior:
+                prior_rank = _MEMORY_CATEGORY_RANK.get(pcat or "", 0)
+                if new_rank >= prior_rank:
+                    conn.execute(
+                        "UPDATE persona_memories SET status='superseded', "
+                        "superseded_by=?, retired_at=? WHERE id=?",
+                        (mid, now, pid),
+                    )
         conn.commit()
         conn.close()
     return mid
 
 
-def _get_persona_memories(profile_id: str, limit: int = 50) -> list[dict]:
-    """Retrieve recent memories for a persona, newest first."""
+_PERSONA_MEMORY_COLS = (
+    "id, content, category, source_chat_id, created_at, "
+    "COALESCE(access_count, 0), COALESCE(last_accessed_at, ''), "
+    "COALESCE(violation_count, 0), COALESCE(token_count, 0), "
+    "subject, COALESCE(status, 'active'), superseded_by, retired_at, "
+    "retire_reason, ttl_seconds"
+)
+
+
+def _row_to_memory(r) -> dict:
+    return {"id": r[0], "content": r[1], "category": r[2],
+            "source_chat_id": r[3], "created_at": r[4],
+            "access_count": r[5], "last_accessed_at": r[6],
+            "violation_count": r[7], "token_count": r[8],
+            "subject": r[9], "status": r[10],
+            "superseded_by": r[11], "retired_at": r[12],
+            "retire_reason": r[13], "ttl_seconds": r[14]}
+
+
+def _get_persona_memories(profile_id: str, limit: int = 50,
+                          include_inactive: bool = False) -> list[dict]:
+    """Retrieve recent active memories for a persona, newest first.
+
+    Hard-filters status='active' by default. Pass include_inactive=True for
+    admin/search paths that want the full archive.
+    """
+    q = f"SELECT {_PERSONA_MEMORY_COLS} FROM persona_memories WHERE profile_id = ?"
+    params: list = [profile_id]
+    if not include_inactive:
+        q += " AND COALESCE(status, 'active') = 'active'"
+    q += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
     with _db_lock:
         conn = _get_db()
-        rows = conn.execute(
-            "SELECT id, content, category, source_chat_id, created_at, "
-            "COALESCE(access_count, 0), COALESCE(last_accessed_at, ''), "
-            "COALESCE(violation_count, 0), COALESCE(token_count, 0) "
-            "FROM persona_memories WHERE profile_id = ? ORDER BY created_at DESC LIMIT ?",
-            (profile_id, limit),
-        ).fetchall()
+        rows = conn.execute(q, params).fetchall()
         conn.close()
-    return [{"id": r[0], "content": r[1], "category": r[2],
-             "source_chat_id": r[3], "created_at": r[4],
-             "access_count": r[5], "last_accessed_at": r[6],
-             "violation_count": r[7], "token_count": r[8]} for r in rows]
+    return [_row_to_memory(r) for r in rows]
+
+
+def _retire_persona_memories(profile_id: str, *, memory_id: str | None = None,
+                             subject: str | None = None,
+                             status: str = "retired",
+                             reason: str = "") -> list[str]:
+    """Mark memories retired/superseded. Returns list of affected ids.
+
+    Agent-driven retirement path (write-side of <memory action="retire">).
+    Scoped to profile_id to prevent one persona retiring another's rows.
+    """
+    if status not in _MEMORY_STATUS_VALID:
+        raise ValueError(f"status must be one of {_MEMORY_STATUS_VALID}; got {status!r}")
+    if status == "active":
+        raise ValueError("use _add_persona_memory to (re)create an active row")
+    now = _now()
+    norm_subject = subject.strip().lower() if isinstance(subject, str) and subject.strip() else None
+    with _db_lock:
+        conn = _get_db()
+        if memory_id:
+            ids = [r[0] for r in conn.execute(
+                "SELECT id FROM persona_memories "
+                "WHERE id = ? AND profile_id = ? AND COALESCE(status, 'active') = 'active'",
+                (memory_id, profile_id),
+            ).fetchall()]
+        elif norm_subject:
+            ids = [r[0] for r in conn.execute(
+                "SELECT id FROM persona_memories "
+                "WHERE subject = ? AND profile_id = ? AND COALESCE(status, 'active') = 'active'",
+                (norm_subject, profile_id),
+            ).fetchall()]
+        else:
+            conn.close()
+            return []
+        for rid in ids:
+            conn.execute(
+                "UPDATE persona_memories SET status=?, retired_at=?, retire_reason=? WHERE id=?",
+                (status, now, reason or None, rid),
+            )
+        conn.commit()
+        conn.close()
+    return ids
 
 
 def _get_persona_model_override(profile_id: str) -> str:
