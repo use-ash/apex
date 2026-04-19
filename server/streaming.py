@@ -600,6 +600,28 @@ def _inject_execute_code_mcp(servers: dict, *, chat_id: str | None = None,
     return servers
 
 
+def _inject_claim_store_mcp(servers: dict, *, chat_id: str | None = None) -> dict:
+    """V3 v2 Step 1a — propagate the Apex chat_id to the claim_store MCP
+    subprocess via APEX_CHAT_ID env, so the subprocess resolves chat_id
+    server-side rather than trusting model-supplied args. Mirrors the
+    Codex-path inject at tool_loop.py:999-1001, backend-agnostic.
+
+    Idempotent and narrow: no-op when claim_store isn't configured (static
+    config path absent) or when chat_id is None (sub-chat, dry-run).
+    Mutates only env['APEX_CHAT_ID'] — preserves the static config's other
+    env vars (APEX_DB_NAME, etc.).
+    """
+    if not chat_id or "claim_store" not in servers:
+        return servers
+    servers = dict(servers)  # don't mutate caller's dict
+    spec = dict(servers["claim_store"])
+    env = dict(spec.get("env") or {})
+    env["APEX_CHAT_ID"] = chat_id
+    spec["env"] = env
+    servers["claim_store"] = spec
+    return servers
+
+
 def _inject_computer_use_mcp(servers: dict, *, chat_id: str | None = None,
                               permission_level: int = 2,
                               computer_use_target: str | None = None) -> dict:
@@ -947,6 +969,8 @@ def _make_options(
     mcp_servers = _inject_execute_code_mcp(mcp_servers, chat_id=chat_id,
                                              workspace=str(workspace_root),
                                              permission_level=permission_level)
+    # V3 v2 Step 1a — propagate chat_id to claim_store subprocess env.
+    mcp_servers = _inject_claim_store_mcp(mcp_servers, chat_id=chat_id)
     # Auto-inject computer_use MCP server when the chat has a target bundle-ID
     # set (macOS only). Absence of a target means no injection, so the tools
     # are simply unavailable — no chat-aware allowlist needed.

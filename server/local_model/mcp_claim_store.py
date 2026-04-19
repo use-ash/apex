@@ -104,6 +104,15 @@ def _byte_range(src: dict) -> tuple[int | None, int | None]:
 # --- Tool executors ---------------------------------------------------------
 
 def _tool_claim_assert(args: dict) -> dict:
+    # V3 v2 Step 1a — APEX_CHAT_ID env var is the authoritative chat_id
+    # when present (set per-chat by streaming._inject_claim_store_mcp).
+    # Overwrite semantics: a confused or adversarial model cannot cross-
+    # chat-spoof by emitting a different chat_id in tool args. Falls
+    # through to model-supplied chat_id if env is unset (static-config
+    # path, pre-migration dev) so _validate_chat_id still catches fakes.
+    _env_chat_id = os.environ.get("APEX_CHAT_ID")
+    if _env_chat_id:
+        args["chat_id"] = _env_chat_id
     chat_id = args["chat_id"]
     turn_id = int(args["turn_id"])
     text = args["text"]

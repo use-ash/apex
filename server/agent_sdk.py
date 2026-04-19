@@ -954,9 +954,30 @@ async def _stream_response(
                     for item in blocked_tools
                     if str(item.get("id") or "")
                 }
+                # V3 v2 Step 1b — scope-limited flip. For claim_store__* tools,
+                # a pending tool_use at ResultMessage time means the model emitted
+                # the tool call but Anthropic's SDK never received an explicit
+                # tool_result block back — which happens when our stdio subprocess
+                # raised (e.g. _validate_sha256 rejection). Synthesizing
+                # is_error=False would mask the server-side failure and the model
+                # would never learn. Flip to is_error=True for claim_store only;
+                # all other MCP tools keep the current implicit-success default
+                # (Finding-1-general fix is out of v2 scope — filesystem,
+                # playwright, computer_use all depend on the existing behavior).
+                _CLAIM_STORE_NAMES = (
+                    "mcp__claim_store__claim_assert",
+                    "mcp__claim_store__claim_revise",
+                    "mcp__claim_store__claim_list",
+                )
                 implicit_success_tools = [
                     item for item in pending_at_result
                     if str(item.get("id") or "") not in blocked_ids
+                    and str(item.get("name") or "") not in _CLAIM_STORE_NAMES
+                ]
+                claim_store_no_result_tools = [
+                    item for item in pending_at_result
+                    if str(item.get("id") or "") not in blocked_ids
+                    and str(item.get("name") or "") in _CLAIM_STORE_NAMES
                 ]
                 blocked_tool_message = _pending_tool_denial_message(blocked_tools) if blocked_tools else ""
                 per_tool_results: dict[str, tuple[str, bool]] = {}
@@ -968,6 +989,15 @@ async def _stream_response(
                     tool_id = str(item.get("id") or "")
                     if tool_id:
                         per_tool_results[tool_id] = ("[tool completed; SDK omitted explicit result block]", False)
+                for item in claim_store_no_result_tools:
+                    tool_id = str(item.get("id") or "")
+                    if tool_id:
+                        per_tool_results[tool_id] = (
+                            "[claim_store tool did not return an explicit result; "
+                            "the server likely rejected the call — treat as failure "
+                            "and review the args (sha256 format, chat_id, source_type).]",
+                            True,
+                        )
                 await _flush_pending_tools(
                     default_content=blocked_tool_message if blocked_tools else "[tool completed; SDK omitted explicit result block]",
                     default_is_error=bool(blocked_tools),
@@ -985,6 +1015,15 @@ async def _stream_response(
                     log(
                         f"SDK result completed with implicit tool success: chat={chat_id} "
                         f"tools={[item.get('name') for item in implicit_success_tools]}"
+                    )
+                if claim_store_no_result_tools:
+                    # V3 v2 Step 1b — claim_store pending at ResultMessage means
+                    # the stdio subprocess raised. Surface loudly so post-deploy
+                    # log grep can count these.
+                    log(
+                        f"SDK claim_store tool had no explicit result (treated as error): "
+                        f"chat={chat_id} "
+                        f"tools={[item.get('name') for item in claim_store_no_result_tools]}"
                     )
                 elapsed = time.monotonic() - _stream_start
                 result_info = {
