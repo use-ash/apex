@@ -6373,6 +6373,41 @@ async function showChatSettings() {
     // shared-memory/sequential-relay toggles) and jump straight to the
     // danger zone. Keeps the modal shape identical between the two types.
     if (!isGroup) {
+      // Individual chats still get the Subconscious Injection toggle so
+      // experiments can stay strictly on-prompt for 1:1 rooms too.
+      const soloSetSection = document.createElement('div');
+      soloSetSection.className = 'gs-section';
+      soloSetSection.innerHTML = `<div class="gs-section-title">Settings</div>`;
+      const soloSubRow = document.createElement('div');
+      soloSubRow.className = 'gs-toggle-row';
+      const soloSubDisabled = !!settings.subconscious_disabled;
+      soloSubRow.innerHTML = `<div><span class="gs-toggle-label">Subconscious Injection</span>
+        <div class="gs-toggle-hint" style="margin-top:2px">When off, suppresses whisper + memory retrieval for this chat. Use for experiments that must stay strictly on-prompt.</div></div>`;
+      const soloSubToggle = document.createElement('button');
+      const soloSubUiOn = !soloSubDisabled;
+      soloSubToggle.className = 'gs-toggle ' + (soloSubUiOn ? 'on' : 'off');
+      soloSubToggle.onclick = async () => {
+        const newDisabled = !soloSubDisabled;
+        try {
+          const resp = await fetch(`/api/chats/${chatId}/settings`, {
+            method: 'PATCH', credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({subconscious_disabled: newDisabled})
+          });
+          if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            gsToast(err.error || 'Setting update failed');
+            return;
+          }
+          settings.subconscious_disabled = newDisabled;
+          gsToast(newDisabled ? 'Subconscious suppressed for this chat' : 'Subconscious re-enabled');
+          render();
+        } catch(e) { dbg('setting update error:', e); }
+      };
+      soloSubRow.appendChild(soloSubToggle);
+      soloSetSection.appendChild(soloSubRow);
+      content.appendChild(soloSetSection);
+
       const dangerSection = document.createElement('div');
       dangerSection.className = 'gs-danger';
       const delBtn = document.createElement('button');
@@ -6583,6 +6618,40 @@ async function showChatSettings() {
     smRow.appendChild(smToggle);
     setSection.appendChild(smRow);
 
+    const subRow = document.createElement('div');
+    subRow.className = 'gs-toggle-row';
+    subRow.style.borderTop = '1px solid var(--bg)';
+    subRow.style.paddingTop = '10px';
+    subRow.style.marginTop = '6px';
+    const subDisabled = !!settings.subconscious_disabled;
+    subRow.innerHTML = `<div><span class="gs-toggle-label">Subconscious Injection</span>
+      <div class="gs-toggle-hint" style="margin-top:2px">When off, suppresses whisper + memory retrieval for this channel. Use for experiments that must stay strictly on-prompt.</div></div>`;
+    const subToggle = document.createElement('button');
+    // UI semantics: ON = subconscious active (default); OFF = suppressed.
+    // Stored semantics: subconscious_disabled is the inverse.
+    const subUiOn = !subDisabled;
+    subToggle.className = 'gs-toggle ' + (subUiOn ? 'on' : 'off');
+    subToggle.onclick = async () => {
+      const newDisabled = !subDisabled;
+      try {
+        const resp = await fetch(`/api/chats/${chatId}/settings`, {
+          method: 'PATCH', credentials: 'same-origin',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({subconscious_disabled: newDisabled})
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          gsToast(err.error || 'Setting update failed');
+          return;
+        }
+        settings.subconscious_disabled = newDisabled;
+        gsToast(newDisabled ? 'Subconscious suppressed for this channel' : 'Subconscious re-enabled');
+        render();
+      } catch(e) { dbg('setting update error:', e); }
+    };
+    subRow.appendChild(subToggle);
+    setSection.appendChild(subRow);
+
     const seqRow = document.createElement('div');
     seqRow.className = 'gs-toggle-row';
     seqRow.style.borderTop = '1px solid var(--bg)';
@@ -6660,6 +6729,48 @@ async function showChatSettings() {
       };
       stepRow.appendChild(stepToggle);
       setSection.appendChild(stepRow);
+
+      const capRow = document.createElement('div');
+      capRow.className = 'gs-toggle-row';
+      capRow.style.borderTop = '1px solid var(--bg)';
+      capRow.style.paddingTop = '10px';
+      capRow.style.marginTop = '6px';
+      const capCopy = document.createElement('div');
+      capCopy.className = 'gs-toggle-copy';
+      const currentCap = (typeof settings.max_relay_rounds === 'number' && settings.max_relay_rounds > 0) ? settings.max_relay_rounds : '';
+      capCopy.innerHTML = `<span class="gs-toggle-label">Max Relay Rounds</span>
+        <div class="gs-toggle-hint" style="margin-top:2px">Cap the number of full rotations before the relay auto-stops. Blank = default (10).</div>`;
+      capRow.appendChild(capCopy);
+      const capInput = document.createElement('input');
+      capInput.type = 'number';
+      capInput.min = '1';
+      capInput.max = '100';
+      capInput.step = '1';
+      capInput.placeholder = '10';
+      capInput.value = currentCap;
+      capInput.style.cssText = 'width:64px;padding:4px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--border,#444);border-radius:4px;text-align:center;font-size:13px;';
+      capInput.onchange = async () => {
+        const raw = capInput.value.trim();
+        const payload = raw === '' ? {max_relay_rounds: null} : {max_relay_rounds: parseInt(raw, 10)};
+        try {
+          const resp = await fetch(`/api/chats/${chatId}/settings`, {
+            method: 'PATCH', credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+          });
+          if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            gsToast(err.error || 'Setting update failed');
+            capInput.value = currentCap;
+            return;
+          }
+          const data = await resp.json().catch(() => ({}));
+          settings = data.settings || settings;
+          gsToast(raw === '' ? 'Max rounds cleared (default 10)' : `Max rounds set to ${raw}`);
+        } catch(e) { dbg('setting update error:', e); capInput.value = currentCap; }
+      };
+      capRow.appendChild(capInput);
+      setSection.appendChild(capRow);
     }
 
     const relayCard = renderRelayStatus(relayState);

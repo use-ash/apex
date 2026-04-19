@@ -79,7 +79,7 @@ def _serialize_relay_state(chat_id: str, chat: dict | None = None) -> dict | Non
         return {
             "active": False,
             "round_number": int(relay_state.round_number or 1),
-            "max_rounds": _MAX_RELAY_ROUNDS,
+            "max_rounds": (int(settings["max_relay_rounds"]) if isinstance(settings.get("max_relay_rounds"), (int, float)) and settings["max_relay_rounds"] > 0 else _MAX_RELAY_ROUNDS),
             "step_mode": step_mode,
             "paused": False,
             "agents": [],
@@ -107,7 +107,7 @@ def _serialize_relay_state(chat_id: str, chat: dict | None = None) -> dict | Non
     return {
         "active": True,
         "round_number": int(relay_state.round_number or 1),
-        "max_rounds": _MAX_RELAY_ROUNDS,
+        "max_rounds": (int(settings["max_relay_rounds"]) if isinstance(settings.get("max_relay_rounds"), (int, float)) and settings["max_relay_rounds"] > 0 else _MAX_RELAY_ROUNDS),
         "step_mode": step_mode,
         "paused": paused,
         "agents": agents,
@@ -458,10 +458,22 @@ async def api_update_chat_settings(chat_id: str, request: Request):
         return JSONResponse({"error": "Chat not found"}, status_code=404)
     current_settings = _get_chat_settings(chat_id)
     data = await request.json()
-    allowed = {"agent_mentions_enabled", "auto_title", "notification_level", "auto_reply", "shared_memory", "coordination_protocol", "relay_step_mode"}
+    allowed = {"agent_mentions_enabled", "auto_title", "notification_level", "auto_reply", "shared_memory", "coordination_protocol", "relay_step_mode", "subconscious_disabled", "max_relay_rounds"}
     filtered = {k: v for k, v in data.items() if k in allowed}
     if not filtered:
         return JSONResponse({"error": f"No valid settings. Allowed: {', '.join(sorted(allowed))}"}, status_code=400)
+    if "max_relay_rounds" in filtered:
+        raw = filtered["max_relay_rounds"]
+        if raw in (None, "", 0):
+            filtered["max_relay_rounds"] = None  # clear → fall back to module default
+        else:
+            try:
+                n = int(raw)
+            except (TypeError, ValueError):
+                return JSONResponse({"error": "max_relay_rounds must be a positive integer or null"}, status_code=400)
+            if n < 1 or n > 100:
+                return JSONResponse({"error": "max_relay_rounds must be between 1 and 100"}, status_code=400)
+            filtered["max_relay_rounds"] = n
     if (
         str(current_settings.get("coordination_protocol") or "freeform") == "sequential"
         and str(filtered.get("coordination_protocol") or "sequential") == "freeform"
