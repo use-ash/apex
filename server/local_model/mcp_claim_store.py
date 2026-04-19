@@ -11,11 +11,24 @@ resolved via APEX_DB_NAME env — same convention as server/db.py).
 
 Protocol: newline-delimited JSON-RPC over stdin/stdout (MCP stdio transport).
 Run standalone:  python3 mcp_claim_store.py
+
+Environment variables honored:
+  APEX_DB_NAME                   DB file name under APEX_STATE_DIR (default apex.db).
+  APEX_STATE_DIR                 State directory (default ~/.openclaw/apex/state).
+  APEX_CHAT_ID                   (V3 v2 Step 1a) Authoritative chat_id for this
+                                 subprocess; overrides model-supplied args["chat_id"].
+                                 Set per-chat by streaming._inject_claim_store_mcp.
+  APEX_AUTOPROVENANCE_DISABLE=1  (V3 v2 Step 2 kill switch) Disable server-side
+                                 sha256 auto-population. Restores Day 4.5 behavior
+                                 (model must supply sha256 explicitly). Ops-level
+                                 rollback without a code push.
 """
+import hashlib
 import json
 import os
 import sqlite3
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -101,6 +114,107 @@ def _byte_range(src: dict) -> tuple[int | None, int | None]:
     return None, None
 
 
+# --- V3 v2 Step 2 — server-side sha256 auto-provenance --------------------
+
+# Whitelist (after realpath). Narrower than /Users/dana/ — that would cover
+# Keychain, iMessage DB, Downloads, etc. See v2_spec.md §2 Step 2 (c).
+_AUTOPROV_ALLOWED_PREFIXES = (
+    "/Users/dana/.openclaw/",
+    "/private/tmp/",        # realpath of /tmp/
+)
+# Reject-list substrings checked against realpath. Defense in depth: even a
+# whitelisted prefix doesn't let the model hash cert material, .env secrets,
+# or the live SQLite DBs (which would leak writer-activity timing).
+_AUTOPROV_REJECT_SUBSTRINGS = (
+    "/state/ssl/",
+    "/apex/state/",
+)
+_AUTOPROV_MAX_BYTES = 1024 * 1024        # 1 MB hard cap on byte_range size
+_AUTOPROV_ALLOWED_TOOLS = ("Read",)      # extend cautiously; each tool adds
+                                         # semantics we must vouch for.
+
+
+def _autoprovenance(tool: str | None, path: str | None,
+                    byte_range: tuple[int | None, int | None]) -> str | None:
+    """V3 v2 Step 2 — compute sha256 of the bytes at (path, byte_range) when
+    the model supplies tool+path+byte_range for a tool_result claim but omits
+    sha256. Fail-closed: returns None (caller raises) whenever any precondition
+    isn't met. This closes the 'models cannot compute hashes at persona level
+    1' constraint surfaced in v1.
+
+    Honest weakening (named in spec §2 Step 2 (b)): bytes are re-read at
+    assert time, not captured from the originating tool_use. If the file
+    mutated between the tool_use and the claim_assert call, the hash reflects
+    current state. Collision window is typically <1s in practice.
+
+    Kill switch: APEX_AUTOPROVENANCE_DISABLE=1 short-circuits to None.
+    """
+    if os.environ.get("APEX_AUTOPROVENANCE_DISABLE") == "1":
+        return None
+    t0 = time.monotonic()
+    ok = False
+    real = ""
+    n_bytes = 0
+    err: str | None = None
+    try:
+        if tool not in _AUTOPROV_ALLOWED_TOOLS:
+            err = f"tool {tool!r} not in {_AUTOPROV_ALLOWED_TOOLS}"
+            return None
+        if not isinstance(path, str) or not path:
+            err = "path missing"
+            return None
+        if ".." in path.split(os.sep):
+            err = "path contains .. segment (pre-realpath)"
+            return None
+        lo, hi = byte_range
+        if lo is None or hi is None:
+            err = "byte_range missing"
+            return None
+        if hi <= lo:
+            err = f"byte_range empty or reversed: [{lo},{hi})"
+            return None
+        if (hi - lo) > _AUTOPROV_MAX_BYTES:
+            err = f"byte_range too large: {hi - lo} > {_AUTOPROV_MAX_BYTES}"
+            return None
+        real = os.path.realpath(path)
+        if not any(real.startswith(p) for p in _AUTOPROV_ALLOWED_PREFIXES):
+            err = f"path outside whitelist: {real!r}"
+            return None
+        if any(sub in real for sub in _AUTOPROV_REJECT_SUBSTRINGS):
+            err = f"path matches reject-list: {real!r}"
+            return None
+        # Also reject trailing .env (secrets file convention)
+        if real.endswith(".env") or "/.env/" in real or real.endswith("/.env"):
+            err = f"path is .env (secret): {real!r}"
+            return None
+        if not os.path.exists(real):
+            err = f"path does not exist: {real!r}"
+            return None
+        size = os.path.getsize(real)
+        effective_hi = min(hi, size)
+        if effective_hi <= lo:
+            err = f"byte_range past EOF: lo={lo} size={size}"
+            return None
+        with open(real, "rb") as f:
+            f.seek(lo)
+            data = f.read(effective_hi - lo)
+        n_bytes = len(data)
+        digest = hashlib.sha256(data).hexdigest()
+        ok = True
+        return digest
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}"
+        return None
+    finally:
+        elapsed_ms = (time.monotonic() - t0) * 1000.0
+        path_sha = hashlib.sha256((real or path or "").encode("utf-8")).hexdigest()[:8]
+        _log(
+            f"AUTOPROV tool={tool} path_sha={path_sha} bytes={n_bytes} "
+            f"ms={elapsed_ms:.1f} ok={ok}"
+            + (f" err={err}" if err else "")
+        )
+
+
 # --- Tool executors ---------------------------------------------------------
 
 def _tool_claim_assert(args: dict) -> dict:
@@ -131,7 +245,23 @@ def _tool_claim_assert(args: dict) -> dict:
     #     The old guard was truthy-only (`if not sha256: raise`), which
     #     accepted any non-empty string — Day 2b's 62-char mnemonic digits
     #     passed. Now the format is validated.
+    #
+    # V3 v2 Step 2 — if sha256 is missing but tool+path+byte_range look
+    # auto-hashable, compute the hash server-side. Fail-closed: if the
+    # helper returns None (path outside whitelist, byte_range oversized,
+    # file missing, kill switch engaged, etc.), we fall through to
+    # _validate_sha256 which will reject the still-missing hash. The
+    # intent is that the model supplies the provenance tuple and the
+    # server supplies the hash; both are server-verified.
     if source_type == "tool_result":
+        if not src.get("sha256"):
+            auto_sha = _autoprovenance(
+                src.get("tool"),
+                src.get("path"),
+                _byte_range(src),
+            )
+            if auto_sha:
+                src["sha256"] = auto_sha
         _validate_sha256(src.get("sha256"))
 
     # (3) source_type='prior_turn' had NO provenance guard. A model could
@@ -198,8 +328,22 @@ def _tool_claim_revise(args: dict) -> dict:
         if stype not in _SOURCE_TYPES:
             raise ValueError(f"source_type invalid: {stype!r}")
         # V3 Day 4.5 — same format guards as claim_assert.
+        # V3 v2 Step 2 — auto-provenance applies to revise too. If the
+        # revision supplies a new (tool, path, byte_range) but no sha256,
+        # compute server-side. If the revision omits all provenance, fall
+        # through to the old row's sha256 (Day 4.5 behavior).
         if stype == "tool_result":
-            _validate_sha256(new_src.get("sha256") or old["source_sha256"])
+            effective_sha = new_src.get("sha256") or old["source_sha256"]
+            if not effective_sha and new_src.get("path"):
+                auto_sha = _autoprovenance(
+                    new_src.get("tool") or old["source_tool"],
+                    new_src.get("path"),
+                    _byte_range(new_src),
+                )
+                if auto_sha:
+                    new_src["sha256"] = auto_sha
+                    effective_sha = auto_sha
+            _validate_sha256(effective_sha)
         if stype == "prior_turn":
             _validate_sha256(new_src.get("sha256") or old["source_sha256"])
 
@@ -234,21 +378,29 @@ def _tool_claim_revise(args: dict) -> dict:
 _SRC_REF_SCHEMA = {
     "type": "object",
     "description": (
-        "Provenance reference. When source_type='tool_result', sha256 is REQUIRED "
-        "and MUST be a 64-char lowercase hex SHA-256 digest of the tool_result "
-        "content the claim is grounded in. tool, path, byte_range are recommended."
+        "Provenance reference. When source_type='tool_result', sha256 is verified. "
+        "If sha256 is OMITTED and you supply tool+path+byte_range for an allowed "
+        "tool (currently only 'Read') pointing at a file inside the server's "
+        "whitelist, the server will compute sha256 on your behalf — this is the "
+        "recommended path (you are NOT expected to compute hashes yourself). "
+        "If sha256 is SUPPLIED, it must be a 64-char lowercase hex digest and "
+        "will be accepted as-is (not re-verified against path bytes)."
     ),
     "properties": {
-        "tool": {"type": "string", "description": "Tool name that produced the source (e.g. 'Read', 'Grep')."},
-        "path": {"type": "string", "description": "File path or URI of the source."},
+        "tool": {"type": "string", "description": "Tool name that produced the source (e.g. 'Read')."},
+        "path": {"type": "string", "description": "File path of the source (absolute or relative to an allowed prefix)."},
         "byte_range": {
             "type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2,
-            "description": "[lo, hi) byte range within the source.",
+            "description": "[lo, hi) byte range within the source. Required for server-side auto-hash; max range size 1MB.",
         },
         "sha256": {
             "type": "string",
             "pattern": "^[0-9a-f]{64}$",
-            "description": "64-char lowercase hex SHA-256 of the source content. REQUIRED when source_type='tool_result'.",
+            "description": (
+                "64-char lowercase hex SHA-256 of the source content. Optional "
+                "when tool+path+byte_range are supplied and path is server-hashable "
+                "(the server will compute and fill it in). Required otherwise."
+            ),
         },
     },
 }
