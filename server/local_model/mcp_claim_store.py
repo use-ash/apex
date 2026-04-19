@@ -52,9 +52,42 @@ def _connect() -> sqlite3.Connection:
 
 _SOURCE_TYPES = ("tool_result", "prior_turn", "speculation", "user")
 
+# V3 Day 4.5 — compiled once for hot-path sha256 format check.
+import re as _re
+_SHA256_RE = _re.compile(r"^[0-9a-f]{64}$")
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _validate_sha256(s: str | None) -> None:
+    """Raise ValueError if s is not a valid 64-char lowercase hex sha256.
+    Callers that permit None should check for that separately before calling.
+    """
+    if not isinstance(s, str) or not _SHA256_RE.match(s):
+        raise ValueError(
+            f"source_ref.sha256 must be a 64-char lowercase hex SHA-256 digest; "
+            f"got {(s[:16] + '…') if isinstance(s, str) and len(s) > 16 else s!r} "
+            f"(len={len(s) if isinstance(s, str) else 'n/a'})"
+        )
+
+
+def _validate_chat_id(chat_id: str) -> None:
+    """Reject chat_ids not present in the `chats` table. Closes the Codex
+    mis-attribution path where the model fabricates 'default' or any other
+    non-existent chat_id and the row lands unreachable."""
+    if not isinstance(chat_id, str) or not chat_id:
+        raise ValueError("chat_id must be a non-empty string")
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM chats WHERE id = ? LIMIT 1", (chat_id,)
+        ).fetchone()
+    if row is None:
+        raise ValueError(
+            f"unknown chat_id: {chat_id!r} (not present in chats table). "
+            f"Populate chat_id from the host audit context; do not invent."
+        )
 
 
 def _uuid7() -> str:
@@ -79,8 +112,30 @@ def _tool_claim_assert(args: dict) -> dict:
     if source_type not in _SOURCE_TYPES:
         raise ValueError(f"source_type must be one of {_SOURCE_TYPES}; got {source_type!r}")
     src = args.get("source_ref") or {}
-    if source_type == "tool_result" and not src.get("sha256"):
-        raise ValueError("source_type='tool_result' requires source_ref.sha256")
+
+    # V3 Day 4.5 — server-side provenance guards.
+    # (1) chat_id must resolve to a real chat row. Closes the Codex
+    #     mis-attribution path (pre-Day 4 wrote 74 rows under 'default').
+    _validate_chat_id(chat_id)
+
+    # (2) source_type='tool_result' requires a validly-formatted sha256.
+    #     The old guard was truthy-only (`if not sha256: raise`), which
+    #     accepted any non-empty string — Day 2b's 62-char mnemonic digits
+    #     passed. Now the format is validated.
+    if source_type == "tool_result":
+        _validate_sha256(src.get("sha256"))
+
+    # (3) source_type='prior_turn' had NO provenance guard. A model could
+    #     write any claim by claiming "I said this earlier". Require at
+    #     minimum source_tool + source_sha256 so the prior-turn assertion
+    #     has a verifiable anchor.
+    if source_type == "prior_turn":
+        if not src.get("source_tool") and not src.get("tool"):
+            raise ValueError(
+                "source_type='prior_turn' requires source_ref.tool (the tool "
+                "that produced the originally-grounding evidence)"
+            )
+        _validate_sha256(src.get("sha256"))
 
     claim_id = _uuid7()
     bl, bh = _byte_range(src)
@@ -133,8 +188,11 @@ def _tool_claim_revise(args: dict) -> dict:
         stype = new_stype or old["source_type"]
         if stype not in _SOURCE_TYPES:
             raise ValueError(f"source_type invalid: {stype!r}")
-        if stype == "tool_result" and not (new_src.get("sha256") or old["source_sha256"]):
-            raise ValueError("revision with source_type='tool_result' requires source_ref.sha256")
+        # V3 Day 4.5 — same format guards as claim_assert.
+        if stype == "tool_result":
+            _validate_sha256(new_src.get("sha256") or old["source_sha256"])
+        if stype == "prior_turn":
+            _validate_sha256(new_src.get("sha256") or old["source_sha256"])
 
         bl, bh = _byte_range(new_src)
         new_id = _uuid7()

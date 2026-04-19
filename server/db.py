@@ -430,9 +430,13 @@ def _init_db() -> None:
             source_byte_hi  INTEGER,
             source_sha256   TEXT,
             status          TEXT NOT NULL DEFAULT 'active'
-                            CHECK (status IN ('active', 'revised', 'retracted')),
+                            CHECK (status IN ('active', 'revised', 'retracted', 'invalid_legacy')),
             supersedes      TEXT REFERENCES claims(claim_id),
-            superseded_by   TEXT REFERENCES claims(claim_id)
+            superseded_by   TEXT REFERENCES claims(claim_id),
+            -- V3 Day 4.5: free-form audit note. Populated for rows marked
+            -- 'invalid_legacy' during the pre-hardening migration; null for
+            -- rows written under the validated schema.
+            status_comment  TEXT
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_claims_chat_turn     ON claims(chat_id, turn_id)")
