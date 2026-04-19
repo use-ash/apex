@@ -276,6 +276,147 @@ SUBJECT_CLUSTERS: list[dict] = [
         "subject": "apex.test_security_fixes.db_wipeout",
         "match_any": ["db wipeout root cause"],
     },
+    # =========================================================================
+    # 2026-04-19 addendum — clusters flagged after first prod apply still
+    # co-appearing in the injected blob. Re-running the migration picks these
+    # up without disturbing already-subjected rows.
+    # =========================================================================
+    {
+        "subject": "apex.chatmine.model_history",
+        "match_any": [
+            "chatmine model history correction",
+            "chatmine model history — corrected",
+            "chatmine model test history",
+            "two distinct chatmine-related model tests",
+            "three tests existed",
+            "gemma4:26b was the model that early-stopped",
+            "apr 9 2026 fabrication test",
+            "gemma4:26b reading symbol_monitor.py",
+        ],
+    },
+    {
+        "subject": "apex.deepthought.v42_ob_zone_source",
+        "match_any": [
+            "deepthought v4.2 draws the \"plan m: old order block\"",
+            "deepthought v4.2 is a zone/pivot indicator",
+            "ovtlyr order blocks indicator does not emit",
+            "plan m: old order block",
+            "deepthought is the visible plan m ob renderer",
+        ],
+    },
+    {
+        "subject": "apex.ws.streaming_zombie",
+        "match_any": [
+            "ws streaming zombie fix",
+            "ws streaming race bug fix",
+            "zombie ws vacuum",
+            "_vacuum_dead_ws",
+            "ws stream-router self-heal",
+            "commit 727770d",
+            "commit b9386a1",
+            "commit dca1ad6",
+        ],
+    },
+    {
+        "subject": "apex.thinking_pill.leak",
+        "match_any": [
+            "thinking-pill cross-chat leak",
+            "thinking pill cross-chat leak",
+            "thinking-pill disappears every 15s",
+            "ios thinking-pill disappears",
+            "_ws_liveness_prober",
+            "server_ping",
+            "case serverping(ts: int)",
+        ],
+    },
+    {
+        "subject": "apex.db.busy_timeout",
+        "match_any": [
+            "sqlite busy_timeout fix",
+            "pragma busy_timeout=30000",
+            "busy_timeout=30000",
+        ],
+    },
+    {
+        "subject": "apex.whisper_feedback.state_dir",
+        "match_any": [
+            "whisper feedback loop fixed",
+            "_ws_state_dir",
+            "_load_whisper_feedback",
+        ],
+    },
+    {
+        "subject": "apex.chat.tool_policy_levels",
+        "match_any": [
+            "5-level system (0=chat only",
+            "apex chat permissions are a 5-level",
+            "tool_policy` json on `agent_profiles",
+        ],
+    },
+    {
+        "subject": "v3.architecture.multi_level",
+        "match_any": [
+            "two-convention architecture reframed",
+            "multi-model, multi-level system where introspection",
+            "l0 perception", "l1 self-model", "l2 reasoner",
+        ],
+    },
+    {
+        "subject": "apex.chatmine.build_index",
+        "match_any": [
+            "build_index.py (metacognition embedding index)",
+            "build_index.py not run against it",
+            "chatmine symlink",
+            ".subconscious/chatmine -> chatmine_agent",
+        ],
+    },
+    {
+        "subject": "chatmine.bridge_retired",
+        "match_any": [
+            "chatmine_bridge.py was retired",
+            "do not recommend reviving chatmine_bridge",
+        ],
+    },
+    {
+        "subject": "apex.alerts.ca_cert",
+        "match_any": [
+            "alert delivery from plan_m trackers is working",
+            "apex ca cert bug still active",
+            "live ca at ~/.openclaw/apex/state/ssl/ca.crt",
+        ],
+    },
+    {
+        "subject": "apex.memory.blob_caching",
+        "match_any": [
+            "memory blob caching analysis",
+            "system-reminder memory blob is not fully cached",
+            "two-layer memory (durable-cached",
+        ],
+    },
+    {
+        "subject": "apex.ios.build_number_bump",
+        "match_any": [
+            "apex ios build-number bump",
+            "current_project_version in apexchat.xcodeproj",
+            "orphan bumps",
+        ],
+    },
+    {
+        "subject": "deepthought.v42_sensitivity",
+        "match_any": [
+            "deepthought v4.2 has a sensitivity input",
+            "user's standard sensitivity is 28",
+            "data_get_pine_boxes api returns all internal computed",
+        ],
+    },
+    {
+        "subject": "deepthought.cvx.position_state",
+        "match_any": [
+            "user does not have an active cvx position",
+            "open 1 contract 165$ strike",
+            "is a plan note / setup marker, not a live trade",
+        ],
+    },
 ]
 
 
