@@ -387,6 +387,42 @@ def _init_db() -> None:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_perm_audit_chat ON permission_audit_log(chat_id)")
+    # V3 v1 gate — claim_store (Day 1: MCP + table + round-trip).
+    # Soft FK on chat_id (no REFERENCES) to keep the claim-write hot path
+    # independent of chat GC. Hard FK on supersedes/superseded_by because
+    # revision-chain integrity is the constraint that actually matters.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS claims (
+            claim_id        TEXT PRIMARY KEY,
+            chat_id         TEXT NOT NULL,
+            turn_id         INTEGER NOT NULL,
+            created_at      TEXT NOT NULL,
+            revised_at      TEXT,
+            text            TEXT NOT NULL,
+            confidence      REAL NOT NULL
+                            CHECK (confidence >= 0.0 AND confidence <= 1.0),
+            source_type     TEXT NOT NULL
+                            CHECK (source_type IN (
+                                'tool_result',
+                                'prior_turn',
+                                'speculation',
+                                'user'
+                            )),
+            source_tool     TEXT,
+            source_path     TEXT,
+            source_byte_lo  INTEGER,
+            source_byte_hi  INTEGER,
+            source_sha256   TEXT,
+            status          TEXT NOT NULL DEFAULT 'active'
+                            CHECK (status IN ('active', 'revised', 'retracted')),
+            supersedes      TEXT REFERENCES claims(claim_id),
+            superseded_by   TEXT REFERENCES claims(claim_id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_claims_chat_turn     ON claims(chat_id, turn_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_claims_source_sha256 ON claims(source_sha256)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_claims_supersedes    ON claims(supersedes)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_claims_chat_active   ON claims(chat_id) WHERE status='active'")
     conn.commit()
     conn.close()
 
