@@ -32,6 +32,41 @@ try:
     from local_model.tools.guide_tools import GUIDE_TOOL_NAMES
 except ImportError:
     GUIDE_TOOL_NAMES: frozenset[str] = frozenset()
+
+# V3 v1 gate — claim-store MCP tools, attached to gate-test profiles only.
+# These are gated via extra_allowed_tools so non-gate profiles cannot invoke
+# them even if the MCP server is visible via global mcp_servers.json.
+CLAIM_STORE_TOOL_NAMES: frozenset[str] = frozenset({
+    "claim_store__claim_assert",
+    "claim_store__claim_list",
+    "claim_store__claim_revise",
+})
+
+# Profile IDs that should see CLAIM_STORE_TOOL_NAMES in their extra allow list.
+# Day 2b: two dev-only gate-test personas in apex_dev.db.
+GATE_TEST_PROFILE_IDS: frozenset[str] = frozenset({
+    "9b9b990f",  # gate-test-haiku-clean (backend=claude)
+    "b32aac1b",  # gate-test-codex-weak (backend=codex)
+})
+
+_GUIDE_PROFILE_ID = "sys-guide"
+
+
+def resolve_profile_extra_tools(profile_id: str | None) -> frozenset[str]:
+    """Return extra tool names this profile should be allowed to call.
+
+    Extra tools bypass the Level 1/2/3 catalog check in
+    `tool_allowed_for_level`. Use this for persona-scoped tool bundles
+    (e.g. guide config tools, gate-test claim-store tools).
+    """
+    extras: set[str] = set()
+    if not profile_id:
+        return frozenset(extras)
+    if profile_id == _GUIDE_PROFILE_ID:
+        extras.update(GUIDE_TOOL_NAMES)
+    if profile_id in GATE_TEST_PROFILE_IDS:
+        extras.update(CLAIM_STORE_TOOL_NAMES)
+    return frozenset(extras)
 BUILTIN_LOCAL_TOOLS = frozenset(
     {"bash", "read_file", "write_file", "edit_file", "list_files", "search_files",
      "execute_code"}
@@ -314,6 +349,25 @@ TOOL_POLICY_CATALOG = {
         "description": "Validate config and confirm live vs. restart-required settings.",
         "category": "guide",
         "group": "config",
+    },
+    # --- V3 v1 gate claim-store tools (dev-only, gate-test profiles) ---
+    "claim_store__claim_assert": {
+        "name": "Claim Store: Assert",
+        "description": "Register a factual claim with source provenance before emitting prose that relies on it.",
+        "category": "gate",
+        "group": "claims",
+    },
+    "claim_store__claim_list": {
+        "name": "Claim Store: List",
+        "description": "List claims for the current chat/turn from the claim store.",
+        "category": "gate",
+        "group": "claims",
+    },
+    "claim_store__claim_revise": {
+        "name": "Claim Store: Revise",
+        "description": "Revise an existing claim; append-only supersession with link back to the prior row.",
+        "category": "gate",
+        "group": "claims",
     },
 }
 

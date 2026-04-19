@@ -19,7 +19,7 @@ from db import _get_chat, _get_chat_tool_policy, _get_messages, _estimate_tokens
 from log import log
 from model_dispatch import MODEL_CONTEXT_WINDOWS, MODEL_CONTEXT_DEFAULT, MODEL_INPUT_PRICE, MODEL_OUTPUT_PRICE
 from state import _clients, _session_context_sent
-from tool_access import tool_access_decision
+from tool_access import tool_access_decision, resolve_profile_extra_tools
 from streaming import (
     _send_stream_event, _disconnect_client,
     _normalize_response_stream,
@@ -775,6 +775,20 @@ async def _stream_response(
     def _host_denied_pending_tools(items: list[dict]) -> list[dict]:
         effective_level = int(permission_level if permission_level is not None else _get_chat_tool_policy(chat_id).get("level", 2))
         effective_allowed_commands = list(allowed_commands or [])
+        # Resolve per-profile extras (guide tools, gate-test claim_store, etc.)
+        # from client_key — same semantics as streaming._resolve_guide_extra_tools.
+        _profile_id = ""
+        if client_key:
+            if ":" in client_key:
+                _profile_id = client_key.split(":", 1)[1]
+            else:
+                try:
+                    _chat = _get_chat(client_key)
+                    if _chat:
+                        _profile_id = str(_chat.get("profile_id", "") or "")
+                except Exception:
+                    _profile_id = ""
+        effective_extras = resolve_profile_extra_tools(_profile_id) or None
         denied: list[dict] = []
         for item in items:
             allowed, _message = tool_access_decision(
@@ -783,6 +797,7 @@ async def _stream_response(
                 level=effective_level,
                 allowed_commands=effective_allowed_commands,
                 workspace_paths=env.get_runtime_workspace_paths(),
+                extra_allowed_tools=effective_extras,
                 audit_context={
                     "source": "sdk_pending",
                     "client_key": client_key or "",

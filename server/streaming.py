@@ -25,7 +25,11 @@ from fastapi import WebSocket
 
 from db import _get_db, _get_chat, _update_chat, _get_chat_tool_policy, _get_profile_tool_policy
 from log import log
-from tool_access import tool_access_decision, GUIDE_TOOL_NAMES
+from tool_access import (
+    tool_access_decision,
+    GUIDE_TOOL_NAMES,
+    resolve_profile_extra_tools,
+)
 from memory_extract import _filter_stream_text_for_memory_tags, _clear_stream_text_filter
 from state import (
     _clients, _client_sessions, _client_last_used, _client_permission_levels, _client_permission_policies,
@@ -651,11 +655,36 @@ def _is_guide_session(client_key: str | None) -> bool:
     return False
 
 
+def _resolve_profile_id_from_client_key(client_key: str | None) -> str:
+    """Resolve the active profile ID for this SDK session.
+
+    Group-agent client keys are formatted `chat_id:profile_id`; solo chats are
+    just `chat_id` and the profile ID lives on the chat row.
+    """
+    if not client_key:
+        return ""
+    if ":" in client_key:
+        return client_key.split(":", 1)[1]
+    chat_id = client_key
+    try:
+        chat = _get_chat(chat_id)
+        if chat:
+            return str(chat.get("profile_id", "") or "")
+    except Exception:
+        return ""
+    return ""
+
+
 def _resolve_guide_extra_tools(client_key: str | None) -> frozenset[str] | None:
-    """Return guide tool names if this is a guide session, else None."""
-    if _is_guide_session(client_key):
-        return GUIDE_TOOL_NAMES
-    return None
+    """Return per-profile extra tool names (guide config, claim-store gate, etc).
+
+    Kept under the original name so callers in the rest of streaming.py don't
+    need to change; the implementation now delegates to the shared resolver in
+    tool_access so the tool-loop path can re-use the same mapping.
+    """
+    profile_id = _resolve_profile_id_from_client_key(client_key)
+    extras = resolve_profile_extra_tools(profile_id)
+    return extras if extras else None
 
 
 def _resolve_sdk_permission_level(client_key: str | None, chat_id: str | None = None) -> int:
