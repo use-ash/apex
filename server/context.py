@@ -509,18 +509,19 @@ def _parse_iso(s: str) -> datetime:
 
 
 def _apply_superseded_penalty(memories: list[dict]) -> None:
-    """Flag and penalize older memories superseded by newer ones on the same topic."""
-    word_sets = [(set(m["content"].lower().split()), m) for m in memories]
-    for i, (ws_i, mem_i) in enumerate(word_sets):
-        for j, (ws_j, mem_j) in enumerate(word_sets):
-            if i >= j or not ws_i or not ws_j:
-                continue
-            overlap = len(ws_i & ws_j) / min(len(ws_i), len(ws_j))
-            if overlap >= 0.6:
-                older = mem_i if mem_i["created_at"] < mem_j["created_at"] else mem_j
-                older["_score"] = max(0, older.get("_score", 0) - 0.05)
-                older["_superseded"] = True
+    """Deprecated. Superseded by hard status='active' filter in db._get_persona_memories.
 
+    Kept as no-op stub so git-bisect can pinpoint the 2026-04-18 memory refactor
+    (see scripts/migrations/2026_04_18_memory_refactor.py) if a regression surfaces.
+    The old 60%-overlap penalty was lossy (rephrased subjects bypassed it) and
+    never fully retired stale entries — only nudged their score by -0.05.
+    """
+    return None
+
+
+# Injection weight by category. Decisions/corrections outrank task/context on
+# the same-salience tie. Applied as a final multiplier in _score_memories.
+_CATEGORY_INJECT_WEIGHT = {"decision": 1.2, "correction": 1.1, "task": 0.9, "context": 0.8}
 
 _MIN_INJECTION_SCORE = 0.10  # below this, memory is not worth injecting
 
@@ -578,12 +579,26 @@ def _score_memories(memories: list[dict], user_message: str = "") -> list[dict]:
         else:
             score += 0.03
 
+        # 8. TTL decay for tasks — halve per week overdue beyond ttl_seconds.
+        #    A 14-day-TTL task at day 21 -> score × 0.5; at day 35 -> × 0.125.
+        #    Never zero, so strong similarity can still surface an aged task.
+        ttl_s = mem.get("ttl_seconds")
+        if mem.get("category") == "task" and ttl_s:
+            age_s = (now - created).total_seconds()
+            if age_s > ttl_s:
+                overdue_weeks = (age_s - ttl_s) / (7 * 86400)
+                score *= 0.5 ** overdue_weeks
+
+        # 9. Category injection weight — decisions/corrections outrank tasks/context.
+        score *= _CATEGORY_INJECT_WEIGHT.get(mem.get("category", ""), 1.0)
+
         mem["_score"] = score
 
-    # Superseded detection — post-pass (marks duplicates)
+    # Superseded detection — now a no-op (hard-filtered at DB read time).
     _apply_superseded_penalty(memories)
 
-    # Filter: drop superseded and below-threshold memories
+    # Filter: drop below-threshold memories. `_superseded` never set post-refactor,
+    # retained in predicate for forward-compat with the legacy key.
     memories = [m for m in memories if m["_score"] >= _MIN_INJECTION_SCORE
                 and not m.get("_superseded")]
     memories.sort(key=lambda m: m["_score"], reverse=True)
@@ -1088,12 +1103,19 @@ def _get_memory_prompt(chat_id: str, active_profile_id: str = "",
         lines.append("Important decisions, corrections, context, and tasks for these open chats are stored in a shared system memory pool.")
     else:
         lines.append("You have persistent memory that follows you across all channels and groups.")
-    lines.append("To save something important, include a memory tag in your response:")
-    lines.append('  <memory category="decision">What was decided and why</memory>')
-    lines.append('  <memory category="correction">User preference or correction to remember</memory>')
-    lines.append('  <memory category="context">Important context for future conversations</memory>')
-    lines.append('  <memory category="task">Pending task or follow-up</memory>')
-    lines.append("The tag will be stripped from the displayed message. Use sparingly — only for things worth remembering across sessions.")
+    lines.append("To save, use a memory tag:")
+    lines.append('  <memory category="decision" subject="scope.topic">What and why</memory>')
+    lines.append('  <memory category="correction" subject="scope.topic">User preference or fact</memory>')
+    lines.append('  <memory category="task" subject="scope.topic" ttl="14d">Pending follow-up</memory>')
+    lines.append('  <memory category="context" subject="scope.topic">Background info</memory>')
+    lines.append('The `subject` is a dotted path ("v3.claim_store.schema", "apex.db.writer_lock"). '
+                 'Writing a new entry with a matching subject automatically supersedes older '
+                 'entries of equal-or-lower rank (decision=3, correction=3, task=2, context=1).')
+    lines.append("To retire stale entries explicitly:")
+    lines.append('  <memory action="retire" id="mem_abc123">reason</memory>')
+    lines.append('  <memory action="retire" subject="v3.old.thread" status="superseded">reason</memory>')
+    lines.append("Tags are stripped from the displayed message. Use sparingly — one tag per true "
+                 "commitment, not per turn.")
     lines.append("Note: This persistent memory (above) is your primary memory system. "
                  "The MCP `memory` tool (knowledge graph) is a separate, supplemental store — "
                  "do not confuse the two. When asked about your memory, refer to this section first.")
