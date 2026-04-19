@@ -166,11 +166,23 @@ def _tool_claim_revise(args: dict) -> dict:
 
 _SRC_REF_SCHEMA = {
     "type": "object",
+    "description": (
+        "Provenance reference. When source_type='tool_result', sha256 is REQUIRED "
+        "and MUST be a 64-char lowercase hex SHA-256 digest of the tool_result "
+        "content the claim is grounded in. tool, path, byte_range are recommended."
+    ),
     "properties": {
-        "tool": {"type": "string"},
-        "path": {"type": "string"},
-        "byte_range": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
-        "sha256": {"type": "string"},
+        "tool": {"type": "string", "description": "Tool name that produced the source (e.g. 'Read', 'Grep')."},
+        "path": {"type": "string", "description": "File path or URI of the source."},
+        "byte_range": {
+            "type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2,
+            "description": "[lo, hi) byte range within the source.",
+        },
+        "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "64-char lowercase hex SHA-256 of the source content. REQUIRED when source_type='tool_result'.",
+        },
     },
 }
 
@@ -178,7 +190,32 @@ _TOOLS = {
     "claim_assert": {
         "description": (
             "Register a factual claim with source provenance. Call BEFORE emitting prose "
-            "that relies on this fact. source_type='tool_result' requires source_ref.sha256."
+            "that relies on this fact.\n\n"
+            "REQUIRED fields: chat_id, turn_id, text, source_type.\n"
+            "When source_type='tool_result', source_ref.sha256 is ALSO REQUIRED and "
+            "MUST be a real 64-char lowercase hex SHA-256 digest of the tool_result "
+            "content (do not invent or mnemonic-pattern it — the server rejects calls "
+            "lacking sha256; the row will not persist).\n\n"
+            "Example call shape (all fields real, not placeholders):\n"
+            "  {\n"
+            "    \"chat_id\": \"<the current apex chat_id, populated by the host>\",\n"
+            "    \"turn_id\": 1,\n"
+            "    \"text\": \"symbol_monitor.py line 240 sets protocolVersion='2024-11-05'\",\n"
+            "    \"confidence\": 0.9,\n"
+            "    \"source_type\": \"tool_result\",\n"
+            "    \"source_ref\": {\n"
+            "      \"tool\": \"Read\",\n"
+            "      \"path\": \"/abs/path/symbol_monitor.py\",\n"
+            "      \"byte_range\": [7620, 7680],\n"
+            "      \"sha256\": \"d1ae7b2f1cc343f4d573bdf499c6e9d92844d03bcb5590236d0f4cd446338f57\"\n"
+            "    }\n"
+            "  }\n"
+            "Do not guess sha256. Compute it from the exact bytes returned by the tool "
+            "call you are grounding against. If sha256 is unavailable, either use "
+            "source_type='speculation' (marks the claim as unverified — honest) or "
+            "omit the claim_assert call entirely. Do not fabricate a hash to satisfy "
+            "the schema — the server rejects non-64-char-hex strings and the row will "
+            "not persist."
         ),
         "inputSchema": {
             "type": "object",

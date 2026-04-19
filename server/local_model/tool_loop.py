@@ -988,6 +988,17 @@ async def run_tool_loop(
                         elif is_mcp_tool(tool_name):
                             try:
                                 from .mcp_bridge import call_mcp_tool
+                                # V3 Day 4: auto-populate chat_id from audit
+                                # context for MCP tools that require it. The
+                                # Codex backend does not emit chat_id via any
+                                # session machinery (unlike the Claude SDK),
+                                # so the model was fabricating "default" for
+                                # claim_store__*. Overwrite (not setdefault)
+                                # prevents cross-chat spoofing by a malicious
+                                # or confused model.
+                                if isinstance(tool_args, dict) and audit_context and audit_context.get("chat_id"):
+                                    if "chat_id" in tool_args or tool_name.startswith("claim_store__"):
+                                        tool_args["chat_id"] = audit_context["chat_id"]
                                 tool_result = await call_mcp_tool(tool_name, tool_args)
                             except Exception as e:
                                 tool_result = f"Error calling MCP tool {tool_name}: {type(e).__name__}: {e}"
