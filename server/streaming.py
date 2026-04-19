@@ -139,6 +139,9 @@ def _attach_ws(ws: WebSocket, chat_id: str) -> None:
     _vacuum_dead_ws(chat_id)
     _chat_ws.setdefault(chat_id, set()).add(ws)
     _ws_chat[ws] = chat_id
+    # Seed the ping-ts map so a just-attached socket gets a full grace period
+    # before the prober can evict it for staleness.
+    _last_client_ping.setdefault(ws, time.time())
     # WSDIAG: observability for WS streaming race bug. Correlate by ws_id+chat.
     log(f"WSDIAG attach ws={id(ws) & 0xFFFFFF:06x} old={(old or '_')[:8]} new={chat_id[:8]} set={len(_chat_ws.get(chat_id, ()))}")
 
@@ -146,6 +149,7 @@ def _attach_ws(ws: WebSocket, chat_id: str) -> None:
 def _detach_ws(ws: WebSocket) -> None:
     """Remove ws from all tracking."""
     old = _ws_chat.pop(ws, None)
+    _last_client_ping.pop(ws, None)
     if old:
         old_set = _chat_ws.get(old)
         if old_set:
@@ -170,7 +174,36 @@ def _detach_ws(ws: WebSocket) -> None:
 # and detects dead sockets via the send exception. Evict on failure.
 
 _LIVENESS_INTERVAL_SEC = 15
+# If no client ping has arrived in this many seconds, consider the ws dead
+# even if outbound sends still appear to succeed (half-open TCP — outbound
+# buffer still accepts writes, but the client has stopped reading). The web
+# client heartbeats every 5s and iOS similar, so 30s = 6 missed heartbeats.
+_PING_STALE_SEC = 30
 _liveness_task: asyncio.Task | None = None
+
+# Per-ws timestamp of the most recent client→server ping. Seeded on attach
+# (fresh sockets get a full grace period) and refreshed each time the WS
+# handler receives {action:"ping"} via mark_client_ping().
+_last_client_ping: "dict[WebSocket, float]" = {}
+
+
+def mark_client_ping(ws: WebSocket) -> None:
+    """Record the arrival time of a client ping. Called from the WS handler."""
+    _last_client_ping[ws] = time.time()
+
+
+async def _force_close_ws(ws: WebSocket) -> None:
+    """Best-effort close so the client's onclose fires and triggers reconnect.
+
+    Without this, evicting from _chat_ws only removes the ws from the
+    server's fan-out set — the client still sees readyState=OPEN and thinks
+    everything is healthy, so no reconnect is scheduled. Closing the socket
+    forces web/iOS onclose handlers to run and re-attach.
+    """
+    try:
+        await ws.close(code=1011, reason="liveness_eviction")
+    except Exception:
+        pass
 
 
 async def _probe_one_ws(ws: WebSocket) -> bool:
@@ -202,22 +235,50 @@ async def _ws_liveness_prober() -> None:
             if not snapshot:
                 continue
             evicted = 0
+            now = time.time()
             for chat_id, ws in snapshot:
                 # Skip if ws is clearly dead by state check (reactive path)
                 if not _ws_is_alive(ws):
                     _vacuum_dead_ws(chat_id)
+                    _last_client_ping.pop(ws, None)
+                    await _force_close_ws(ws)
                     evicted += 1
                     continue
-                ok = await _probe_one_ws(ws)
-                if not ok:
-                    # Send failed — ws is dead. Remove now, before a real
-                    # stream frame gets wasted on it.
+                # Ping-staleness check: half-open TCP sockets still accept
+                # outbound writes (server_ping send succeeds) but the client
+                # has stopped reading. The client-side heartbeat running every
+                # 5s is the only end-to-end signal. If no ping has arrived in
+                # _PING_STALE_SEC, treat the ws as dead regardless of whether
+                # our outbound send would succeed.
+                last_ping = _last_client_ping.get(ws, now)
+                if now - last_ping > _PING_STALE_SEC:
                     ws_set = _chat_ws.get(chat_id)
                     if ws_set:
                         ws_set.discard(ws)
                         if not ws_set:
                             _chat_ws.pop(chat_id, None)
                     _ws_chat.pop(ws, None)
+                    _last_client_ping.pop(ws, None)
+                    await _force_close_ws(ws)
+                    evicted += 1
+                    log(
+                        f"WSDIAG stale_ping_evict ws={id(ws) & 0xFFFFFF:06x} "
+                        f"chat={chat_id[:8]} age={int(now - last_ping)}s"
+                    )
+                    continue
+                ok = await _probe_one_ws(ws)
+                if not ok:
+                    # Send failed — ws is dead. Remove now, before a real
+                    # stream frame gets wasted on it. Also close so the
+                    # client's onclose fires and triggers reconnect.
+                    ws_set = _chat_ws.get(chat_id)
+                    if ws_set:
+                        ws_set.discard(ws)
+                        if not ws_set:
+                            _chat_ws.pop(chat_id, None)
+                    _ws_chat.pop(ws, None)
+                    _last_client_ping.pop(ws, None)
+                    await _force_close_ws(ws)
                     evicted += 1
                     log(f"WSDIAG probe_evict ws={id(ws) & 0xFFFFFF:06x} chat={chat_id[:8]}")
             if evicted:

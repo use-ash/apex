@@ -59,7 +59,7 @@ from state import (
     _queued_turns,
 )
 from streaming import (
-    _make_stream_id, _attach_ws, _detach_ws,
+    _make_stream_id, _attach_ws, _detach_ws, mark_client_ping,
     _get_active_stream_entries, _has_active_stream,
     _set_active_send_task, _update_active_send_task, _remove_active_send_task,
     _cancel_chat_streams,
@@ -459,6 +459,7 @@ async def websocket_endpoint(websocket: WebSocket):
             action = data.get("action", "")
 
             if action == "ping":
+                mark_client_ping(websocket)
                 await websocket.send_json({"type": "pong"})
                 continue
 
