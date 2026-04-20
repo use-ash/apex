@@ -65,6 +65,11 @@ def _connect() -> sqlite3.Connection:
 
 _SOURCE_TYPES = ("tool_result", "prior_turn", "speculation", "user")
 
+# V3 v2 Step 3 — Room E §DELTA-E.5 (C14) 16th L1 field.
+# Frozen at assert — revise may NOT mutate resource_type (E_RESOURCE_TYPE_MUTATED).
+# Back-compat default at assert time: source_type='tool_result' → 'TOOL'.
+_RESOURCE_TYPES = ("PROMPT", "AGENT", "TOOL", "ENV", "MEMORY")
+
 # V3 Day 4.5 — compiled once for hot-path sha256 format check.
 import re as _re
 _SHA256_RE = _re.compile(r"^[0-9a-f]{64}$")
@@ -251,6 +256,27 @@ def _tool_claim_assert(args: dict) -> dict:
         raise ValueError(f"source_type must be one of {_SOURCE_TYPES}; got {source_type!r}")
     src = args.get("source_ref") or {}
 
+    # V3 v2 Step 3 — resource_type is the 16th L1 field (Room E §DELTA-E.5, C14).
+    # Validated at assert, frozen thereafter (revise may not mutate).
+    # Back-compat: when the caller omits resource_type and source_type='tool_result',
+    # default to 'TOOL' so pre-Step-3 callers still work. Other source_types MUST
+    # supply resource_type explicitly — the server does not guess PROMPT vs ENV vs
+    # MEMORY for prior_turn / speculation / user claims.
+    resource_type = args.get("resource_type")
+    if resource_type is None:
+        if source_type == "tool_result":
+            resource_type = "TOOL"
+        else:
+            raise ValueError(
+                f"resource_type is required when source_type={source_type!r} "
+                f"(only source_type='tool_result' gets the 'TOOL' back-compat default). "
+                f"Supply one of {_RESOURCE_TYPES}."
+            )
+    if resource_type not in _RESOURCE_TYPES:
+        raise ValueError(
+            f"resource_type must be one of {_RESOURCE_TYPES}; got {resource_type!r}"
+        )
+
     # V3 Day 4.5 — server-side provenance guards.
     # (1) chat_id must resolve to a real chat row. Closes the Codex
     #     mis-attribution path (pre-Day 4 wrote 74 rows under 'default').
@@ -312,13 +338,14 @@ def _tool_claim_assert(args: dict) -> dict:
             """INSERT INTO claims (
                 claim_id, chat_id, turn_id, created_at, text, confidence,
                 source_type, source_tool, source_path,
-                source_byte_lo, source_byte_hi, source_sha256, status
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'active')""",
+                source_byte_lo, source_byte_hi, source_sha256,
+                resource_type, status
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'active')""",
             (claim_id, chat_id, turn_id, _now_iso(), text, confidence,
              source_type, src.get("tool"), src.get("path"),
-             bl, bh, src.get("sha256")),
+             bl, bh, src.get("sha256"), resource_type),
         )
-    return {"claim_id": claim_id, "status": "active"}
+    return {"claim_id": claim_id, "status": "active", "resource_type": resource_type}
 
 
 def _tool_claim_list(args: dict) -> dict:
@@ -356,6 +383,28 @@ def _tool_claim_revise(args: dict) -> dict:
         stype = new_stype or old["source_type"]
         if stype not in _SOURCE_TYPES:
             raise ValueError(f"source_type invalid: {stype!r}")
+
+        # V3 v2 Step 3 — resource_type is frozen at assert (E_RESOURCE_TYPE_MUTATED).
+        # Allowed: caller omits resource_type (carried forward), or supplies the
+        # same value as the old row. If the old row's resource_type is NULL
+        # (pre-Step-3 row created before this column was populated), allow the
+        # revision to set it once — a one-time backfill path, not a mutation.
+        old_rtype = old["resource_type"] if "resource_type" in old.keys() else None
+        new_rtype = args.get("resource_type")
+        if new_rtype is not None:
+            if new_rtype not in _RESOURCE_TYPES:
+                raise ValueError(
+                    f"resource_type must be one of {_RESOURCE_TYPES}; got {new_rtype!r}"
+                )
+            if old_rtype is not None and new_rtype != old_rtype:
+                raise ValueError(
+                    f"resource_type is frozen at assert: old={old_rtype!r} "
+                    f"new={new_rtype!r} (E_RESOURCE_TYPE_MUTATED). To correct a "
+                    f"mis-typed claim, withdraw it and assert a new one."
+                )
+            effective_rtype = new_rtype
+        else:
+            effective_rtype = old_rtype
         # V3 Day 4.5 — same format guards as claim_assert.
         # V3 v2 Step 2 — auto-provenance applies to revise too. If the
         # revision supplies a new (tool, path, byte_range) but no sha256,
@@ -384,8 +433,8 @@ def _tool_claim_revise(args: dict) -> dict:
                 claim_id, chat_id, turn_id, created_at, text, confidence,
                 source_type, source_tool, source_path,
                 source_byte_lo, source_byte_hi, source_sha256,
-                status, supersedes
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'active', ?)""",
+                resource_type, status, supersedes
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'active', ?)""",
             (new_id, old["chat_id"], old["turn_id"], now, new_text, new_conf,
              stype,
              new_src.get("tool") or old["source_tool"],
@@ -393,6 +442,7 @@ def _tool_claim_revise(args: dict) -> dict:
              bl if bl is not None else old["source_byte_lo"],
              bh if bh is not None else old["source_byte_hi"],
              new_src.get("sha256") or old["source_sha256"],
+             effective_rtype,
              old_id),
         )
         conn.execute(
@@ -475,6 +525,18 @@ _TOOLS = {
                 "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                 "source_type": {"type": "string", "enum": list(_SOURCE_TYPES)},
                 "source_ref": _SRC_REF_SCHEMA,
+                "resource_type": {
+                    "type": "string",
+                    "enum": list(_RESOURCE_TYPES),
+                    "description": (
+                        "What kind of resource the claim is about, per V3 spec Room E §DELTA-E.5. "
+                        "PROMPT = instruction/system-prompt text; AGENT = another agent's output; "
+                        "TOOL = tool_result bytes (file, API, shell); ENV = environment observation "
+                        "(pid, port, hostname, clock); MEMORY = persistent store (DB row, memory "
+                        "blob, chatmine). Frozen at assert — claim_revise will reject any change. "
+                        "Default when omitted: 'TOOL' if source_type='tool_result', else REQUIRED."
+                    ),
+                },
             },
         },
         "executor": _tool_claim_assert,
@@ -506,6 +568,16 @@ _TOOLS = {
                 "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                 "source_type": {"type": "string", "enum": list(_SOURCE_TYPES)},
                 "source_ref": _SRC_REF_SCHEMA,
+                "resource_type": {
+                    "type": "string",
+                    "enum": list(_RESOURCE_TYPES),
+                    "description": (
+                        "Frozen at original assert — pass only if matching the old row "
+                        "(or if old row predates Step 3 and has no resource_type set, in "
+                        "which case this is a one-time backfill). Any mismatch raises "
+                        "E_RESOURCE_TYPE_MUTATED."
+                    ),
+                },
             },
         },
         "executor": _tool_claim_revise,
