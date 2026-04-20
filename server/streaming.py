@@ -53,6 +53,26 @@ except ImportError:
 # Config imported from env.py
 
 _STREAM_BUFFER_MAX = 2000
+
+# --- Zombie-reload guard (2026-04-20) ---------------------------------------
+# Tracks which WebSockets were attached to a chat at the moment a given
+# stream began (_stream_attached_at_start) and which of those dropped off
+# while the stream was still running (_stream_disconnected_during). Used at
+# post-stream broadcast in ws_handler to emit `stream_complete_reload` ONLY
+# to rejoiners + latecomers, not to viewers that stayed attached end-to-end
+# and already hold every frame in their live client context.
+# Keyed by (chat_id, stream_id). Both dicts popped after the broadcast.
+_stream_attached_at_start: "dict[tuple[str, str], set]" = {}
+_stream_disconnected_during: "dict[tuple[str, str], set]" = {}
+
+
+def _record_disconnect_mid_stream(ws, chat_id: str) -> None:
+    """If any stream is mid-flight for chat_id, record ws as having dropped."""
+    for key in list(_stream_attached_at_start.keys()):
+        if key[0] == chat_id and ws in _stream_attached_at_start[key]:
+            _stream_disconnected_during.setdefault(key, set()).add(ws)
+
+
 # Server epoch — monotonic-ish ID stamped on every stream event so clients can
 # detect server restart and reset their seq dedup state. Generated fresh each
 # time this module loads (i.e., each server process).
@@ -111,6 +131,8 @@ def _vacuum_dead_ws(chat_id: str) -> int:
         return 0
     dead = [w for w in list(ws_set) if not _ws_is_alive(w)]
     for w in dead:
+        # Record pre-discard so mid-stream guard sees the viewer leave.
+        _record_disconnect_mid_stream(w, chat_id)
         ws_set.discard(w)
         _ws_chat.pop(w, None)
     if not ws_set:
@@ -126,6 +148,7 @@ def _attach_ws(ws: WebSocket, chat_id: str) -> None:
     if old and old != chat_id:
         old_set = _chat_ws.get(old)
         if old_set:
+            _record_disconnect_mid_stream(ws, old)
             old_set.discard(ws)
             if not old_set:
                 _chat_ws.pop(old, None)
@@ -153,6 +176,7 @@ def _detach_ws(ws: WebSocket) -> None:
     if old:
         old_set = _chat_ws.get(old)
         if old_set:
+            _record_disconnect_mid_stream(ws, old)
             old_set.discard(ws)
             if not old_set:
                 _chat_ws.pop(old, None)
