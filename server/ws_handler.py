@@ -60,6 +60,7 @@ from state import (
 )
 from streaming import (
     _make_stream_id, _attach_ws, _detach_ws, mark_client_ping,
+    _stream_attached_at_start, _stream_disconnected_during,
     _get_active_stream_entries, _has_active_stream,
     _set_active_send_task, _update_active_send_task, _remove_active_send_task,
     _cancel_chat_streams,
@@ -1208,6 +1209,10 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             stream_start_event["speaker_avatar"] = group_agent["avatar"]
             stream_start_event["speaker_id"] = group_agent["profile_id"]
         await _send_stream_event(chat_id, stream_start_event)
+        # Snapshot viewers attached at stream_start for zombie-reload guard.
+        # See streaming._stream_attached_at_start docstring; popped at 1713.
+        _stream_attached_at_start[(chat_id, stream_id)] = set(_chat_ws.get(chat_id, set()))
+        _stream_disconnected_during.pop((chat_id, stream_id), None)
         if is_group_chat:
             await _send_active_streams(chat_id)
 
@@ -1674,9 +1679,26 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
 
         ws_set = _chat_ws.get(chat_id, set())
         other_viewers = ws_set - {original_ws}
-        if other_viewers:
-            log(f"Notifying {len(other_viewers)} other viewer(s) to reload chat={chat_id}")
-            for ows in other_viewers:
+        # Zombie-reload guard: only broadcast stream_complete_reload to
+        # viewers that either (a) dropped off mid-stream and reconnected
+        # (rejoiners) or (b) attached AFTER stream_start (latecomers).
+        # Viewers continuously attached from stream_start through stream_end
+        # already hold every frame in their live client context; reloading
+        # them races the post-result teardown and tears down chatview 1ms
+        # before the real stream_end arrives. See evidence trail in
+        # console-2026-04-20T20-15-28-648Z.log:502-547.
+        attached = _stream_attached_at_start.pop((chat_id, stream_id), set())
+        disconnected = _stream_disconnected_during.pop((chat_id, stream_id), set())
+        rejoiners = other_viewers & disconnected
+        latecomers = other_viewers - attached
+        needs_reload = rejoiners | latecomers
+        if needs_reload:
+            log(
+                f"Notifying {len(needs_reload)} viewer(s) to reload chat={chat_id} "
+                f"(rejoin={len(rejoiners)} late={len(latecomers)} "
+                f"skipped_continuous={len(other_viewers - needs_reload)})"
+            )
+            for ows in needs_reload:
                 await _safe_ws_send_json(
                     ows,
                     {"type": "stream_complete_reload", "chat_id": chat_id, "stream_id": stream_id},
