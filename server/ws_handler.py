@@ -929,8 +929,36 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             group_agent = _resolve_primary_group_agent(chat_id, prompt)
     mention_prompt = prompt
     _coord_protocol = _get_chat_settings(chat_id).get("coordination_protocol", "freeform") if (group_agent and is_group_chat) else "freeform"
+    # True hub-spoke enforcement: user-originated messages always route to the
+    # hub, regardless of @-mentions in the prompt body. The hub alone
+    # evaluates and dispatches specialists. Agent-to-user handoffs (agent /
+    # user_multi / feedback sources) are left alone — they've already passed
+    # through hub-spoke gates on the agent side.
+    if (
+        group_agent
+        and is_group_chat
+        and not suppress_user_message
+        and handoff_source not in {"agent", "user_multi"}
+        and _coord_protocol == "hub_spoke"
+    ):
+        _hub_pid_force = str(_get_chat_settings(chat_id).get("hub_profile_id") or "")
+        if _hub_pid_force and str(group_agent.get("profile_id") or "") != _hub_pid_force:
+            _hub_member = next(
+                (
+                    m for m in _get_group_members(chat_id)
+                    if str(m.get("profile_id") or "") == _hub_pid_force
+                ),
+                None,
+            )
+            if _hub_member:
+                log(
+                    f"hub-spoke: user dispatch forced to hub "
+                    f"(was @{group_agent.get('name')}, now @{_hub_member.get('name')}) "
+                    f"chat={chat_id[:8]}"
+                )
+                group_agent = _hub_member
     if group_agent and is_group_chat and not suppress_user_message and handoff_source not in {"agent", "user_multi"}:
-        if _coord_protocol == "sequential" or _strict_relay_requested(mention_prompt):
+        if _coord_protocol in ("sequential", "hub_spoke") or _strict_relay_requested(mention_prompt):
             _start_strict_group_relay(
                 chat_id,
                 first_profile_id=str(group_agent.get("profile_id") or ""),
@@ -945,7 +973,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         permission_policy = {**permission_policy, "level": 0, "allowed_commands": []}
         permission_level = 0
         allowed_commands = []
-    elif strict_relay_active and _coord_protocol != "sequential":
+    elif strict_relay_active and _coord_protocol not in ("sequential", "hub_spoke"):
         permission_policy = {**permission_policy, "level": 0, "allowed_commands": []}
         permission_level = 0
         allowed_commands = []
@@ -972,6 +1000,16 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             premium_multi_targets = get_multi_dispatch_targets(chat_id, prompt, group_agent, data) or []
         fallback_multi_targets = _get_multi_dispatch_targets_fallback(chat_id, prompt, group_agent)
         multi_targets = _merge_group_dispatch_targets(premium_multi_targets, fallback_multi_targets)
+        # True hub-spoke enforcement: suppress user-originated multi-dispatch
+        # entirely. Only the hub (now group_agent after the force above) fires
+        # on the user's message; specialists @-mentioned in the user prompt
+        # are not parallel-dispatched. The hub reads the mentions and decides.
+        if _coord_protocol == "hub_spoke" and multi_targets:
+            log(
+                f"hub-spoke: user multi-dispatch suppressed "
+                f"({len(multi_targets)} targets) chat={chat_id[:8]}"
+            )
+            multi_targets = []
         for t in multi_targets:
             if str(t.get("profile_id") or "") == str(group_agent.get("profile_id") or ""):
                 log(f"user multi-dispatch blocked (self-target): {group_agent['name']} chat={chat_id[:8]}")
