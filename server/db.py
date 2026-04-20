@@ -443,6 +443,33 @@ def _init_db() -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_claims_source_sha256 ON claims(source_sha256)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_claims_supersedes    ON claims(supersedes)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_claims_chat_active   ON claims(chat_id) WHERE status='active'")
+    # V3 v2 Step 3 — Room E §DELTA-E.5 (C14): resource_type 16th L1 field.
+    # ALTER-idempotent migration; CHECK constraint can't be added post-hoc
+    # in SQLite, so the enum {PROMPT,AGENT,TOOL,ENV,MEMORY} is enforced at
+    # insert time in server/local_model/mcp_claim_store.py::_RESOURCE_TYPES.
+    # Legacy rows get NULL; mcp_claim_store treats NULL as TOOL for
+    # source_type='tool_result' back-compat, else demands explicit value.
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.execute("ALTER TABLE claims ADD COLUMN resource_type TEXT")
+    # V3 v2 Step 3 §3 Q4 — claim_gate_traces side-table.
+    # Full per-turn trace lives here (100s of KB under narrow harness);
+    # claim_gate_summary event carries only a trace_ref {table, pk, bytes}.
+    # UNIQUE (chat_id, turn_id) — one trace per stream/turn. Re-emission
+    # on reconnect must UPSERT, not duplicate. schema_version tracks
+    # trace_json shape so consumers can refuse unknown formats.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS claim_gate_traces (
+            id              TEXT PRIMARY KEY,
+            chat_id         TEXT NOT NULL,
+            turn_id         INTEGER NOT NULL,
+            created_at      TEXT NOT NULL,
+            trace_json      TEXT NOT NULL,
+            byte_len        INTEGER NOT NULL,
+            schema_version  INTEGER NOT NULL,
+            UNIQUE (chat_id, turn_id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cgt_chat_turn ON claim_gate_traces (chat_id, turn_id)")
     conn.commit()
     conn.close()
 
