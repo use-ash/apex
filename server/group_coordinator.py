@@ -1056,22 +1056,25 @@ def _build_group_relay_plan(
             )
     # True hub-spoke enforcement (defense-in-depth): regardless of strict_relay
     # state, if this chat is configured hub_spoke and the sender is NOT the
-    # hub, drop ALL dispatch actions. Specialists cannot @-mention other
-    # specialists into action — only the hub evaluates and routes. This covers
-    # the state-machine gap where strict_relay has cleared ([ROUND DONE],
-    # max_rounds, hub no-mention turn) but the fallback relay still wants to
-    # fan out on the next agent turn.
+    # hub, drop cross-talk dispatch actions. Specialists may ONLY relay TO the
+    # hub (evaluator-gate handoff, e.g. ending a turn with @br-coordinator);
+    # they cannot @-mention other specialists into action. Preserving the
+    # specialist→hub edge is required so the evaluator re-fires after each
+    # specialist turn; dropping only non-hub-targeted relay/redirect actions
+    # (instead of the entire action list) keeps that edge alive while still
+    # blocking specialist→specialist fan-out.
     _hub_settings = _get_chat_settings(chat_id)
     if str(_hub_settings.get("coordination_protocol") or "") == "hub_spoke":
         _hub_pid = str(_hub_settings.get("hub_profile_id") or "")
         _sender_pid = str(group_agent.get("profile_id") or "")
         if _hub_pid and _sender_pid and _sender_pid != _hub_pid:
-            _dropped = [
+            _filtered_actions = [
                 a for a in (relay.get("actions") or [])
-                if a.get("type") in {"relay", "redirect"}
+                if a.get("type") not in {"relay", "redirect"}
+                or str((a.get("target") or {}).get("profile_id") or "") == _hub_pid
             ]
-            if _dropped:
-                relay = {**relay, "actions": []}
+            if len(_filtered_actions) != len(relay.get("actions") or []):
+                relay = {**relay, "actions": _filtered_actions}
     sender_profile_id = str(group_agent.get("profile_id") or "")
     actionable_relay_actions = [
         action
