@@ -770,6 +770,32 @@ def _resolve_guide_extra_tools(client_key: str | None) -> frozenset[str] | None:
     return extras if extras else None
 
 
+# V3 v1 gate-test personas that need claim_store__* MCP tool extras at
+# chat-spawn. These profiles carry Level 1 tool_policy on their agent_profiles
+# row (no way to express MCP patterns there), so the claim_store tools must be
+# injected via extra_allowed_tools. Extend by adding IDs to this frozenset —
+# no other code changes required.
+#   9b9b990f = gate-test-haiku-clean  (backend=claude, model=haiku-4-5)
+#   b32aac1b = gate-test-codex-weak   (backend=codex,  model=codex:gpt-5.4)
+_CLAIM_STORE_GATE_PROFILES: frozenset[str] = frozenset({
+    "9b9b990f",
+    "b32aac1b",
+})
+
+
+def _resolve_claim_store_extra_tools(profile_id: str) -> frozenset[str] | None:
+    """Return `claim_store__*` prefix for gate-test profiles, else None.
+
+    Mirrors the shape of `_resolve_guide_extra_tools` but keyed on profile_id
+    directly rather than tunneling through client_key → tool_access. The
+    returned extras are unioned with the guide extras at the single call-site
+    in `_build_sdk_options`.
+    """
+    if profile_id and profile_id in _CLAIM_STORE_GATE_PROFILES:
+        return frozenset({"claim_store__*"})
+    return None
+
+
 def _resolve_sdk_permission_level(client_key: str | None, chat_id: str | None = None) -> int:
     if not client_key:
         return 2
@@ -922,6 +948,11 @@ def _make_options(
     ]
     # Resolve guide-specific extra tools if this is a guide session
     extra_allowed_tools = _resolve_guide_extra_tools(client_key)
+    # Union in claim_store__* for V3 gate-test profiles (Day 2b).
+    _profile_id_for_extras = _resolve_profile_id_from_client_key(client_key)
+    _claim_store_extras = _resolve_claim_store_extra_tools(_profile_id_for_extras)
+    if _claim_store_extras:
+        extra_allowed_tools = frozenset((extra_allowed_tools or frozenset()) | _claim_store_extras)
     opts = ClaudeAgentOptions(
         model=model or MODEL,
         cwd=str(workspace_root),
