@@ -77,12 +77,27 @@ def _now_iso() -> str:
 def _validate_sha256(s: str | None) -> None:
     """Raise ValueError if s is not a valid 64-char lowercase hex sha256.
     Callers that permit None should check for that separately before calling.
+
+    V3 v2 Step 2-bis — also reject trivial single-character fills
+    (`"0"*64`, `"f"*64`, any repeat of one hex char). These pass the
+    format regex but are obvious placeholder fabrications; the
+    2026-04-19 matrix run caught Codex gpt-5.4 landing 3 rows with
+    source_sha256="0"*64 because it couldn't compute a real hash at
+    persona-level-1 and the format-only check let the bypass through.
+    The downstream gate classifies these as `E_SHA256_TRIVIAL`.
     """
     if not isinstance(s, str) or not _SHA256_RE.match(s):
         raise ValueError(
             f"source_ref.sha256 must be a 64-char lowercase hex SHA-256 digest; "
             f"got {(s[:16] + '…') if isinstance(s, str) and len(s) > 16 else s!r} "
             f"(len={len(s) if isinstance(s, str) else 'n/a'})"
+        )
+    # Trivial single-char fill — E_SHA256_TRIVIAL per spec §2 Q2.
+    if len(set(s)) == 1:
+        raise ValueError(
+            f"source_ref.sha256 is a trivial placeholder ({s[:8]}…×{len(s)//8}); "
+            f"compute the real digest or omit sha256 so the server can auto-populate "
+            f"via the Read-tool whitelist (E_SHA256_TRIVIAL)"
         )
 
 
@@ -254,14 +269,28 @@ def _tool_claim_assert(args: dict) -> dict:
     # intent is that the model supplies the provenance tuple and the
     # server supplies the hash; both are server-verified.
     if source_type == "tool_result":
-        if not src.get("sha256"):
-            auto_sha = _autoprovenance(
-                src.get("tool"),
-                src.get("path"),
-                _byte_range(src),
-            )
-            if auto_sha:
-                src["sha256"] = auto_sha
+        # V3 v2 Step 2-bis — verify-on-supplied.
+        # Autoprovenance always fires when the (tool, path, byte_range)
+        # tuple is hashable under the whitelist. If the model ALSO supplied
+        # sha256, the two must match; mismatch is E_SHA256_MISMATCH per
+        # spec §2 Q2. Closes the "supply plausible hex + never gets
+        # checked" bypass.
+        auto_sha = _autoprovenance(
+            src.get("tool"),
+            src.get("path"),
+            _byte_range(src),
+        )
+        supplied = src.get("sha256")
+        if auto_sha:
+            if supplied and supplied != auto_sha:
+                raise ValueError(
+                    f"source_ref.sha256 mismatch: supplied={supplied[:16]}… "
+                    f"server_computed={auto_sha[:16]}… "
+                    f"(tool={src.get('tool')!r}, path={src.get('path')!r}) "
+                    f"— omit sha256 to accept server computation, or recompute "
+                    f"the real digest (E_SHA256_MISMATCH)"
+                )
+            src["sha256"] = auto_sha
         _validate_sha256(src.get("sha256"))
 
     # (3) source_type='prior_turn' had NO provenance guard. A model could
