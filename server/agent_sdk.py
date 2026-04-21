@@ -631,22 +631,40 @@ def _build_turn_payload(chat_id: str, prompt: str, attachments: list[dict]) -> t
         if item["type"] == "image"
     ]
     profile_prompt = _get_profile_prompt(chat_id)
-    group_roster_prompt = _get_group_roster_prompt(chat_id, user_message=query_prompt)
-    memory_prompt = "" if group_roster_prompt else _get_memory_prompt(chat_id, user_message=query_prompt)
-    workspace_ctx = _get_workspace_context(chat_id)
-    whisper = _get_whisper_text(chat_id, current_prompt=query_prompt,
-                               model_hint="claude-sdk") if ENABLE_SUBCONSCIOUS_WHISPER else ""
-    context_energy = _get_context_energy_prompt(chat_id)
-    # Metacognition: when unified memory is active, metacognition results
-    # are already merged into the whisper Type 2 path (context.py).
-    # Only call the separate metacognition system when unified memory is off.
-    metacog = ""
-    if ENABLE_METACOGNITION and not ENABLE_UNIFIED_MEMORY:
-        try:
-            from metacognition import retrieve_prior_context
-            metacog = retrieve_prior_context(query_prompt)
-        except Exception as e:
-            log.warning("metacognition import/call failed: %s", e)
+    # Isolated profiles (e.g. chatmine-extractor) run system-prompt-only —
+    # no memory, no whisper, no workspace ctx, no fuel gauge, no metacog.
+    # This prevents cross-session context from contaminating single-shot
+    # worker tasks.
+    try:
+        from context import profile_is_isolated
+        _isolated = profile_is_isolated(chat_id)
+    except Exception:
+        _isolated = False
+    if _isolated:
+        group_roster_prompt = ""
+        memory_prompt = ""
+        workspace_ctx = ""
+        whisper = ""
+        context_energy = ""
+        metacog = ""
+        log(f"agent_sdk: isolated profile chat={chat_id} — suppressed memory/whisper/workspace/metacog/energy")
+    else:
+        group_roster_prompt = _get_group_roster_prompt(chat_id, user_message=query_prompt)
+        memory_prompt = "" if group_roster_prompt else _get_memory_prompt(chat_id, user_message=query_prompt)
+        workspace_ctx = _get_workspace_context(chat_id)
+        whisper = _get_whisper_text(chat_id, current_prompt=query_prompt,
+                                   model_hint="claude-sdk") if ENABLE_SUBCONSCIOUS_WHISPER else ""
+        context_energy = _get_context_energy_prompt(chat_id)
+        # Metacognition: when unified memory is active, metacognition results
+        # are already merged into the whisper Type 2 path (context.py).
+        # Only call the separate metacognition system when unified memory is off.
+        metacog = ""
+        if ENABLE_METACOGNITION and not ENABLE_UNIFIED_MEMORY:
+            try:
+                from metacognition import retrieve_prior_context
+                metacog = retrieve_prior_context(query_prompt)
+            except Exception as e:
+                log.warning("metacognition import/call failed: %s", e)
     prefix = f"{profile_prompt}{group_roster_prompt}{memory_prompt}{workspace_ctx}{context_energy}{whisper}{metacog}".strip()
     final_prompt = query_prompt or ("What do you see?" if image_blocks else "")
     if prefix:
