@@ -32,6 +32,7 @@ from db import (
 )
 from group_coordinator import _MAX_RELAY_ROUNDS, _clear_strict_group_relay, _get_strict_group_relay_state
 from license import get_license_manager
+from log import log as _apex_log
 from model_dispatch import MODEL_CONTEXT_WINDOWS, MODEL_CONTEXT_DEFAULT
 from streaming import (
     _cancel_chat_streams, _disconnect_client, _finalize_stream, _safe_ws_send_json,
@@ -154,6 +155,34 @@ async def api_new_chat(request: Request):
     category = data.get("category") if chat_type == "alerts" else None
     profile_id = str(data.get("profile_id", "")).strip()
     members = data.get("members", [])
+    # --- audit log for chat creation (attribution for autonomous fires) ---
+    # mTLS cert fingerprint is not available from the ASGI scope in Uvicorn
+    # 0.42+ (see server/mtls.py); we log the signals we *can* see so CoS-driven
+    # autonomous creates (curl/python-requests from localhost) can be
+    # distinguished from browser-driven creates post-hoc.
+    try:
+        _client_host = request.client.host if request.client else "?"
+        _ua = request.headers.get("user-agent", "-")[:120]
+        _ref = request.headers.get("referer", "-")[:120]
+        _member_pids = []
+        if isinstance(members, list):
+            for _m in members:
+                if isinstance(_m, dict):
+                    _mp = str(_m.get("profile_id", "")).strip()
+                    if _mp:
+                        _member_pids.append(_mp)
+        _apex_log(
+            f"[audit chat_create] ip={_client_host} ua={_ua!r} "
+            f"type={chat_type} category={category or '-'} "
+            f"profile_id={profile_id or '-'} "
+            f"members={','.join(_member_pids) or '-'} "
+            f"referer={_ref!r}"
+        )
+    except Exception as _audit_err:  # never let audit logging break chat-create
+        try:
+            _apex_log(f"[audit chat_create] logging_error: {_audit_err!r}")
+        except Exception:
+            pass
     if chat_type == "group":
         if not GROUPS_ENABLED and not _license_mgr.is_feature_enabled("groups"):
             lic = _license_mgr.status()
