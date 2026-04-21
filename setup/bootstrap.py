@@ -99,7 +99,7 @@ def check_dependencies() -> dict[str, bool]:
         print()
         names = ", ".join(missing_required)
         if prompt_yes_no(f"Install missing required packages ({names})?"):
-            cmd = [sys.executable, "-m", "pip", "install"] + missing_required
+            cmd = [sys.executable, "-m", "pip", "install", "--upgrade"] + missing_required
             print_info(f"Running: {' '.join(cmd)}")
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode == 0:

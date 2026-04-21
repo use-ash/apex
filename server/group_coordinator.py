@@ -58,6 +58,11 @@ class GroupRelayPlan:
 
 _STRICT_RELAY_KEY = "strict_relay"
 
+# Hub-spoke mode markers. The hub uses [ROUND DONE] to terminate the relay
+# cleanly; we detect it here so _advance_hub_spoke_relay can deactivate
+# without needing a mention.
+_HUB_ROUND_DONE_MARKER = "[round done]"
+
 
 def _detect_agent_abstention(response_text: str) -> bool:
     """Check if an agent's response signals abstention (PASS)."""
@@ -362,6 +367,29 @@ def _set_strict_relay_payload(chat_id: str, payload: dict | None) -> None:
 def _start_strict_group_relay(chat_id: str, *, first_profile_id: str = "") -> GroupStrictRelayState:
     members = _get_group_members(chat_id)
     ordered_profile_ids = _normalize_profile_id_sequence([], members)
+    settings = _get_chat_settings(chat_id)
+    coord_protocol = str(settings.get("coordination_protocol") or "freeform")
+    if coord_protocol == "hub_spoke":
+        hub_profile_id = str(settings.get("hub_profile_id") or "")
+        if not hub_profile_id or hub_profile_id not in ordered_profile_ids:
+            # Misconfigured hub — fall through to no-op (room acts freeform).
+            _set_strict_relay_payload(chat_id, None)
+            return _get_strict_group_relay_state(chat_id, members)
+        # Rotate so hub is first; hub speaks first on kickoff.
+        ordered_profile_ids = _rotate_profile_ids(ordered_profile_ids, hub_profile_id)
+        payload = {
+            "active": bool(len(ordered_profile_ids) > 1),
+            "mode": "hub_spoke",
+            "hub_profile_id": hub_profile_id,
+            "ordered_profile_ids": ordered_profile_ids,
+            "completed_profile_ids": [],
+            "next_profile_id": hub_profile_id,
+            "round_number": 1,
+            "round_abstentions": [],
+        }
+        _set_strict_relay_payload(chat_id, payload if payload["active"] else None)
+        return _get_strict_group_relay_state(chat_id, members)
+    # sequential (round-robin) mode — unchanged.
     ordered_profile_ids = _rotate_profile_ids(ordered_profile_ids, first_profile_id)
     payload = {
         "active": bool(len(ordered_profile_ids) > 1),
@@ -401,10 +429,17 @@ def _get_strict_group_relay_state(
         pid for pid in list(payload.get("round_abstentions") or [])
         if pid in ordered_profile_ids
     )
-    next_profile_id = next(
-        (profile_id for profile_id in ordered_profile_ids if profile_id not in completed_profile_ids),
-        "",
-    )
+    mode = str(payload.get("mode") or "sequential")
+    if mode == "hub_spoke":
+        # In hub_spoke mode the next speaker is stored directly by the
+        # advance function; there is no round-robin "completed" set.
+        stored_next = str(payload.get("next_profile_id") or "")
+        next_profile_id = stored_next if stored_next in ordered_profile_ids else ""
+    else:
+        next_profile_id = next(
+            (profile_id for profile_id in ordered_profile_ids if profile_id not in completed_profile_ids),
+            "",
+        )
     active = bool(next_profile_id)
     return GroupStrictRelayState(
         active=active,
@@ -417,13 +452,105 @@ def _get_strict_group_relay_state(
     )
 
 
+def _advance_hub_spoke_relay(
+    chat_id: str,
+    sender_profile_id: str,
+    *,
+    response_text: str = "",
+    members: list[dict] | None = None,
+) -> GroupStrictRelayState:
+    """Hub-spoke next-speaker rule.
+
+    - If sender is the hub: parse the first @-mention targeting a non-hub
+      member; that becomes next. If no valid mention OR `[ROUND DONE]`
+      marker is present, deactivate the relay.
+    - If sender is a specialist: next is always the hub, regardless of
+      what the specialist @-mentioned. The hub is the evaluator gate.
+    """
+    relay_members = list(members or _get_group_members(chat_id))
+    state = _get_strict_group_relay_state(chat_id, relay_members)
+    if not state.active:
+        return state
+    payload = _get_strict_relay_payload(chat_id)
+    hub_profile_id = str(payload.get("hub_profile_id") or "")
+    if not hub_profile_id:
+        _clear_strict_group_relay(chat_id)
+        return _get_strict_group_relay_state(chat_id, relay_members)
+    round_number = int(payload.get("round_number") or 1)
+    ordered_profile_ids = list(state.ordered_profile_ids)
+    lowered = (response_text or "").casefold()
+    terminated = _HUB_ROUND_DONE_MARKER in lowered
+    next_profile_id = ""
+    if sender_profile_id == hub_profile_id:
+        if terminated:
+            _clear_strict_group_relay(chat_id)
+            return _get_strict_group_relay_state(chat_id, relay_members)
+        mentioned = _find_specific_group_mentioned_members(
+            response_text or "", relay_members
+        )
+        next_profile_id = next(
+            (
+                str(m.get("profile_id") or "")
+                for m in mentioned
+                if str(m.get("profile_id") or "")
+                and str(m.get("profile_id") or "") != hub_profile_id
+            ),
+            "",
+        )
+        if not next_profile_id:
+            # Hub didn't dispatch — treat as round done.
+            _clear_strict_group_relay(chat_id)
+            return _get_strict_group_relay_state(chat_id, relay_members)
+        # Hub → specialist counts as a new round step (the hub evaluated
+        # and dispatched). Round number increments on every hub turn so
+        # the max_relay_rounds cap still applies as a circuit-breaker.
+        round_number += 1
+    else:
+        # Specialist just spoke — auto-queue hub regardless of mentions.
+        next_profile_id = hub_profile_id
+    chat_cap = _get_chat_settings(chat_id).get("max_relay_rounds")
+    max_rounds = (
+        int(chat_cap) if isinstance(chat_cap, (int, float)) and chat_cap > 0
+        else _MAX_RELAY_ROUNDS
+    )
+    if round_number > max_rounds:
+        _clear_strict_group_relay(chat_id)
+        return _get_strict_group_relay_state(chat_id, relay_members)
+    _set_strict_relay_payload(
+        chat_id,
+        {
+            "active": True,
+            "mode": "hub_spoke",
+            "hub_profile_id": hub_profile_id,
+            "ordered_profile_ids": ordered_profile_ids,
+            "completed_profile_ids": [],
+            "next_profile_id": next_profile_id,
+            "round_number": round_number,
+            "round_abstentions": [],
+        },
+    )
+    return _get_strict_group_relay_state(chat_id, relay_members)
+
+
 def _advance_strict_group_relay(
     chat_id: str,
     sender_profile_id: str,
     members: list[dict] | None = None,
     *,
     abstained: bool = False,
+    response_text: str = "",
 ) -> GroupStrictRelayState:
+    # Hub-spoke has a separate state machine: after any non-hub turn the
+    # hub is auto-queued; after a hub turn the next speaker is parsed from
+    # the hub's single @-mention. No round-robin over members.
+    payload = _get_strict_relay_payload(chat_id)
+    if str(payload.get("mode") or "") == "hub_spoke":
+        return _advance_hub_spoke_relay(
+            chat_id,
+            sender_profile_id,
+            response_text=response_text,
+            members=members,
+        )
     state = _get_strict_group_relay_state(chat_id, members)
     if not state.active:
         return state
@@ -496,8 +623,25 @@ def _build_strict_group_relay_feedback_prompt(
     members: list[dict],
     *,
     sender_name: str,
+    chat_id: str = "",
 ) -> str:
     next_target = state.next_target
+    mode = ""
+    if chat_id:
+        payload = _get_strict_relay_payload(chat_id)
+        mode = str(payload.get("mode") or "")
+    if mode == "hub_spoke":
+        if not next_target:
+            return (
+                f"System feedback for @{sender_name}: The hub-spoke round is complete. "
+                "Do not hand off to another agent."
+            )
+        return (
+            f"System feedback for @{sender_name}: Hub-spoke relay is active. "
+            f"Next speaker is @{next_target.get('name')}. "
+            f"@mention exactly @{next_target.get('name')} at end of turn and do not "
+            f"mention anyone else."
+        )
     if not next_target:
         return (
             f"System feedback for @{sender_name}: The strict relay round is complete. "
@@ -531,6 +675,43 @@ def _build_group_relay_state_prompt(chat_id: str) -> str:
     state = _get_strict_group_relay_state(chat_id, members)
     if not state.active:
         return ""
+    payload = _get_strict_relay_payload(chat_id)
+    mode = str(payload.get("mode") or "")
+    next_target = state.next_target
+    if mode == "hub_spoke":
+        hub_profile_id = str(payload.get("hub_profile_id") or "")
+        member_map = _member_map(members)
+        hub_member = member_map.get(hub_profile_id)
+        hub_name = str((hub_member or {}).get("name") or "hub")
+        next_name = str((next_target or {}).get("name") or "")
+        if next_target and next_target.get("profile_id") == hub_profile_id:
+            next_line = (
+                f"The next speaker is the coordinator (@{hub_name}). The coordinator "
+                f"will evaluate your turn and dispatch the next specialist."
+            )
+        elif next_target:
+            next_line = (
+                f"The next speaker is @{next_name}. You were dispatched by the "
+                f"coordinator (@{hub_name}). End your turn with exactly "
+                f"`@{hub_name}` to return control."
+            )
+        else:
+            next_line = "The hub-spoke round is complete. Do not hand off again."
+        round_line = f"Round: {state.round_number}" if state.round_number > 1 else ""
+        return (
+            "<system-reminder>\n"
+            "# Hub-Spoke Relay\n"
+            f"A hub-spoke relay is active. The coordinator (@{hub_name}) evaluates "
+            f"every specialist turn and assigns the next one.\n"
+            + (f"{round_line}\n" if round_line else "")
+            + f"{next_line}\n"
+            "Rules:\n"
+            "- Specialists: do your work, then end with exactly `@" + hub_name + "`. No other mentions.\n"
+            "- Coordinator: end with exactly one `@<role>` naming the next specialist, "
+            "or `[ROUND DONE] @dana` to terminate.\n"
+            "- Do not use SDK client counts or tools to infer room membership.\n"
+            "</system-reminder>\n\n"
+        )
     completed = _format_group_member_mentions_for_ids(members, state.completed_profile_ids) or "none yet"
     remaining_profile_ids = [
         profile_id
@@ -538,7 +719,6 @@ def _build_group_relay_state_prompt(chat_id: str) -> str:
         if profile_id not in state.completed_profile_ids
     ]
     remaining = _format_group_member_mentions_for_ids(members, remaining_profile_ids) or "none"
-    next_target = state.next_target
     next_line = (
         f"The next valid handoff target is @{next_target.get('name')}."
         if next_target
@@ -783,6 +963,7 @@ def _build_group_relay_plan(
         str(group_agent.get("profile_id") or ""),
         relay_members,
         abstained=agent_abstained,
+        response_text=response_text,
     )
     broadcast_mention_present = _has_group_broadcast_mention(response_text, relay_members)
     explicit_relay_targets = _find_specific_group_mentioned_members(response_text, relay_members)
@@ -859,6 +1040,7 @@ def _build_group_relay_plan(
                 strict_relay,
                 relay_members,
                 sender_name=str(group_agent.get("name") or group_agent.get("profile_id") or "agent"),
+                chat_id=chat_id,
             )
             strict_relay_feedback_message = _build_strict_group_relay_feedback_message(strict_relay)
     # Step mode: when relay round completed (cleared), suppress ALL dispatch
@@ -872,6 +1054,27 @@ def _build_group_relay_plan(
             strict_relay_feedback_message = (
                 "Round complete — waiting for your input before the next round."
             )
+    # True hub-spoke enforcement (defense-in-depth): regardless of strict_relay
+    # state, if this chat is configured hub_spoke and the sender is NOT the
+    # hub, drop cross-talk dispatch actions. Specialists may ONLY relay TO the
+    # hub (evaluator-gate handoff, e.g. ending a turn with @br-coordinator);
+    # they cannot @-mention other specialists into action. Preserving the
+    # specialist→hub edge is required so the evaluator re-fires after each
+    # specialist turn; dropping only non-hub-targeted relay/redirect actions
+    # (instead of the entire action list) keeps that edge alive while still
+    # blocking specialist→specialist fan-out.
+    _hub_settings = _get_chat_settings(chat_id)
+    if str(_hub_settings.get("coordination_protocol") or "") == "hub_spoke":
+        _hub_pid = str(_hub_settings.get("hub_profile_id") or "")
+        _sender_pid = str(group_agent.get("profile_id") or "")
+        if _hub_pid and _sender_pid and _sender_pid != _hub_pid:
+            _filtered_actions = [
+                a for a in (relay.get("actions") or [])
+                if a.get("type") not in {"relay", "redirect"}
+                or str((a.get("target") or {}).get("profile_id") or "") == _hub_pid
+            ]
+            if len(_filtered_actions) != len(relay.get("actions") or []):
+                relay = {**relay, "actions": _filtered_actions}
     sender_profile_id = str(group_agent.get("profile_id") or "")
     actionable_relay_actions = [
         action

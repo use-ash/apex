@@ -65,7 +65,8 @@ def _serialize_relay_state(chat_id: str, chat: dict | None = None) -> dict | Non
     if not current_chat or str(current_chat.get("type") or "chat") != "group":
         return None
     settings = _get_chat_settings(chat_id)
-    if str(settings.get("coordination_protocol") or "freeform") != "sequential":
+    protocol = str(settings.get("coordination_protocol") or "freeform")
+    if protocol not in ("sequential", "hub_spoke"):
         return None
     members = _get_group_members(chat_id)
     relay_state = _get_strict_group_relay_state(chat_id, members)
@@ -458,7 +459,7 @@ async def api_update_chat_settings(chat_id: str, request: Request):
         return JSONResponse({"error": "Chat not found"}, status_code=404)
     current_settings = _get_chat_settings(chat_id)
     data = await request.json()
-    allowed = {"agent_mentions_enabled", "auto_title", "notification_level", "auto_reply", "shared_memory", "coordination_protocol", "relay_step_mode", "subconscious_disabled", "max_relay_rounds"}
+    allowed = {"agent_mentions_enabled", "auto_title", "notification_level", "auto_reply", "shared_memory", "coordination_protocol", "relay_step_mode", "subconscious_disabled", "max_relay_rounds", "hub_profile_id"}
     filtered = {k: v for k, v in data.items() if k in allowed}
     if not filtered:
         return JSONResponse({"error": f"No valid settings. Allowed: {', '.join(sorted(allowed))}"}, status_code=400)
@@ -474,10 +475,9 @@ async def api_update_chat_settings(chat_id: str, request: Request):
             if n < 1 or n > 100:
                 return JSONResponse({"error": "max_relay_rounds must be between 1 and 100"}, status_code=400)
             filtered["max_relay_rounds"] = n
-    if (
-        str(current_settings.get("coordination_protocol") or "freeform") == "sequential"
-        and str(filtered.get("coordination_protocol") or "sequential") == "freeform"
-    ):
+    _prev_protocol = str(current_settings.get("coordination_protocol") or "freeform")
+    _new_protocol = str(filtered.get("coordination_protocol") or _prev_protocol)
+    if _prev_protocol in ("sequential", "hub_spoke") and _new_protocol == "freeform":
         _clear_strict_group_relay(chat_id)
     updated = _update_chat_settings(chat_id, filtered)
     updated = dict(updated)

@@ -6055,7 +6055,10 @@ async def api_memory_operations(action: str):
     }
 
     if action == "promotion_dryrun":
-        # Read feedback index and find promotion candidates
+        # Refresh the feedback index (fast, in-process) then find candidates.
+        # We rebuild inline because the dashboard "rebuild_index" button wires
+        # to the metacognition embedding index, not this one — two different
+        # stores, same-sounding name.
         sub = _subconscious_dir()
         if not sub:
             return JSONResponse({
@@ -6064,6 +6067,14 @@ async def api_memory_operations(action: str):
                 "output": "No subconscious directory found.",
                 "candidates": [],
             })
+
+        try:
+            from context import _load_whisper_feedback
+            _wf = _load_whisper_feedback()
+            if _wf:
+                _wf.rebuild_index()
+        except Exception as _e:
+            _log.warning(f"inline rebuild_index failed (non-fatal): {_e}")
 
         fb_path = sub / "whisper_feedback" / "index.json"
         if not fb_path.exists():
@@ -6074,24 +6085,37 @@ async def api_memory_operations(action: str):
                 "candidates": [],
             })
 
+        # Read thresholds from config (schema defaults: 20 injections, 60% hit).
+        try:
+            _min_inj = int(_config.get("memory", "promotion_min_injections") or 20)
+            _min_hit_pct = int(_config.get("memory", "promotion_min_hit_rate") or 60)
+        except Exception:
+            _min_inj, _min_hit_pct = 20, 60
+        _min_hit = _min_hit_pct / 100.0
+
         try:
             fb = json.loads(fb_path.read_text())
             items = fb.get("items", {})
             candidates = []
             for hash_key, info in items.items():
-                inj = info.get("injection_count", 0)
+                # whisper_feedback.py writes keys as total_injections / hit_rate;
+                # we also accept injection_count for forward compat.
+                inj = info.get("total_injections", info.get("injection_count", 0))
                 hit = info.get("hit_rate", 0.0)
-                if inj >= 20 and hit >= 0.60:
+                if inj >= _min_inj and hit >= _min_hit:
                     candidates.append({
                         "hash": hash_key,
                         "injection_count": inj,
                         "hit_rate": round(hit, 3),
                         "text_preview": info.get("text_preview", "")[:200],
                     })
+            candidates.sort(key=lambda c: (-c["hit_rate"], -c["injection_count"]))
 
             output = (
                 f"Found {len(candidates)} promotion candidate(s) "
-                f"(min injections: 20, min hit rate: 60%)"
+                f"(min injections: {_min_inj}, min hit rate: {_min_hit_pct}%) "
+                f"from {len(items)} tracked items, "
+                f"{fb.get('total_evaluations', 0)} total evaluations."
             )
             return JSONResponse({
                 "status": "ok",

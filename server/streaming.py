@@ -15,6 +15,7 @@ import sys
 import time
 import uuid
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 import env
@@ -25,7 +26,11 @@ from fastapi import WebSocket
 
 from db import _get_db, _get_chat, _update_chat, _get_chat_tool_policy, _get_profile_tool_policy
 from log import log
-from tool_access import tool_access_decision, GUIDE_TOOL_NAMES
+from tool_access import (
+    tool_access_decision,
+    GUIDE_TOOL_NAMES,
+    resolve_profile_extra_tools,
+)
 from memory_extract import _filter_stream_text_for_memory_tags, _clear_stream_text_filter
 from state import (
     _clients, _client_sessions, _client_last_used, _client_permission_levels, _client_permission_policies,
@@ -49,6 +54,18 @@ except ImportError:
 # Config imported from env.py
 
 _STREAM_BUFFER_MAX = 2000
+
+# --- V3 v2 Step 3 Commit 4 — claim_gate_summary emit (2026-04-20) -----------
+# Gated by APEX_CLAIM_GATE_SUMMARY env var; OFF by default. When enabled, we
+# run server/claim_gate.py::extract_and_tag against the assistant's final
+# prose + that turn's claim_assert rows after stream_end, persist the full
+# trace JSON to claim_gate_traces (UNIQUE(chat_id, turn_id) covers replay
+# race), and emit one claim_gate_summary WS event carrying counts + tag_rate
+# + trace_ref. Fail-open: any error is logged at WARN, never aborts stream.
+# Normative spec: workspace/v3/experiments/claim_gate_summary_spec.md (02c3c2c).
+_CLAIM_GATE_SUMMARY_ENABLED = os.environ.get("APEX_CLAIM_GATE_SUMMARY") == "1"
+_CLAIM_GATE_SUMMARY_SCHEMA_VERSION = 1
+_CLAIM_GATE_SUMMARY_WIRE_CAP = 4096  # hard cap on wire-payload bytes (spec §2)
 
 # --- Zombie-reload guard (2026-04-20) ---------------------------------------
 # Tracks which WebSockets were attached to a chat at the moment a given
@@ -620,6 +637,28 @@ def _inject_execute_code_mcp(servers: dict, *, chat_id: str | None = None,
     return servers
 
 
+def _inject_claim_store_mcp(servers: dict, *, chat_id: str | None = None) -> dict:
+    """V3 v2 Step 1a — propagate the Apex chat_id to the claim_store MCP
+    subprocess via APEX_CHAT_ID env, so the subprocess resolves chat_id
+    server-side rather than trusting model-supplied args. Mirrors the
+    Codex-path inject at tool_loop.py:999-1001, backend-agnostic.
+
+    Idempotent and narrow: no-op when claim_store isn't configured (static
+    config path absent) or when chat_id is None (sub-chat, dry-run).
+    Mutates only env['APEX_CHAT_ID'] — preserves the static config's other
+    env vars (APEX_DB_NAME, etc.).
+    """
+    if not chat_id or "claim_store" not in servers:
+        return servers
+    servers = dict(servers)  # don't mutate caller's dict
+    spec = dict(servers["claim_store"])
+    env = dict(spec.get("env") or {})
+    env["APEX_CHAT_ID"] = chat_id
+    spec["env"] = env
+    servers["claim_store"] = spec
+    return servers
+
+
 def _inject_computer_use_mcp(servers: dict, *, chat_id: str | None = None,
                               permission_level: int = 2,
                               computer_use_target: str | None = None) -> dict:
@@ -736,10 +775,61 @@ def _is_guide_session(client_key: str | None) -> bool:
     return False
 
 
+def _resolve_profile_id_from_client_key(client_key: str | None) -> str:
+    """Resolve the active profile ID for this SDK session.
+
+    Group-agent client keys are formatted `chat_id:profile_id`; solo chats are
+    just `chat_id` and the profile ID lives on the chat row.
+    """
+    if not client_key:
+        return ""
+    if ":" in client_key:
+        return client_key.split(":", 1)[1]
+    chat_id = client_key
+    try:
+        chat = _get_chat(chat_id)
+        if chat:
+            return str(chat.get("profile_id", "") or "")
+    except Exception:
+        return ""
+    return ""
+
+
 def _resolve_guide_extra_tools(client_key: str | None) -> frozenset[str] | None:
-    """Return guide tool names if this is a guide session, else None."""
-    if _is_guide_session(client_key):
-        return GUIDE_TOOL_NAMES
+    """Return per-profile extra tool names (guide config, claim-store gate, etc).
+
+    Kept under the original name so callers in the rest of streaming.py don't
+    need to change; the implementation now delegates to the shared resolver in
+    tool_access so the tool-loop path can re-use the same mapping.
+    """
+    profile_id = _resolve_profile_id_from_client_key(client_key)
+    extras = resolve_profile_extra_tools(profile_id)
+    return extras if extras else None
+
+
+# V3 v1 gate-test personas that need claim_store__* MCP tool extras at
+# chat-spawn. These profiles carry Level 1 tool_policy on their agent_profiles
+# row (no way to express MCP patterns there), so the claim_store tools must be
+# injected via extra_allowed_tools. Extend by adding IDs to this frozenset —
+# no other code changes required.
+#   9b9b990f = gate-test-haiku-clean  (backend=claude, model=haiku-4-5)
+#   b32aac1b = gate-test-codex-weak   (backend=codex,  model=codex:gpt-5.4)
+_CLAIM_STORE_GATE_PROFILES: frozenset[str] = frozenset({
+    "9b9b990f",
+    "b32aac1b",
+})
+
+
+def _resolve_claim_store_extra_tools(profile_id: str) -> frozenset[str] | None:
+    """Return `claim_store__*` prefix for gate-test profiles, else None.
+
+    Mirrors the shape of `_resolve_guide_extra_tools` but keyed on profile_id
+    directly rather than tunneling through client_key → tool_access. The
+    returned extras are unioned with the guide extras at the single call-site
+    in `_build_sdk_options`.
+    """
+    if profile_id and profile_id in _CLAIM_STORE_GATE_PROFILES:
+        return frozenset({"claim_store__*"})
     return None
 
 
@@ -895,6 +985,11 @@ def _make_options(
     ]
     # Resolve guide-specific extra tools if this is a guide session
     extra_allowed_tools = _resolve_guide_extra_tools(client_key)
+    # Union in claim_store__* for V3 gate-test profiles (Day 2b).
+    _profile_id_for_extras = _resolve_profile_id_from_client_key(client_key)
+    _claim_store_extras = _resolve_claim_store_extra_tools(_profile_id_for_extras)
+    if _claim_store_extras:
+        extra_allowed_tools = frozenset((extra_allowed_tools or frozenset()) | _claim_store_extras)
     opts = ClaudeAgentOptions(
         model=model or MODEL,
         cwd=str(workspace_root),
@@ -942,6 +1037,8 @@ def _make_options(
     mcp_servers = _inject_execute_code_mcp(mcp_servers, chat_id=chat_id,
                                              workspace=str(workspace_root),
                                              permission_level=permission_level)
+    # V3 v2 Step 1a — propagate chat_id to claim_store subprocess env.
+    mcp_servers = _inject_claim_store_mcp(mcp_servers, chat_id=chat_id)
     # Auto-inject computer_use MCP server when the chat has a target bundle-ID
     # set (macOS only). Absence of a target means no injection, so the tools
     # are simply unavailable — no chat-aware allowlist needed.
@@ -1350,6 +1447,128 @@ async def _send_active_streams(chat_id: str) -> None:
     })
 
 
+async def _emit_claim_gate_summary(chat_id: str, stream_id: str) -> None:
+    """V3 v2 Step 3 Commit 4 — post-stream claim gate summary.
+
+    Runs `claim_gate.extract_and_tag` against the assistant's final prose
+    + this turn's claim_assert rows, persists the full trace JSON to the
+    `claim_gate_traces` side-table, and emits exactly one
+    `claim_gate_summary` WS event to the chat's viewers.
+
+    MUST be called AFTER `stream_end` in the same coroutine (ordering is
+    part of the wire contract — clients gate their summary handling on
+    having already received stream_end).
+
+    Fail-open: every exception path here logs at WARN and returns. The
+    streaming lifecycle must never observe an error out of this helper.
+    """
+    if not _CLAIM_GATE_SUMMARY_ENABLED:
+        return
+    t0 = time.monotonic()
+    turn_id: int = 0
+    try:
+        # The assistant message for this turn is persisted by
+        # ws_handler._save_message BEFORE _finalize_stream runs, so we can
+        # read it back here to derive (turn_id, assistant_text).
+        with _db_lock:
+            conn = _get_db()
+            try:
+                row = conn.execute(
+                    "SELECT content FROM messages "
+                    "WHERE chat_id=? AND role='assistant' "
+                    "ORDER BY created_at DESC, id DESC LIMIT 1",
+                    (chat_id,),
+                ).fetchone()
+                if row is None:
+                    return
+                assistant_text = (row[0] or "")
+                turn_id = int(conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE chat_id=? AND role='assistant'",
+                    (chat_id,),
+                ).fetchone()[0])
+                assert_rows = conn.execute(
+                    "SELECT text FROM claims "
+                    "WHERE chat_id=? AND turn_id=? AND status='active'",
+                    (chat_id, turn_id),
+                ).fetchall()
+            finally:
+                conn.close()
+
+        asserts = [{"text": (r[0] or "")} for r in assert_rows]
+
+        # Lazy import so module load doesn't pay for the regexes unless
+        # the gate is actually enabled.
+        from claim_gate import extract_and_tag
+        trace = extract_and_tag(assistant_text, asserts)
+
+        trace_json = json.dumps(trace, separators=(",", ":"), sort_keys=True)
+        byte_len = len(trace_json.encode("utf-8"))
+        now_iso = (
+            datetime.now(timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
+        trace_id = str(uuid.uuid7())
+        with _db_lock:
+            conn = _get_db()
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO claim_gate_traces "
+                    "(id, chat_id, turn_id, created_at, trace_json, byte_len, schema_version) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (trace_id, chat_id, turn_id, now_iso, trace_json, byte_len,
+                     _CLAIM_GATE_SUMMARY_SCHEMA_VERSION),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+        counts = {
+            "grounded": len(trace.get("grounded", [])),
+            "unverified": len(trace.get("unverified", [])),
+            "speculation": len(trace.get("speculation", [])),
+        }
+        tag_rate = float(trace.get("tag_rate", 0.0))
+        # v1 gate has no failure codes; Room E/F will populate this list
+        # once the refusal-code taxonomy lands (spec §8 Q2 held-pending).
+        failure_codes: list[str] = []
+
+        payload = {
+            "type": "claim_gate_summary",
+            "chat_id": chat_id,
+            "turn_id": turn_id,
+            "tag_rate": round(tag_rate, 4),
+            "counts": counts,
+            "failure_codes": failure_codes,
+            "trace_ref": {
+                "chat_id": chat_id,
+                "turn_id": turn_id,
+                "schema_version": _CLAIM_GATE_SUMMARY_SCHEMA_VERSION,
+            },
+            "emitted_at": now_iso,
+            "stream_id": stream_id,
+        }
+        wire_bytes = len(json.dumps(payload).encode("utf-8"))
+        if wire_bytes > _CLAIM_GATE_SUMMARY_WIRE_CAP:
+            # Defensive (current payload has no extracted-claim detail so
+            # we're already minimal; reserve space for future field growth
+            # by trimming failure_codes first).
+            payload["failure_codes"] = []
+            wire_bytes = len(json.dumps(payload).encode("utf-8"))
+
+        await _send_stream_event(chat_id, payload)
+        dt_ms = int((time.monotonic() - t0) * 1000)
+        log(
+            f"claim_gate_summary emit: chat={chat_id[:8]} turn={turn_id} "
+            f"tag_rate={tag_rate:.3f} byte_len={byte_len} wire={wire_bytes}B ms={dt_ms}"
+        )
+    except Exception as e:  # noqa: BLE001 — fail-open is the contract
+        log(
+            f"claim_gate_summary emit FAILED (swallowed): "
+            f"chat={chat_id[:8]} turn={turn_id} err={type(e).__name__}: {e}"
+        )
+
+
 async def _finalize_stream(chat_id: str, stream_id: str, task: asyncio.Task | None = None,
                            *, is_group_chat: bool = False, send_stream_end: bool = True,
                            preserve_journal: bool = False) -> None:
@@ -1357,6 +1576,9 @@ async def _finalize_stream(chat_id: str, stream_id: str, task: asyncio.Task | No
         if send_stream_end:
             await _send_stream_event(chat_id, {"type": "stream_end", "chat_id": chat_id, "stream_id": stream_id})
             log(f"stream_end sent: chat={chat_id} viewers={len(_chat_ws.get(chat_id, set()))}")
+            # V3 v2 Step 3 Commit 4 — emit claim_gate_summary AFTER stream_end
+            # in the same coroutine (ordering invariant per spec §5.3).
+            await _emit_claim_gate_summary(chat_id, stream_id)
     finally:
         _drop_logged.discard(f"{chat_id}:{stream_id}")
         _clear_stream_text_filter(chat_id, stream_id)

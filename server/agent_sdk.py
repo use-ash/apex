@@ -19,7 +19,7 @@ from db import _get_chat, _get_chat_tool_policy, _get_messages, _estimate_tokens
 from log import log
 from model_dispatch import MODEL_CONTEXT_WINDOWS, MODEL_CONTEXT_DEFAULT, MODEL_INPUT_PRICE, MODEL_OUTPUT_PRICE
 from state import _clients, _session_context_sent
-from tool_access import tool_access_decision
+from tool_access import tool_access_decision, resolve_profile_extra_tools
 from streaming import (
     _send_stream_event, _disconnect_client,
     _normalize_response_stream,
@@ -631,22 +631,40 @@ def _build_turn_payload(chat_id: str, prompt: str, attachments: list[dict]) -> t
         if item["type"] == "image"
     ]
     profile_prompt = _get_profile_prompt(chat_id)
-    group_roster_prompt = _get_group_roster_prompt(chat_id, user_message=query_prompt)
-    memory_prompt = "" if group_roster_prompt else _get_memory_prompt(chat_id, user_message=query_prompt)
-    workspace_ctx = _get_workspace_context(chat_id)
-    whisper = _get_whisper_text(chat_id, current_prompt=query_prompt,
-                               model_hint="claude-sdk") if ENABLE_SUBCONSCIOUS_WHISPER else ""
-    context_energy = _get_context_energy_prompt(chat_id)
-    # Metacognition: when unified memory is active, metacognition results
-    # are already merged into the whisper Type 2 path (context.py).
-    # Only call the separate metacognition system when unified memory is off.
-    metacog = ""
-    if ENABLE_METACOGNITION and not ENABLE_UNIFIED_MEMORY:
-        try:
-            from metacognition import retrieve_prior_context
-            metacog = retrieve_prior_context(query_prompt)
-        except Exception as e:
-            log.warning("metacognition import/call failed: %s", e)
+    # Isolated profiles (e.g. chatmine-extractor) run system-prompt-only —
+    # no memory, no whisper, no workspace ctx, no fuel gauge, no metacog.
+    # This prevents cross-session context from contaminating single-shot
+    # worker tasks.
+    try:
+        from context import profile_is_isolated
+        _isolated = profile_is_isolated(chat_id)
+    except Exception:
+        _isolated = False
+    if _isolated:
+        group_roster_prompt = ""
+        memory_prompt = ""
+        workspace_ctx = ""
+        whisper = ""
+        context_energy = ""
+        metacog = ""
+        log(f"agent_sdk: isolated profile chat={chat_id} — suppressed memory/whisper/workspace/metacog/energy")
+    else:
+        group_roster_prompt = _get_group_roster_prompt(chat_id, user_message=query_prompt)
+        memory_prompt = "" if group_roster_prompt else _get_memory_prompt(chat_id, user_message=query_prompt)
+        workspace_ctx = _get_workspace_context(chat_id)
+        whisper = _get_whisper_text(chat_id, current_prompt=query_prompt,
+                                   model_hint="claude-sdk") if ENABLE_SUBCONSCIOUS_WHISPER else ""
+        context_energy = _get_context_energy_prompt(chat_id)
+        # Metacognition: when unified memory is active, metacognition results
+        # are already merged into the whisper Type 2 path (context.py).
+        # Only call the separate metacognition system when unified memory is off.
+        metacog = ""
+        if ENABLE_METACOGNITION and not ENABLE_UNIFIED_MEMORY:
+            try:
+                from metacognition import retrieve_prior_context
+                metacog = retrieve_prior_context(query_prompt)
+            except Exception as e:
+                log.warning("metacognition import/call failed: %s", e)
     prefix = f"{profile_prompt}{group_roster_prompt}{memory_prompt}{workspace_ctx}{context_energy}{whisper}{metacog}".strip()
     final_prompt = query_prompt or ("What do you see?" if image_blocks else "")
     if prefix:
@@ -775,6 +793,20 @@ async def _stream_response(
     def _host_denied_pending_tools(items: list[dict]) -> list[dict]:
         effective_level = int(permission_level if permission_level is not None else _get_chat_tool_policy(chat_id).get("level", 2))
         effective_allowed_commands = list(allowed_commands or [])
+        # Resolve per-profile extras (guide tools, gate-test claim_store, etc.)
+        # from client_key — same semantics as streaming._resolve_guide_extra_tools.
+        _profile_id = ""
+        if client_key:
+            if ":" in client_key:
+                _profile_id = client_key.split(":", 1)[1]
+            else:
+                try:
+                    _chat = _get_chat(client_key)
+                    if _chat:
+                        _profile_id = str(_chat.get("profile_id", "") or "")
+                except Exception:
+                    _profile_id = ""
+        effective_extras = resolve_profile_extra_tools(_profile_id) or None
         denied: list[dict] = []
         for item in items:
             allowed, _message = tool_access_decision(
@@ -783,6 +815,7 @@ async def _stream_response(
                 level=effective_level,
                 allowed_commands=effective_allowed_commands,
                 workspace_paths=env.get_runtime_workspace_paths(),
+                extra_allowed_tools=effective_extras,
                 audit_context={
                     "source": "sdk_pending",
                     "client_key": client_key or "",
@@ -939,9 +972,30 @@ async def _stream_response(
                     for item in blocked_tools
                     if str(item.get("id") or "")
                 }
+                # V3 v2 Step 1b — scope-limited flip. For claim_store__* tools,
+                # a pending tool_use at ResultMessage time means the model emitted
+                # the tool call but Anthropic's SDK never received an explicit
+                # tool_result block back — which happens when our stdio subprocess
+                # raised (e.g. _validate_sha256 rejection). Synthesizing
+                # is_error=False would mask the server-side failure and the model
+                # would never learn. Flip to is_error=True for claim_store only;
+                # all other MCP tools keep the current implicit-success default
+                # (Finding-1-general fix is out of v2 scope — filesystem,
+                # playwright, computer_use all depend on the existing behavior).
+                _CLAIM_STORE_NAMES = (
+                    "mcp__claim_store__claim_assert",
+                    "mcp__claim_store__claim_revise",
+                    "mcp__claim_store__claim_list",
+                )
                 implicit_success_tools = [
                     item for item in pending_at_result
                     if str(item.get("id") or "") not in blocked_ids
+                    and str(item.get("name") or "") not in _CLAIM_STORE_NAMES
+                ]
+                claim_store_no_result_tools = [
+                    item for item in pending_at_result
+                    if str(item.get("id") or "") not in blocked_ids
+                    and str(item.get("name") or "") in _CLAIM_STORE_NAMES
                 ]
                 blocked_tool_message = _pending_tool_denial_message(blocked_tools) if blocked_tools else ""
                 per_tool_results: dict[str, tuple[str, bool]] = {}
@@ -953,6 +1007,15 @@ async def _stream_response(
                     tool_id = str(item.get("id") or "")
                     if tool_id:
                         per_tool_results[tool_id] = ("[tool completed; SDK omitted explicit result block]", False)
+                for item in claim_store_no_result_tools:
+                    tool_id = str(item.get("id") or "")
+                    if tool_id:
+                        per_tool_results[tool_id] = (
+                            "[claim_store tool did not return an explicit result; "
+                            "the server likely rejected the call — treat as failure "
+                            "and review the args (sha256 format, chat_id, source_type).]",
+                            True,
+                        )
                 await _flush_pending_tools(
                     default_content=blocked_tool_message if blocked_tools else "[tool completed; SDK omitted explicit result block]",
                     default_is_error=bool(blocked_tools),
@@ -970,6 +1033,15 @@ async def _stream_response(
                     log(
                         f"SDK result completed with implicit tool success: chat={chat_id} "
                         f"tools={[item.get('name') for item in implicit_success_tools]}"
+                    )
+                if claim_store_no_result_tools:
+                    # V3 v2 Step 1b — claim_store pending at ResultMessage means
+                    # the stdio subprocess raised. Surface loudly so post-deploy
+                    # log grep can count these.
+                    log(
+                        f"SDK claim_store tool had no explicit result (treated as error): "
+                        f"chat={chat_id} "
+                        f"tools={[item.get('name') for item in claim_store_no_result_tools]}"
                     )
                 elapsed = time.monotonic() - _stream_start
                 result_info = {

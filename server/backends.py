@@ -28,6 +28,7 @@ from db import (
     _update_chat_settings,
     _get_chat_tool_policy,
     _get_profile_tool_policy,
+    _get_chat,
 )
 from log import log
 from model_dispatch import (
@@ -35,7 +36,7 @@ from model_dispatch import (
     MODEL_CONTEXT_WINDOWS, MODEL_CONTEXT_DEFAULT,
 )
 from state import _current_group_profile_id, _codex_threads, _codex_thread_turns
-from tool_access import allowed_tool_names_for_level
+from tool_access import allowed_tool_names_for_level, resolve_profile_extra_tools
 
 _CODEX_MAX_THREAD_TURNS = int(os.environ.get("APEX_CODEX_MAX_TURNS", "8"))
 
@@ -671,7 +672,24 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
     )
     permission_level = int(tool_policy.get("level", 2))
     allowed_commands = list(tool_policy.get("allowed_commands") or [])
-    allowed_local_tools = allowed_tool_names_for_level(permission_level)
+    # Persona-scoped extras (guide config tools, v3-gate claim-store tools).
+    # Must be resolved BEFORE allowed_tool_names_for_level so Level 1 personas
+    # keyed on a gate-test profile can actually see claim_store__* in the
+    # filtered schema set. In group chats, current_pid is the speaking persona;
+    # in 1:1 chats current_pid is empty, so fall back to chat.profile_id.
+    _extras_pid = current_pid or ""
+    if not _extras_pid:
+        try:
+            _chat_row = _get_chat(chat_id)
+            if _chat_row:
+                _extras_pid = str(_chat_row.get("profile_id", "") or "")
+        except Exception:
+            _extras_pid = ""
+    extra_allowed_tools = resolve_profile_extra_tools(_extras_pid or None)
+    allowed_local_tools = allowed_tool_names_for_level(
+        permission_level,
+        extra_allowed_tools=extra_allowed_tools,
+    )
     if _TOOL_LOOP_AVAILABLE:
         sys_prompt = build_system_prompt(effective_model, permission_level=permission_level, allowed_tool_names=allowed_local_tools)
     else:
@@ -758,6 +776,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 allowed_tools=allowed_local_tools,
                 allowed_commands=allowed_commands,
                 audit_context=audit_context,
+                extra_allowed_tools=extra_allowed_tools,
             )
         elif backend == "deepseek":
             result = await run_tool_loop(
@@ -773,6 +792,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 allowed_tools=allowed_local_tools,
                 allowed_commands=allowed_commands,
                 audit_context=audit_context,
+                extra_allowed_tools=extra_allowed_tools,
             )
         elif backend == "zhipu":
             result = await run_tool_loop(
@@ -788,6 +808,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 allowed_tools=allowed_local_tools,
                 allowed_commands=allowed_commands,
                 audit_context=audit_context,
+                extra_allowed_tools=extra_allowed_tools,
             )
         elif backend == "google":
             result = await run_tool_loop(
@@ -803,6 +824,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 allowed_tools=allowed_local_tools,
                 allowed_commands=allowed_commands,
                 audit_context=audit_context,
+                extra_allowed_tools=extra_allowed_tools,
             )
         elif backend == "codex":
             codex_model = effective_model[6:]
@@ -820,6 +842,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                     allowed_tools=allowed_local_tools,
                     allowed_commands=allowed_commands,
                     audit_context=audit_context,
+                    extra_allowed_tools=extra_allowed_tools,
                 )
             else:
                 result = await run_tool_loop(
@@ -835,6 +858,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                     allowed_tools=allowed_local_tools,
                     allowed_commands=allowed_commands,
                     audit_context=audit_context,
+                    extra_allowed_tools=extra_allowed_tools,
                 )
         elif ALLOW_LOCAL_TOOLS and backend == "mlx":
             mlx_model = effective_model[4:]
@@ -851,6 +875,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 allowed_tools=allowed_local_tools,
                 allowed_commands=allowed_commands,
                 audit_context=audit_context,
+                extra_allowed_tools=extra_allowed_tools,
             )
         elif ALLOW_LOCAL_TOOLS:
             result = await run_tool_loop(
@@ -864,6 +889,7 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
                 allowed_tools=allowed_local_tools,
                 allowed_commands=allowed_commands,
                 audit_context=audit_context,
+                extra_allowed_tools=extra_allowed_tools,
             )
         else:
             result = None  # fall through to plain streaming below
