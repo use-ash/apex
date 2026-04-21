@@ -1804,6 +1804,21 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
   const el = document.getElementById('messages');
   // B-42: drop stream events that belong to a different chat
   const _B42_STREAM = new Set(['stream_start','stream_ack','stream_queued','text','thinking','tool_use','tool_result','stream_end','active_streams','queue_update']);
+  // WSDIAG rx: log every streaming-relevant frame at ingress so the stuck-
+  // stream diagnosis can distinguish (a) frames stopped arriving,
+  // (b) frames arriving for a stream_id we don't have active, (c) frames
+  // arriving fine but render layer stalled. Correlate with server apex.log
+  // WSDIAG send lines by chat=<8> + sid=<8>. Only the streaming frames —
+  // skip heartbeat/system chatter to keep the console readable.
+  if (msg && _B42_STREAM.has(msg.type)) {
+    try {
+      var _rxSid = String(msg.stream_id || '').slice(0,8);
+      var _rxChat = String(msg.chat_id || '').slice(0,8);
+      var _rxCurr = String(currentChat || '').slice(0,8);
+      var _rxActiveSids = Object.keys(_streamCtx || {}).map(function(k){return k.slice(0,8);}).join(',');
+      console.log('WSDIAG rx type=' + msg.type + ' chat=' + _rxChat + ' sid=' + _rxSid + ' curr=' + _rxCurr + ' activeSids=[' + _rxActiveSids + ']');
+    } catch(_e) {}
+  }
   // B-42b: fall back to sessionStorage so a transiently-nulled currentChat
   // (init race, tab refocus, stream teardown sweep) doesn't silently drop
   // our own in-flight stream events.
@@ -6652,25 +6667,40 @@ async function showChatSettings() {
     subRow.appendChild(subToggle);
     setSection.appendChild(subRow);
 
-    const seqRow = document.createElement('div');
-    seqRow.className = 'gs-toggle-row';
-    seqRow.style.borderTop = '1px solid var(--bg)';
-    seqRow.style.paddingTop = '10px';
-    seqRow.style.marginTop = '6px';
-    const seqOn = settings.coordination_protocol === 'sequential';
+    const protoRow = document.createElement('div');
+    protoRow.className = 'gs-toggle-row';
+    protoRow.style.borderTop = '1px solid var(--bg)';
+    protoRow.style.paddingTop = '10px';
+    protoRow.style.marginTop = '6px';
+    const curProto = settings.coordination_protocol === 'sequential' ? 'sequential'
+                    : settings.coordination_protocol === 'hub_spoke' ? 'hub_spoke'
+                    : 'freeform';
+    const seqOn = curProto === 'sequential';
+    const hubOn = curProto === 'hub_spoke';
     const relayState = settings.relay_state || null;
-    const seqCopy = document.createElement('div');
-    seqCopy.className = 'gs-toggle-copy';
-    seqCopy.innerHTML = `<span class="gs-toggle-label">Sequential Relay</span>
-      <div class="gs-toggle-hint" style="margin-top:2px">Agents take turns in order. Each one sees all prior responses before adding theirs.</div>`;
-    seqRow.appendChild(seqCopy);
-    const seqToggle = document.createElement('button');
-    seqToggle.className = 'gs-toggle ' + (seqOn ? 'on' : 'off');
-    seqToggle.onclick = async () => {
-      const newVal = seqOn ? 'freeform' : 'sequential';
-      if (seqOn && relayState && relayState.active === true) {
+    const protoCopy = document.createElement('div');
+    protoCopy.className = 'gs-toggle-copy';
+    const protoHint = curProto === 'hub_spoke'
+      ? 'Hub-spoke: one primary is the evaluator gate. Every specialist turn routes back to the hub, which PASSes/FAILs and dispatches the next role.'
+      : curProto === 'sequential'
+      ? 'Sequential: agents take turns in order. Each one sees all prior responses before adding theirs.'
+      : 'Freeform: agents respond via @mention routing with no forced turn-taking.';
+    protoCopy.innerHTML = `<span class="gs-toggle-label">Coordination Protocol</span>
+      <div class="gs-toggle-hint" style="margin-top:2px">${protoHint}</div>`;
+    protoRow.appendChild(protoCopy);
+    const protoSelect = document.createElement('select');
+    protoSelect.style.cssText = 'padding:6px 8px;background:var(--bg);color:var(--fg);border:1px solid var(--border,#444);border-radius:6px;font-size:13px;';
+    [['freeform', 'Freeform'], ['sequential', 'Sequential'], ['hub_spoke', 'Hub & Spoke']].forEach(([v, l]) => {
+      const opt = document.createElement('option');
+      opt.value = v; opt.textContent = l;
+      if (v === curProto) opt.selected = true;
+      protoSelect.appendChild(opt);
+    });
+    protoSelect.onchange = async () => {
+      const newVal = protoSelect.value;
+      if ((seqOn || hubOn) && newVal === 'freeform' && relayState && relayState.active === true) {
         const confirmed = confirm("End the active relay? Agents who haven't responded will be skipped.");
-        if (!confirmed) return;
+        if (!confirmed) { protoSelect.value = curProto; return; }
       }
       try {
         const resp = await fetch(`/api/chats/${chatId}/settings`, {
@@ -6681,19 +6711,72 @@ async function showChatSettings() {
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
           gsToast(err.error || 'Setting update failed');
+          protoSelect.value = curProto;
           return;
         }
         const payload = await resp.json().catch(() => ({}));
         settings = payload.settings || settings;
         settings.coordination_protocol = newVal;
-        gsToast(newVal === 'sequential' ? 'Sequential relay enabled' : 'Freeform routing enabled');
+        gsToast(newVal === 'hub_spoke' ? 'Hub-spoke enabled' : newVal === 'sequential' ? 'Sequential relay enabled' : 'Freeform routing enabled');
         render();
-      } catch(e) { dbg('setting update error:', e); }
+      } catch(e) { dbg('setting update error:', e); protoSelect.value = curProto; }
     };
-    seqRow.appendChild(seqToggle);
-    setSection.appendChild(seqRow);
+    protoRow.appendChild(protoSelect);
+    setSection.appendChild(protoRow);
 
-    if (seqOn) {
+    if (hubOn) {
+      const hubRow = document.createElement('div');
+      hubRow.className = 'gs-toggle-row';
+      hubRow.style.borderTop = '1px solid var(--bg)';
+      hubRow.style.paddingTop = '10px';
+      hubRow.style.marginTop = '6px';
+      const curHub = settings.hub_profile_id || '';
+      const hubCopy = document.createElement('div');
+      hubCopy.className = 'gs-toggle-copy';
+      hubCopy.innerHTML = `<span class="gs-toggle-label">Hub Agent</span>
+        <div class="gs-toggle-hint" style="margin-top:2px">The evaluator-gate. Every specialist turn routes back to this agent; the hub rules PASS/FAIL and dispatches the next role.</div>`;
+      hubRow.appendChild(hubCopy);
+      const hubSelect = document.createElement('select');
+      hubSelect.style.cssText = 'padding:6px 8px;background:var(--bg);color:var(--fg);border:1px solid var(--border,#444);border-radius:6px;font-size:13px;max-width:180px;';
+      const blankOpt = document.createElement('option');
+      blankOpt.value = ''; blankOpt.textContent = '— select —';
+      if (!curHub) blankOpt.selected = true;
+      hubSelect.appendChild(blankOpt);
+      (members || []).forEach(m => {
+        const pid = m.profile_id || '';
+        if (!pid) return;
+        const opt = document.createElement('option');
+        opt.value = pid;
+        opt.textContent = m.name || m.slug || pid;
+        if (pid === curHub) opt.selected = true;
+        hubSelect.appendChild(opt);
+      });
+      hubSelect.onchange = async () => {
+        const newHub = hubSelect.value || null;
+        try {
+          const resp = await fetch(`/api/chats/${chatId}/settings`, {
+            method: 'PATCH', credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({hub_profile_id: newHub})
+          });
+          if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            gsToast(err.error || 'Setting update failed');
+            hubSelect.value = curHub;
+            return;
+          }
+          const payload = await resp.json().catch(() => ({}));
+          settings = payload.settings || settings;
+          settings.hub_profile_id = newHub;
+          gsToast(newHub ? 'Hub agent set' : 'Hub agent cleared');
+          render();
+        } catch(e) { dbg('setting update error:', e); hubSelect.value = curHub; }
+      };
+      hubRow.appendChild(hubSelect);
+      setSection.appendChild(hubRow);
+    }
+
+    if (seqOn || hubOn) {
       const stepRow = document.createElement('div');
       stepRow.className = 'gs-toggle-row';
       stepRow.style.borderTop = '1px solid var(--bg)';
