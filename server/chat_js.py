@@ -3760,6 +3760,10 @@ function linkifyMarkdownLinks(html) {
 function renderInlineMarkdown(text) {
   let html = escHtml(text);
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // GFM strikethrough: ~~text~~ -> <s>text</s>. Must come before bold/italic
+  // passes so ~~ binds tighter than * / **, and after code so `~~literal~~`
+  // in inline code survives.
+  html = html.replace(/~~([^~\n]+?)~~/g, '<s>$1</s>');
   html = html.replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>');
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
