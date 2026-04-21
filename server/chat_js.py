@@ -1980,7 +1980,7 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
       let ctx = _getCtx(msg);
       // B-42e: salvage — if stream_start was dropped but chat_id matches our
       // active chat, synthesize a ctx so tokens aren't silently discarded.
-      if (!ctx && msg.stream_id && (!msg.chat_id || msg.chat_id === currentChat)) {
+      if (!ctx && msg.stream_id && msg.chat_id && msg.chat_id === currentChat) {
         const speaker = msg.speaker_name ? {name: msg.speaker_name, avatar: msg.speaker_avatar || '', id: msg.speaker_id || ''} : null;
         ctx = _upsertStreamCtx(msg.stream_id, speaker, msg.chat_id || currentChat || '');
         _activateStream(ctx, {chatId: msg.chat_id || currentChat || ''});
@@ -2037,7 +2037,7 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
     case 'thinking': {
       _removeThinkingIndicator();
       let ctx = _getCtx(msg);
-      if (!ctx && msg.stream_id && (!msg.chat_id || msg.chat_id === currentChat)) {
+      if (!ctx && msg.stream_id && msg.chat_id && msg.chat_id === currentChat) {
         const speaker = msg.speaker_name ? {name: msg.speaker_name, avatar: msg.speaker_avatar || '', id: msg.speaker_id || ''} : null;
         ctx = _upsertStreamCtx(msg.stream_id, speaker, msg.chat_id || currentChat || '');
         _activateStream(ctx, {chatId: msg.chat_id || currentChat || ''});
@@ -2067,13 +2067,14 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
     case 'tool_use': {
       _removeThinkingIndicator();
       let ctx = _getCtx(msg);
-      if (!ctx && msg.stream_id && (!msg.chat_id || msg.chat_id === currentChat)) {
+      if (!ctx && msg.stream_id && msg.chat_id && msg.chat_id === currentChat) {
         const speaker = msg.speaker_name ? {name: msg.speaker_name, avatar: msg.speaker_avatar || '', id: msg.speaker_id || ''} : null;
         ctx = _upsertStreamCtx(msg.stream_id, speaker);
         _activateStream(ctx, {chatId: msg.chat_id || currentChat || ''});
         dbg('B42e: salvaged tool_use ctx', msg.stream_id);
       }
       if (!ctx) break;
+      if (ctx.chatId && currentChat && ctx.chatId !== currentChat) break;
       _ensureCtxBubble(ctx);
       _activateStream(ctx);
       if (ctx.awaitingAck && !ctx.thinkingText) {
