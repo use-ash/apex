@@ -322,6 +322,24 @@ def run(dry_run: bool = False, target_file: str | None = None, verbose: bool = F
     if not dry_run and stats["pruned"] > 0:
         sync_memory_index(verbose)
 
+    # Whisper feedback index rebuild — aggregates evaluations.jsonl into
+    # per-item hit_rate scores used by the relevance scorer (get_adjustment).
+    # Runs on every autodream pass (including dry-run) because the rebuild
+    # itself is idempotent and cheap; skipping it on dry-run would leave the
+    # index stale after ordinary consolidation runs.
+    try:
+        from whisper_feedback import rebuild_index as _wf_rebuild
+        wf_index = _wf_rebuild()
+        stats["wf_items_tracked"] = wf_index.get("total_items_tracked", 0)
+        stats["wf_evaluations"] = wf_index.get("total_evaluations", 0)
+        _log(
+            f"  whisper_feedback: {stats['wf_items_tracked']} items, "
+            f"{stats['wf_evaluations']} evaluations",
+            verbose,
+        )
+    except Exception as e:
+        _log(f"  whisper_feedback rebuild failed (non-fatal): {e}", verbose)
+
     _log(f"autoDream complete: {stats}", verbose)
     return stats
 

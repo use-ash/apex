@@ -58,14 +58,19 @@ GUIDANCE_FILE = os.path.join(STATE_DIR, "guidance.json")
 LOCK_FILE = os.path.join(STATE_DIR, ".lock")
 
 # ── Ollama ─────────────────────────────────────────────────────────
-# gemma4:26b — Gemma 4 26B MoE (4B active), 17GB
-# Fastest extraction model tested (12.1s total for both tasks).
+# qwen3.5:9b-fast — Qwen 3.5 9B fast variant, 6.6GB
+# Replaced gemma4:26b on Apr 16 2026 after Apr 14 retest (/tmp/llm_comparison_v2.py):
+# gemma4:26b failed invariant extraction with JSON parse error at char 885
+# (thinking-token leakage — {"type":"thought","content":"..."} envelope breaks
+# structured output) and produced shortest extraction output (1090 chars / 242 tokens)
+# of any local model. qwen3.5:9b-fast returned valid arrays with multiple rules on
+# invariants (only local model that did) and 3 corrections on extraction.
 # MUST use /api/chat endpoint — /api/generate leaks thinking tokens despite think=False.
 # Must pass think=False + system message for clean JSON output.
-OLLAMA_MODEL = "gemma4:26b"
+OLLAMA_MODEL = "qwen3.5:9b-fast"
 OLLAMA_URL = "http://localhost:11434/api/chat"
 OLLAMA_TIMEOUT = 120  # 60s was too tight for big prompts; chunks use their own timeout
-OLLAMA_OPTIONS = {"num_predict": 1024, "temperature": 0.1, "repeat_penalty": 1.3}
+OLLAMA_OPTIONS = {"num_predict": 2048, "temperature": 0.1, "repeat_penalty": 1.3}
 
 # ── Guidance limits ────────────────────────────────────────────────
 GUIDANCE_MAX_CHARS = 32000  # was 4000→20000→32000; 27 items = ~29K chars
@@ -75,7 +80,7 @@ GUIDANCE_MAX_AGE_DAYS = 7
 INVARIANT_CONFIDENCE_THRESHOLD = 0.75
 INVARIANT_TTL_DAYS = 30
 INVARIANT_MAX_PER_SESSION = 3
-OLLAMA_VALIDATION_MODEL = "gemma4:26b"
+OLLAMA_VALIDATION_MODEL = "qwen3.5:9b-fast"
 OLLAMA_VALIDATION_TIMEOUT = 30
 
 # ── Type 1 / Type 2 pathway thresholds ─────────────────────────────

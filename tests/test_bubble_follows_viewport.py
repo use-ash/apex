@@ -28,9 +28,9 @@ SSL_DIR = Path(os.path.expanduser("~/.openclaw/apex/state/ssl"))
 CERT = SSL_DIR / "client_new.crt"
 KEY = SSL_DIR / "client_new.key"
 
-BASE_URL = "https://localhost:8301"
-CHAT_A = "b9aa2863"  # "testing"
-CHAT_B = "35bb7925"  # "Hello Opus 4.7!"
+BASE_URL = os.environ.get("APEX_TEST_URL", "https://localhost:8301")
+CHAT_A = "35bb7925"  # "Hello Opus 4.7!"
+CHAT_B = "924b73aa"  # "Use the interceptor MCP tools..."
 
 PROMPT = (
     "Write a detailed 400-word essay about the history of the typewriter, "

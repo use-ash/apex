@@ -745,6 +745,7 @@ async def run_tool_loop(
     allowed_tools: set[str] | None = None,
     allowed_commands: list[str] | None = None,
     audit_context: dict | None = None,
+    extra_allowed_tools: frozenset[str] | set[str] | None = None,
 ) -> dict:
     """
     Run the tool-calling agent loop (Ollama or OpenAI-compatible API).
@@ -778,6 +779,24 @@ async def run_tool_loop(
 
     _loop_started_at = time.monotonic()
     tool_schemas = get_tool_schemas(allowed_tools)
+    # V3 gate-test triage: one-line catalog dump so we can tell model-choice
+    # from MCP-exposure gaps (e.g. codex skipping claim_assert).
+    try:
+        from log import log as _tl_log
+        _chat_for_log = (audit_context or {}).get("chat_id", "?")
+        _tl_log(f"tool_loop tools[{model}][{_chat_for_log}]: {[s.get('name') or s.get('function', {}).get('name') for s in tool_schemas]}")
+        _tl_log(f"tool_loop allowed[{model}][{_chat_for_log}]: {sorted(allowed_tools) if allowed_tools else None}")
+        try:
+            from .mcp_bridge import _connections as _mcp_conns
+            _mcp_summary = {
+                name: (len(c.tools) if c.session else f"down({'task_done' if c._task and c._task.done() else 'pending'})")
+                for name, c in _mcp_conns.items()
+            }
+            _tl_log(f"tool_loop mcp_conns: {_mcp_summary}")
+        except Exception as _mcp_err:
+            _tl_log(f"tool_loop mcp_conns probe failed: {_mcp_err}")
+    except Exception:
+        pass
     tool_events: list[dict] = []
     result_text = ""
     thinking_text = ""
@@ -930,6 +949,7 @@ async def run_tool_loop(
                         allowed_commands=allowed_commands,
                         workspace_paths=workspace or "",
                         audit_context=audit_context,
+                        extra_allowed_tools=extra_allowed_tools,
                     )
                     if not allowed:
                         tool_result = message
