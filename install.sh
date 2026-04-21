@@ -140,14 +140,21 @@ find_python() {
         done
     fi
 
-    for candidate in "${candidates[@]}"; do
-        if _check_python_version "$candidate"; then
-            return 0
-        fi
-    done
+    # candidates may be empty if python3 isn't on PATH — guard against
+    # "unbound variable" under `set -u` when indexing an empty array.
+    if [ ${#candidates[@]} -gt 0 ]; then
+        for candidate in "${candidates[@]}"; do
+            if _check_python_version "$candidate"; then
+                return 0
+            fi
+        done
+    fi
 
-    # Not found
-    err "Python 3.10+ is required but was not found."
+    # Not found — caller decides whether to bootstrap or show manual help.
+    return 1
+}
+
+print_python_install_help() {
     echo ""
     if [ "$OS" = "Darwin" ]; then
         info "To install Python on macOS:"
@@ -163,6 +170,80 @@ find_python() {
     fi
     echo ""
     info "After installing Python, run this installer again."
+}
+
+# ---------------------------------------------------------------------------
+# uv fallback — bootstraps a self-contained Python 3.12 when no suitable
+# system Python is found. uv is a single static binary from Astral that
+# doesn't require Python itself to install, and `uv python install` fetches
+# a standalone CPython build into ~/.local/share/uv/python/.
+# ---------------------------------------------------------------------------
+
+bootstrap_python_via_uv() {
+    echo ""
+    warn "No suitable Python 3.10+ found on this system."
+    echo ""
+    info "Apex can bootstrap Python 3.12 automatically using 'uv'"
+    info "(a fast Python version manager from Astral: https://astral.sh/uv)."
+    info "This installs uv to ~/.local/bin and a standalone CPython 3.12"
+    info "to ~/.local/share/uv/. Nothing is installed system-wide."
+    echo ""
+
+    # In non-interactive mode (piped stdin), proceed without prompting so
+    # curl|sh-style installs still work.
+    if [ -t 0 ]; then
+        printf "  Proceed with automatic install? [Y/n] "
+        local reply
+        read -r reply || reply=""
+        case "$reply" in
+            [nN]|[nN][oO]) return 1 ;;
+        esac
+    fi
+
+    # Install uv if missing
+    if ! command -v uv &>/dev/null; then
+        if ! command -v curl &>/dev/null; then
+            err "curl is required to install uv but was not found."
+            return 1
+        fi
+        info "Installing uv..."
+        if ! curl -LsSf https://astral.sh/uv/install.sh | sh; then
+            err "uv installer failed."
+            return 1
+        fi
+        # uv installer drops the binary in ~/.local/bin (or ~/.cargo/bin on
+        # older installs). Add both to PATH for this shell session.
+        for p in "$HOME/.local/bin" "$HOME/.cargo/bin"; do
+            if [ -x "$p/uv" ]; then
+                export PATH="$p:$PATH"
+            fi
+        done
+    fi
+
+    if ! command -v uv &>/dev/null; then
+        err "uv installed but is not on PATH. Try restarting your shell."
+        return 1
+    fi
+    ok "uv ready ($(command -v uv))"
+
+    info "Installing standalone Python 3.12 via uv (one-time, ~30 seconds)..."
+    if ! uv python install 3.12; then
+        err "uv python install 3.12 failed."
+        return 1
+    fi
+
+    # Resolve the absolute path to the uv-managed interpreter.
+    local uv_python
+    uv_python="$(uv python find 3.12 2>/dev/null || true)"
+    if [ -z "$uv_python" ] || [ ! -x "$uv_python" ]; then
+        err "uv-managed Python 3.12 not found after install."
+        return 1
+    fi
+
+    if _check_python_version "$uv_python"; then
+        return 0
+    fi
+    err "uv-managed Python failed version check."
     return 1
 }
 
@@ -215,7 +296,13 @@ banner
 printf "  ${BOLD}Checking system...${RESET}\n\n"
 
 detect_platform
-find_python
+if ! find_python; then
+    if ! bootstrap_python_via_uv; then
+        err "Python 3.10+ is required but could not be installed automatically."
+        print_python_install_help
+        exit 1
+    fi
+fi
 
 echo ""
 printf "  ${BOLD}Preparing environment...${RESET}\n\n"
