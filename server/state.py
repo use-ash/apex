@@ -112,6 +112,7 @@ _queued_turns: dict[str, deque[dict[str, Any]]] = {}
 # ---------------------------------------------------------------------------
 _stream_buffers: dict[str, deque] = {}   # stream_id -> deque of (seq, payload)
 _stream_seq: dict[str, int] = {}         # stream_id -> sequence counter
+_stream_epoch_nonce: dict[str, str] = {}  # chat_id -> per-burst nonce (appended to _SERVER_EPOCH so client dedup resets when seq recycles to 0)
 _chat_send_locks: dict[str, asyncio.Lock] = {}  # chat_id -> ws send lock
 
 # ---------------------------------------------------------------------------
