@@ -1036,13 +1036,50 @@ def _build_group_relay_plan(
                 strict_actions.append(action)
         relay = {**relay, "actions": strict_actions}
         if not strict_actions:
-            strict_relay_feedback_prompt = _build_strict_group_relay_feedback_prompt(
-                strict_relay,
-                relay_members,
-                sender_name=str(group_agent.get("name") or group_agent.get("profile_id") or "agent"),
-                chat_id=chat_id,
-            )
-            strict_relay_feedback_message = _build_strict_group_relay_feedback_message(strict_relay)
+            # Fix (2026-04-22): self-pass feedback-loop bug. Previously, when the
+            # sender did not emit a clean @next-speaker mention, we coerced the
+            # SAME sender to re-emit via strict_relay_feedback_prompt. Each
+            # re-emission was persisted as a top-level assistant message, which
+            # re-entered this code path with `strict_feedback_depth` reset to 0,
+            # producing 2–3 self-pass messages per round (chat 9cdffa31 R1–R6).
+            # New behavior for sequential mode: since `_advance_strict_group_relay`
+            # has already appended the sender to `completed_profile_ids` and
+            # `next_profile_id` points at the NEXT speaker in rotation, synthesize
+            # a relay action targeting that next speaker directly instead of
+            # looping back to the sender. Hub-spoke mode retains the feedback
+            # coercion because its state machine depends on hub @-mention parsing.
+            coord_protocol = str(_get_chat_settings(chat_id).get("coordination_protocol") or "")
+            sender_pid = str(group_agent.get("profile_id") or "")
+            synthesized_next: dict | None = None
+            if (
+                coord_protocol == "sequential"
+                and strict_target_profile_id
+                and strict_target_profile_id != sender_pid
+            ):
+                next_member = next(
+                    (
+                        m for m in relay_members
+                        if str(m.get("profile_id") or "") == strict_target_profile_id
+                    ),
+                    None,
+                )
+                if next_member:
+                    synthesized_next = {
+                        "type": "relay",
+                        "target": next_member,
+                        "prompt": response_text,
+                        "depth": mention_depth + 1,
+                    }
+            if synthesized_next is not None:
+                relay = {**relay, "actions": [synthesized_next]}
+            else:
+                strict_relay_feedback_prompt = _build_strict_group_relay_feedback_prompt(
+                    strict_relay,
+                    relay_members,
+                    sender_name=str(group_agent.get("name") or group_agent.get("profile_id") or "agent"),
+                    chat_id=chat_id,
+                )
+                strict_relay_feedback_message = _build_strict_group_relay_feedback_message(strict_relay)
     # Step mode: when relay round completed (cleared), suppress ALL dispatch
     # to force human input before the next round begins.  The relay was just
     # cleared by _advance_strict_group_relay because step_mode prevented a

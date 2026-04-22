@@ -1001,13 +1001,19 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
             premium_multi_targets = get_multi_dispatch_targets(chat_id, prompt, group_agent, data) or []
         fallback_multi_targets = _get_multi_dispatch_targets_fallback(chat_id, prompt, group_agent)
         multi_targets = _merge_group_dispatch_targets(premium_multi_targets, fallback_multi_targets)
-        # True hub-spoke enforcement: suppress user-originated multi-dispatch
-        # entirely. Only the hub (now group_agent after the force above) fires
-        # on the user's message; specialists @-mentioned in the user prompt
-        # are not parallel-dispatched. The hub reads the mentions and decides.
-        if _coord_protocol == "hub_spoke" and multi_targets:
+        # Suppress user-originated multi-dispatch for BOTH hub-spoke AND
+        # sequential strict-relay modes. In hub-spoke, only the hub fires on
+        # the user's message; specialists @-mentioned in the prompt are not
+        # parallel-dispatched. In sequential, the strict-relay rotation is
+        # the single source of truth for "who speaks next" — any parallel
+        # dispatch from user @-mentions creates a second dispatch queue that
+        # cascades through the whole room (each cascaded agent produces a
+        # doubled substantive + `[PASS] @Next` pair). See chat ff5146f8
+        # 2026-04-22 for the fan-out trace. Freeform mode keeps the parallel
+        # fan-out — it has no single-source-of-truth rotation to protect.
+        if _coord_protocol in ("hub_spoke", "sequential") and multi_targets:
             log(
-                f"hub-spoke: user multi-dispatch suppressed "
+                f"{_coord_protocol}: user multi-dispatch suppressed "
                 f"({len(multi_targets)} targets) chat={chat_id[:8]}"
             )
             multi_targets = []
