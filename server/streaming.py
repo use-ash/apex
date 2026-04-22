@@ -35,7 +35,7 @@ from memory_extract import _filter_stream_text_for_memory_tags, _clear_stream_te
 from state import (
     _clients, _client_sessions, _client_last_used, _client_permission_levels, _client_permission_policies,
     _chat_locks, _chat_ws, _ws_chat,
-    _active_send_tasks, _stream_buffers, _stream_seq, _chat_send_locks,
+    _active_send_tasks, _stream_buffers, _stream_seq, _stream_epoch_nonce, _chat_send_locks,
     _ws_send_count, _ws_fail_count, _db_lock, _current_stream_id,
 )
 
@@ -1275,6 +1275,7 @@ def _reset_stream_buffer(chat_id: str) -> None:
         return
     _stream_buffers[chat_id] = deque(maxlen=_STREAM_BUFFER_MAX)
     _stream_seq[chat_id] = 0
+    _stream_epoch_nonce[chat_id] = uuid.uuid4().hex[:8]
     try:
         _stream_journal_path(chat_id).write_text("")
     except (OSError, ValueError):
@@ -1360,7 +1361,7 @@ def _buffer_stream_event(chat_id: str, payload: dict) -> None:
     # Attach seq + server_epoch to payload so client can dedupe events
     # that arrive via both live-send and attach-replay paths.
     payload["seq"] = seq
-    payload["epoch"] = _SERVER_EPOCH
+    payload["epoch"] = f"{_SERVER_EPOCH}:{_stream_epoch_nonce.get(chat_id, '0')}"
     _stream_buffers[chat_id].append((seq, dict(payload)))
     try:
         with open(_stream_journal_path(chat_id), "a") as f:
@@ -1588,6 +1589,7 @@ async def _finalize_stream(chat_id: str, stream_id: str, task: asyncio.Task | No
         if not _has_active_stream(chat_id):
             _stream_buffers.pop(chat_id, None)
             _stream_seq.pop(chat_id, None)
+            _stream_epoch_nonce.pop(chat_id, None)
             if preserve_journal:
                 _archive_stream_journal(chat_id)
             else:
