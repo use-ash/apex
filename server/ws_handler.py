@@ -30,6 +30,7 @@ from db import (
     _get_recent_messages_text,
     _save_message,
     _get_latest_user_attachments,
+    _get_all_device_tokens,
 )
 from group_coordinator import (
     _build_group_relay_plan,
@@ -99,6 +100,7 @@ from backends import (
     validate_backend_attachments,
 )
 from mtls import has_verified_peer_cert, mtls_required
+from routes_alerts import _send_push_notification, _strip_html
 
 try:
     from claude_agent_sdk import ClaudeSDKClient
@@ -117,6 +119,56 @@ MAX_MENTION_DEPTH = 25
 # Premium module — injected by apex.py when loaded. Provides group routing
 # and agent relay functions. When None, all group routing is disabled.
 _ws_premium = None
+
+
+def _chat_push_preview(text: str, *, limit: int = 160) -> str:
+    plain = _strip_html(text or "")
+    if len(plain) <= limit:
+        return plain
+    return plain[:limit]
+
+
+async def _maybe_send_chat_push(
+    chat: dict,
+    result_text: str,
+    *,
+    attached_snap: set | None = None,
+    disconnected_snap: set | None = None,
+) -> None:
+    preview = _chat_push_preview(result_text)
+    if not preview:
+        return
+    chat_id = str(chat.get("id") or "")
+    live_ws = set(_chat_ws.get(chat_id, set()))
+    attached = set(attached_snap or set())
+    disconnected = set(disconnected_snap or set())
+    owner_continuous_ws = (live_ws & attached) - disconnected
+    if owner_continuous_ws:
+        log(
+            f"APNs chat skip: chat={chat_id[:8]} reason=live_viewer viewers={len(owner_continuous_ws)}"
+        )
+        return
+    tokens = _get_all_device_tokens()
+    if not tokens:
+        log(f"APNs chat skip: chat={chat_id[:8]} reason=no_tokens")
+        return
+    title = str(chat.get("title") or "ApexChat")
+    sent = 0
+    for tok in tokens:
+        if await _send_push_notification(tok, title, preview, thread_id=chat_id, extra={"chat_id": chat_id}):
+            sent += 1
+    log(f"APNs chat push: chat={chat_id[:8]} sent={sent}/{len(tokens)} body_len={len(preview)}")
+
+
+async def _kick_assistant_turn(
+    websocket: WebSocket,
+    data: dict,
+    *,
+    origin: str = "user_ws",
+) -> None:
+    if origin not in {"user_ws", "autonomous"}:
+        raise ValueError(f"Unsupported assistant-turn origin: {origin}")
+    await _handle_send_action(websocket, data, origin=origin)
 
 
 def _resolve_effective_tool_policy(chat_id: str, chat: dict, group_agent: dict | None) -> dict:
@@ -716,7 +768,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 stream_id = str(data.get("stream_id") or _make_stream_id())
                 send_data = dict(data)
                 send_data["stream_id"] = stream_id
-                task = asyncio.create_task(_handle_send_action(websocket, send_data))
+                # Bug A — user-WS inbound is one caller of _kick_assistant_turn;
+                # autonomous callers (scheduler, tool-result callback, wake
+                # daemon) invoke the same entry point with origin="autonomous".
+                # See br-architect Q1 decision 2026-04-23T20:57:09.
+                task = asyncio.create_task(
+                    _kick_assistant_turn(websocket, send_data, origin="user_ws")
+                )
                 if send_chat_id:
                     _set_active_send_task(send_chat_id, stream_id, task, started_at=time.monotonic())
 
@@ -768,13 +826,26 @@ async def websocket_endpoint(websocket: WebSocket):
             log(f"websocket cleanup ws={ws_id}: {len(active_tasks)} send task(s) continue in background")
 
 
-async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
+async def _handle_send_action(
+    websocket: WebSocket,
+    data: dict,
+    *,
+    origin: str = "user_ws",
+) -> None:
     chat_id = data.get("chat_id", "")
     prompt = str(data.get("prompt", "")).strip()
     attachments = data.get("attachments", [])
     handoff_attachments = list(attachments or data.get("_parent_attachments") or [])
     handoff_attachment_refs = list(data.get("_parent_attachment_refs") or _attachment_ref_payload(handoff_attachments))
     stream_id = str(data.get("stream_id") or _make_stream_id())
+    # Bug A — owner-continuous APNS gate snapshots. Captured from
+    # _stream_attached_at_start / _stream_disconnected_during just before
+    # the zombie-reload pop (line ~1786); consumed by _maybe_send_chat_push
+    # after _finalize_stream returns. Init here so the finally-block read
+    # path is UnboundLocalError-safe on early-exit branches.
+    _apns_attached_snap: set = set()
+    _apns_disconnected_snap: set = set()
+    _apns_response_text: str = ""
     if not (prompt or attachments) or not chat_id:
         return
     if not _is_valid_chat_id(chat_id):
@@ -1445,6 +1516,7 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
                 store_client_session(client_key, result["session_id"])
 
         response_text = result.get("text", "") if result else ""
+        _apns_response_text = response_text
         if (
             result.get("text")
             or result.get("thinking")
@@ -1733,6 +1805,12 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         # console-2026-04-20T20-15-28-648Z.log:502-547.
         attached = _stream_attached_at_start.pop((chat_id, stream_id), set())
         disconnected = _stream_disconnected_during.pop((chat_id, stream_id), set())
+        # Bug A — snapshot pre-pop values for the APNS owner-continuous gate
+        # consumed after _finalize_stream. Copies protect against later
+        # mutation of the sets by other code paths, per architect correction
+        # 2026-04-23T21:28:34.
+        _apns_attached_snap = set(attached)
+        _apns_disconnected_snap = set(disconnected)
         rejoiners = other_viewers & disconnected
         latecomers = other_viewers - attached
         needs_reload = rejoiners | latecomers
@@ -1765,5 +1843,20 @@ async def _handle_send_action(websocket: WebSocket, data: dict) -> None:
         finally:
             _current_group_profile_id.reset(group_profile_token)
             _current_stream_id.reset(stream_token)
+        # Bug A — APNS gate: after _finalize_stream, if no owner-attached
+        # viewer stayed through the full stream, push result preview to all
+        # registered device tokens. Uses the pre-pop snapshots captured near
+        # the zombie-reload broadcast so the predicate is race-safe across
+        # the pop. Wrapped to never disrupt the post-stream cleanup path.
+        try:
+            if chat and _apns_response_text:
+                await _maybe_send_chat_push(
+                    chat,
+                    _apns_response_text,
+                    attached_snap=_apns_attached_snap,
+                    disconnected_snap=_apns_disconnected_snap,
+                )
+        except Exception as apns_err:
+            log(f"APNs chat push error: chat={chat_id[:8]} origin={origin} {apns_err!r}")
         if lock_acquired:
             _launch_next_queued_turn(lock_key)
