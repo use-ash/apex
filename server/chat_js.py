@@ -563,6 +563,7 @@ function _pickWatchdogTarget(now = Date.now()) {
   let pickedInfo = null;
   const severityRank = {working: 0, stale: 1, stuck: 2};
   Object.values(_streamCtx).forEach(ctx => {
+    if (ctx.chatId && ctx.chatId !== currentChat) return;
     const info = _ctxWatchdogStateInfo(ctx, now);
     if (!info || info.state === 'working') return;
     if (!pickedCtx) {
@@ -594,6 +595,7 @@ function _thinkingPillLabel(ctx, info) {
 function _renderWatchdogPills() {
   const now = Date.now();
   Object.values(_streamCtx).forEach(ctx => {
+    if (ctx.chatId && ctx.chatId !== currentChat) return;
     const pill = ctx && ctx.liveThinkingPill;
     if (!pill || !pill.isConnected) return;
     const label = pill.querySelector('.pill-label');
