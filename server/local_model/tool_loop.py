@@ -666,11 +666,11 @@ def _call_chatgpt_backend(model: str, messages: list, tools: list,
                             _emit_fn({"type": "thinking", "text": done_text}), _loop
                         )
                 elif done_text:
-                    reasoning_text = done_text  # ensure final value is authoritative
-                    if _loop is not None and _emit_fn is not None:
-                        asyncio.run_coroutine_threadsafe(
-                            _emit_fn({"type": "thinking", "text": done_text}), _loop
-                        )
+                    # Deltas already streamed the content; keep done_text as the
+                    # authoritative final value but do NOT re-emit — re-emitting
+                    # duplicates every reasoning section in the client pill
+                    # (seen 2026-04-23 on codex:gpt-5.4 in hub-spoke rooms).
+                    reasoning_text = done_text
             elif etype == "response.output_item.done":
                 item = event.get("item", {})
                 if item.get("type") == "reasoning":
