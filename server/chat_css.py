@@ -64,11 +64,13 @@ margin:8px 0;font-size:calc(13px * var(--chat-font-scale));line-height:1.4}
 .msg.assistant .bubble ul + p,.msg.assistant .bubble ol + p,.msg.assistant .bubble pre + p{margin-top:8px}
 .msg.assistant .bubble ul,.msg.assistant .bubble ol{padding-left:20px;margin:8px 0}
 .msg.assistant .bubble li + li{margin-top:4px}
-.msg.assistant .bubble .md-table{border-collapse:collapse;margin:10px 0;display:block;overflow-x:auto;
-font-size:calc(13px * var(--chat-font-scale));max-width:100%}
+.msg.assistant .bubble .md-table-wrap{margin:10px 0;max-width:100%;overflow-x:auto}
+.msg.assistant .bubble .md-table{border-collapse:collapse;
+font-size:calc(13px * var(--chat-font-scale));word-break:normal;overflow-wrap:anywhere}
 .msg.assistant .bubble .md-table th,.msg.assistant .bubble .md-table td{
-border:1px solid rgba(148,163,184,0.25);padding:4px 8px;text-align:left;vertical-align:top}
-.msg.assistant .bubble .md-table th{background:var(--card);font-weight:600}
+border:1px solid rgba(148,163,184,0.25);padding:4px 8px;text-align:left;vertical-align:top;
+word-break:normal;overflow-wrap:break-word;hyphens:auto}
+.msg.assistant .bubble .md-table th{background:var(--card);font-weight:600;white-space:nowrap}
 .msg.assistant .bubble .md-table tbody tr:nth-child(even){background:rgba(148,163,184,0.06)}
 .msg-attachments{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
 .msg-attachments:first-child{margin-top:0}
