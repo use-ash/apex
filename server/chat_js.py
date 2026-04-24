@@ -3808,7 +3808,7 @@ function renderMarkdown(el, rawText) {
         const alignStyle = (a) => a ? ' style="text-align:' + a + '"' : '';
         const thead = '<thead><tr>' + headers.map((h, k) => '<th' + alignStyle(aligns[k] || '') + '>' + renderInlineMarkdown(h) + '</th>').join('') + '</tr></thead>';
         const tbody = '<tbody>' + rows.map(cells => '<tr>' + cells.map((c, k) => '<td' + alignStyle(aligns[k] || '') + '>' + renderInlineMarkdown(c) + '</td>').join('') + '</tr>').join('') + '</tbody>';
-        tableBlocks.push('<table class="md-table">' + thead + tbody + '</table>');
+        tableBlocks.push('<div class="md-table-wrap"><table class="md-table">' + thead + tbody + '</table></div>');
         _outLines.push('@@TABLEBLOCK_' + (tableBlocks.length - 1) + '@@');
         i = j - 1;
         continue;
