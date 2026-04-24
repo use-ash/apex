@@ -3832,7 +3832,12 @@ function renderMarkdown(el, rawText) {
     const line = rawLine.trimEnd();
     const trimmed = line.trim();
     if (!trimmed) {
-      closeList();
+      // Do NOT close an open list on a blank line — CommonMark "loose list"
+      // semantics let items be separated by blank lines and still share one
+      // <ol>/<ul>. Every branch that emits a non-list block (heading, paragraph,
+      // code fence, table) already calls closeList() itself, so list
+      // termination is handled there. Closing here caused each blank-separated
+      // "1. " / "2. " line to open a fresh <ol>, so every item rendered as "1.".
       continue;
     }
 
