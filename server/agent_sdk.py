@@ -1050,7 +1050,11 @@ async def _stream_response(
                     "thinking": thinking_text,
                     "tool_events": json.dumps(tool_events),
                     "cost_usd": msg.total_cost_usd or 0,
-                    "tokens_in": (msg.usage or {}).get("input_tokens", 0),
+                    "tokens_in": (
+                        (msg.usage or {}).get("input_tokens", 0)
+                        + (msg.usage or {}).get("cache_read_input_tokens", 0)
+                        + (msg.usage or {}).get("cache_creation_input_tokens", 0)
+                    ),
                     "tokens_out": (msg.usage or {}).get("output_tokens", 0),
                     "duration_ms": int(elapsed * 1000),
                     "error": None,
