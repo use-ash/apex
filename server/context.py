@@ -926,14 +926,30 @@ async def _maybe_compact_chat(
     if COMPACTION_THRESHOLD <= 0 and not force:
         return False
 
+    # Compute an effective threshold scaled to the chat's model context window.
+    # COMPACTION_THRESHOLD is the floor (minimum); for large-context models
+    # (e.g. 1M-token Opus 4.7) a fixed 100K threshold would compact after
+    # the very first message.  Use 75% of the model's window instead, but
+    # never go below COMPACTION_THRESHOLD.
+    effective_threshold = COMPACTION_THRESHOLD
+    if COMPACTION_THRESHOLD > 0:
+        try:
+            _chat = await asyncio.to_thread(_get_chat, chat_id)
+            _chat_model = (_chat.get("model") or "") if _chat else ""
+            _ctx_window = MODEL_CONTEXT_WINDOWS.get(_chat_model, MODEL_CONTEXT_DEFAULT)
+            _dynamic = int(_ctx_window * 0.75)
+            effective_threshold = max(COMPACTION_THRESHOLD, _dynamic)
+        except Exception:
+            pass
+
     cumulative = await asyncio.to_thread(_get_cumulative_tokens_in, chat_id)
-    if cumulative < COMPACTION_THRESHOLD and not force:
+    if cumulative < effective_threshold and not force:
         return False
 
     if force and force_tokens > 0:
         cumulative = force_tokens  # use caller-provided count for accurate logging
 
-    log(f"compaction triggered: chat={chat_id} tokens_in={cumulative} threshold={COMPACTION_THRESHOLD} force={force}")
+    log(f"compaction triggered: chat={chat_id} tokens_in={cumulative} threshold={effective_threshold} force={force}")
 
     # Phase 1: classify session type before generating recovery context
     session_info = await asyncio.to_thread(_classify_session_type, chat_id)
