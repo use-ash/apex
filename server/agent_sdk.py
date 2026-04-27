@@ -80,6 +80,19 @@ _AUTH_ERROR_PATTERNS = (
     "Please run /login",
 )
 
+_CONTEXT_OVERFLOW_PATTERNS = (
+    "prompt is too long",
+    "context_window_exceeded",
+    "too many tokens",
+)
+
+
+def _is_context_too_long(text: str) -> bool:
+    """Check if SDK response text indicates a context window overflow."""
+    tl = text.lower()
+    return any(p in tl for p in _CONTEXT_OVERFLOW_PATTERNS)
+
+
 _OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 _OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 _OAUTH_REFRESH_BUFFER_S = 5 * 60  # 5 minutes — match Claude Code's internal buffer
@@ -915,6 +928,12 @@ async def _stream_response(
                         # Don't stream raw auth errors to user — they'll get
                         # a helpful message via the error handler instead
                         if _is_auth_error(block.text):
+                            continue
+                        # Don't stream context overflow errors — ws_handler will
+                        # force-compact and ask user to retry
+                        if _is_context_too_long(block.text):
+                            result_info["context_overflow"] = True
+                            log(f"context overflow in stream: chat={chat_id} suppressing text")
                             continue
                         await _send({"type": "text", "text": block.text})
 

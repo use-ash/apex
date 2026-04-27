@@ -1507,6 +1507,34 @@ async def _handle_send_action(
         if not result:
             return
 
+        # Context window overflow — force-compact and ask user to retry.
+        # The error text was already suppressed in _stream_response so the
+        # user never sees the raw "Prompt is too long" message.
+        if result.get("context_overflow"):
+            log(f"context overflow response: chat={chat_id} forcing compaction")
+            try:
+                await _maybe_compact_chat(
+                    chat_id,
+                    force=True,
+                    force_tokens=result.get("tokens_in", 0),
+                )
+            except Exception as _ce:
+                log(f"force compact error after overflow: chat={chat_id} {_ce}")
+            for _ws in list(_chat_ws.get(chat_id, {websocket})):
+                await _safe_ws_send_json(
+                    _ws,
+                    {
+                        "type": "system_message",
+                        "chat_id": chat_id,
+                        "text": (
+                            "Context window full — conversation auto-compacted. "
+                            "Please resend your last message."
+                        ),
+                    },
+                    chat_id=chat_id,
+                )
+            return
+
         if result.get("session_id") and backend != "codex":
             # Codex threads persisted via chat settings, not claude_session_id
             _update_chat(chat_id, claude_session_id=result["session_id"])
