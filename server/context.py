@@ -910,19 +910,30 @@ def _classify_session_type(chat_id: str) -> dict:
 # Auto-compaction
 # ---------------------------------------------------------------------------
 
-async def _maybe_compact_chat(chat_id: str) -> bool:
+async def _maybe_compact_chat(
+    chat_id: str,
+    *,
+    force: bool = False,
+    force_tokens: int = 0,
+) -> bool:
     """Check if chat needs compaction. If so, summarize + rotate session.
 
     Returns True if compaction was performed.
+    Set force=True to compact regardless of token threshold (e.g. after a
+    context-window-exceeded API rejection).  force_tokens overrides the
+    cumulative count used in the log/WS message when provided.
     """
-    if COMPACTION_THRESHOLD <= 0:
+    if COMPACTION_THRESHOLD <= 0 and not force:
         return False
 
     cumulative = await asyncio.to_thread(_get_cumulative_tokens_in, chat_id)
-    if cumulative < COMPACTION_THRESHOLD:
+    if cumulative < COMPACTION_THRESHOLD and not force:
         return False
 
-    log(f"compaction triggered: chat={chat_id} tokens_in={cumulative} threshold={COMPACTION_THRESHOLD}")
+    if force and force_tokens > 0:
+        cumulative = force_tokens  # use caller-provided count for accurate logging
+
+    log(f"compaction triggered: chat={chat_id} tokens_in={cumulative} threshold={COMPACTION_THRESHOLD} force={force}")
 
     # Phase 1: classify session type before generating recovery context
     session_info = await asyncio.to_thread(_classify_session_type, chat_id)
