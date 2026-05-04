@@ -6,7 +6,9 @@ it via the Claude Code adapter. Falls back to direct guidance.json read
 if the canonical store fails.
 """
 
+import datetime
 import json
+import re
 import select
 import sys
 from pathlib import Path
@@ -15,6 +17,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import config
 import state
+
+
+_DATE_LITERAL_RE = re.compile(r"\b(?:TODAY|today)\s*=\s*\d{4}-\d{2}-\d{2}\b")
+
+
+def _refresh_today(text: str) -> str:
+    """Rewrite TODAY=YYYY-MM-DD literals to live date at emission time."""
+    if not text:
+        return text
+    return _DATE_LITERAL_RE.sub(
+        f"TODAY={datetime.date.today().isoformat()}", text
+    )
 
 
 def _canonical_render(session_id: str) -> str | None:
@@ -56,7 +70,7 @@ def _legacy_render(session_id: str) -> str:
         lines.append("")
         lines.append("## Guidance")
         for item in items:
-            lines.append(f"- [{item.get('type', 'note')}] {item.get('text', '')}")
+            lines.append(f"- [{item.get('type', 'note')}] {_refresh_today(item.get('text', ''))}")
 
     if digests:
         lines.append("")

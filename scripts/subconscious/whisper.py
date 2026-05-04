@@ -10,6 +10,7 @@ the guidance state has changed since the last emission.
 import datetime
 import hashlib
 import json
+import re
 import select
 import sys
 from pathlib import Path
@@ -115,17 +116,25 @@ def main():
             others = [i for i in relevant if i.get("type") != "invariant"]
             lines = ["<subconscious_whisper>"]
 
+            today_iso = datetime.date.today().isoformat()
+            date_literal_re = re.compile(r"\b(?:TODAY|today)\s*=\s*\d{4}-\d{2}-\d{2}\b")
+
+            def _refresh_today(text: str) -> str:
+                if not text:
+                    return text
+                return date_literal_re.sub(f"TODAY={today_iso}", text)
+
             for item in invariants:
-                ctx = item.get("context", "")
-                enf = item.get("enforce", "")
-                avd = item.get("avoid", "")
+                ctx = _refresh_today(item.get("context", ""))
+                enf = _refresh_today(item.get("enforce", ""))
+                avd = _refresh_today(item.get("avoid", ""))
                 if ctx and enf and avd:
                     lines.append(f"- [invariant] When {ctx}: enforce {enf}; avoid {avd}")
                 else:
-                    lines.append(f"- [invariant] {item.get('text', '')}")
+                    lines.append(f"- [invariant] {_refresh_today(item.get('text', ''))}")
 
             for item in others:
-                lines.append(f"- [{item.get('type', 'note')}] {item.get('text', '')}")
+                lines.append(f"- [{item.get('type', 'note')}] {_refresh_today(item.get('text', ''))}")
 
             if prompt_count >= 80:
                 lines.append(

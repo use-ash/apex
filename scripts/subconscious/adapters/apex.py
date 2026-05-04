@@ -15,6 +15,7 @@ layer (invariants, corrections) while Apex's embeddings provide the MEMORY
 layer (relevant past context). This adapter merges both.
 """
 
+import datetime
 import re
 import sys
 from pathlib import Path
@@ -26,6 +27,23 @@ from canonical_store import ContextEnvelope, Memory
 
 # Apex whisper budget is tighter — it fires every prompt
 WHISPER_BUDGET = 3000  # chars
+
+
+# ---------------------------------------------------------------------------
+# Date-anchor refresh — rewrite TODAY=YYYY-MM-DD literals to the live date
+# at emission time so stale invariants don't leak frozen anchors into the
+# model's context. See whisper.py for the same fix on the hook-side path.
+# ---------------------------------------------------------------------------
+
+_DATE_LITERAL_RE = re.compile(r"\b(?:TODAY|today)\s*=\s*\d{4}-\d{2}-\d{2}\b")
+
+
+def _refresh_today(text: str) -> str:
+    if not text:
+        return text
+    return _DATE_LITERAL_RE.sub(
+        f"TODAY={datetime.date.today().isoformat()}", text
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -166,13 +184,13 @@ def render_type1_whisper(envelope: ContextEnvelope,
     query_tokens = _tokenize(query) if query else set()
 
     def _render_item(mem):
-        ctx = getattr(mem, "context_when", "")
-        enf = getattr(mem, "enforce", "")
-        avd = getattr(mem, "avoid", "")
+        ctx = _refresh_today(getattr(mem, "context_when", ""))
+        enf = _refresh_today(getattr(mem, "enforce", ""))
+        avd = _refresh_today(getattr(mem, "avoid", ""))
         tag = "invariant" if mem.type == "invariant" else "correction"
         if ctx and enf and avd:
             return f"- [{tag}] When {ctx}: enforce {enf}; avoid {avd}"
-        return f"- [{tag}] {mem.display_text()}"
+        return f"- [{tag}] {_refresh_today(mem.display_text())}"
 
     # Score ALL items by blended confidence + relevance.
     # With 40-50 items at high confidence, pure confidence ordering
@@ -270,13 +288,13 @@ def render_guidance_whisper(envelope: ContextEnvelope,
         invariants = invariants[:max_items]
 
     for mem in invariants[:max_items]:
-        ctx = getattr(mem, "context_when", "")
-        enf = getattr(mem, "enforce", "")
-        avd = getattr(mem, "avoid", "")
+        ctx = _refresh_today(getattr(mem, "context_when", ""))
+        enf = _refresh_today(getattr(mem, "enforce", ""))
+        avd = _refresh_today(getattr(mem, "avoid", ""))
         if ctx and enf and avd:
             line = f"- [invariant] When {ctx}: enforce {enf}; avoid {avd}"
         else:
-            line = f"- [invariant] {mem.display_text()}"
+            line = f"- [invariant] {_refresh_today(mem.display_text())}"
 
         if chars_used + len(line) > WHISPER_BUDGET:
             break
@@ -284,14 +302,14 @@ def render_guidance_whisper(envelope: ContextEnvelope,
         chars_used += len(line)
 
     for mem in corrections[:3]:
-        line = f"- [correction] {mem.text[:200]}"
+        line = f"- [correction] {_refresh_today(mem.text[:200])}"
         if chars_used + len(line) > WHISPER_BUDGET:
             break
         lines.append(line)
         chars_used += len(line)
 
     for mem in others[:3]:
-        line = f"- [{mem.type}] {mem.display_text()[:200]}"
+        line = f"- [{mem.type}] {_refresh_today(mem.display_text()[:200])}"
         if chars_used + len(line) > WHISPER_BUDGET:
             break
         lines.append(line)
@@ -361,17 +379,17 @@ def render_session_context(envelope: ContextEnvelope) -> str:
         lines.append("## Guidance")
         for mem in guidance:
             if mem.type == "invariant":
-                ctx = getattr(mem, "context_when", "")
-                enf = getattr(mem, "enforce", "")
-                avd = getattr(mem, "avoid", "")
+                ctx = _refresh_today(getattr(mem, "context_when", ""))
+                enf = _refresh_today(getattr(mem, "enforce", ""))
+                avd = _refresh_today(getattr(mem, "avoid", ""))
                 if ctx and enf and avd:
                     lines.append(
                         f"- [invariant] When {ctx}: enforce {enf}; avoid {avd}"
                     )
                 else:
-                    lines.append(f"- [invariant] {mem.display_text()}")
+                    lines.append(f"- [invariant] {_refresh_today(mem.display_text())}")
             else:
-                lines.append(f"- [{mem.type}] {mem.display_text()}")
+                lines.append(f"- [{mem.type}] {_refresh_today(mem.display_text())}")
 
     lines.append("</subconscious_context>")
     return "\n".join(lines)
