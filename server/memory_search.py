@@ -33,9 +33,23 @@ BATCH_SIZE = 10
 BATCH_SLEEP = 0.1
 MAX_RETRIES = 3
 
-MEMORY_DIR = Path(
-    os.environ.get("APEX_MEMORY_DIR", str(Path.home() / ".apex" / "memory"))
-)
+def _default_memory_dir() -> str:
+    """Pick the first existing candidate. Workspace path is canonical as of 2026-04-21.
+
+    Historical default `~/.apex/memory` was never populated on this machine —
+    actual memory lives under the OpenClaw workspace.
+    """
+    candidates = [
+        Path.home() / ".openclaw" / "workspace" / "memory",
+        Path.home() / ".apex" / "memory",  # legacy fallback
+    ]
+    for c in candidates:
+        if c.is_dir():
+            return str(c)
+    return str(candidates[0])  # workspace path even if missing, so errors are obvious
+
+
+MEMORY_DIR = Path(os.environ.get("APEX_MEMORY_DIR", _default_memory_dir()))
 
 # Transcript dirs: configurable via env var (comma-separated) or defaults
 _DEFAULT_TRANSCRIPT_DIRS = [

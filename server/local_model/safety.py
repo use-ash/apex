@@ -52,6 +52,21 @@ SENSITIVE_BASENAMES = {
     "config.json",
 }
 
+# Python scripts explicitly allowed to be executed via `python3 <path>` at L2.
+# These are vetted, well-known fetch/transcribe utilities that wrap external
+# binaries (yt-dlp, whisper, curl) the model would otherwise need L3 to reach.
+# Match is by realpath — symlinks resolve, and `~` / relative paths normalize
+# before the check. Add scripts here only after confirming they don't shell out
+# in ways that would re-introduce the bypass _validate_python_command exists
+# to prevent.
+L2_ALLOWED_PYTHON_SCRIPTS = frozenset(
+    os.path.realpath(str(Path.home() / p))
+    for p in (
+        ".openclaw/workspace/tools/media_transcribe.py",
+        ".openclaw/workspace/fetch_x.py",
+    )
+)
+
 LEVEL3_FIND_EXEC_SENTINEL = "__APEX_FIND_EXEC_SEMI__"
 # Shell meta-characters used to detect compound commands / blocked syntax
 _SHELL_ALWAYS_BLOCKED = ("`", "$(", "${", ">", "<", "\r", "\x00")
@@ -445,6 +460,15 @@ def _validate_python_command(argv: list[str], workspace: str | None) -> str | No
         return None
     if len(argv) >= 4 and argv[1] == "-m" and argv[2] == "py_compile":
         return _validate_arg_paths(argv[3:], workspace)
+    # L2 script allowlist: vetted fetch/transcribe utilities (media_transcribe.py,
+    # fetch_x.py). Path is resolved before lookup so `~` and relative forms work.
+    if len(argv) >= 2 and not argv[1].startswith("-"):
+        try:
+            script_real = os.path.realpath(argv[1])
+        except (OSError, ValueError):
+            script_real = ""
+        if script_real and script_real in L2_ALLOWED_PYTHON_SCRIPTS:
+            return None
     return "Error: python script execution via bash is blocked at Level 2. Use the execute_code tool, or ask the user to elevate to Level 3 — at Level 3 this command will be allowed."
 
 
