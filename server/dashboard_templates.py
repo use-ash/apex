@@ -878,6 +878,36 @@ DASHBOARD_BODY_HTML = r"""<body>
                 </div>
             </div>
 
+            <div class="card" style="margin-bottom:20px;">
+                <div class="card-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                        <path d="M2 17l10 5 10-5"/>
+                        <path d="M2 12l10 5 10-5"/>
+                    </svg>
+                    Response Calibration Primer
+                </div>
+                <div id="calibration-primer-content">
+                    <div class="form-help" id="calibration-primer-status" style="margin-bottom:12px;">
+                        Injected into every model's system prompt (Codex, Anthropic API, Claude SDK, local Ollama). Use <code>{user}</code> as a placeholder — it is substituted with the Primary interactive user label from Budget Settings.
+                    </div>
+                    <div class="form-field">
+                        <label class="form-toggle">
+                            <input id="calibration-primer-enabled" type="checkbox">
+                            <span>Enable calibration primer</span>
+                        </label>
+                    </div>
+                    <div class="form-field">
+                        <label class="form-label" for="calibration-primer-text">Primer text</label>
+                        <textarea id="calibration-primer-text" rows="14" style="width:100%;font-family:var(--mono-font, monospace);font-size:12px;line-height:1.5;" spellcheck="false"></textarea>
+                    </div>
+                    <div class="config-actions" style="margin-top:16px;display:flex;gap:8px;">
+                        <button class="btn btn-primary" id="btn-calibration-save">Save Primer</button>
+                        <button class="btn btn-secondary" id="btn-calibration-reset">Reset to Default</button>
+                    </div>
+                </div>
+            </div>
+
             <div class="card-grid usage-breakdown-grid">
                 <div class="card">
                     <div class="card-title">

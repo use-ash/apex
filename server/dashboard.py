@@ -992,6 +992,61 @@ async def api_admin_usage_config_update(request: Request):
         return _error("Invalid usage configuration", "VALIDATION_ERROR", 422)
 
 
+@dashboard_app.get("/api/admin/calibration/config")
+async def api_admin_calibration_config():
+    """Return current response-calibration primer settings."""
+    if _config is None:
+        return _not_initialized()
+    from context import _CALIBRATION_PRIMER_DEFAULT_TEXT
+    enabled = _config.get("policy", "calibration_primer")
+    if enabled is None:
+        enabled = True
+    text = _config.get("policy", "calibration_primer_text")
+    if not isinstance(text, str) or not text.strip():
+        text = _CALIBRATION_PRIMER_DEFAULT_TEXT
+    user_label = str(_config.get("usage", "primary_user_label") or "Dana")
+    return JSONResponse({
+        "calibration_primer": bool(enabled),
+        "calibration_primer_text": text,
+        "primary_user_label": user_label,
+    })
+
+
+@dashboard_app.post("/api/admin/calibration/config")
+async def api_admin_calibration_config_update(request: Request):
+    """Update response-calibration primer settings."""
+    if _config is None:
+        return _not_initialized()
+    try:
+        body = await request.json()
+    except Exception:
+        return _error("Invalid JSON", "INVALID_JSON", 400)
+    if not isinstance(body, dict):
+        return _error("Request body must be a JSON object", "INVALID_BODY", 400)
+    updates: dict[str, Any] = {}
+    if "calibration_primer" in body:
+        updates["calibration_primer"] = bool(body["calibration_primer"])
+    if "calibration_primer_text" in body:
+        text = str(body["calibration_primer_text"] or "")
+        updates["calibration_primer_text"] = text
+    if not updates:
+        return _error("No calibration settings provided", "EMPTY_UPDATE", 400)
+    try:
+        values, restart_required = _config.update_section("policy", updates)
+        return JSONResponse({
+            "status": "ok",
+            "section": "policy",
+            "config": {
+                "calibration_primer": values.get("calibration_primer"),
+                "calibration_primer_text": values.get("calibration_primer_text"),
+            },
+            "restart_required": restart_required,
+        })
+    except ValueError as exc:
+        _log.warning("Calibration config validation error: %s", exc)
+        return _error("Invalid calibration configuration", "VALIDATION_ERROR", 422)
+
+
 @dashboard_app.get("/api/admin/usage/export")
 async def api_admin_usage_export(month: str | None = None):
     """Export assistant-message usage rows for the selected month as CSV."""

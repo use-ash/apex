@@ -315,50 +315,70 @@ def _get_temporal_context(chat_id: str) -> str:
         return ""
 
 
-_CALIBRATION_PRIMER_TEXT = (
+_CALIBRATION_PRIMER_DEFAULT_TEXT = (
     "# Response Calibration (applies to every reply)\n"
     "- Do NOT praise the question or validate premises before answering. "
     "No 'great question', 'you're absolutely right', 'fascinating perspective', "
     "or any variant.\n"
-    "- If Dana is wrong, say so immediately. Lead with the strongest "
-    "counterargument to any position he appears to hold before supporting it.\n"
-    "- If Dana pushes back, do NOT capitulate unless he provides new evidence "
+    "- If {user} is wrong, say so immediately. Lead with the strongest "
+    "counterargument to any position they appear to hold before supporting it.\n"
+    "- If {user} pushes back, do NOT capitulate unless they provide new evidence "
     "or a superior argument — restate your position if your reasoning holds.\n"
-    "- Do NOT anchor on numbers or estimates Dana supplies; generate your own "
+    "- Do NOT anchor on numbers or estimates {user} supplies; generate your own "
     "independently first, then compare.\n"
     "- Use explicit confidence levels (high / moderate / low / unknown) on "
     "non-trivial claims.\n"
     "- Never apologize for disagreeing. Accuracy is the success metric, not "
-    "Dana's approval."
+    "{user}'s approval."
 )
 
 
-def _calibration_primer_enabled() -> bool:
-    """Read policy.calibration_primer from state/config.json. Default: True."""
+def _read_calibration_config() -> tuple[bool, str, str]:
+    """Read primer config from state/config.json.
+
+    Returns (enabled, primer_text_template, user_label). All have safe defaults.
+    """
+    enabled = True
+    primer_text = _CALIBRATION_PRIMER_DEFAULT_TEXT
+    user_label = "Dana"
     try:
         cfg_path = Path(str(env.APEX_ROOT)) / "state" / "config.json"
         if cfg_path.exists():
             data = json.loads(cfg_path.read_text())
             policy = data.get("policy") or {}
             if "calibration_primer" in policy:
-                return bool(policy["calibration_primer"])
+                enabled = bool(policy["calibration_primer"])
+            txt = policy.get("calibration_primer_text")
+            if isinstance(txt, str) and txt.strip():
+                primer_text = txt
+            usage = data.get("usage") or {}
+            label = usage.get("primary_user_label")
+            if isinstance(label, str) and label.strip():
+                user_label = label.strip()
     except Exception:
         pass
-    return True
+    return enabled, primer_text, user_label
+
+
+def _calibration_primer_enabled() -> bool:
+    """Back-compat helper. Default: True."""
+    return _read_calibration_config()[0]
 
 
 def _get_calibration_primer(chat_id: str = "") -> str:
     """Per-turn anti-sycophancy / calibration primer.
 
     Injected into every model's system context (Codex, Anthropic API, Claude SDK,
-    local Ollama) so response calibration rules are model-agnostic. Suppressed
-    for isolated profiles (handled at call site) and via
-    policy.calibration_primer=false.
+    local Ollama) so response calibration rules are model-agnostic. Personalized
+    by substituting {user} with usage.primary_user_label. Suppressed for isolated
+    profiles (handled at call site) and via policy.calibration_primer=false.
     """
     try:
-        if not _calibration_primer_enabled():
+        enabled, primer_text, user_label = _read_calibration_config()
+        if not enabled:
             return ""
-        return "<system-reminder>\n" + _CALIBRATION_PRIMER_TEXT + "\n</system-reminder>"
+        rendered = primer_text.replace("{user}", user_label)
+        return "<system-reminder>\n" + rendered + "\n</system-reminder>"
     except Exception as e:
         log(f"_get_calibration_primer failed for chat={chat_id}: {e}")
         return ""
