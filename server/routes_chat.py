@@ -18,7 +18,7 @@ from starlette.responses import Response
 from db import (
     _get_db,
     SYSTEM_PROFILE_ID,
-    _create_chat, _get_chats, _get_chat, _update_chat, _delete_chat,
+    _create_chat, _get_chats, _get_chat, _get_chat_stats, _update_chat, _delete_chat,
     _get_chat_settings, _update_chat_settings,
     _get_chat_tool_policy, _normalize_tool_policy, _set_chat_tool_policy, _log_permission_change,
     _get_group_members,
@@ -139,8 +139,12 @@ async def _refresh_direct_chat_runtime(chat_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 @chat_router.get("/api/chats")
-async def api_chats():
-    return JSONResponse(_get_chats())
+async def api_chats(request: Request):
+    # ?include=last_message_at adds a per-chat MAX(messages.created_at) field
+    # so callers can compute staleness without a follow-up /messages query.
+    include = request.query_params.get("include", "")
+    include_lma = "last_message_at" in [s.strip() for s in include.split(",") if s.strip()]
+    return JSONResponse(_get_chats(include_last_message_at=include_lma))
 
 
 @chat_router.post("/api/chats")
@@ -641,6 +645,14 @@ async def api_delete_stale_threads(older_than_days: int = 7):
                 for ws in list(ws_set):
                     await _safe_ws_send_json(ws, payload, chat_id=cid)
     return JSONResponse({"ok": True, "deleted": deleted})
+
+
+@chat_router.get("/api/chats/{chat_id}/stats")
+async def api_chat_stats(chat_id: str):
+    """Aggregate timing/usage stats — first/last message timestamps,
+    message count, total duration_ms, total tokens, total cost.
+    Lets callers answer 'how stale is this chat?' without pulling messages."""
+    return JSONResponse(_get_chat_stats(chat_id))
 
 
 @chat_router.get("/api/chats/{chat_id}/messages")
