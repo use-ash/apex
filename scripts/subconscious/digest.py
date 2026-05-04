@@ -18,6 +18,31 @@ from contradiction_detector import check_contradictions, is_overridden
 
 INVARIANT_TTL_DAYS = getattr(config, "INVARIANT_TTL_DAYS", 30)
 
+try:
+    from zoneinfo import ZoneInfo
+    _LOCAL_TZ = ZoneInfo("America/New_York")
+except Exception:  # pragma: no cover — fallback if tzdata absent
+    _LOCAL_TZ = None
+
+
+def _msg_date(ts: str) -> datetime.date | None:
+    """Parse a JSONL entry timestamp into an ET-local date.
+
+    Per-message anchoring: a session that spans midnight needs each message's
+    relatives ('yesterday') resolved against the day THAT MESSAGE was sent,
+    not against `today` at digest-time.
+    """
+    if not ts:
+        return None
+    try:
+        s = ts.replace("Z", "+00:00")
+        d = datetime.datetime.fromisoformat(s)
+        if _LOCAL_TZ is not None and d.tzinfo is not None:
+            d = d.astimezone(_LOCAL_TZ)
+        return d.date()
+    except (ValueError, TypeError):
+        return None
+
 
 def _acquire_digest_lock(session_id: str, timeout: float = 30.0):
     """Acquire a per-session digest lock file. Returns fd or None on timeout."""
@@ -76,9 +101,18 @@ def _parse_transcript(path: str, offset: int = 0) -> tuple[list[dict], str, int]
                 content = entry.get("message") or entry.get("content") or ""
                 if isinstance(content, dict):
                     content = content.get("text", str(content))
+                content_str = str(content)
 
-                messages.append({"role": role, "content": str(content)})
-                lines_text.append(f"[{role}] {content}")
+                # Per-message anchoring: resolve 'yesterday' against the day
+                # the message was actually sent. Idempotent via the negative
+                # lookahead in llm._REL_DATE_PATTERN, so already-anchored
+                # phrases pass through untouched.
+                msg_dt = _msg_date(entry.get("timestamp", ""))
+                if msg_dt is not None:
+                    content_str = llm._anchor_relatives(content_str, msg_dt)
+
+                messages.append({"role": role, "content": content_str})
+                lines_text.append(f"[{role}] {content_str}")
 
             new_offset = f.tell()
     except (FileNotFoundError, OSError):
