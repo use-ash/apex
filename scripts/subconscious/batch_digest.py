@@ -138,6 +138,41 @@ def has_digest(session_id: str) -> bool:
     return Path(config.DIGESTS_DIR, f"{session_id}.json").exists()
 
 
+def _session_date_from_transcript(path: Path) -> datetime.date | None:
+    """Read the first JSONL line and return its timestamp's date.
+
+    Used to anchor relative-date phrases ('yesterday', 'last week') to
+    the session's actual date rather than today, so historical re-digests
+    don't drift as the calendar advances.
+    """
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = entry.get("timestamp")
+                if not ts:
+                    continue
+                try:
+                    # Handle 'Z' suffix and offsets
+                    iso = ts.replace("Z", "+00:00")
+                    return datetime.datetime.fromisoformat(iso).date()
+                except (ValueError, TypeError):
+                    continue
+    except (FileNotFoundError, OSError):
+        pass
+    # Fall back to file mtime
+    try:
+        return datetime.date.fromtimestamp(path.stat().st_mtime)
+    except (OSError, ValueError):
+        return None
+
+
 def parse_transcript(path: Path) -> list[dict]:
     """Parse JSONL transcript into a list of {role, content} dicts.
 
@@ -370,8 +405,16 @@ def _sample_chunks(chunks: list[list[dict]], max_chunks: int) -> list[list[dict]
     return head + middle + tail
 
 
-def run_digest(session_id: str, path: Path, max_chunks: int = 0) -> dict:
-    """Run extraction on a single transcript, chunking large ones."""
+def run_digest(session_id: str, path: Path, max_chunks: int = 0,
+               session_date: datetime.date | None = None) -> dict:
+    """Run extraction on a single transcript, chunking large ones.
+
+    `session_date` anchors relative-date phrases to the session's actual
+    date. Defaults to deriving from the transcript's first timestamp so
+    historical re-digests don't bind 'yesterday' to today's date.
+    """
+    if session_date is None:
+        session_date = _session_date_from_transcript(path)
     messages = parse_transcript(path)
     if not messages:
         return {}
@@ -382,7 +425,7 @@ def run_digest(session_id: str, path: Path, max_chunks: int = 0) -> dict:
 
     # Small transcripts: single-shot (old path, fast)
     if len(total_text) <= SINGLE_SHOT_CHARS:
-        digest = llm.extract_session(total_text, messages)
+        digest = llm.extract_session(total_text, messages, session_date=session_date)
         return digest
 
     # Large transcripts: chunk and extract each piece
@@ -410,14 +453,19 @@ def run_digest(session_id: str, path: Path, max_chunks: int = 0) -> dict:
 
     if not chunk_results:
         # All chunks failed — fall back to heuristic on full message set
-        return llm.extract_session(total_text[-SINGLE_SHOT_CHARS:], messages)
+        return llm.extract_session(total_text[-SINGLE_SHOT_CHARS:], messages,
+                                   session_date=session_date)
 
     digest = merge_chunk_results(chunk_results)
     if failed_chunks:
         print(f"[{failed_chunks} chunk failures]", end=" ", flush=True)
 
     # Invariants still run on the tail of the transcript (they only use last 6KB anyway)
-    digest["invariants"] = llm.extract_invariants(total_text[-6000:])
+    digest["invariants"] = llm.extract_invariants(total_text[-6000:],
+                                                  session_date=session_date)
+
+    # Anchor relative dates (chunked path bypasses extract_session, so apply here)
+    digest = llm._anchor_extraction(digest, anchor=session_date)
 
     return digest
 

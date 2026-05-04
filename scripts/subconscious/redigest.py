@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import config
 import state
 import llm
-from batch_digest import parse_transcript, TRANSCRIPTS_DIRS
+from batch_digest import parse_transcript, TRANSCRIPTS_DIRS, _session_date_from_transcript
 
 # ── Config ────────────────────────────────────────────────────────────
 
@@ -118,10 +118,19 @@ def main():
                 skipped += 1
                 continue
 
+            # Anchor relative-date phrases to the session's actual date,
+            # not today, so historical re-digests don't bind 'yesterday'
+            # to the day we happen to re-process.
+            session_date = _session_date_from_transcript(transcript_path)
+
             # Call _extract_via_llm directly to get a clear error on timeout
             result = llm._extract_via_llm(transcript_text)
             # Also get invariants
-            result["invariants"] = llm.extract_invariants(transcript_text)
+            result["invariants"] = llm.extract_invariants(
+                transcript_text, session_date=session_date
+            )
+            # Anchor relatives in corrections/decisions/pending/summary
+            result = llm._anchor_extraction(result, anchor=session_date)
 
             if result.get("summary", {}).get("source") == "heuristic":
                 print("still heuristic")
