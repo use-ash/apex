@@ -207,6 +207,32 @@ SCHEMA: dict[str, dict[str, dict[str, Any]]] = {
             "multiline": True,
             "placeholder": "/Users/you/project/state\n/Users/you/.ssh",
         },
+        "calibration_primer": {
+            "type": "bool",
+            "default": True,
+            "description": "Inject anti-sycophancy / response-calibration primer into every model's system prompt",
+        },
+        "calibration_primer_text": {
+            "type": "str",
+            "default": (
+                "# Response Calibration (applies to every reply)\n"
+                "- Do NOT praise the question or validate premises before answering. "
+                "No 'great question', 'you're absolutely right', 'fascinating perspective', "
+                "or any variant.\n"
+                "- If {user} is wrong, say so immediately. Lead with the strongest "
+                "counterargument to any position they appear to hold before supporting it.\n"
+                "- If {user} pushes back, do NOT capitulate unless they provide new evidence "
+                "or a superior argument — restate your position if your reasoning holds.\n"
+                "- Do NOT anchor on numbers or estimates {user} supplies; generate your own "
+                "independently first, then compare.\n"
+                "- Use explicit confidence levels (high / moderate / low / unknown) on "
+                "non-trivial claims.\n"
+                "- Never apologize for disagreeing. Accuracy is the success metric, not "
+                "{user}'s approval."
+            ),
+            "description": "Primer text. Use {user} as a placeholder for the primary user label.",
+            "multiline": True,
+        },
     },
     "alerts": {
         "telegram_configured": {

@@ -4082,6 +4082,8 @@ async function loadUsagePage(monthKey) {
             renderUsageBudget(null, usageState.payload);
             showToast("Usage config unavailable: " + configResult.reason.message, "warning");
         }
+
+        loadCalibrationConfig();
     } catch (err) {
         ["usage-hero-content", "usage-daily-spend-content", "usage-providers-content", "usage-by-agent-content", "usage-by-user-content", "usage-by-model-content"].forEach(function(id) {
             var el = document.getElementById(id);
@@ -4155,6 +4157,73 @@ async function exportUsageCsv() {
     window.open(API + "/admin/usage/export?month=" + encodeURIComponent(month), "_blank");
 }
 window.exportUsageCsv = exportUsageCsv;
+
+/* -- Calibration Primer ---------------------------------------------- */
+
+var calibrationDefaultText = null;
+
+async function loadCalibrationConfig() {
+    var enabledEl = document.getElementById("calibration-primer-enabled");
+    var textEl = document.getElementById("calibration-primer-text");
+    var statusEl = document.getElementById("calibration-primer-status");
+    if (!enabledEl || !textEl) return;
+    try {
+        var data = await apiFetch("/admin/calibration/config");
+        enabledEl.checked = !!data.calibration_primer;
+        textEl.value = data.calibration_primer_text || "";
+        if (calibrationDefaultText === null) calibrationDefaultText = data.calibration_primer_text || "";
+        if (statusEl) {
+            var label = data.primary_user_label || "Dana";
+            statusEl.innerHTML = "Injected into every model's system prompt. Use <code>{user}</code> as a placeholder \u2014 currently substituted with <strong>" + esc(label) + "</strong> (edit in Budget Settings).";
+        }
+    } catch (err) {
+        if (statusEl) statusEl.textContent = "Could not load calibration primer: " + err.message;
+    }
+}
+window.loadCalibrationConfig = loadCalibrationConfig;
+
+async function saveCalibrationConfig() {
+    var enabledEl = document.getElementById("calibration-primer-enabled");
+    var textEl = document.getElementById("calibration-primer-text");
+    var button = document.getElementById("btn-calibration-save");
+    var statusEl = document.getElementById("calibration-primer-status");
+    if (!enabledEl || !textEl) return;
+    var payload = {
+        calibration_primer: !!enabledEl.checked,
+        calibration_primer_text: String(textEl.value || ""),
+    };
+    if (button) button.disabled = true;
+    try {
+        await apiFetch("/admin/calibration/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+        showToast("Calibration primer saved", "success");
+        if (statusEl) {
+            var prev = statusEl.innerHTML;
+            statusEl.textContent = "Saved. Takes effect on next model turn.";
+            setTimeout(function() { loadCalibrationConfig(); }, 1500);
+        }
+    } catch (err) {
+        showToast("Save failed: " + err.message, "error");
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+window.saveCalibrationConfig = saveCalibrationConfig;
+
+function resetCalibrationConfig() {
+    var textEl = document.getElementById("calibration-primer-text");
+    if (!textEl) return;
+    if (calibrationDefaultText !== null) {
+        textEl.value = calibrationDefaultText;
+        showToast("Reverted to last-loaded text. Click Save to persist.", "info");
+    } else {
+        loadCalibrationConfig();
+    }
+}
+window.resetCalibrationConfig = resetCalibrationConfig;
 
 /* -- Database -------------------------------------------------------- */
 
@@ -4752,6 +4821,8 @@ function init() {
     });
     bindClick("btn-usage-save-config", saveUsageConfig);
     bindClick("btn-usage-export", exportUsageCsv);
+    bindClick("btn-calibration-save", saveCalibrationConfig);
+    bindClick("btn-calibration-reset", resetCalibrationConfig);
     bindClick("btn-save-sans", saveSANs);
     bindClick("btn-activate-license", activateLicense);
 
