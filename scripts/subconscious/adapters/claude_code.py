@@ -9,7 +9,9 @@ Claude Code context injection points:
 This adapter renders ContextEnvelope for points 1 and 2.
 """
 
+import datetime
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -21,6 +23,18 @@ from canonical_store import ContextEnvelope, Memory
 # Token budget estimates (chars, not tokens — conservative 4:1 ratio)
 SESSION_START_BUDGET = 16000   # One-shot injection at start
 PROMPT_SUBMIT_BUDGET = 4000   # Per-prompt refresh (lightweight)
+
+
+_DATE_LITERAL_RE = re.compile(r"\b(?:TODAY|today)\s*=\s*\d{4}-\d{2}-\d{2}\b")
+
+
+def _refresh_today(text: str) -> str:
+    """Rewrite TODAY=YYYY-MM-DD literals to live date at emission time."""
+    if not text:
+        return text
+    return _DATE_LITERAL_RE.sub(
+        f"TODAY={datetime.date.today().isoformat()}", text
+    )
 
 
 def render_session_start(envelope: ContextEnvelope) -> str:
@@ -43,7 +57,7 @@ def render_session_start(envelope: ContextEnvelope) -> str:
         char_budget = SESSION_START_BUDGET - 500  # reserve for header/footer
         chars_used = 0
         for mem in guidance:
-            display = f"- [{mem.type}] {mem.display_text()}"
+            display = f"- [{mem.type}] {_refresh_today(mem.display_text())}"
             if chars_used + len(display) > char_budget:
                 lines.append(f"- [note] {len(guidance) - len([m for m in guidance if m.char_len() + chars_used <= char_budget])} items truncated for budget")
                 break
@@ -97,7 +111,7 @@ def render_prompt_submit(envelope: ContextEnvelope,
     ]
     if recent_corrections:
         for c in recent_corrections[:3]:
-            lines.append(f"- [correction] {c.text[:200]}")
+            lines.append(f"- [correction] {_refresh_today(c.text[:200])}")
 
     if not lines:
         return ""

@@ -13,7 +13,9 @@ Output format differences from Claude Code:
   - UserPromptSubmit: JSON object with "systemMessage" key (Codex-specific)
 """
 
+import datetime
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -25,6 +27,18 @@ from canonical_store import ContextEnvelope, Memory
 # Token budget estimates (chars, not tokens — conservative 4:1 ratio)
 SESSION_START_BUDGET = 16000   # One-shot injection at start
 PROMPT_SUBMIT_BUDGET = 6000    # Codex is more tolerant of system messages
+
+
+_DATE_LITERAL_RE = re.compile(r"\b(?:TODAY|today)\s*=\s*\d{4}-\d{2}-\d{2}\b")
+
+
+def _refresh_today(text: str) -> str:
+    """Rewrite TODAY=YYYY-MM-DD literals to live date at emission time."""
+    if not text:
+        return text
+    return _DATE_LITERAL_RE.sub(
+        f"TODAY={datetime.date.today().isoformat()}", text
+    )
 
 
 def render_session_start(envelope: ContextEnvelope) -> str:
@@ -47,15 +61,15 @@ def render_session_start(envelope: ContextEnvelope) -> str:
         chars_used = 0
         for mem in guidance:
             if mem.type == "invariant":
-                ctx = getattr(mem, "context_when", "")
-                enf = getattr(mem, "enforce", "")
-                avd = getattr(mem, "avoid", "")
+                ctx = _refresh_today(getattr(mem, "context_when", ""))
+                enf = _refresh_today(getattr(mem, "enforce", ""))
+                avd = _refresh_today(getattr(mem, "avoid", ""))
                 if ctx and enf and avd:
                     display = f"- [invariant] When {ctx}: enforce {enf}; avoid {avd}"
                 else:
-                    display = f"- [invariant] {mem.display_text()}"
+                    display = f"- [invariant] {_refresh_today(mem.display_text())}"
             else:
-                display = f"- [{mem.type}] {mem.display_text()}"
+                display = f"- [{mem.type}] {_refresh_today(mem.display_text())}"
 
             if chars_used + len(display) > char_budget:
                 remaining = len(guidance) - len(
@@ -106,17 +120,17 @@ def render_prompt_submit(envelope: ContextEnvelope,
         # Full dump on first 3 prompts
         for mem in envelope.guidance:
             if mem.type == "invariant":
-                ctx = getattr(mem, "context_when", "")
-                enf = getattr(mem, "enforce", "")
-                avd = getattr(mem, "avoid", "")
+                ctx = _refresh_today(getattr(mem, "context_when", ""))
+                enf = _refresh_today(getattr(mem, "enforce", ""))
+                avd = _refresh_today(getattr(mem, "avoid", ""))
                 if ctx and enf and avd:
                     whisper_lines.append(
                         f"- [invariant] When {ctx}: enforce {enf}; avoid {avd}"
                     )
                 else:
-                    whisper_lines.append(f"- [invariant] {mem.display_text()}")
+                    whisper_lines.append(f"- [invariant] {_refresh_today(mem.display_text())}")
             else:
-                whisper_lines.append(f"- [{mem.type}] {mem.display_text()}")
+                whisper_lines.append(f"- [{mem.type}] {_refresh_today(mem.display_text())}")
     else:
         # After warmup: only high-confidence corrections
         recent_corrections = [
@@ -124,7 +138,7 @@ def render_prompt_submit(envelope: ContextEnvelope,
             if m.type == "correction" and m.confidence >= 0.7
         ]
         for c in recent_corrections[:3]:
-            whisper_lines.append(f"- [correction] {c.text[:200]}")
+            whisper_lines.append(f"- [correction] {_refresh_today(c.text[:200])}")
 
     if not whisper_lines:
         return ""
