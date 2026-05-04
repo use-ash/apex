@@ -223,6 +223,7 @@ from context import (
     _get_memory_prompt, _get_workspace_context,
     _get_context_energy_prompt,
     _get_temporal_context,
+    _get_calibration_primer,
 )
 from agent_sdk import _load_attachment
 
@@ -342,7 +343,8 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
         workspace_ctx = _get_workspace_context(chat_id)
         temporal_ctx = _get_temporal_context(chat_id)
         context_energy = _get_context_energy_prompt(chat_id)
-        ctx_prefix = f"{profile_prompt}{group_roster_prompt}{memory_prompt}{workspace_ctx}{temporal_ctx}{context_energy}"
+        calibration = _get_calibration_primer(chat_id)
+        ctx_prefix = f"{profile_prompt}{group_roster_prompt}{memory_prompt}{workspace_ctx}{temporal_ctx}{context_energy}{calibration}"
         full_prompt = f"{ctx_prefix}{prompt}" if ctx_prefix else prompt
 
         # Fetch wider window, then classify: crash recovery / stale return / cold call
@@ -703,8 +705,9 @@ async def _run_ollama_chat(chat_id: str, prompt: str, model: str | None = None,
     workspace_ctx = _get_workspace_context(chat_id)
     temporal_ctx = _get_temporal_context(chat_id)
     context_energy = _get_context_energy_prompt(chat_id)
-    if profile_prompt or group_roster_prompt or memory_prompt or workspace_ctx or temporal_ctx or context_energy:
-        sys_prompt = f"{sys_prompt}\n\n{profile_prompt}{group_roster_prompt}{memory_prompt}{workspace_ctx}{temporal_ctx}{context_energy}"
+    calibration = _get_calibration_primer(chat_id)
+    if profile_prompt or group_roster_prompt or memory_prompt or workspace_ctx or temporal_ctx or context_energy or calibration:
+        sys_prompt = f"{sys_prompt}\n\n{profile_prompt}{group_roster_prompt}{memory_prompt}{workspace_ctx}{temporal_ctx}{context_energy}{calibration}"
 
     # In group chats, conversation history prefixes other agents' messages with
     # [AgentName]: for attribution. GPT-series models learn this pattern and can

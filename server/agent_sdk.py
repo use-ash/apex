@@ -29,6 +29,7 @@ from context import (
     _get_memory_prompt, _get_workspace_context, _get_whisper_text,
     _get_context_energy_prompt, _compute_context_used,
     _get_temporal_context,
+    _get_calibration_primer,
 )
 
 try:
@@ -661,8 +662,9 @@ def _build_turn_payload(chat_id: str, prompt: str, attachments: list[dict]) -> t
         temporal_ctx = ""
         whisper = ""
         context_energy = ""
+        calibration = ""
         metacog = ""
-        log(f"agent_sdk: isolated profile chat={chat_id} — suppressed memory/whisper/workspace/metacog/energy")
+        log(f"agent_sdk: isolated profile chat={chat_id} — suppressed memory/whisper/workspace/metacog/energy/calibration")
     else:
         group_roster_prompt = _get_group_roster_prompt(chat_id, user_message=query_prompt)
         memory_prompt = "" if group_roster_prompt else _get_memory_prompt(chat_id, user_message=query_prompt)
@@ -671,6 +673,7 @@ def _build_turn_payload(chat_id: str, prompt: str, attachments: list[dict]) -> t
         whisper = _get_whisper_text(chat_id, current_prompt=query_prompt,
                                    model_hint="claude-sdk") if ENABLE_SUBCONSCIOUS_WHISPER else ""
         context_energy = _get_context_energy_prompt(chat_id)
+        calibration = _get_calibration_primer(chat_id)
         # Metacognition: when unified memory is active, metacognition results
         # are already merged into the whisper Type 2 path (context.py).
         # Only call the separate metacognition system when unified memory is off.
@@ -681,7 +684,7 @@ def _build_turn_payload(chat_id: str, prompt: str, attachments: list[dict]) -> t
                 metacog = retrieve_prior_context(query_prompt)
             except Exception as e:
                 log.warning("metacognition import/call failed: %s", e)
-    prefix = f"{profile_prompt}{group_roster_prompt}{memory_prompt}{workspace_ctx}{temporal_ctx}{context_energy}{whisper}{metacog}".strip()
+    prefix = f"{profile_prompt}{group_roster_prompt}{memory_prompt}{workspace_ctx}{temporal_ctx}{context_energy}{calibration}{whisper}{metacog}".strip()
     final_prompt = query_prompt or ("What do you see?" if image_blocks else "")
     if prefix:
         final_prompt = f"{prefix}\n\n{final_prompt}".strip() if final_prompt else prefix
