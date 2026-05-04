@@ -27,6 +27,7 @@ from db import (
     _get_group_members, _get_persona_memories, _bump_memory_access,
     _get_last_assistant_speaker,
     _now, SYSTEM_PROFILE_ID, _get_chat_settings,
+    _get_chat_stats,
     verify_system_prompt, _persist_compaction_at,
 )
 import env
@@ -222,6 +223,96 @@ def _get_live_state_snapshot() -> str:
     if len(lines) <= 1:
         return ""
     return "<system-reminder>\n" + "\n".join(lines) + "\n</system-reminder>"
+
+
+def _format_relative_age(iso_str: str | None, now_utc: datetime) -> str:
+    """Format an ISO-8601 timestamp as 'N {unit} ago' relative to now_utc.
+
+    Returns '' when the input is missing/unparseable.
+    """
+    if not iso_str:
+        return ""
+    try:
+        # Tolerate both 'Z' and explicit offset; messages.created_at is UTC ISO.
+        s = iso_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return ""
+    delta = now_utc - dt
+    secs = max(0, int(delta.total_seconds()))
+    if secs < 60:
+        return f"{secs}s ago"
+    if secs < 3600:
+        return f"{secs // 60}m ago"
+    if secs < 86400:
+        return f"{secs // 3600}h ago"
+    days = secs // 86400
+    if days < 30:
+        return f"{days}d ago"
+    if days < 365:
+        return f"{days // 30}mo ago"
+    return f"{days // 365}y ago"
+
+
+def _get_temporal_context(chat_id: str) -> str:
+    """Per-turn temporal anchor: live wall clock + this chat's stats.
+
+    Refreshed every turn (NOT gated by `_session_context_sent`) so AI sessions
+    always see a current 'now' and an accurate session age. Replaces the
+    static `TODAY=...` SessionStart primer pattern, which lags as soon as the
+    session crosses a day boundary or runs over a long span.
+
+    Cheap: one wall-clock read + one indexed COUNT/MIN/MAX/SUM over messages
+    for this chat. Failures degrade silently — never crashes the stream.
+    """
+    try:
+        now_utc = datetime.now(timezone.utc)
+        now_et = now_utc.astimezone(ZoneInfo("America/New_York"))
+        now_pt = now_utc.astimezone(ZoneInfo("America/Los_Angeles"))
+        today = now_et.date()
+        quarter = (today.month - 1) // 3 + 1
+        weekday = today.strftime("%A")
+
+        lines = ["# Temporal Context (live, refreshed every turn)"]
+        lines.append(
+            f"NOW: ET {now_et.strftime('%Y-%m-%d %H:%M:%S')} | "
+            f"PT {now_pt.strftime('%H:%M:%S')} | "
+            f"UTC {now_utc.strftime('%Y-%m-%d %H:%M:%SZ')}"
+        )
+        lines.append(f"TODAY: {today.isoformat()} ({weekday}) — Q{quarter} {today.year}")
+
+        try:
+            stats = _get_chat_stats(chat_id) if chat_id else None
+        except Exception:
+            stats = None
+        if stats and stats.get("message_count", 0) > 0:
+            first_age = _format_relative_age(stats.get("first_message_at"), now_utc)
+            last_age = _format_relative_age(stats.get("last_message_at"), now_utc)
+            dur_min = stats.get("total_duration_ms", 0) / 60000.0
+            cost = stats.get("total_cost_usd", 0.0)
+            tin = stats.get("total_tokens_in", 0)
+            tout = stats.get("total_tokens_out", 0)
+            lines.append(
+                f"\n## This Chat ({chat_id[:8]})\n"
+                f"Started: {stats.get('first_message_at') or '?'} ({first_age})\n"
+                f"Last msg: {stats.get('last_message_at') or '?'} ({last_age})\n"
+                f"Messages: {stats.get('message_count', 0)} | "
+                f"Tokens: {tin:,} in / {tout:,} out | "
+                f"Cost: ${cost:.2f} | "
+                f"Tool time: {dur_min:.1f} min"
+            )
+
+        lines.append(
+            "\nRULE: Compute durations from NOW above, not from training priors. "
+            "When asked about 'how long ago' or 'how long this session', use the "
+            "stats block — do not pattern-match from memory."
+        )
+        return "<system-reminder>\n" + "\n".join(lines) + "\n</system-reminder>"
+    except Exception as e:
+        log(f"_get_temporal_context failed for chat={chat_id}: {e}")
+        return ""
 
 
 # ---------------------------------------------------------------------------
