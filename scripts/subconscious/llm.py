@@ -2,6 +2,7 @@
 
 Calls Ollama locally; falls back to heuristic keyword matching.
 """
+import datetime as _dt
 import json
 import re
 import sys
@@ -24,6 +25,67 @@ _CORRECTION_WORDS = re.compile(
 _TOOL_RESULT_PATTERN = re.compile(
     r"^\s*\{['\"](?:role|tool_use_id|type)['\"]"
 )
+
+# Relative-date anchoring: bind natural-language relatives to absolute dates
+# at extraction time, so a saved rule containing "yesterday" stays correct
+# weeks later. Idempotent — won't re-anchor an already-anchored phrase.
+_REL_DATE_PATTERN = re.compile(
+    r"\b(yesterday|today|tomorrow|last week|this week|next week|"
+    r"last month|this month|next month)\b"
+    r"(?!\s*\(\d{4}-\d{2}-\d{2}\))",
+    re.IGNORECASE,
+)
+
+
+def _anchor_relatives(text: str, anchor: _dt.date | None = None) -> str:
+    """Append (YYYY-MM-DD) to natural-language relative date references.
+
+    'yesterday' -> 'yesterday (2026-05-02)'. Anchors to `anchor` (default today).
+    Idempotent via a negative lookahead: won't double-anchor.
+    """
+    if not text:
+        return text
+    if anchor is None:
+        anchor = _dt.date.today()
+
+    def _resolve(word: str) -> _dt.date:
+        w = word.lower()
+        if w == "yesterday":   return anchor - _dt.timedelta(days=1)
+        if w == "today":       return anchor
+        if w == "tomorrow":    return anchor + _dt.timedelta(days=1)
+        if w == "last week":   return anchor - _dt.timedelta(days=7)
+        if w == "this week":   return anchor
+        if w == "next week":   return anchor + _dt.timedelta(days=7)
+        if w == "last month":  return anchor - _dt.timedelta(days=30)
+        if w == "this month":  return anchor
+        if w == "next month":  return anchor + _dt.timedelta(days=30)
+        return anchor
+
+    def _sub(m: re.Match) -> str:
+        word = m.group(1)
+        return f"{word} ({_resolve(word).isoformat()})"
+
+    return _REL_DATE_PATTERN.sub(_sub, text)
+
+
+def _anchor_extraction(result: dict, anchor: _dt.date | None = None) -> dict:
+    """Walk an extract_session result dict and anchor relatives in all text fields."""
+    if anchor is None:
+        anchor = _dt.date.today()
+    for key in ("corrections", "decisions", "pending"):
+        for item in result.get(key, []) or []:
+            if isinstance(item, dict) and "text" in item:
+                item["text"] = _anchor_relatives(item["text"], anchor)
+    summary = result.get("summary")
+    if isinstance(summary, dict) and "text" in summary:
+        summary["text"] = _anchor_relatives(summary["text"], anchor)
+    for inv in result.get("invariants", []) or []:
+        if not isinstance(inv, dict):
+            continue
+        for field in ("context", "enforce", "avoid"):
+            if field in inv:
+                inv[field] = _anchor_relatives(inv[field], anchor)
+    return result
 
 
 def _normalize(text: str, max_len: int = 200) -> str:
@@ -54,15 +116,22 @@ def _clean_llm_json(raw: str) -> str:
     return raw
 
 
-def extract_session(transcript: str, messages: list[dict]) -> dict:
-    """Extract corrections, decisions, pending, summary, and invariants from a session."""
+def extract_session(transcript: str, messages: list[dict],
+                    session_date: _dt.date | None = None) -> dict:
+    """Extract corrections, decisions, pending, summary, and invariants from a session.
+
+    `session_date` anchors relative date phrases ('yesterday', 'last week')
+    to absolute dates at extraction time. Defaults to today.
+    """
     try:
         result = _extract_via_llm(transcript)
     except Exception:
         result = _extract_heuristic(messages)
     # Extract invariants independently (MemCollab contrastive pipeline)
-    result["invariants"] = extract_invariants(transcript)
-    return result
+    result["invariants"] = extract_invariants(transcript, session_date=session_date)
+    # Anchor natural-language relatives to absolute dates so saved rules
+    # don't drift as the calendar advances.
+    return _anchor_extraction(result, anchor=session_date)
 
 
 def _extract_via_llm(transcript: str) -> dict:
@@ -114,19 +183,29 @@ def _extract_via_llm(transcript: str) -> dict:
     }
 
 
-def extract_invariants(transcript: str) -> list[dict]:
+def extract_invariants(transcript: str,
+                       session_date: _dt.date | None = None) -> list[dict]:
     """Extract enforce/avoid invariants from a session transcript.
 
     MemCollab-inspired: produces model-agnostic behavioral rules structured as
     (context, enforce, avoid) tuples. Uses contrastive validation across two
     different model families to filter out model-specific reasoning artifacts.
+
+    `session_date` anchors relative date phrases. Defaults to today.
     """
     try:
         candidates = _extract_invariants_pass1(transcript)
         if not candidates:
             return []
         validated = _validate_invariants_pass2(candidates, transcript)
-        return validated[:INVARIANT_MAX_PER_SESSION]
+        validated = validated[:INVARIANT_MAX_PER_SESSION]
+        # Anchor relatives in extracted invariants
+        anchor = session_date or _dt.date.today()
+        for inv in validated:
+            for field in ("context", "enforce", "avoid"):
+                if field in inv:
+                    inv[field] = _anchor_relatives(inv[field], anchor)
+        return validated
     except Exception:
         return []
 
