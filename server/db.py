@@ -1135,15 +1135,24 @@ def _create_chat(title: str = "New Channel", model: str | None = None, chat_type
     return cid
 
 
-def _get_chats() -> list[dict]:
+def _get_chats(include_last_message_at: bool = False) -> list[dict]:
     with _db_lock:
         conn = _get_db()
-        rows = conn.execute(
-            "SELECT c.id, c.title, c.claude_session_id, c.created_at, c.updated_at, "
-            "c.model, c.type, c.category, c.profile_id, ap.name, ap.avatar "
-            "FROM chats c LEFT JOIN agent_profiles ap ON c.profile_id = ap.id "
-            "ORDER BY c.updated_at DESC"
-        ).fetchall()
+        if include_last_message_at:
+            rows = conn.execute(
+                "SELECT c.id, c.title, c.claude_session_id, c.created_at, c.updated_at, "
+                "c.model, c.type, c.category, c.profile_id, ap.name, ap.avatar, "
+                "(SELECT MAX(m.created_at) FROM messages m WHERE m.chat_id = c.id) AS last_message_at "
+                "FROM chats c LEFT JOIN agent_profiles ap ON c.profile_id = ap.id "
+                "ORDER BY c.updated_at DESC"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT c.id, c.title, c.claude_session_id, c.created_at, c.updated_at, "
+                "c.model, c.type, c.category, c.profile_id, ap.name, ap.avatar "
+                "FROM chats c LEFT JOIN agent_profiles ap ON c.profile_id = ap.id "
+                "ORDER BY c.updated_at DESC"
+            ).fetchall()
         # Batch-fetch member counts + primary agent for groups
         group_ids = [r[0] for r in rows if (r[6] or "chat") == "group"]
         group_meta: dict[str, dict] = {}
@@ -1167,6 +1176,8 @@ def _get_chats() -> list[dict]:
         d = {"id": r[0], "title": r[1], "claude_session_id": r[2],
              "created_at": r[3], "updated_at": r[4], "model": r[5], "type": r[6], "category": r[7] or None,
              "profile_id": r[8] or "", "profile_name": r[9] or "", "profile_avatar": r[10] or ""}
+        if include_last_message_at and len(r) > 11:
+            d["last_message_at"] = r[11]
         gm = group_meta.get(r[0])
         if gm:
             d["member_count"] = gm["member_count"]
@@ -1177,6 +1188,32 @@ def _get_chats() -> list[dict]:
                 d["profile_avatar"] = gm["primary_avatar"]
         result.append(d)
     return result
+
+
+def _get_chat_stats(chat_id: str) -> dict:
+    """Aggregate timing/usage stats for a chat — for API consumers that
+    want temporal info without pulling the full message list."""
+    with _db_lock:
+        conn = _get_db()
+        row = conn.execute(
+            "SELECT MIN(created_at), MAX(created_at), COUNT(*), "
+            "COALESCE(SUM(duration_ms), 0), "
+            "COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0), "
+            "COALESCE(SUM(cost_usd), 0.0) "
+            "FROM messages WHERE chat_id = ?",
+            (chat_id,),
+        ).fetchone()
+        conn.close()
+    return {
+        "chat_id": chat_id,
+        "first_message_at": row[0],
+        "last_message_at": row[1],
+        "message_count": int(row[2] or 0),
+        "total_duration_ms": int(row[3] or 0),
+        "total_tokens_in": int(row[4] or 0),
+        "total_tokens_out": int(row[5] or 0),
+        "total_cost_usd": float(row[6] or 0.0),
+    }
 
 
 def _get_chat(chat_id: str) -> dict | None:

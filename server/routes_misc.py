@@ -169,6 +169,32 @@ async def health():
     })
 
 
+@misc_router.get("/api/now")
+async def api_now():
+    """Server wall clock. Lets API consumers compute 'time since X'
+    against the same clock that wrote the row, avoiding client skew.
+    Returns ISO-8601 in UTC + ET + PT, plus a unix epoch for diffing."""
+    from datetime import datetime, timezone, timedelta
+    now_utc = datetime.now(timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        et = now_utc.astimezone(ZoneInfo("America/New_York"))
+        pt = now_utc.astimezone(ZoneInfo("America/Los_Angeles"))
+        et_iso = et.isoformat(timespec="seconds")
+        pt_iso = pt.isoformat(timespec="seconds")
+    except Exception:
+        # Fallback: best-effort fixed offsets (wrong during DST transitions
+        # but never crashes if zoneinfo data is missing).
+        et_iso = (now_utc - timedelta(hours=4)).isoformat(timespec="seconds") + "-04:00"
+        pt_iso = (now_utc - timedelta(hours=7)).isoformat(timespec="seconds") + "-07:00"
+    return JSONResponse({
+        "utc": now_utc.isoformat(timespec="seconds"),
+        "utc_epoch": int(now_utc.timestamp()),
+        "et": et_iso,
+        "pt": pt_iso,
+    })
+
+
 @misc_router.get("/api/embedding/status")
 async def api_embedding_status():
     """Return embedding index status."""
