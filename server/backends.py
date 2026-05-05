@@ -270,8 +270,8 @@ def validate_backend_attachments(backend: str, attachments: list[dict] | None) -
 
 async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
                            attachments: list[dict] | None = None) -> dict:
-    """Run a chat response via the Codex CLI (gpt-5.4, o3, o4-mini)."""
-    effective_model = model or "codex:gpt-5.4"
+    """Run a chat response via the Codex CLI (gpt-5.5, gpt-5.4, o3, o4-mini)."""
+    effective_model = model or "codex:gpt-5.5"
     cli_model = effective_model.removeprefix("codex:")
 
     # Models that require OpenAI API key (not available on ChatGPT OAuth)
