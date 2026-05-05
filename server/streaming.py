@@ -150,8 +150,6 @@ def _vacuum_dead_ws(chat_id: str) -> int:
         _ws_chat.pop(w, None)
     if not ws_set:
         _chat_ws.pop(chat_id, None)
-    if dead:
-        log(f"WSDIAG vacuum chat={chat_id[:8]} dead={len(dead)} remaining={len(ws_set)}")
     return len(dead)
 
 
@@ -178,8 +176,6 @@ def _attach_ws(ws: WebSocket, chat_id: str) -> None:
     # Seed the ping-ts map so a just-attached socket gets a full grace period
     # before the prober can evict it for staleness.
     _last_client_ping.setdefault(ws, time.time())
-    # WSDIAG: observability for WS streaming race bug. Correlate by ws_id+chat.
-    log(f"WSDIAG attach ws={id(ws) & 0xFFFFFF:06x} old={(old or '_')[:8]} new={chat_id[:8]} set={len(_chat_ws.get(chat_id, ()))}")
 
 
 def _detach_ws(ws: WebSocket) -> None:
@@ -193,8 +189,6 @@ def _detach_ws(ws: WebSocket) -> None:
             old_set.discard(ws)
             if not old_set:
                 _chat_ws.pop(old, None)
-        # WSDIAG
-        log(f"WSDIAG detach ws={id(ws) & 0xFFFFFF:06x} was={old[:8]} set={len(_chat_ws.get(old, ()))}")
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +254,6 @@ async def _ws_liveness_prober() -> None:
     need a pong because the client already tolerates unknown {type:...}
     messages and starlette raises immediately on a dead socket.
     """
-    log("WSDIAG liveness prober started")
     while True:
         try:
             await asyncio.sleep(_LIVENESS_INTERVAL_SEC)
@@ -298,10 +291,6 @@ async def _ws_liveness_prober() -> None:
                     _last_client_ping.pop(ws, None)
                     await _force_close_ws(ws)
                     evicted += 1
-                    log(
-                        f"WSDIAG stale_ping_evict ws={id(ws) & 0xFFFFFF:06x} "
-                        f"chat={chat_id[:8]} age={int(now - last_ping)}s"
-                    )
                     continue
                 ok = await _probe_one_ws(ws)
                 if not ok:
@@ -317,14 +306,10 @@ async def _ws_liveness_prober() -> None:
                     _last_client_ping.pop(ws, None)
                     await _force_close_ws(ws)
                     evicted += 1
-                    log(f"WSDIAG probe_evict ws={id(ws) & 0xFFFFFF:06x} chat={chat_id[:8]}")
-            if evicted:
-                log(f"WSDIAG liveness tick probed={len(snapshot)} evicted={evicted}")
         except asyncio.CancelledError:
-            log("WSDIAG liveness prober cancelled")
             raise
         except Exception as e:
-            log(f"WSDIAG liveness prober error (non-fatal): {e}")
+            log(f"ws liveness prober error (non-fatal): {e}")
 
 
 def start_liveness_prober() -> None:
@@ -1375,7 +1360,6 @@ def _buffer_stream_event(chat_id: str, payload: dict) -> None:
 # ---------------------------------------------------------------------------
 
 _drop_logged: set[str] = set()  # tracks (chat:stream) combos already logged as dropped
-_wsdiag_text_logged: set[str] = set()  # WSDIAG: first text frame per stream only (avoid flood)
 
 async def _send_stream_event(chat_id: str, payload: dict) -> None:
     payload = dict(payload)
@@ -1389,17 +1373,6 @@ async def _send_stream_event(chat_id: str, payload: dict) -> None:
             return
         payload["text"] = filtered_text
     _buffer_stream_event(chat_id, payload)
-    # WSDIAG: observability for WS streaming race bug. Log non-text frames
-    # always; text frames only on first-per-stream to avoid flooding.
-    _ptype = str(payload.get("type") or "")
-    _should_log = False
-    if _ptype != "text":
-        _should_log = True
-    elif payload_stream_id:
-        _tkey = f"{chat_id}:{payload_stream_id}"
-        if _tkey not in _wsdiag_text_logged:
-            _wsdiag_text_logged.add(_tkey)
-            _should_log = True
     send_lock = _get_chat_send_lock(chat_id)
     async with send_lock:
         # Vacuum zombie WebSockets (disconnected but still registered) before
@@ -1409,10 +1382,6 @@ async def _send_stream_event(chat_id: str, payload: dict) -> None:
         # transition, browser tab backgrounded).
         _vacuum_dead_ws(chat_id)
         ws_set = _chat_ws.get(chat_id)
-        if _should_log:
-            _recips = len(ws_set) if ws_set else 0
-            _seq = payload.get("seq", "_")
-            log(f"WSDIAG send chat={chat_id[:8]} type={_ptype} sid={payload_stream_id[:8]} seq={_seq} recips={_recips}")
         if not ws_set:
             drop_key = f"{chat_id}:{payload_stream_id}"
             if drop_key not in _drop_logged:

@@ -819,8 +819,6 @@ async function attachToStream(socket, chatId, options = {}) {
     return;
   }
   dbg('sending attach:', chatId, 'reason=', reason, 'reloadBeforeAttach=', reloadBeforeAttach);
-  // WSDIAG
-  console.log('WSDIAG attach chat=' + (chatId || '').slice(0,8) + ' reason=' + (reason || '_') + ' site=attachToStream');
   socket.send(JSON.stringify({action: 'attach', chat_id: chatId}));
 }
 
@@ -1015,21 +1013,6 @@ function connect() {
       const msg = JSON.parse(e.data);
       if (msg.type === 'pong') { lastPong = Date.now(); return; }
       dbg(' event:', msg.type, msg);
-      // WSDIAG: observability for WS streaming race bug. Text frames sampled
-      // (first-per-stream) so we don't flood console on streaming responses.
-      if (msg && msg.type && msg.type !== 'text') {
-        var _cc = (currentChat || '').slice(0,8);
-        var _sid = (msg.stream_id || '').slice(0,8);
-        var _mc = (msg.chat_id || '').slice(0,8);
-        console.log('WSDIAG recv type=' + msg.type + ' chat=' + _mc + ' sid=' + _sid + ' seq=' + (msg.seq == null ? '_' : msg.seq) + ' curr=' + _cc);
-      } else if (msg && msg.type === 'text' && msg.stream_id) {
-        window._wsdiagTextSeen = window._wsdiagTextSeen || {};
-        var _tk = (msg.chat_id || '') + ':' + msg.stream_id;
-        if (!window._wsdiagTextSeen[_tk]) {
-          window._wsdiagTextSeen[_tk] = 1;
-          console.log('WSDIAG recv type=text chat=' + (msg.chat_id || '').slice(0,8) + ' sid=' + msg.stream_id.slice(0,8) + ' seq=' + (msg.seq == null ? '_' : msg.seq) + ' curr=' + (currentChat || '').slice(0,8) + ' (first)');
-        }
-      }
       handleEvent(msg);
     } catch (err) {
       reportError('ws message parse', err);
@@ -1806,21 +1789,6 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
   const el = document.getElementById('messages');
   // B-42: drop stream events that belong to a different chat
   const _B42_STREAM = new Set(['stream_start','stream_ack','stream_queued','text','thinking','tool_use','tool_result','stream_end','active_streams','queue_update']);
-  // WSDIAG rx: log every streaming-relevant frame at ingress so the stuck-
-  // stream diagnosis can distinguish (a) frames stopped arriving,
-  // (b) frames arriving for a stream_id we don't have active, (c) frames
-  // arriving fine but render layer stalled. Correlate with server apex.log
-  // WSDIAG send lines by chat=<8> + sid=<8>. Only the streaming frames —
-  // skip heartbeat/system chatter to keep the console readable.
-  if (msg && _B42_STREAM.has(msg.type)) {
-    try {
-      var _rxSid = String(msg.stream_id || '').slice(0,8);
-      var _rxChat = String(msg.chat_id || '').slice(0,8);
-      var _rxCurr = String(currentChat || '').slice(0,8);
-      var _rxActiveSids = Object.keys(_streamCtx || {}).map(function(k){return k.slice(0,8);}).join(',');
-      console.log('WSDIAG rx type=' + msg.type + ' chat=' + _rxChat + ' sid=' + _rxSid + ' curr=' + _rxCurr + ' activeSids=[' + _rxActiveSids + ']');
-    } catch(_e) {}
-  }
   // B-42b: fall back to sessionStorage so a transiently-nulled currentChat
   // (init race, tab refocus, stream teardown sweep) doesn't silently drop
   // our own in-flight stream events.
@@ -1834,16 +1802,7 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
     // back to the originating chat rebuilds an empty bubble.
     const _hasPreservedCtx = msg.stream_id && _streamCtx[msg.stream_id];
     if (!_hasPreservedCtx) {
-      // WSDIAG: always surface cross-chat drops (not just dbg) — this is the
-      // symptom of the streaming race bug we're hunting.
-      console.log('WSDIAG drop type=' + msg.type + ' chat=' + (msg.chat_id || '').slice(0,8) + ' vs curr=' + (_activeChat || '').slice(0,8) + ' sid=' + (msg.stream_id || '').slice(0,8) + ' reason=cross-chat');
       return;
-    }
-    // WSDIAG: tag the pass-through so we can trace preserved-ctx routing in logs.
-    if (msg.type === 'text' || msg.type === 'thinking') {
-      // (text/thinking events are the hot path; drop-log noise for others only)
-    } else {
-      console.log('WSDIAG pass-thru type=' + msg.type + ' chat=' + (msg.chat_id || '').slice(0,8) + ' vs curr=' + (_activeChat || '').slice(0,8) + ' sid=' + (msg.stream_id || '').slice(0,8) + ' reason=preserved-ctx');
     }
   }
   // B-42c: self-heal currentChat if it was nulled but the event matches sessionStorage
@@ -1889,7 +1848,6 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
       // thinking/text/tool_use events (which don't carry chat_id), so the
       // thinking pill stays pinned to the wrong chat for the rest of the turn.
       if (msg.chat_id && currentChat && msg.chat_id !== currentChat) {
-        console.log('WSDIAG drop stream_start chat=' + String(msg.chat_id).slice(0,8) + ' current=' + String(currentChat).slice(0,8) + ' sid=' + String(msg.stream_id || '').slice(0,8));
         break;
       }
       const sid = msg.stream_id || ('_s' + Date.now());
@@ -1918,7 +1876,6 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
     case 'stream_ack': {
       // Cross-chat leak guard — see stream_start above.
       if (msg.chat_id && currentChat && msg.chat_id !== currentChat) {
-        console.log('WSDIAG drop stream_ack chat=' + String(msg.chat_id).slice(0,8) + ' current=' + String(currentChat).slice(0,8) + ' sid=' + String(msg.stream_id || '').slice(0,8));
         break;
       }
       const sid = msg.stream_id || ('_s' + Date.now());
@@ -1949,7 +1906,6 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
     case 'stream_queued': {
       // Cross-chat leak guard — see stream_start above.
       if (msg.chat_id && currentChat && msg.chat_id !== currentChat) {
-        console.log('WSDIAG drop stream_queued chat=' + String(msg.chat_id).slice(0,8) + ' current=' + String(currentChat).slice(0,8) + ' sid=' + String(msg.stream_id || '').slice(0,8));
         break;
       }
       _removeThinkingIndicator();
@@ -2201,7 +2157,6 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
       // with a rapid chat switch; without this gate the replayed stream rebuilds
       // its thinking pill inside the wrong chat's transcript.
       if (msg.chat_id && currentChat && msg.chat_id !== currentChat) {
-        console.log('WSDIAG drop stream_reattached chat=' + String(msg.chat_id).slice(0,8) + ' current=' + String(currentChat).slice(0,8) + ' sid=' + String(msg.stream_id || '').slice(0,8));
         break;
       }
       const sid = msg.stream_id || ('_s' + Date.now());
@@ -4106,10 +4061,6 @@ async function send(options = {}) {
   lastSubmittedPrompt = text;
   hideStopMenu();
   clearComposerDraft({keepFocus: true});
-  // WSDIAG: log at send boundary so we can correlate with server recv_attach
-  // and the subsequent stream_start frame. ws_chat_attached mismatch here is
-  // a smoking gun.
-  console.log('WSDIAG send chat=' + (currentChat || '').slice(0,8) + ' len=' + (text || '').length + ' wsState=' + (ws && ws.readyState));
   try {
     ws.send(JSON.stringify(msg));
   } catch (err) {
@@ -4444,8 +4395,6 @@ async function selectChat(id, title, chatType, category, options) {
   closeSidebar();
   // Attach WS to the selected chat so we receive live stream events
   if (!skipAttach && ws && ws.readyState === WebSocket.OPEN) {
-    // WSDIAG
-    console.log('WSDIAG attach chat=' + (id || '').slice(0,8) + ' site=selectChat');
     ws.send(JSON.stringify({action: 'attach', chat_id: id}));
   }
 
