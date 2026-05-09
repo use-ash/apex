@@ -39,11 +39,17 @@ def _load_guidance_items() -> list[dict]:
         # Convert Memory objects back to dict form for hash + rendering
         items = []
         for m in memories:
+            # display_text() already embeds [src: ...] when set; for the
+            # whisper render path we want the raw text + a separate
+            # source_anchor field so the rendering layer can place the
+            # suffix consistently across both load paths.
             item = {
                 "type": m.type,
-                "text": m.display_text(),
+                "text": m.text,
                 "confidence": m.confidence,
             }
+            if getattr(m, "source_anchor", ""):
+                item["source_anchor"] = m.source_anchor
             if m.type == "invariant":
                 item["context"] = m.context_when
                 item["enforce"] = m.enforce
@@ -124,17 +130,22 @@ def main():
                     return text
                 return date_literal_re.sub(f"TODAY={today_iso}", text)
 
+            def _src_suffix(item: dict) -> str:
+                a = item.get("source_anchor", "")
+                return f" [src: {a}]" if a else ""
+
             for item in invariants:
                 ctx = _refresh_today(item.get("context", ""))
                 enf = _refresh_today(item.get("enforce", ""))
                 avd = _refresh_today(item.get("avoid", ""))
+                suffix = _src_suffix(item)
                 if ctx and enf and avd:
-                    lines.append(f"- [invariant] When {ctx}: enforce {enf}; avoid {avd}")
+                    lines.append(f"- [invariant] When {ctx}: enforce {enf}; avoid {avd}{suffix}")
                 else:
-                    lines.append(f"- [invariant] {_refresh_today(item.get('text', ''))}")
+                    lines.append(f"- [invariant] {_refresh_today(item.get('text', ''))}{suffix}")
 
             for item in others:
-                lines.append(f"- [{item.get('type', 'note')}] {_refresh_today(item.get('text', ''))}")
+                lines.append(f"- [{item.get('type', 'note')}] {_refresh_today(item.get('text', ''))}{_src_suffix(item)}")
 
             if prompt_count >= 80:
                 lines.append(
