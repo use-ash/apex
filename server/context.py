@@ -225,6 +225,23 @@ def _get_live_state_snapshot() -> str:
     return "<system-reminder>\n" + "\n".join(lines) + "\n</system-reminder>"
 
 
+def _format_short_delta(seconds: int) -> str:
+    """Render a duration as a compact token: '45s', '2m', '3h', '1d'.
+
+    No 'ago' suffix — caller composes that. Returns '' for negative inputs.
+    """
+    secs = int(seconds)
+    if secs < 0:
+        return ""
+    if secs < 60:
+        return f"{secs}s"
+    if secs < 3600:
+        return f"{secs // 60}m"
+    if secs < 86400:
+        return f"{secs // 3600}h"
+    return f"{secs // 86400}d"
+
+
 def _format_relative_age(iso_str: str | None, now_utc: datetime) -> str:
     """Format an ISO-8601 timestamp as 'N {unit} ago' relative to now_utc.
 
@@ -1186,19 +1203,50 @@ def _get_recent_exchange_context(chat_id: str, pairs: int = 2) -> str:
     if not rows:
         return ""
     rows.reverse()
-    exchanges: list[str] = []
+    # Walk newest -> oldest, keep up to pairs*2 user/assistant items.
+    kept: list[tuple[str, str, str | None]] = []  # (role, text, ts_iso)
     i = len(rows) - 1
-    while i >= 0 and len(exchanges) < pairs * 2:
+    while i >= 0 and len(kept) < pairs * 2:
         role, content, ts = rows[i]
         if role in ("user", "assistant") and content and content.strip():
             text = content.strip()[:600]
             if role == "assistant":
                 text = text[:400]
-            exchanges.append(f"[{role}] {text}")
+            kept.append((role, text, ts))
         i -= 1
-    if not exchanges:
+    if not kept:
         return ""
-    exchanges.reverse()
+    kept.reverse()  # chronological: oldest -> newest
+
+    now_utc = datetime.now(timezone.utc)
+    GAP_THRESHOLD_SECS = 600  # 10 minutes
+
+    def _parse_ts(s: str | None) -> datetime | None:
+        if not s:
+            return None
+        try:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except Exception:
+            return None
+
+    exchanges: list[str] = []
+    prev_dt: datetime | None = None
+    for role, text, ts in kept:
+        dt = _parse_ts(ts)
+        meta_parts: list[str] = [role]
+        if dt is not None:
+            age_secs = max(0, int((now_utc - dt).total_seconds()))
+            meta_parts.append(f"{_format_short_delta(age_secs)} ago")
+            if prev_dt is not None:
+                gap_secs = int((dt - prev_dt).total_seconds())
+                if gap_secs >= GAP_THRESHOLD_SECS:
+                    meta_parts[-1] += f", +{_format_short_delta(gap_secs)} gap"
+            prev_dt = dt
+        meta = " ".join(meta_parts) if len(meta_parts) > 1 else meta_parts[0]
+        exchanges.append(f"[{meta}] {text}")
     block = "\n\n".join(exchanges)
     return (
         f"<system-reminder>\n# Recent Conversation (last {pairs} exchanges)\n"
