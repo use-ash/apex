@@ -116,6 +116,31 @@ def _clean_llm_json(raw: str) -> str:
     return raw
 
 
+# URL/path/chat-id detector for source-anchor heuristic fallback.
+# Captures: https://..., /absolute/path, ~/path, chat_abc123, paper titles in quotes.
+_ANCHOR_PATTERNS = [
+    re.compile(r"https?://[^\s)>\]]+"),
+    re.compile(r"(?<![\w/])(?:~/|/)[^\s)>\]]{3,}"),
+    re.compile(r"\b(?:chat|session|msg)[\s\-_]?[0-9a-f]{6,}\b", re.IGNORECASE),
+    re.compile(r"\barxiv:\d{4}\.\d{4,5}(?:v\d+)?\b", re.IGNORECASE),
+]
+
+
+def _find_source_anchor(text: str) -> str:
+    """Return the first external content reference in text, or '' if none.
+
+    Heuristic backstop: if the LLM extraction prompt fails to populate
+    source_anchor, scan the text for URLs/paths/chat-ids/arxiv-ids.
+    """
+    if not text:
+        return ""
+    for pat in _ANCHOR_PATTERNS:
+        m = pat.search(text)
+        if m:
+            return m.group(0)
+    return ""
+
+
 def extract_session(transcript: str, messages: list[dict],
                     session_date: _dt.date | None = None) -> dict:
     """Extract corrections, decisions, pending, summary, and invariants from a session.
@@ -143,6 +168,12 @@ def _extract_via_llm(transcript: str) -> dict:
         "- decisions: architectural or technical decisions made\n"
         "- pending: unresolved items, things left incomplete\n"
         "- summary: 1-2 sentence session summary\n\n"
+        "For corrections, decisions, and pending: each item may be either\n"
+        "a plain string OR an object {\"text\": \"...\", \"source_anchor\": \"...\"}.\n"
+        "Populate source_anchor with the URL, file path, chat-id, paper title,\n"
+        "or other external identifier the entry references — so a future agent\n"
+        "can re-fetch the artifact without re-prompting the user. Use null/empty\n"
+        "when the entry is purely abstract (no external referent).\n\n"
         "Return valid JSON with keys: corrections (list), decisions (list), "
         "pending (list), summary (string).\n\n"
         f"Transcript:\n{clean}"
@@ -167,10 +198,25 @@ def _extract_via_llm(transcript: str) -> dict:
     parsed = json.loads(raw)
 
     def _tag(items):
-        return [
-            {"text": _normalize(str(i)), "confidence": 0.8, "source": "llm"}
-            for i in (items if isinstance(items, list) else [])
-        ]
+        out = []
+        for i in (items if isinstance(items, list) else []):
+            # Items may be plain strings or {text, source_anchor} dicts.
+            if isinstance(i, dict):
+                text = _normalize(str(i.get("text", "")))
+                anchor = str(i.get("source_anchor") or "").strip()
+            else:
+                text = _normalize(str(i))
+                anchor = ""
+            if not text:
+                continue
+            # Heuristic backstop: scan text for URLs/paths if LLM missed it.
+            if not anchor:
+                anchor = _find_source_anchor(text)
+            entry = {"text": text, "confidence": 0.8, "source": "llm"}
+            if anchor:
+                entry["source_anchor"] = anchor
+            out.append(entry)
+        return out
 
     return {
         "corrections": _tag(parsed.get("corrections", [])),
@@ -225,7 +271,10 @@ def _extract_invariants_pass1(transcript: str) -> list[dict]:
         '- "enforce": what to do — be SPECIFIC and actionable, include tool names, paths, '
         "or techniques the user insisted on\n"
         '- "avoid": what NOT to do — the specific mistake or approach the user corrected\n'
-        '- "confidence": 0.0-1.0 how confident this is a real, durable rule\n\n'
+        '- "confidence": 0.0-1.0 how confident this is a real, durable rule\n'
+        '- "source_anchor": URL, file path, chat-id, paper title, or other external\n'
+        "  identifier the rule references (so a future agent can re-fetch the\n"
+        "  artifact). Use empty string when the rule is purely abstract.\n\n"
         "Extraction guidelines:\n"
         "- Focus on moments where the user corrected the assistant or stated a preference\n"
         "- Include specific tool names, file names, and paths that the user mentioned\n"
@@ -276,14 +325,21 @@ def _extract_invariants_pass1(transcript: str) -> list[dict]:
         enforce = str(item.get("enforce", "")).strip()
         avoid = str(item.get("avoid", "")).strip()
         conf = float(item.get("confidence", 0.5))
+        anchor = str(item.get("source_anchor") or "").strip()
         if ctx and enforce and avoid and conf >= INVARIANT_CONFIDENCE_THRESHOLD:
-            results.append({
+            # Heuristic backstop: scan combined fields for URLs/paths.
+            if not anchor:
+                anchor = _find_source_anchor(f"{ctx} {enforce} {avoid}")
+            entry = {
                 "context": _normalize(ctx, 120),
                 "enforce": _normalize(enforce, 200),
                 "avoid": _normalize(avoid, 200),
                 "confidence": round(conf, 2),
                 "source": "single",
-            })
+            }
+            if anchor:
+                entry["source_anchor"] = anchor
+            results.append(entry)
     return results
 
 
@@ -368,19 +424,26 @@ def _validate_invariants_pass2(candidates: list[dict], transcript: str) -> list[
             enforce = str(item.get("enforce", "")).strip()
             avoid = str(item.get("avoid", "")).strip()
             if ctx and enforce and avoid:
-                # Find matching candidate to preserve its original confidence
+                # Find matching candidate to preserve its original confidence + anchor
                 orig_conf = 0.85
+                orig_anchor = ""
                 for c in candidates:
                     if _normalize(c.get("context", ""), 120) == _normalize(ctx, 120):
                         orig_conf = c.get("confidence", 0.85)
+                        orig_anchor = c.get("source_anchor", "") or ""
                         break
-                validated.append({
+                # Validator may have echoed a fresh anchor; prefer it, else carry orig.
+                anchor = str(item.get("source_anchor") or orig_anchor or "").strip()
+                entry = {
                     "context": _normalize(ctx, 120),
                     "enforce": _normalize(enforce, 200),
                     "avoid": _normalize(avoid, 200),
                     "confidence": round(min(orig_conf, 0.95), 2),
                     "source": "contrastive",
-                })
+                }
+                if anchor:
+                    entry["source_anchor"] = anchor
+                validated.append(entry)
         return validated if validated else candidates
 
     except Exception as e:

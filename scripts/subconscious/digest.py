@@ -152,32 +152,38 @@ def _merge_guidance(current_guidance: dict, digest: dict) -> dict:
         "pending": 3,        # pending items are urgent or irrelevant
     }
 
+    def _maybe_anchor(src: dict, dst: dict) -> dict:
+        a = src.get("source_anchor")
+        if a:
+            dst["source_anchor"] = a
+        return dst
+
     # Collect new items from digest
     new_items = []
     for correction in digest.get("corrections", []):
-        new_items.append({
+        new_items.append(_maybe_anchor(correction, {
             "type": "correction",
             "text": correction.get("text", ""),
             "confidence": correction.get("confidence", 0.5),
             "created_at": now,
             "ttl_days": TTL_BY_TYPE["correction"],
-        })
+        }))
     for decision in digest.get("decisions", []):
-        new_items.append({
+        new_items.append(_maybe_anchor(decision, {
             "type": "decision",
             "text": decision.get("text", ""),
             "confidence": decision.get("confidence", 0.5),
             "created_at": now,
             "ttl_days": TTL_BY_TYPE["decision"],
-        })
+        }))
     for pending in digest.get("pending", []):
-        new_items.append({
+        new_items.append(_maybe_anchor(pending, {
             "type": "pending",
             "text": pending.get("text", ""),
             "confidence": pending.get("confidence", 0.5),
             "created_at": now,
             "ttl_days": TTL_BY_TYPE["pending"],
-        })
+        }))
 
     # Mark pending items as resolved if they appear in decisions
     decision_texts = [d.get("text", "") for d in digest.get("decisions", [])]
@@ -224,6 +230,8 @@ def _merge_guidance(current_guidance: dict, digest: dict) -> dict:
             "created_at": now,
             "ttl_days": INVARIANT_TTL_DAYS,
         }
+        if inv.get("source_anchor"):
+            inv_item["source_anchor"] = inv["source_anchor"]
         # Dedup invariants: use combined text for broader matching,
         # or context-only for high overlap (same topic, different wording)
         is_dup = False
