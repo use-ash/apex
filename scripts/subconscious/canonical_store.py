@@ -40,13 +40,23 @@ class Memory:
     context_when: str = ""
     enforce: str = ""
     avoid: str = ""
+    # External-content anchor: URL, file path, chat-id, paper title, or other
+    # identifier that this entry depends on. Distinct from `source` (which
+    # surface produced this) and `source_id` (canonical-store backref).
+    # Populated when the entry references content the agent might need to
+    # re-fetch later — preventing the post-compaction "drop-the-link" failure.
+    source_anchor: str = ""
 
     def display_text(self) -> str:
         """Human-readable rendering for injection."""
         if self.type == "invariant" and self.context_when:
-            return (f"When {self.context_when}: "
+            base = (f"When {self.context_when}: "
                     f"enforce {self.enforce}; avoid {self.avoid}")
-        return self.text
+        else:
+            base = self.text
+        if self.source_anchor:
+            return f"{base} [src: {self.source_anchor}]"
+        return base
 
     def char_len(self) -> int:
         """Total chars consumed when injected."""
