@@ -43,6 +43,7 @@ from state import (
     _compaction_summaries, _compaction_session_type,
     _recovery_target, _recovery_skip_count,
     _last_compacted_at, _last_fuel_phase, _session_context_sent,
+    _live_state_last_hash,
     _group_profile_override, _whisper_last,
     _db_lock, _current_group_profile_id, _queued_turns,
     _chat_ws, _clients,
@@ -166,11 +167,19 @@ def _check_port_listening(port: int) -> int | None:
     return None
 
 
-def _get_live_state_snapshot() -> str:
+def _get_live_state_snapshot(chat_id: str = "") -> str:
     """Build a live operational state block for agent context injection.
 
     Runs lightweight shell commands (~100ms total). Any failure skips that
     section — never crashes the stream.
+
+    Delta-only emission (Step 3, plan snuggly-gathering-anchor.md): if a
+    `chat_id` is supplied and the resulting snapshot hash matches the last
+    emission to that chat, returns "". The first emission per chat always
+    fires; subsequent identical snapshots are suppressed. Pass `chat_id=""`
+    for unconditional emission (back-compat, used by callers that lack chat
+    context, e.g. health checks). Strips the `Generated: …` timestamp before
+    hashing so it doesn't defeat the cache.
     """
     lines: list[str] = []
     try:
@@ -222,7 +231,19 @@ def _get_live_state_snapshot() -> str:
 
     if len(lines) <= 1:
         return ""
-    return "<system-reminder>\n" + "\n".join(lines) + "\n</system-reminder>"
+    output = "<system-reminder>\n" + "\n".join(lines) + "\n</system-reminder>"
+
+    # Delta-only emission: hash the body sans the generated-at timestamp
+    # (line[0] starts with "# Live State Snapshot\nGenerated: …"). Subsequent
+    # identical snapshots for the same chat return "".
+    if chat_id:
+        import hashlib
+        body_for_hash = "\n".join(lines[1:])  # skip header+timestamp line
+        h = hashlib.md5(body_for_hash.encode()).hexdigest()
+        if _live_state_last_hash.get(chat_id) == h:
+            return ""
+        _live_state_last_hash[chat_id] = h
+    return output
 
 
 def _format_short_delta(seconds: int) -> str:
@@ -1209,9 +1230,9 @@ def _get_recent_exchange_context(chat_id: str, pairs: int = 2) -> str:
     while i >= 0 and len(kept) < pairs * 2:
         role, content, ts = rows[i]
         if role in ("user", "assistant") and content and content.strip():
-            text = content.strip()[:600]
+            text = content.strip()[:300]
             if role == "assistant":
-                text = text[:400]
+                text = text[:200]
             kept.append((role, text, ts))
         i -= 1
     if not kept:
@@ -1375,7 +1396,7 @@ def _resolve_memory_profile_id(chat_id: str, active_profile_id: str = "") -> str
 
 
 def _get_memory_prompt(chat_id: str, active_profile_id: str = "",
-                       limit: int = 30, user_message: str = "") -> str:
+                       limit: int = 5, user_message: str = "") -> str:
     """Build persistent memory instructions for the effective profile of this chat.
 
     Honors chats.settings.subconscious_disabled as a single killswitch for
@@ -1404,20 +1425,46 @@ def _get_memory_prompt(chat_id: str, active_profile_id: str = "",
         except Exception:
             pass
 
-    lines: list[str] = []
-    if memories:
-        title = "## Your Persistent Memory"
-        if memory_profile_id == SYSTEM_PROFILE_ID:
-            title += " (shared open-model memory)"
-        else:
-            title += " (across all channels and groups)"
-        lines.append(title)
-        for mem in memories:
-            cat_label = mem["category"].capitalize() if mem["category"] else "Note"
-            lines.append(f"- [{cat_label}] {mem['content']}")
+    if not memories:
+        return ""
 
+    lines: list[str] = []
+    title = "## Your Persistent Memory"
+    if memory_profile_id == SYSTEM_PROFILE_ID:
+        title += " (shared open-model memory)"
+    else:
+        title += " (across all channels and groups)"
+    lines.append(title)
+    for mem in memories:
+        cat_label = mem["category"].capitalize() if mem["category"] else "Note"
+        lines.append(f"- [{cat_label}] {mem['content']}")
+    # Tiny save-tag reminder — the full memory-system instructions block is
+    # injected once per session via `_get_memory_instructions_block()` from
+    # `_get_workspace_context`. See plan: snuggly-gathering-anchor.md (Step 2).
     lines.append("")
-    lines.append("## Memory System")
+    lines.append('Save: <memory category="decision|correction|task|context" subject="scope.topic">…</memory>')
+    return "<system-reminder>\n# Persistent Memory\n" + "\n".join(lines).strip() + "\n</system-reminder>\n\n"
+
+
+def _get_memory_instructions_block(chat_id: str, active_profile_id: str = "") -> str:
+    """One-shot memory-system instructions block — injected via _get_workspace_context.
+
+    Was previously appended to every per-turn _get_memory_prompt() emission
+    (~500 words × every turn). Now lives in the session-start gated path so it
+    rides the _session_context_sent cache for Claude SDK clients.
+    """
+    # Killswitch parity with _get_memory_prompt
+    try:
+        if bool(_get_chat_settings(chat_id).get("subconscious_disabled")):
+            return ""
+    except Exception:
+        pass
+
+    memory_profile_id = _resolve_memory_profile_id(chat_id, active_profile_id=active_profile_id)
+    if not memory_profile_id:
+        return ""
+
+    lines: list[str] = ["## Memory System"]
     if memory_profile_id == SYSTEM_PROFILE_ID:
         lines.append("You are in an open-model chat with no persona attached.")
         lines.append("Important decisions, corrections, context, and tasks for these open chats are stored in a shared system memory pool.")
@@ -1436,10 +1483,10 @@ def _get_memory_prompt(chat_id: str, active_profile_id: str = "",
     lines.append('  <memory action="retire" subject="v3.old.thread" status="superseded">reason</memory>')
     lines.append("Tags are stripped from the displayed message. Use sparingly — one tag per true "
                  "commitment, not per turn.")
-    lines.append("Note: This persistent memory (above) is your primary memory system. "
+    lines.append("Note: The Persistent Memory block (injected per turn) is your primary memory system. "
                  "The MCP `memory` tool (knowledge graph) is a separate, supplemental store — "
-                 "do not confuse the two. When asked about your memory, refer to this section first.")
-    return "<system-reminder>\n# Persistent Memory\n" + "\n".join(lines).strip() + "\n</system-reminder>\n\n"
+                 "do not confuse the two. When asked about your memory, refer to that block first.")
+    return "<system-reminder>\n# Memory System (session reference)\n" + "\n".join(lines).strip() + "\n</system-reminder>"
 
 
 # --- Premium stubs: group roster + agent resolution ---
@@ -1802,7 +1849,7 @@ def _get_workspace_context(chat_id: str) -> str:
             summary, session_type = recovery_result
             log(f"Injecting recovery context for session={session_key} type={session_type}")
             recovery_block = _build_recovery_block(chat_id, summary, session_type=session_type)
-            live = _get_live_state_snapshot()
+            live = _get_live_state_snapshot(chat_id=chat_id)
             return recovery_block + "\n\n" + live + "\n\n" if live else recovery_block + "\n\n"
         return ""
     parts: list[str] = []
@@ -1828,6 +1875,11 @@ def _get_workspace_context(chat_id: str) -> str:
     )
     if memory_md.exists():
         parts.append(f"<system-reminder>\n# MEMORY.md (persistent memory)\n{memory_md.read_text()[:4000]}\n</system-reminder>")
+    # Memory-system instructions block — moved out of per-turn _get_memory_prompt
+    # (Step 2, plan snuggly-gathering-anchor.md). Rides the session-start gate.
+    mem_instructions = _get_memory_instructions_block(chat_id)
+    if mem_instructions:
+        parts.append(mem_instructions)
     skill_files = env.iter_workspace_skill_files(env.get_runtime_workspace_paths_list())
     if skill_files:
         catalog = _format_skill_catalog(skill_files, workspace)
@@ -1839,13 +1891,13 @@ def _get_workspace_context(chat_id: str) -> str:
             f"{catalog}\n"
             "</system-reminder>"
         )
-    live = _get_live_state_snapshot()
+    live = _get_live_state_snapshot(chat_id=chat_id)
     if live:
         parts.append(live)
     chat = _get_chat(chat_id)
     has_existing_session = bool(chat and chat.get("claude_session_id"))
     if not has_existing_session:
-        recent = _get_recent_exchange_context(chat_id, pairs=2)
+        recent = _get_recent_exchange_context(chat_id, pairs=1)
         if recent:
             parts.append(recent)
     if parts:
@@ -1867,10 +1919,13 @@ def _clear_session_context(chat_id_or_key: str) -> None:
     """
     if ":" in chat_id_or_key:
         _session_context_sent.discard(chat_id_or_key)
+        # Evict live-state hash too — extracted chat_id is the prefix
+        _live_state_last_hash.pop(chat_id_or_key.split(":", 1)[0], None)
         return
     prefix = f"{chat_id_or_key}:"
     stale_keys = {key for key in _session_context_sent if key == chat_id_or_key or key.startswith(prefix)}
     _session_context_sent.difference_update(stale_keys)
+    _live_state_last_hash.pop(chat_id_or_key, None)
 
 
 def _has_session_context(chat_id_or_key: str) -> bool:
