@@ -63,6 +63,7 @@ _last_fuel_phase: dict[str, str] = {}            # chat_id -> last known phase (
 # Primary writer: context.py — use _clear_session_context() for writes.
 # ---------------------------------------------------------------------------
 _session_context_sent: set[str] = set()  # session keys that got workspace context
+_live_state_last_hash: dict[str, str] = {}  # chat_id -> last emitted live-state hash (delta-only emission)
 
 # ---------------------------------------------------------------------------
 # Group routing

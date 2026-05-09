@@ -20,8 +20,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import config
 import state
 
-WARMUP_TURNS = 3  # always emit for the first N prompts
+WARMUP_TURNS = 1  # always emit for the first N prompts (was 3 — Step 5 plan snuggly-gathering-anchor)
 MIN_ITEMS_FOR_WHISPER = 5  # don't inject until guidance has enough signal
+MAX_INVARIANTS = 8  # cap whisper invariants per emission — prevents 16KB blob bloat
 INTRO_MARKER_FILE = "whisper_introduced"  # tracks whether the user has seen the intro
 
 
@@ -114,11 +115,16 @@ def main():
         should_emit = (
             prompt_count <= WARMUP_TURNS
             or current_hash != last_hash
-            or prompt_count >= 50
+            or prompt_count >= 100
         )
 
         if should_emit:
-            invariants = [i for i in relevant if i.get("type") == "invariant"]
+            # Cap invariants to prevent the 16KB hook-stdout blob from
+            # compounding in transcript history. Sort by confidence DESC then
+            # take top-MAX_INVARIANTS. (Step 5, plan snuggly-gathering-anchor.)
+            all_invariants = [i for i in relevant if i.get("type") == "invariant"]
+            all_invariants.sort(key=lambda x: x.get("confidence", 0), reverse=True)
+            invariants = all_invariants[:MAX_INVARIANTS]
             others = [i for i in relevant if i.get("type") != "invariant"]
             lines = ["<subconscious_whisper>"]
 
