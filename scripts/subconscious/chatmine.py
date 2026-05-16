@@ -170,7 +170,15 @@ def _llm_call(prompt: str, use_json: bool = True, timeout: int | None = None) ->
     return None
 
 
-def extract_chunk(transcript: str, chat_title: str, chunk_idx: int) -> dict | None:
+def extract_chunk(transcript: str, chat_title: str, chunk_idx: int,
+                  source_anchor: str = "") -> dict | None:
+    """Extract knowledge from a transcript chunk.
+
+    `source_anchor` (Layer A): canonical reference for this chunk
+    (e.g. ``apex:<chat_id>:<day>:chunk_<idx>``). Stored on the result so
+    downstream consolidation + canonical_store can thread it onto Memory
+    objects, restoring referents after compaction.
+    """
     prompt = (
         f"Analyze this conversation segment from '{chat_title}' (chunk {chunk_idx}).\n\n"
         f"Extract the following as JSON:\n"
@@ -190,11 +198,15 @@ def extract_chunk(transcript: str, chat_title: str, chunk_idx: int) -> dict | No
     result = _llm_call(prompt)
     if not result:
         _log(f"  LLM error on chunk {chunk_idx}")
+        return None
+    if source_anchor:
+        result["source_anchor"] = source_anchor
     return result
 
 
 def consolidate_day(day_extractions: list[dict], chat_title: str, day: str) -> dict | None:
-    merged = {"decisions": [], "bugs_fixed": [], "features_built": [], "lessons": [], "topics": []}
+    merged = {"decisions": [], "bugs_fixed": [], "features_built": [], "lessons": [],
+              "topics": [], "source_anchors": []}
     for ext in day_extractions:
         if not ext:
             continue
@@ -205,22 +217,36 @@ def consolidate_day(day_extractions: list[dict], chat_title: str, day: str) -> d
         topic = ext.get("topic", "")
         if topic:
             merged["topics"].append(str(topic))
+        # Layer A: collect chunk-level anchors so canonical_store can attach
+        # one to each Memory loaded from this day file.
+        anchor = ext.get("source_anchor", "")
+        if anchor:
+            merged["source_anchors"].append(str(anchor))
 
-    total_items = sum(len(v) for v in merged.values())
+    # Match original threshold semantics — exclude the new source_anchors key
+    # from the count (it's metadata, not extracted knowledge).
+    _ITEM_KEYS = ("decisions", "bugs_fixed", "features_built", "lessons", "topics")
+    total_items = sum(len(merged.get(k, [])) for k in _ITEM_KEYS)
     if total_items < 3:
         return merged if total_items > 0 else None
     if total_items <= 15:
         return merged
 
+    # Strip metadata before sending to LLM — dedup is over knowledge items only.
+    payload = {k: merged[k] for k in _ITEM_KEYS}
     prompt = (
         f"Consolidate these extracted items from '{chat_title}' on {day}.\n\n"
         f"Remove exact duplicates and merge similar items. Keep all unique information.\n\n"
-        f"Input:\n{json.dumps(merged, indent=2)}\n\n"
+        f"Input:\n{json.dumps(payload, indent=2)}\n\n"
         f"Return the same JSON structure with deduplicated lists. Be concise but preserve specifics."
     )
     # Consolidation prompts are large — always allow up to 5 min regardless of model size
     result = _llm_call(prompt, timeout=300)
-    return result if result else merged
+    if not result:
+        return merged
+    # Re-attach source_anchors after dedup (LLM doesn't see them)
+    result["source_anchors"] = merged.get("source_anchors", [])
+    return result
 
 
 def write_digest(chat_id, chat_title, daily_digests, dry_run=False, verbose=False):
@@ -328,7 +354,9 @@ def mine_chat(chat_id, chat_title, dry_run=False, verbose=False, force=False):
             continue
 
         _log(f"  Chunk {chunk_idx}/{len(chunks)} ({day}): {len(chunk)} msgs, {len(transcript)} chars", verbose)
-        extraction = extract_chunk(transcript, chat_title, chunk_idx)
+        # Layer A: chunk-level anchor — apex:<chat_id_short>:<day>:chunk_<idx>
+        chunk_anchor = f"apex:{chat_id[:12]}:{day}:chunk_{chunk_idx}"
+        extraction = extract_chunk(transcript, chat_title, chunk_idx, source_anchor=chunk_anchor)
         if extraction:
             day_chunks[day].append(extraction)
             items = sum(len(extraction.get(k, [])) for k in ("decisions", "bugs_fixed", "features_built", "lessons"))

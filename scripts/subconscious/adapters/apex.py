@@ -46,6 +46,18 @@ def _refresh_today(text: str) -> str:
     )
 
 
+def _anchor_suffix(mem) -> str:
+    """Return ' [src: <anchor>]' when the Memory has a source_anchor, else ''.
+
+    Structured-invariant render branches build lines directly from
+    `context_when/enforce/avoid` and bypass `Memory.display_text()`, so they
+    miss the anchor suffix that `display_text()` would otherwise add. This
+    helper restores parity (Layer A).
+    """
+    anchor = getattr(mem, "source_anchor", "") or ""
+    return f" [src: {anchor}]" if anchor else ""
+
+
 # ---------------------------------------------------------------------------
 # Relevance scoring — match guidance items to current conversation context
 # ---------------------------------------------------------------------------
@@ -189,7 +201,7 @@ def render_type1_whisper(envelope: ContextEnvelope,
         avd = _refresh_today(getattr(mem, "avoid", ""))
         tag = "invariant" if mem.type == "invariant" else "correction"
         if ctx and enf and avd:
-            return f"- [{tag}] When {ctx}: enforce {enf}; avoid {avd}"
+            return f"- [{tag}] When {ctx}: enforce {enf}; avoid {avd}{_anchor_suffix(mem)}"
         return f"- [{tag}] {_refresh_today(mem.display_text())}"
 
     # Score ALL items by blended confidence + relevance.
@@ -292,7 +304,7 @@ def render_guidance_whisper(envelope: ContextEnvelope,
         enf = _refresh_today(getattr(mem, "enforce", ""))
         avd = _refresh_today(getattr(mem, "avoid", ""))
         if ctx and enf and avd:
-            line = f"- [invariant] When {ctx}: enforce {enf}; avoid {avd}"
+            line = f"- [invariant] When {ctx}: enforce {enf}; avoid {avd}{_anchor_suffix(mem)}"
         else:
             line = f"- [invariant] {_refresh_today(mem.display_text())}"
 
@@ -384,7 +396,7 @@ def render_session_context(envelope: ContextEnvelope) -> str:
                 avd = _refresh_today(getattr(mem, "avoid", ""))
                 if ctx and enf and avd:
                     lines.append(
-                        f"- [invariant] When {ctx}: enforce {enf}; avoid {avd}"
+                        f"- [invariant] When {ctx}: enforce {enf}; avoid {avd}{_anchor_suffix(mem)}"
                     )
                 else:
                     lines.append(f"- [invariant] {_refresh_today(mem.display_text())}")

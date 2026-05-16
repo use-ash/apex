@@ -26,6 +26,7 @@ from db import (
     _update_group_member,
     _remove_group_member,
     _get_messages,
+    _search_messages,
     _get_last_turn_tokens_in, _estimate_tokens,
     set_computer_use_target,
     set_interceptor_enabled,
@@ -661,7 +662,13 @@ async def api_messages(
     days: int | None = None,
     limit: int | None = 100,
     before_id: str | None = None,
+    q: str | None = None,
 ):
+    # Topic search short-circuits pagination: ?q=keyword returns matched
+    # messages with snippets across the entire chat history.
+    if q:
+        search_limit = limit if (limit and limit > 0) else 20
+        return JSONResponse(_search_messages(chat_id, q, limit=search_limit))
     return JSONResponse(_get_messages(chat_id, days=days, limit=limit, before_id=before_id))
 
 
