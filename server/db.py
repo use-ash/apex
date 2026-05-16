@@ -1815,6 +1815,77 @@ def _get_messages(
     return {"messages": messages, "has_more": has_more}
 
 
+def _search_messages(
+    chat_id: str,
+    q: str,
+    limit: int = 20,
+    snippet_chars: int = 400,
+    include_internal: bool = False,
+) -> dict:
+    """LIKE-based full-text search across a single chat's messages.
+
+    Returns {"messages": [...], "query": q, "match_count": N} where each
+    message includes a `snippet` field: the matched substring with
+    snippet_chars/2 context on each side.
+
+    Multi-token queries are AND-matched (every whitespace-split token must
+    appear in content). Empty q returns {}.
+    """
+    q = (q or "").strip()
+    if not q:
+        return {"messages": [], "query": "", "match_count": 0}
+    tokens = [t for t in q.split() if t]
+    if not tokens:
+        return {"messages": [], "query": q, "match_count": 0}
+
+    vis_clause = "" if include_internal else (
+        " AND (visibility = 'public' OR visibility = '' OR visibility IS NULL)"
+    )
+    where_parts = ["chat_id = ?"]
+    params: list = [chat_id]
+    for tok in tokens:
+        where_parts.append("content LIKE ? COLLATE NOCASE")
+        params.append(f"%{tok}%")
+    where = " AND ".join(where_parts) + vis_clause
+
+    cols = ("id, role, content, created_at, speaker_name, group_turn_id")
+    capped_limit = max(1, min(limit, 100))
+
+    with _db_lock:
+        conn = _get_db()
+        rows = conn.execute(
+            f"SELECT {cols} FROM messages WHERE {where} "
+            f"ORDER BY created_at DESC LIMIT ?",
+            params + [capped_limit],
+        ).fetchall()
+        conn.close()
+
+    half = max(40, snippet_chars // 2)
+    out: list[dict] = []
+    primary = tokens[0].lower()
+    for r in rows:
+        content = r[2] or ""
+        idx = content.lower().find(primary)
+        if idx < 0:
+            idx = 0
+        lo = max(0, idx - half)
+        hi = min(len(content), idx + len(primary) + half)
+        prefix = "…" if lo > 0 else ""
+        suffix = "…" if hi < len(content) else ""
+        snippet = f"{prefix}{content[lo:hi]}{suffix}"
+        out.append({
+            "id": r[0],
+            "role": r[1],
+            "created_at": r[3],
+            "speaker_name": r[4] or "",
+            "group_turn_id": r[5] or "",
+            "snippet": snippet,
+        })
+    # Return oldest-first for readability
+    out.reverse()
+    return {"messages": out, "query": q, "match_count": len(out)}
+
+
 # ---------------------------------------------------------------------------
 # Alerts
 # ---------------------------------------------------------------------------

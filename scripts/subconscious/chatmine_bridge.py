@@ -36,8 +36,26 @@ import state
 from digest import _merge_guidance, _similarity
 from contradiction_detector import check_contradictions, check_intra_session, is_overridden
 
-CHATMINE_CLAUDE_DIR = Path(config.STATE_DIR) / "chatmine" / "claude"
+CHATMINE_ROOT = Path(config.STATE_DIR) / "chatmine"
+CHATMINE_CLAUDE_DIR = CHATMINE_ROOT / "claude"
 BRIDGE_STATE_FILE = Path(config.STATE_DIR) / "chatmine_bridge_state.json"
+
+
+def _iter_session_dirs():
+    """Yield (session_id, session_dir) for both Claude Code and Apex chats.
+
+    Layout:
+      chatmine/claude/<session_id>/<date>.json   (Claude Code transcripts)
+      chatmine/<apex_chat_id>/<date>.json        (Apex chat transcripts)
+    """
+    if CHATMINE_CLAUDE_DIR.exists():
+        for d in CHATMINE_CLAUDE_DIR.iterdir():
+            if d.is_dir():
+                yield d.name, d
+    if CHATMINE_ROOT.exists():
+        for d in CHATMINE_ROOT.iterdir():
+            if d.is_dir() and d.name != "claude":
+                yield d.name, d
 
 # Lower confidence than real-time digests (0.5) because chatmine
 # runs through a small model and has dedup issues
@@ -79,16 +97,13 @@ def _find_unbridged(session_filter: str = None) -> list[tuple[str, str, Path]]:
 
     Returns list of (session_id, date, path) tuples.
     """
-    if not CHATMINE_CLAUDE_DIR.exists():
+    if not CHATMINE_ROOT.exists():
         return []
 
     bridge_state = _load_bridge_state()
     unbridged = []
 
-    for session_dir in CHATMINE_CLAUDE_DIR.iterdir():
-        if not session_dir.is_dir():
-            continue
-        sid = session_dir.name
+    for sid, session_dir in _iter_session_dirs():
         if session_filter and not sid.startswith(session_filter):
             continue
 
