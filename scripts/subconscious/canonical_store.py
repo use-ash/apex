@@ -402,9 +402,14 @@ class CanonicalStore:
         return memories
 
     def _load_chatmine_memories(self) -> list[Memory]:
-        """Load from chatmine/claude/ day files (most recent sessions only)."""
-        chatmine_dir = self._state_dir / "chatmine" / "claude"
-        if not chatmine_dir.exists():
+        """Load from chatmine/ day files (most recent sessions only).
+
+        Walks both Claude Code sessions (chatmine/claude/<session_id>/) and
+        Apex chat sessions (chatmine/<apex_chat_id>/) so anchored memories
+        from either surface reach the live whisper/guidance pipeline.
+        """
+        chatmine_root = self._state_dir / "chatmine"
+        if not chatmine_root.exists():
             return []
 
         memories = []
@@ -413,9 +418,17 @@ class CanonicalStore:
         # Only load from sessions modified in last 7 days
         cutoff = datetime.datetime.now() - datetime.timedelta(days=7)
 
-        for session_dir in chatmine_dir.iterdir():
-            if not session_dir.is_dir():
-                continue
+        # Build the set of session dirs across both layouts
+        session_dirs = []
+        claude_dir = chatmine_root / "claude"
+        if claude_dir.exists():
+            session_dirs.extend(d for d in claude_dir.iterdir() if d.is_dir())
+        session_dirs.extend(
+            d for d in chatmine_root.iterdir()
+            if d.is_dir() and d.name != "claude"
+        )
+
+        for session_dir in session_dirs:
             if session_dir.stat().st_mtime < cutoff.timestamp():
                 continue
 
@@ -430,6 +443,11 @@ class CanonicalStore:
                 continue
 
             sid = session_dir.name[:12]
+            # Layer A: prefer the chunk-level anchor if chatmine recorded one;
+            # fall back to a day-level synthetic anchor so post-compaction
+            # recovery has *some* referent for every chatmine-derived Memory.
+            anchors = data.get("source_anchors", []) or []
+            day_anchor = anchors[0] if anchors else f"chatmine:{sid}:{today}"
 
             for lesson in data.get("lessons", []):
                 memories.append(Memory(
@@ -438,6 +456,7 @@ class CanonicalStore:
                     confidence=0.4,
                     source="chatmine",
                     source_id=f"chatmine:{sid}:{today}",
+                    source_anchor=day_anchor,
                     created_at=datetime.datetime.now(
                         datetime.timezone.utc).isoformat(),
                     ttl_days=7,
@@ -450,6 +469,7 @@ class CanonicalStore:
                     confidence=0.4,
                     source="chatmine",
                     source_id=f"chatmine:{sid}:{today}",
+                    source_anchor=day_anchor,
                     created_at=datetime.datetime.now(
                         datetime.timezone.utc).isoformat(),
                     ttl_days=7,

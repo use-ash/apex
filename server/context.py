@@ -1766,20 +1766,54 @@ def _build_recovery_block(chat_id: str, summary: str, session_type: str = "task"
 
     briefing = summary if summary else "(Summary generation failed — use transcript below.)"
 
+    # Self-orient instructions: the chat history is the source of truth.
+    # Search it FIRST before asking the user to repeat themselves. The tail
+    # block above is only the last few thousand chars — older context
+    # (trade plans, prior decisions, root causes) lives further back in the
+    # same chat_id and must be retrieved on demand.
+    self_orient = (
+        "## IF YOU ARE DISORIENTED — SEARCH THE CHAT, DO NOT ASK THE USER\n"
+        "The full conversation persists in the Apex DB keyed by chat_id. "
+        "This briefing's tail covers only the last few thousand chars. "
+        "Anything earlier (multi-hour-old plans, prior decisions, prior "
+        "diagnoses) is still retrievable. Use these tools before asking "
+        f"the user to repeat themselves. chat_id={chat_id}\n"
+        "\n"
+        "Topic search (preferred — chat-scoped, returns snippets):\n"
+        f"  curl -s 'http://127.0.0.1:8300/api/chats/{chat_id}/messages?q=<keyword>&limit=20'\n"
+        "  (use port 8301 on dev)\n"
+        "\n"
+        "Paginated history (walks backward by created_at):\n"
+        f"  curl -s 'http://127.0.0.1:8300/api/chats/{chat_id}/messages?limit=100'\n"
+        f"  then pass &before_id=<oldest_id_from_prev_page> to go further back\n"
+        "\n"
+        "Local transcript tail (current JSONL session only — narrower scope):\n"
+        "  python3 /Users/dana/.openclaw/workspace/tools/pull_session_history.py --tail 50\n"
+        "  python3 /Users/dana/.openclaw/workspace/tools/pull_session_history.py --search '<keyword>' --all-sessions\n"
+        "\n"
+        "Heuristic: if the user references 'the X we discussed' or 'the X "
+        "plan' and X is not in the tail above, search for X via the API "
+        "BEFORE answering. Do not fabricate continuity from priors."
+    )
+
     # Session-type-specific closing instructions
     if session_type in ("thinking", "mixed"):
         closing = (
+            f"{self_orient}\n\n"
             "CRITICAL RECOVERY INSTRUCTIONS FOR ANALYTICAL SESSION:\n"
             "1. READ the Mental Model and Key Insights sections FIRST.\n"
             "2. DO NOT re-derive conclusions already reached. Build on them.\n"
             "3. Check Failed Approaches before proposing new directions.\n"
             "4. If the prior analysis reached a framework or taxonomy, USE IT as your starting point.\n"
-            "5. The user expects continuity of reasoning depth. Do not regress to surface-level analysis."
+            "5. The user expects continuity of reasoning depth. Do not regress to surface-level analysis.\n"
+            "6. If a referent is ambiguous, SEARCH the chat (see above) before asking."
         )
     else:
         closing = (
+            f"{self_orient}\n\n"
             "IMPORTANT: Pick up where you left off. If a task was in-progress, continue it. "
-            "If questions were pending, address them. Do not start over or re-introduce yourself."
+            "If questions were pending, address them. Do not start over or re-introduce yourself. "
+            "If a referent is ambiguous, SEARCH the chat (see above) before asking the user."
         )
 
     return (
