@@ -194,7 +194,14 @@ def _read_keychain_oauth() -> dict:
         )
         if result.returncode == 0 and result.stdout.strip():
             creds = json.loads(result.stdout.strip())
-            return creds.get("claudeAiOauth", {})
+            oauth = creds.get("claudeAiOauth", {})
+            # Keep cache file in sync so tmux/fallback path never serves stale token
+            try:
+                _OAUTH_CACHE.write_text(json.dumps(oauth, separators=(",", ":")))
+                safe_chmod(_OAUTH_CACHE, 0o600)
+            except Exception:
+                pass
+            return oauth
     except Exception:
         pass
     # Fallback: cached OAuth data
