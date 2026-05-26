@@ -630,19 +630,34 @@ def _get_context_energy_prompt(chat_id: str) -> str:
         return ""  # no data yet (first turn)
 
     pct = context_used / context_window if context_window > 0 else 0.0
-    compaction_pct = COMPACTION_THRESHOLD / context_window if context_window > 0 else 0.75
 
-    # Phase labels with behavioral nudges
-    if pct < 0.40:
+    # --- Second meter: cumulative input toward compaction ---
+    # Compaction triggers on sum(tokens_in) since last compaction, NOT on
+    # context_used.  A single 27-tool-call turn at ~40K context can rack up
+    # 1M+ cumulative tokens_in (each tool round-trip re-sends context) and
+    # trip compaction while context_used looks fine.  Show both meters so the
+    # agent can see *which* pressure is rising.  Must mirror the threshold
+    # math in `maybe_compact_chat` exactly or the gauge will lie.
+    cumulative_in = _get_cumulative_tokens_in(chat_id)
+    effective_threshold = COMPACTION_THRESHOLD
+    if COMPACTION_THRESHOLD > 0 and context_window > 0:
+        effective_threshold = max(COMPACTION_THRESHOLD, int(context_window * 0.75))
+    cum_pct = (cumulative_in / effective_threshold) if effective_threshold > 0 else 0.0
+
+    # Phase is driven by whichever pressure is higher.  Compaction risk is
+    # what actually matters to the agent — surface it.  Nudges escalate with
+    # phase regardless of which meter is leading.
+    pressure_pct = max(pct, cum_pct)
+    if pressure_pct < 0.40:
         phase = "explore"
         nudge = ""
-    elif pct < 0.60:
+    elif pressure_pct < 0.60:
         phase = "consolidate"
         nudge = (
             "Context is filling. Begin externalizing key findings to durable storage "
             "(memory tags, file artifacts) before they are lost to compaction."
         )
-    elif pct < 0.80:
+    elif pressure_pct < 0.80:
         phase = "preserve"
         nudge = (
             "Context budget is running low. Prioritize: (1) completing the current task, "
@@ -673,20 +688,33 @@ def _get_context_energy_prompt(chat_id: str) -> str:
             return f"{n / 1_000_000:.1f}M"
         return f"{n // 1000}K"
 
+    # Cap displayed cum_pct so a runaway accumulator (e.g. _last_compacted_at
+    # missing on a long-running chat) doesn't render "31178%".
+    cum_pct_display = min(cum_pct, 9.99)
+    cum_pct_suffix = "+" if cum_pct > 9.99 else ""
     lines = [
-        f"context_used: {_fmt_k(context_used)} / {_fmt_k(context_window)} ({pct:.0%})",
-        f"compaction_at: ~{compaction_pct:.0%} of window ({_fmt_k(COMPACTION_THRESHOLD)} output tokens)",
-        f"phase: {phase}",
+        f"context_size:  {_fmt_k(context_used)} / {_fmt_k(context_window)} ({pct:.0%})  — next-call input",
+        f"cumulative_in: {_fmt_k(cumulative_in)} / {_fmt_k(effective_threshold)} ({cum_pct_display:.0%}{cum_pct_suffix})  — compaction trigger (Σ tokens_in since last compact)",
+        f"phase: {phase}  (driven by max of the two meters)",
         f"est_turns_remaining: {turns_label}",
     ]
     if nudge:
         lines.append(f"guidance: {nudge}")
 
     # --- Server-side auto-checkpoint on upward phase transition ---
+    # Gate on context_size pressure only — a runaway cumulative_in (chats
+    # with missing _last_compacted_at) would otherwise spam checkpoints by
+    # forcing phase=critical on first render.
+    ctx_phase = (
+        "explore" if pct < 0.40
+        else "consolidate" if pct < 0.60
+        else "preserve" if pct < 0.80
+        else "critical"
+    )
     prev_phase = _last_fuel_phase.get(chat_id, "explore")
-    if _PHASE_ORDER.get(phase, 0) > _PHASE_ORDER.get(prev_phase, 0):
-        _write_phase_checkpoint(chat_id, phase, pct, context_used, context_window)
-    _last_fuel_phase[chat_id] = phase
+    if _PHASE_ORDER.get(ctx_phase, 0) > _PHASE_ORDER.get(prev_phase, 0):
+        _write_phase_checkpoint(chat_id, ctx_phase, pct, context_used, context_window)
+    _last_fuel_phase[chat_id] = ctx_phase
 
     return "<system-reminder>\n# Context Budget\n" + "\n".join(lines) + "\n</system-reminder>"
 
