@@ -489,8 +489,11 @@ async def _cancel_chat_streams(chat_id: str, stream_id: str = "") -> bool:
         if not selected_keys:
             selected_keys = client_keys
 
+    # Interrupt the active turn but keep the SDK client warm in the pool so
+    # the next user message reuses the same connect()/session — no fresh
+    # SessionStart:resume hook fires and no token-bloat re-injection.
     for ck in selected_keys:
-        client = _clients.pop(ck, None)
+        client = _clients.get(ck)
         if not client:
             continue
         try:
