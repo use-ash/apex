@@ -169,6 +169,8 @@ _USAGE_TRACK_BY_BACKEND = {
 _MODEL_PRICING: dict[str, dict[str, Any]] = {
     "claude-haiku-4-5-20251001": {"display": "Haiku 4.5", "track": "subscription", "price_in": 0.80, "price_out": 4.00, "provider": "claude"},
     "claude-sonnet-4-6": {"display": "Sonnet 4.6", "track": "subscription", "price_in": 3.00, "price_out": 15.00, "provider": "claude"},
+    "claude-opus-4-8": {"display": "Opus 4.8", "track": "subscription", "price_in": 5.00, "price_out": 25.00, "provider": "claude"},
+    "claude-opus-4-7": {"display": "Opus 4.7", "track": "subscription", "price_in": 5.00, "price_out": 25.00, "provider": "claude"},
     "claude-opus-4-6": {"display": "Opus 4.6", "track": "subscription", "price_in": 15.00, "price_out": 75.00, "provider": "claude"},
     "codex:gpt-5.5": {"display": "Codex GPT-5.5", "track": "subscription", "price_in": 5.00, "price_out": 30.00, "provider": "codex"},
     "codex:gpt-5.4": {"display": "Codex GPT-5.4", "track": "subscription", "price_in": 1.50, "price_out": 6.00, "provider": "codex"},
