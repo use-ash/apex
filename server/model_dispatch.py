@@ -20,6 +20,7 @@ MLX_BASE_URL = env.MLX_URL
 # Model context window sizes (input tokens)
 # ---------------------------------------------------------------------------
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    "claude-opus-4-8": 1_000_000,
     "claude-opus-4-7": 1_000_000,
     "claude-opus-4-6": 1_000_000,
     "claude-sonnet-4-6": 200_000,
@@ -51,6 +52,7 @@ MODEL_CONTEXT_DEFAULT = 128_000  # fallback for local/unknown models
 # real cumulative context counts).
 # ---------------------------------------------------------------------------
 MODEL_INPUT_PRICE: dict[str, float] = {
+    "claude-opus-4-8": 5.0 / 1_000_000,         # $5/M input
     "claude-opus-4-7": 5.0 / 1_000_000,         # $5/M input
     "claude-opus-4-6": 15.0 / 1_000_000,        # $15/M input
     "claude-sonnet-4-6": 3.0 / 1_000_000,       # $3/M input
@@ -59,6 +61,7 @@ MODEL_INPUT_PRICE: dict[str, float] = {
     "grok-4-fast": 3.0 / 1_000_000,             # $3/M input
 }
 MODEL_OUTPUT_PRICE: dict[str, float] = {
+    "claude-opus-4-8": 25.0 / 1_000_000,        # $25/M output
     "claude-opus-4-7": 25.0 / 1_000_000,        # $25/M output
     "claude-opus-4-6": 75.0 / 1_000_000,        # $75/M output
     "claude-sonnet-4-6": 15.0 / 1_000_000,      # $15/M output
@@ -71,6 +74,7 @@ MODEL_OUTPUT_PRICE: dict[str, float] = {
 # Remote model catalogue (drives the model picker UI)
 # ---------------------------------------------------------------------------
 REMOTE_MODEL_OPTIONS = [
+    {"id": "claude-opus-4-8",       "displayName": "Claude Opus 4.8",  "provider": "anthropic", "local": False},
     {"id": "claude-opus-4-7",       "displayName": "Claude Opus 4.7",  "provider": "anthropic", "local": False},
     {"id": "claude-opus-4-6",       "displayName": "Claude Opus 4.6",  "provider": "anthropic", "local": False},
     {"id": "claude-sonnet-4-6",     "displayName": "Claude Sonnet 4.6","provider": "anthropic", "local": False},
