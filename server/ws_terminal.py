@@ -134,6 +134,115 @@ async def _pty_read(master_fd: int, ws: WebSocket, sess: _Session) -> None:
 # REST
 # ---------------------------------------------------------------------------
 
+_TERMINAL_VIEW_HTML = """\
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+html,body{{width:100%;height:100%;background:#0d0d0d;overflow:hidden}}
+#t{{width:100%;height:100%;padding:4px}}
+.xterm{{height:100%}}
+.xterm-viewport{{overflow-y:hidden!important}}
+</style>
+<link rel="stylesheet" href="/static/xterm.css">
+</head>
+<body>
+<div id="t"></div>
+<script src="/static/xterm.js"></script>
+<script src="/static/xterm-addon-fit.js"></script>
+<script>
+(function(){{
+  const chatId = {chat_id_json};
+  const tmuxSession = {tmux_json};
+  const term = new Terminal({{
+    cursorBlink:true, fontSize:13,
+    fontFamily:"'SF Mono','Fira Code',monospace",
+    theme:{{background:'#0d0d0d',foreground:'#e5e7eb',cursor:'#22c55e',
+            selectionBackground:'rgba(124,58,237,0.4)'}},
+    scrollback:5000, allowTransparency:false,
+  }});
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(document.getElementById('t'));
+  fit.fit();
+
+  const proto = location.protocol==='https:'?'wss:':'ws:';
+  const sessParam = tmuxSession?'&tmux_session='+encodeURIComponent(tmuxSession):'';
+  const url = proto+'//'+location.host+'/ws/terminal?chat_id='+encodeURIComponent(chatId)+sessParam;
+  let ws, attempt=0;
+
+  function connect(){{
+    ws = new WebSocket(url);
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = function(){{
+      attempt=0;
+      ws.send(JSON.stringify({{type:'resize',cols:term.cols,rows:term.rows}}));
+      term.focus();
+    }};
+    ws.onmessage = function(e){{
+      if(e.data instanceof ArrayBuffer){{ term.write(new Uint8Array(e.data)); }}
+      else{{
+        try{{
+          var c=JSON.parse(e.data);
+          if(c.type==='ping'){{ /* no-op */ }}
+        }}catch(ex){{}}
+      }}
+    }};
+    ws.onclose = function(){{
+      if(attempt<5){{
+        attempt++;
+        setTimeout(connect, Math.min(8000,500*Math.pow(2,attempt)));
+      }}
+    }};
+    ws.onerror=function(){{}};
+  }}
+  connect();
+
+  term.onData(function(d){{
+    if(ws&&ws.readyState===WebSocket.OPEN)
+      ws.send(new TextEncoder().encode(d).buffer);
+  }});
+
+  var _rt=null, _lc=0, _lr=0;
+  new ResizeObserver(function(){{
+    clearTimeout(_rt);
+    _rt=setTimeout(function(){{
+      try{{fit.fit();}}catch(e){{}}
+      if(ws&&ws.readyState===WebSocket.OPEN&&(term.cols!==_lc||term.rows!==_lr)){{
+        _lc=term.cols; _lr=term.rows;
+        ws.send(JSON.stringify({{type:'resize',cols:_lc,rows:_lr}}));
+      }}
+    }},150);
+  }}).observe(document.getElementById('t'));
+
+  setInterval(function(){{
+    if(ws&&ws.readyState===WebSocket.OPEN)
+      ws.send(JSON.stringify({{type:'ping'}}));
+  }},30000);
+}})();
+</script>
+</body>
+</html>"""
+
+
+@terminal_router.get("/terminal-view/{chat_id}")
+async def terminal_view(chat_id: str):
+    """Standalone xterm.js page for embedding in iOS WKWebView."""
+    import json as _json
+    from db import _get_chat_settings
+    settings = _get_chat_settings(chat_id)
+    tmux = settings.get("tmux_session") or ""
+    html = _TERMINAL_VIEW_HTML.format(
+        chat_id_json=_json.dumps(chat_id),
+        tmux_json=_json.dumps(tmux) if tmux else "null",
+    )
+    from fastapi.responses import HTMLResponse as _HR
+    return _HR(html, headers={"Cache-Control": "no-store"})
+
+
 @terminal_router.get("/api/terminal/sessions")
 async def list_sessions():
     """List running tmux session names."""
