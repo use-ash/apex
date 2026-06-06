@@ -229,11 +229,17 @@ async def api_new_chat(request: Request):
         title = "Quick thread"
     elif chat_type == "group":
         title = data.get("title", "New Group")
+    elif chat_type == "terminal":
+        tmux_session = re.sub(r"[^a-zA-Z0-9_\-]", "", str(data.get("tmux_session", "")).strip())[:64] or None
+        title = tmux_session or "shell"
     else:
         title = "New Channel"
     cid = _create_chat(title=title, model=model, chat_type=chat_type, category=category, profile_id=profile_id)
+    if chat_type == "terminal" and tmux_session:
+        _update_chat_settings(cid, {"tmux_session": tmux_session})
     resp = {"id": cid, "model": model, "type": chat_type, "category": category, "profile_id": profile_id,
-            "profile_name": "", "profile_avatar": ""}
+            "profile_name": "", "profile_avatar": "",
+            **({"tmux_session": tmux_session} if chat_type == "terminal" else {})}
     if chat_type == "group" and members:
         for i, mem in enumerate(members):
             pid = mem.get("profile_id", "")

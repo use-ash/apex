@@ -76,6 +76,7 @@ from context import _generate_recovery_context, _store_recovery_context
 import context as _context_mod
 from ws_handler import ws_router
 import ws_handler as _ws_handler_mod
+from ws_terminal import terminal_router
 import env
 from premium_loader import PremiumLoader
 from mtls import has_verified_peer_cert, mtls_required
@@ -308,6 +309,7 @@ app.include_router(upload_router)
 app.include_router(chat_router)
 app.include_router(tasks_router)
 app.include_router(ws_router)
+app.include_router(terminal_router)
 
 
 # Routes that don't require client certificate.

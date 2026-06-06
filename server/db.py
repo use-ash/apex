@@ -1153,6 +1153,14 @@ def _get_chats(include_last_message_at: bool = False) -> list[dict]:
                 "FROM chats c LEFT JOIN agent_profiles ap ON c.profile_id = ap.id "
                 "ORDER BY c.updated_at DESC"
             ).fetchall()
+        # Batch-fetch tmux_session for terminal channels
+        terminal_ids = [r[0] for r in rows if (r[6] or "chat") == "terminal"]
+        terminal_settings: dict[str, dict] = {}
+        for tid in terminal_ids:
+            ts_row = conn.execute("SELECT settings FROM chats WHERE id = ?", (tid,)).fetchone()
+            if ts_row and ts_row[0]:
+                with contextlib.suppress(json.JSONDecodeError, TypeError):
+                    terminal_settings[tid] = json.loads(ts_row[0])
         # Batch-fetch member counts + primary agent for groups
         group_ids = [r[0] for r in rows if (r[6] or "chat") == "group"]
         group_meta: dict[str, dict] = {}
@@ -1178,6 +1186,9 @@ def _get_chats(include_last_message_at: bool = False) -> list[dict]:
              "profile_id": r[8] or "", "profile_name": r[9] or "", "profile_avatar": r[10] or ""}
         if include_last_message_at and len(r) > 11:
             d["last_message_at"] = r[11]
+        if (r[6] or "chat") == "terminal":
+            ts = terminal_settings.get(r[0], {})
+            d["tmux_session"] = ts.get("tmux_session", "")
         gm = group_meta.get(r[0])
         if gm:
             d["member_count"] = gm["member_count"]
