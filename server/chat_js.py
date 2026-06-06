@@ -8014,7 +8014,7 @@ function _openTerminalChannel(chatId, tmuxSession) {
   // Mount the terminal view over the messages area
   const view = document.createElement('div');
   view.id = '_terminalView';
-  view.className = 'terminal-view' + (sidebarPinned ? ' sidebar-pinned' : '');
+  view.className = 'terminal-view';
   view.innerHTML = '<div class="term-toolbar" id="_termToolbar"><div class="term-dot amber" id="_termDot"></div><span class="term-label" id="_termLabel">Connecting…</span><button class="term-disconnect-btn" onclick="_termDisconnect()">Disconnect</button></div><div class="term-body" id="_termBody"></div>';
   document.body.appendChild(view);
 
@@ -8075,13 +8075,21 @@ function _termConnect(chatId, tmuxSession, attempt) {
   try { sess.term.open(body); sess.fitAddon.fit(); } catch(e) {}
 
   if (sess.resizeObs) { try { sess.resizeObs.disconnect(); } catch(e) {} }
+  let _resizeTimer = null;
+  let _lastCols = 0, _lastRows = 0;
   sess.resizeObs = new ResizeObserver(() => {
-    if (!_termSessions[chatId]) return;
-    try { sess.fitAddon.fit(); } catch(e) {}
-    const t = _termSessions[chatId];
-    if (t && t.ws && t.ws.readyState === WebSocket.OPEN) {
-      t.ws.send(JSON.stringify({type:'resize', cols:sess.term.cols, rows:sess.term.rows}));
-    }
+    if (_resizeTimer) clearTimeout(_resizeTimer);
+    _resizeTimer = setTimeout(() => {
+      if (!_termSessions[chatId]) return;
+      try { sess.fitAddon.fit(); } catch(e) {}
+      const t = _termSessions[chatId];
+      if (t && t.ws && t.ws.readyState === WebSocket.OPEN) {
+        if (sess.term.cols !== _lastCols || sess.term.rows !== _lastRows) {
+          _lastCols = sess.term.cols; _lastRows = sess.term.rows;
+          t.ws.send(JSON.stringify({type:'resize', cols:_lastCols, rows:_lastRows}));
+        }
+      }
+    }, 150);
   });
   sess.resizeObs.observe(body);
 
