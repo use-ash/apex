@@ -22,6 +22,7 @@ CHAT_HTML = (
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/icon.svg">
 <title>Apex{{TITLE_SUFFIX}}</title>
+<link rel="stylesheet" href="/static/xterm.css">
 <style>
 """
     + CHAT_CSS
@@ -32,6 +33,8 @@ CHAT_HTML = (
 """
     + CHAT_BODY_HTML
     + """
+<script src="/static/xterm.js"></script>
+<script src="/static/xterm-addon-fit.js"></script>
 <script nonce="{{CSP_NONCE}}">
 """
     + CHAT_JS
