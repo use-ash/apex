@@ -881,9 +881,9 @@ transition:all .12s ease;white-space:nowrap}
 /* ═══════════════════════════════════════════════════
    Terminal channel — full-height xterm.js canvas
    ═══════════════════════════════════════════════════ */
-.terminal-view{position:fixed;top:52px;left:var(--sidebar-width,0);right:0;bottom:0;
-background:#0d0d0d;display:flex;flex-direction:column;z-index:1}
-.terminal-view.sidebar-pinned{left:var(--sidebar-width,280px)}
+.terminal-view{position:fixed;top:52px;left:0;right:0;bottom:0;
+background:#0d0d0d;display:flex;flex-direction:column;z-index:1;transition:left .2s ease}
+body.sidebar-pinned .terminal-view{left:var(--sidebar-width)}
 .term-toolbar{display:flex;align-items:center;gap:10px;padding:8px 14px;
 background:rgba(0,0,0,0.6);border-bottom:1px solid rgba(255,255,255,0.06);flex-shrink:0}
 .term-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;background:#4b5563}
