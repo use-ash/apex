@@ -23,6 +23,10 @@ from state import _clients
 
 misc_router = APIRouter()
 
+# Static assets directory (xterm.js, etc.)
+_STATIC_DIR = Path(__file__).parent / "static"
+_STATIC_ALLOW = {"xterm.js", "xterm-addon-fit.js", "xterm.css"}
+
 # ---------------------------------------------------------------------------
 # Config (re-derived from env or computed once at import)
 # ---------------------------------------------------------------------------
@@ -76,11 +80,11 @@ async def index():
     html = html.encode("utf-8", errors="replace").decode("utf-8")
     csp = (
         f"default-src 'self'; "
-        f"script-src 'nonce-{nonce}'; "
+        f"script-src 'nonce-{nonce}' 'self'; "
         f"style-src 'self' 'unsafe-inline'; "
         f"img-src 'self' data: blob:; "
         f"connect-src 'self' wss: ws:; "
-        f"font-src 'self'; "
+        f"font-src 'self' data:; "
         f"object-src 'none'; "
         f"base-uri 'self'; "
         f"frame-ancestors 'none';"
@@ -89,6 +93,21 @@ async def index():
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "Content-Security-Policy": csp,
     })
+
+
+@misc_router.get("/static/{filename}")
+async def static_asset(filename: str):
+    if filename not in _STATIC_ALLOW:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    path = _STATIC_DIR / filename
+    if not path.exists():
+        return JSONResponse({"error": "not found"}, status_code=404)
+    content_type = "text/css; charset=utf-8" if filename.endswith(".css") else "application/javascript; charset=utf-8"
+    return Response(
+        content=path.read_bytes(),
+        media_type=content_type,
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @misc_router.get("/manifest.json")

@@ -4116,7 +4116,7 @@ async function loadChats() {
     } else {
       const avatarSpan = document.createElement('span');
       avatarSpan.className = 'ci-avatar';
-      avatarSpan.textContent = c.type === 'alerts' ? '🚨' : '💬';
+      avatarSpan.textContent = c.type === 'alerts' ? '🚨' : c.type === 'terminal' ? '>_' : '💬';
       top.appendChild(avatarSpan);
     }
     const titleSpan = document.createElement('span');
@@ -4133,6 +4133,7 @@ async function loadChats() {
     d.dataset.profileId = c.profile_id || '';
     d.dataset.profileName = c.profile_name || '';
     d.dataset.profileAvatar = c.profile_avatar || '';
+    d.dataset.tmuxSession = c.tmux_session || '';
     d.onclick = () => selectChat(c.id, c.title, c.type, c.category).catch(err => reportError('selectChat click', err));
     d.ondblclick = (e) => { e.stopPropagation(); startRenameChat(d, c.id, c.title || 'Untitled'); };
     d.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteChat(c.id, c.title || 'Untitled'); };
@@ -4156,6 +4157,8 @@ async function loadChats() {
       const modelName = c.model || '';
       if (c.type === 'alerts') {
         sub.textContent = 'Alerts · Trading + System';
+      } else if (c.type === 'terminal') {
+        sub.textContent = 'Terminal' + (c.tmux_session ? ' · ' + c.tmux_session : '');
       } else if (c.type === 'group') {
         sub.textContent = 'Group · ' + (c.member_count || 0) + ' members';
       } else if (agentName && modelName) {
@@ -4394,6 +4397,20 @@ async function selectChat(id, title, chatType, category, options) {
   const seq = ++selectChatSeq;
   setCurrentChat(id, title || 'ApexChat');
   closeSidebar();
+
+  // Terminal channel — render xterm.js instead of messages
+  if (currentChatType === 'terminal') {
+    document.getElementById('composerBar').style.display = 'none';
+    document.getElementById('premiumLockedBar').style.display = 'none';
+    document.getElementById('contextBar').classList.remove('visible');
+    document.getElementById('messages').innerHTML = '';
+    const tmuxSession = sidebarItem?.dataset?.tmuxSession || title || '';
+    _openTerminalChannel(id, tmuxSession);
+    return;
+  }
+  // Remove terminal view if switching away from it
+  _closeTerminalChannel();
+
   // Attach WS to the selected chat so we receive live stream events
   if (!skipAttach && ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({action: 'attach', chat_id: id}));
@@ -5248,6 +5265,15 @@ async function showNewChatProfilePicker() {
     await newThread().catch(err => reportError('newThread', err));
   };
   modal.appendChild(threadBtn);
+
+  // Terminal channel button
+  const termBtn = document.createElement('div');
+  termBtn.style.cssText = 'padding:12px 16px;border-bottom:1px solid var(--bg);cursor:pointer;display:flex;align-items:center;gap:10px';
+  termBtn.innerHTML = '<span style="font-size:18px;font-family:monospace;letter-spacing:-1px">>_</span><div><div style="font-weight:600;font-size:14px">Terminal</div><div style="font-size:12px;color:var(--dim)">Connect to a tmux session or open a shell</div></div>';
+  termBtn.onmouseenter = () => { termBtn.style.background = 'var(--card)'; };
+  termBtn.onmouseleave = () => { termBtn.style.background = ''; };
+  termBtn.onclick = () => { overlay.remove(); _showTerminalNewChannelPicker(); };
+  modal.appendChild(termBtn);
 
   // New Group button (premium-gated)
   fetch('/api/features', {credentials: 'same-origin'}).then(r => r.json()).then(f => {
@@ -7965,6 +7991,320 @@ window.intMountToggle = intMountToggle;
 window.intSyncToggle = intSyncToggle;
 """
 
+_JS_TERMINAL = """// --- Terminal channel ---
+// Full-height xterm.js terminal rendered in the #messages area for type='terminal' chats.
+// WS: /ws/terminal?chat_id=X&tmux_session=Y  (binary stdout, binary stdin, JSON control)
+
+const _termSessions = {};  // chat_id → { term, fitAddon, ws, state, tmuxSession, heartbeat, resizeObs }
+
+function _closeTerminalChannel() {
+  const existing = document.getElementById('_terminalView');
+  if (existing) existing.remove();
+  // Disconnect any open WS not belonging to current chat
+  Object.keys(_termSessions).forEach(cid => {
+    if (cid !== currentChat) {
+      const t = _termSessions[cid];
+      if (t && t.ws && t.ws.readyState <= 1) t.ws.close();
+    }
+  });
+}
+
+function _openTerminalChannel(chatId, tmuxSession) {
+  _closeTerminalChannel();
+  // Mount the terminal view over the messages area
+  const view = document.createElement('div');
+  view.id = '_terminalView';
+  view.className = 'terminal-view' + (sidebarPinned ? ' sidebar-pinned' : '');
+  view.innerHTML = '<div class="term-toolbar" id="_termToolbar"><div class="term-dot amber" id="_termDot"></div><span class="term-label" id="_termLabel">Connecting…</span><button class="term-disconnect-btn" onclick="_termDisconnect()">Disconnect</button></div><div class="term-body" id="_termBody"></div>';
+  document.body.appendChild(view);
+
+  const sess = _termSessions[chatId];
+  if (sess && sess.state === 'connected' && sess.ws && sess.ws.readyState === WebSocket.OPEN) {
+    // Reattach existing live session to new DOM
+    const body = document.getElementById('_termBody');
+    if (body && sess.term) {
+      body.innerHTML = '';
+      sess.term.open(body);
+      try { sess.fitAddon.fit(); } catch(e) {}
+      _termSetDot('green', tmuxSession || 'shell');
+    }
+    return;
+  }
+
+  // Fresh connect
+  _termConnect(chatId, tmuxSession);
+}
+
+function _termConnect(chatId, tmuxSession, attempt) {
+  attempt = attempt || 1;
+  const body = document.getElementById('_termBody');
+  if (!body) return;
+
+  if (typeof Terminal === 'undefined') {
+    _termSetDot('', 'xterm.js not loaded');
+    return;
+  }
+
+  let sess = _termSessions[chatId];
+  if (!sess || !sess.term) {
+    let term, fitAddon;
+    try {
+      term = new Terminal({
+        cursorBlink: true,
+        fontSize: 13,
+        fontFamily: "'SF Mono','Fira Code',monospace",
+        theme: {background:'#0d0d0d', foreground:'#e5e7eb', cursor:'#22c55e',
+                selectionBackground:'rgba(124,58,237,0.4)'},
+        scrollback: 5000,
+        allowTransparency: false,
+      });
+      fitAddon = new FitAddon.FitAddon();
+      term.loadAddon(fitAddon);
+    } catch(e) {
+      _termSetDot('', 'Init failed: ' + e.message);
+      return;
+    }
+    sess = { term, fitAddon, ws: null, state: 'connecting', tmuxSession, heartbeat: null, resizeObs: null };
+    _termSessions[chatId] = sess;
+  }
+
+  sess.state = 'connecting';
+  sess.tmuxSession = tmuxSession;
+
+  body.innerHTML = '';
+  try { sess.term.open(body); sess.fitAddon.fit(); } catch(e) {}
+
+  if (sess.resizeObs) { try { sess.resizeObs.disconnect(); } catch(e) {} }
+  sess.resizeObs = new ResizeObserver(() => {
+    if (!_termSessions[chatId]) return;
+    try { sess.fitAddon.fit(); } catch(e) {}
+    const t = _termSessions[chatId];
+    if (t && t.ws && t.ws.readyState === WebSocket.OPEN) {
+      t.ws.send(JSON.stringify({type:'resize', cols:sess.term.cols, rows:sess.term.rows}));
+    }
+  });
+  sess.resizeObs.observe(body);
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const sessParam = tmuxSession ? '&tmux_session=' + encodeURIComponent(tmuxSession) : '';
+  const url = proto + '//' + location.host + '/ws/terminal?chat_id=' + encodeURIComponent(chatId) + sessParam;
+  let ws;
+  try { ws = new WebSocket(url); } catch(e) { _termSetDot('', 'WS error: ' + e.message); return; }
+  ws.binaryType = 'arraybuffer';
+  sess.ws = ws;
+
+  ws.onopen = () => {
+    sess.state = 'connected';
+    _termSetDot('green', tmuxSession || 'shell');
+    ws.send(JSON.stringify({type:'resize', cols:sess.term.cols, rows:sess.term.rows}));
+    sess.term.focus();
+    // Heartbeat
+    if (sess.heartbeat) clearInterval(sess.heartbeat);
+    sess.heartbeat = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'ping'}));
+    }, 30000);
+  };
+
+  ws.onmessage = (e) => {
+    if (e.data instanceof ArrayBuffer) {
+      sess.term.write(new Uint8Array(e.data));
+    } else {
+      try {
+        const ctrl = JSON.parse(e.data);
+        if (ctrl.type === 'exit') {
+          _termShowDisconnected(chatId, 'Session ended (code ' + ctrl.code + ')');
+        } else if (ctrl.type === 'timeout') {
+          _termShowDisconnected(chatId, 'Idle timeout');
+        }
+      } catch(ex) {}
+    }
+  };
+
+  ws.onclose = (e) => {
+    if (sess.heartbeat) { clearInterval(sess.heartbeat); sess.heartbeat = null; }
+    if (sess.state === 'connected' || sess.state === 'connecting') {
+      if (attempt <= 5) {
+        sess.state = 'reconnecting';
+        _termSetDot('amber', 'Reconnecting… ' + attempt + '/5');
+        setTimeout(() => {
+          if (currentChat === chatId) _termConnect(chatId, tmuxSession, attempt + 1);
+        }, Math.min(16000, 1000 * Math.pow(2, attempt - 1)));
+      } else {
+        _termShowDisconnected(chatId, 'Connection lost');
+      }
+    }
+  };
+  ws.onerror = () => {};
+
+  // Stdin: send keystrokes as binary
+  sess.term.onData(data => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(new TextEncoder().encode(data).buffer);
+    }
+  });
+}
+
+function _termSetDot(color, label) {
+  const dot = document.getElementById('_termDot');
+  const lbl = document.getElementById('_termLabel');
+  if (dot) dot.className = 'term-dot ' + color;
+  if (lbl) lbl.textContent = label;
+}
+
+function _termShowDisconnected(chatId, reason) {
+  const sess = _termSessions[chatId];
+  if (sess) { sess.state = 'disconnected'; if (sess.heartbeat) { clearInterval(sess.heartbeat); sess.heartbeat = null; } }
+  _termSetDot('', reason);
+  const body = document.getElementById('_termBody');
+  if (body) {
+    body.innerHTML = '<div class="term-reconnect"><p>' + escHtml(reason) + '</p><div class="term-reconnect-btns"><button class="term-btn primary" onclick="_termReconnect()">Reconnect</button><button class="term-btn secondary" onclick="_termNewShell()">New Shell</button></div></div>';
+  }
+}
+
+function _termDisconnect() {
+  const chatId = currentChat;
+  const sess = chatId ? _termSessions[chatId] : null;
+  if (sess) {
+    sess.state = 'disconnected';
+    if (sess.ws) { sess.ws.onclose = null; sess.ws.close(); sess.ws = null; }
+    if (sess.heartbeat) { clearInterval(sess.heartbeat); sess.heartbeat = null; }
+  }
+  _termShowDisconnected(chatId, 'Disconnected');
+}
+
+function _termReconnect() {
+  const chatId = currentChat;
+  const sess = chatId ? _termSessions[chatId] : null;
+  const tmuxSession = sess ? sess.tmuxSession : '';
+  if (sess) { if (sess.ws) { sess.ws.onclose = null; sess.ws.close(); } sess.ws = null; }
+  _termConnect(chatId, tmuxSession, 1);
+}
+
+function _termNewShell() {
+  const chatId = currentChat;
+  const sess = chatId ? _termSessions[chatId] : null;
+  if (sess) { if (sess.ws) { sess.ws.onclose = null; sess.ws.close(); } sess.ws = null; if (sess.term) { sess.term.clear(); } }
+  _termConnect(chatId, null, 1);
+}
+
+// --- New terminal channel picker ---
+async function _showTerminalNewChannelPicker() {
+  const overlay = document.createElement('div');
+  overlay.className = 'profile-modal-overlay';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+  const modal = document.createElement('div');
+  modal.className = 'profile-modal';
+  modal.style.maxWidth = '440px';
+
+  const header = document.createElement('div');
+  header.className = 'profile-modal-header';
+  header.innerHTML = '<h3>New Terminal</h3>';
+  const closeBtn = document.createElement('button');
+  closeBtn.innerHTML = '&times;';
+  closeBtn.onclick = () => overlay.remove();
+  header.appendChild(closeBtn);
+  modal.appendChild(header);
+
+  // Fetch live sessions
+  let sessions = [];
+  try {
+    const r = await fetch('/api/terminal/sessions', {credentials: 'same-origin'});
+    if (r.ok) sessions = (await r.json()).sessions || [];
+  } catch(e) {}
+
+  const body = document.createElement('div');
+  body.className = 'profile-modal-body';
+
+  // Existing session section
+  if (sessions.length > 0) {
+    const sec = document.createElement('div');
+    sec.style.cssText = 'padding:16px;border-bottom:1px solid var(--bg)';
+    const label = document.createElement('div');
+    label.style.cssText = 'font-size:12px;font-weight:600;color:var(--dim);margin-bottom:8px';
+    label.textContent = 'Connect to existing tmux session';
+    sec.appendChild(label);
+    const sel = document.createElement('select');
+    sel.id = '_termPickerSel';
+    sel.style.cssText = 'width:100%;padding:9px 12px;background:var(--bg);color:var(--text);border:1px solid var(--card);border-radius:8px;font-size:13px;margin-bottom:10px';
+    sessions.forEach(s => { const opt = document.createElement('option'); opt.value = s; opt.textContent = s; sel.appendChild(opt); });
+    sec.appendChild(sel);
+    const connectBtn = document.createElement('button');
+    connectBtn.className = 'btn-create';
+    connectBtn.style.width = '100%';
+    connectBtn.textContent = 'Connect';
+    connectBtn.onclick = async () => {
+      const name = sel.value;
+      overlay.remove();
+      if (!sidebarPinned) closeSidebar();
+      await _createTerminalChannel(name);
+    };
+    sec.appendChild(connectBtn);
+    body.appendChild(sec);
+  }
+
+  // New session section
+  const newSec = document.createElement('div');
+  newSec.style.cssText = 'padding:16px';
+  const newLabel = document.createElement('div');
+  newLabel.style.cssText = 'font-size:12px;font-weight:600;color:var(--dim);margin-bottom:8px';
+  newLabel.textContent = sessions.length > 0 ? 'Or create a new tmux session' : 'Create a new tmux session';
+  newSec.appendChild(newLabel);
+  const nameRow = document.createElement('div');
+  nameRow.style.cssText = 'display:flex;gap:8px;align-items:center';
+  const nameInp = document.createElement('input');
+  nameInp.type = 'text';
+  nameInp.placeholder = 'session-name (optional)';
+  nameInp.style.cssText = 'flex:1;padding:9px 12px;background:var(--bg);color:var(--text);border:1px solid var(--card);border-radius:8px;font-size:13px';
+  nameInp.oninput = () => { nameInp.value = nameInp.value.replace(/[^a-zA-Z0-9_\\-]/g, ''); };
+  nameRow.appendChild(nameInp);
+  newSec.appendChild(nameRow);
+  const shellBtn = document.createElement('button');
+  shellBtn.className = 'btn-create';
+  shellBtn.style.cssText = 'width:100%;margin-top:10px';
+  shellBtn.textContent = sessions.length > 0 ? 'Create New Session' : 'Open Terminal';
+  shellBtn.onclick = async () => {
+    const name = nameInp.value.trim() || null;
+    overlay.remove();
+    if (!sidebarPinned) closeSidebar();
+    await _createTerminalChannel(name);
+  };
+  newSec.appendChild(shellBtn);
+
+  // Also add plain shell option
+  const plainBtn = document.createElement('button');
+  plainBtn.style.cssText = 'width:100%;margin-top:8px;padding:9px;background:none;border:1px solid var(--card);border-radius:8px;color:var(--dim);font-size:12px;cursor:pointer';
+  plainBtn.textContent = 'Open plain shell (no tmux)';
+  plainBtn.onclick = async () => {
+    overlay.remove();
+    if (!sidebarPinned) closeSidebar();
+    await _createTerminalChannel(null, true);
+  };
+  newSec.appendChild(plainBtn);
+
+  body.appendChild(newSec);
+  modal.appendChild(body);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+}
+
+async function _createTerminalChannel(tmuxSession, plainShell) {
+  const payload = {type: 'terminal'};
+  if (tmuxSession && !plainShell) payload.tmux_session = tmuxSession;
+  const r = await fetch('/api/chats', {
+    method: 'POST', credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) { dbg('ERROR: _createTerminalChannel failed:', r.status); return; }
+  const data = await r.json();
+  // Update sidebar data so tmux_session is available on click
+  await loadChats();
+  const item = document.querySelector(`.chat-item[data-id="${data.id}"]`);
+  if (item) item.dataset.tmuxSession = data.tmux_session || '';
+  await selectChat(data.id, data.title || 'Terminal', 'terminal', '');
+}"""
+
 CHAT_JS = "\n".join([
     _JS_ERROR_HANDLER,
     _JS_STATE,
@@ -7994,4 +8334,5 @@ CHAT_JS = "\n".join([
     _JS_GROUP_SETTINGS,
     _JS_PERSONA_CARD,
     _JS_COMPUTER_USE,
+    _JS_TERMINAL,
 ])

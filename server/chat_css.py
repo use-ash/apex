@@ -876,4 +876,49 @@ color:var(--text);cursor:pointer;text-align:left;transition:all .15s ease;min-wi
 .gs-inline-btn{padding:8px 14px;border-radius:8px;border:1px solid var(--card);
 background:var(--bg);color:var(--text);font-size:12px;font-weight:600;cursor:pointer;
 transition:all .12s ease;white-space:nowrap}
-.gs-inline-btn:hover{border-color:var(--accent);color:var(--accent)}"""
+.gs-inline-btn:hover{border-color:var(--accent);color:var(--accent)}
+
+/* ═══════════════════════════════════════════════════
+   Terminal channel — full-height xterm.js canvas
+   ═══════════════════════════════════════════════════ */
+.terminal-view{position:fixed;top:52px;left:var(--sidebar-width,0);right:0;bottom:0;
+background:#0d0d0d;display:flex;flex-direction:column;z-index:1}
+.terminal-view.sidebar-pinned{left:var(--sidebar-width,280px)}
+.term-toolbar{display:flex;align-items:center;gap:10px;padding:8px 14px;
+background:rgba(0,0,0,0.6);border-bottom:1px solid rgba(255,255,255,0.06);flex-shrink:0}
+.term-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;background:#4b5563}
+.term-dot.green{background:#22c55e}
+.term-dot.amber{background:#f59e0b;animation:dotPulse 1.4s ease-in-out infinite}
+.term-label{font-size:12px;color:#9ca3af;flex:1;font-family:'SF Mono','Fira Code',monospace}
+.term-disconnect-btn{background:none;border:none;color:#6b7280;cursor:pointer;
+font-size:12px;padding:2px 8px;border-radius:4px;transition:all .15s}
+.term-disconnect-btn:hover{color:#f87171;background:rgba(239,68,68,0.1)}
+.term-body{flex:1;min-height:0;overflow:hidden;padding:4px}
+/* Picker shown before WS connects */
+.term-picker{display:flex;flex-direction:column;align-items:center;justify-content:center;
+height:100%;gap:16px;padding:32px}
+.term-picker-card{background:#1a1a2e;border:1px solid rgba(255,255,255,0.08);
+border-radius:14px;padding:28px 32px;width:100%;max-width:420px;display:flex;
+flex-direction:column;gap:14px}
+.term-picker-card h3{color:#f3f4f6;font-size:16px;font-weight:600;margin:0}
+.term-picker-card label{font-size:12px;color:#9ca3af;margin-bottom:4px;display:block}
+.term-picker-card select,.term-picker-card input[type=text]{
+width:100%;padding:10px 12px;background:#0f0f1a;color:#e5e7eb;
+border:1px solid rgba(255,255,255,0.12);border-radius:8px;font-size:13px;
+box-sizing:border-box;outline:none}
+.term-picker-card select:focus,.term-picker-card input[type=text]:focus{
+border-color:rgba(139,92,246,0.5)}
+.term-picker-card .term-btn{padding:10px 16px;border-radius:8px;font-size:13px;
+font-weight:600;cursor:pointer;border:none;width:100%;transition:opacity .15s}
+.term-btn.primary{background:#7c3aed;color:#fff}
+.term-btn.primary:hover{opacity:.88}
+.term-btn.secondary{background:#1f2937;color:#d1d5db;border:1px solid rgba(255,255,255,0.1)}
+.term-btn.secondary:hover{border-color:rgba(255,255,255,0.22)}
+.term-picker-divider{text-align:center;color:#4b5563;font-size:12px;position:relative}
+.term-picker-divider::before,.term-picker-divider::after{content:'';
+display:inline-block;width:38%;height:1px;background:rgba(255,255,255,0.06);
+vertical-align:middle;margin:0 8px}
+.term-reconnect{display:flex;flex-direction:column;align-items:center;gap:10px;padding:24px}
+.term-reconnect p{color:#9ca3af;font-size:13px;margin:0;text-align:center}
+.term-reconnect-btns{display:flex;gap:8px;width:100%;max-width:320px}
+.term-reconnect-btns .term-btn{flex:1}"""
