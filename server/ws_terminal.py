@@ -510,23 +510,17 @@ async def ws_terminal(websocket: WebSocket):
         _sessions[chat_id] = sess
         log(f"terminal: spawned chat={chat_id[:8]} tmux={tmux_session or 'shell'} pid={proc.pid}")
     else:
-        # Existing session — kick the prior WS reader off this PTY and
-        # request a tmux redraw so the new client sees current pane state.
+        # Existing session — kick the prior WS reader off this PTY.
+        # The tmux refresh is deferred until the first resize message lands
+        # so tmux redraws at the new client's actual cols/rows, not the old.
         prior_ws = sess.active_ws
         if prior_ws is not None and prior_ws is not websocket:
             with contextlib.suppress(Exception):
                 await prior_ws.close(code=4001, reason="superseded")
             log(f"terminal: superseded prior WS for chat={chat_id[:8]}")
-        if tmux_session:
-            with contextlib.suppress(Exception):
-                refresh = await asyncio.create_subprocess_exec(
-                    "tmux", "refresh-client", "-t", tmux_session,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                await asyncio.wait_for(refresh.wait(), timeout=2)
 
     sess.active_ws = websocket
+    needs_tmux_refresh = tmux_session is not None and sess.proc.returncode is None
     read_task = asyncio.create_task(_pty_read(sess.master_fd, websocket, sess))
 
     async def _idle_watch():
@@ -556,6 +550,15 @@ async def ws_terminal(websocket: WebSocket):
                         cols = max(1, min(1000, int(ctrl.get("cols", 80))))
                         rows = max(1, min(500, int(ctrl.get("rows", 24))))
                         _set_pty_size(sess.master_fd, cols, rows)
+                        if needs_tmux_refresh:
+                            needs_tmux_refresh = False
+                            with contextlib.suppress(Exception):
+                                refresh = await asyncio.create_subprocess_exec(
+                                    "tmux", "refresh-client", "-t", tmux_session,
+                                    stdout=asyncio.subprocess.DEVNULL,
+                                    stderr=asyncio.subprocess.DEVNULL,
+                                )
+                                await asyncio.wait_for(refresh.wait(), timeout=2)
                     elif t == "ping":
                         await websocket.send_text('{"type":"pong"}')
     except Exception:
