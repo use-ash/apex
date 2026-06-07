@@ -42,6 +42,8 @@ class _Session:
     chat_id: str
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
+    # Set/cleared on each WS attach. Old read task self-exits when this changes.
+    active_ws: object = None
 
 
 _sessions: dict[str, _Session] = {}
@@ -125,6 +127,9 @@ async def _pty_read(master_fd: int, ws: WebSocket, sess: _Session) -> None:
             if not data:
                 break
             sess.last_activity = time.time()
+            # Self-exit if a newer WS replaced us (only one reader per PTY at a time)
+            if sess.active_ws is not ws:
+                break
             await ws.send_bytes(data)
     except (OSError, RuntimeError):
         pass
@@ -218,6 +223,23 @@ html,body{{background:#0d0d0d;overflow:hidden;height:100%}}
   white-space:nowrap;
 }}
 #send:active{{opacity:.8}}
+/* Status row */
+#status{{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  padding:4px 12px 2px;
+  font-size:11px;
+  color:#9ca3af;
+  font-family:'SF Mono',monospace;
+}}
+#dot{{
+  width:8px;height:8px;border-radius:50%;
+  background:#f59e0b;
+  flex-shrink:0;
+}}
+#dot.ok{{background:#22c55e}}
+#dot.err{{background:#ef4444}}
 </style>
 <link rel="stylesheet" href="/static/xterm.css">
 </head>
@@ -226,31 +248,32 @@ html,body{{background:#0d0d0d;overflow:hidden;height:100%}}
 
 <!-- Input bar: shortcut row + text input -->
 <div id="bar">
+  <div id="status"><span id="dot"></span><span id="status-txt">connecting…</span></div>
   <div id="keys">
-    <button ontouchend="sk(event,'\x03')">Ctrl-C</button>
-    <button ontouchend="sk(event,'\x04')">Ctrl-D</button>
-    <button ontouchend="sk(event,'\x1a')">Ctrl-Z</button>
-    <button ontouchend="sk(event,'\x1b')">Esc</button>
-    <button ontouchend="sk(event,'\t')">Tab</button>
-    <button ontouchend="sk(event,'\x1b[A')">↑</button>
-    <button ontouchend="sk(event,'\x1b[B')">↓</button>
-    <button ontouchend="sk(event,'\x1b[D')">←</button>
-    <button ontouchend="sk(event,'\x1b[C')">→</button>
-    <button ontouchend="sk(event,'\x01')">Ctrl-A</button>
-    <button ontouchend="sk(event,'\x05')">Ctrl-E</button>
-    <button ontouchend="sk(event,'\x0b')">Ctrl-K</button>
-    <button ontouchend="sk(event,'\x15')">Ctrl-U</button>
-    <button ontouchend="sk(event,'\x0c')">Ctrl-L</button>
+    <button data-k="3">Ctrl-C</button>
+    <button data-k="4">Ctrl-D</button>
+    <button data-k="26">Ctrl-Z</button>
+    <button data-k="27">Esc</button>
+    <button data-k="9">Tab</button>
+    <button data-k="arrow-up">↑</button>
+    <button data-k="arrow-down">↓</button>
+    <button data-k="arrow-left">←</button>
+    <button data-k="arrow-right">→</button>
+    <button data-k="1">Ctrl-A</button>
+    <button data-k="5">Ctrl-E</button>
+    <button data-k="11">Ctrl-K</button>
+    <button data-k="21">Ctrl-U</button>
+    <button data-k="12">Ctrl-L</button>
+    <button data-k="13">Enter</button>
   </div>
-  <div id="inp-row">
+  <form id="inp-row" onsubmit="event.preventDefault();sendInp();return false;">
     <input id="inp" type="text" placeholder="command…"
       autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
       inputmode="text"
       enterkeyhint="send"
-      onkeydown="if(event.key==='Enter'){{event.preventDefault();sendInp();}}"
     >
-    <button id="send" ontouchend="sendInp()">Send</button>
-  </div>
+    <button id="send" type="submit">Send</button>
+  </form>
 </div>
 
 <script src="/static/xterm.js"></script>
@@ -312,11 +335,20 @@ html,body{{background:#0d0d0d;overflow:hidden;height:100%}}
   var url = proto+'//'+location.host+'/ws/terminal?chat_id='+encodeURIComponent(chatId)+sessParam;
   var ws, attempt=0;
 
+  function setStatus(state, txt){{
+    var dot = document.getElementById('dot');
+    var t = document.getElementById('status-txt');
+    dot.className = state;  // '' (amber) | 'ok' | 'err'
+    t.textContent = txt;
+  }}
+
   function connect(){{
+    setStatus('', attempt ? 'reconnecting ('+attempt+'/5)…' : 'connecting…');
     ws = new WebSocket(url);
     ws.binaryType = 'arraybuffer';
     ws.onopen = function(){{
       attempt=0;
+      setStatus('ok', tmuxSession ? 'connected · tmux:'+tmuxSession : 'connected · shell');
       ws.send(JSON.stringify({{type:'resize',cols:term.cols,rows:term.rows}}));
     }};
     ws.onmessage = function(e){{
@@ -325,13 +357,20 @@ html,body{{background:#0d0d0d;overflow:hidden;height:100%}}
         try{{
           var c=JSON.parse(e.data);
           if(c.type==='exit'||c.type==='timeout'){{
-            term.writeln('\r\n\x1b[33m[session ended]\x1b[0m');
+            term.writeln('\\r\\n\\x1b[33m[session ended]\\x1b[0m');
+            setStatus('err', c.type==='timeout' ? 'idle timeout' : 'exit '+(c.code||0));
           }}
         }}catch(ex){{}}
       }}
     }};
     ws.onclose=function(){{
-      if(attempt<5){{ attempt++; setTimeout(connect,Math.min(8000,500*Math.pow(2,attempt))); }}
+      if(attempt<5){{
+        attempt++;
+        setStatus('', 'disconnected · retry '+attempt);
+        setTimeout(connect,Math.min(8000,500*Math.pow(2,attempt)));
+      }} else {{
+        setStatus('err', 'connection lost');
+      }}
     }};
     ws.onerror=function(){{}};
   }}
@@ -339,23 +378,43 @@ html,body{{background:#0d0d0d;overflow:hidden;height:100%}}
 
   // Send raw bytes to PTY
   function send(str){{
-    if(ws&&ws.readyState===WebSocket.OPEN)
+    if(ws&&ws.readyState===WebSocket.OPEN){{
       ws.send(new TextEncoder().encode(str).buffer);
+      return true;
+    }}
+    return false;
   }}
 
-  // Shortcut key button handler (ontouchend to avoid 300ms delay)
-  window.sk=function(e,seq){{
-    e.preventDefault();
-    send(seq);
+  // Map data-k values to actual byte sequences (built at runtime so escapes are clean)
+  var KEY_MAP = {{
+    'arrow-up':    '\\x1b[A',
+    'arrow-down':  '\\x1b[B',
+    'arrow-left':  '\\x1b[D',
+    'arrow-right': '\\x1b[C',
   }};
+
+  // Wire up shortcut buttons
+  document.querySelectorAll('#keys button').forEach(function(btn){{
+    btn.addEventListener('click', function(ev){{
+      ev.preventDefault();
+      var k = btn.getAttribute('data-k');
+      var seq;
+      if(KEY_MAP[k]){{ seq = KEY_MAP[k]; }}
+      else {{ seq = String.fromCharCode(parseInt(k,10)); }}
+      send(seq);
+      // Bring input back into focus so user can keep typing
+      document.getElementById('inp').focus();
+    }});
+  }});
 
   // Send text field contents + newline
   window.sendInp=function(){{
     var inp=document.getElementById('inp');
     var val=inp.value;
     if(!val) return;
-    send(val+'\r');
-    inp.value='';
+    if(send(val+'\\r')){{
+      inp.value='';
+    }}
   }};
 
   // Heartbeat
@@ -439,7 +498,24 @@ async def ws_terminal(websocket: WebSocket):
         sess = _Session(master_fd=master_fd, proc=proc, chat_id=chat_id)
         _sessions[chat_id] = sess
         log(f"terminal: spawned chat={chat_id[:8]} tmux={tmux_session or 'shell'} pid={proc.pid}")
+    else:
+        # Existing session — kick the prior WS reader off this PTY and
+        # request a tmux redraw so the new client sees current pane state.
+        prior_ws = sess.active_ws
+        if prior_ws is not None and prior_ws is not websocket:
+            with contextlib.suppress(Exception):
+                await prior_ws.close(code=4001, reason="superseded")
+            log(f"terminal: superseded prior WS for chat={chat_id[:8]}")
+        if tmux_session:
+            with contextlib.suppress(Exception):
+                refresh = await asyncio.create_subprocess_exec(
+                    "tmux", "refresh-client", "-t", tmux_session,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await asyncio.wait_for(refresh.wait(), timeout=2)
 
+    sess.active_ws = websocket
     read_task = asyncio.create_task(_pty_read(sess.master_fd, websocket, sess))
 
     async def _idle_watch():
