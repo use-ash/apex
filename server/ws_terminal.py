@@ -246,6 +246,7 @@ html,body{{background:#0d0d0d;overflow:hidden;height:100%}}
     <input id="inp" type="text" placeholder="command…"
       autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
       inputmode="text"
+      enterkeyhint="send"
       onkeydown="if(event.key==='Enter'){{event.preventDefault();sendInp();}}"
     >
     <button id="send" ontouchend="sendInp()">Send</button>
@@ -269,16 +270,28 @@ html,body{{background:#0d0d0d;overflow:hidden;height:100%}}
   }});
   var fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
+
+  // Set bar height CSS var BEFORE opening terminal so #t has correct dimensions
+  function setBarH(andFit){{
+    var h = document.getElementById('bar').offsetHeight || 88;
+    document.documentElement.style.setProperty('--bar-h', h+'px');
+    document.getElementById('t').style.bottom = h+'px';
+    if(andFit){{ try{{fit.fit();}}catch(e){{}} }}
+  }}
+  setBarH(false);
+
   term.open(document.getElementById('t'));
 
-  // Measure bar height and set CSS var so #t knows how much room to leave
-  function setBarH(){{
-    var h = document.getElementById('bar').offsetHeight;
-    document.documentElement.style.setProperty('--bar-h', h+'px');
-    try{{fit.fit();}}catch(e){{}}
-  }}
-  setBarH();
-  new ResizeObserver(setBarH).observe(document.getElementById('bar'));
+  // After DOM paints, fit and send initial resize
+  requestAnimationFrame(function(){{
+    requestAnimationFrame(function(){{
+      setBarH(true);
+      if(ws&&ws.readyState===1)
+        ws.send(JSON.stringify({{type:'resize',cols:term.cols,rows:term.rows}}));
+    }});
+  }});
+
+  new ResizeObserver(function(){{ setBarH(true); }}).observe(document.getElementById('bar'));
 
   // Track keyboard: slide bar up with visualViewport
   if(window.visualViewport){{
