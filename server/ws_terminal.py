@@ -142,10 +142,17 @@ _TERMINAL_VIEW_HTML = """\
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
-html{{height:100dvh;overflow:hidden}}
-body{{width:100%;height:100dvh;background:#0d0d0d;overflow:hidden}}
-#t{{position:fixed;top:0;left:0;right:0;bottom:0;padding:4px}}
-.xterm,.xterm-screen{{height:100%!important}}
+html,body{{background:#0d0d0d;overflow:hidden}}
+#t{{
+  position:fixed;
+  top:env(safe-area-inset-top,0px);
+  left:env(safe-area-inset-left,0px);
+  right:env(safe-area-inset-right,0px);
+  bottom:0;
+  padding:4px;
+  overflow:hidden;
+}}
+.xterm{{height:100%!important}}
 .xterm-viewport{{overflow-y:hidden!important}}
 </style>
 <link rel="stylesheet" href="/static/xterm.css">
@@ -169,6 +176,27 @@ body{{width:100%;height:100dvh;background:#0d0d0d;overflow:hidden}}
   term.loadAddon(fit);
   term.open(document.getElementById('t'));
   fit.fit();
+
+  // Fix iOS keyboard: patch xterm's hidden textarea after open()
+  var ta = document.querySelector('.xterm-helper-textarea');
+  if(ta){{
+    ta.setAttribute('inputmode','text');
+    ta.setAttribute('autocomplete','off');
+    ta.setAttribute('autocorrect','off');
+    ta.setAttribute('autocapitalize','off');
+    ta.setAttribute('spellcheck','false');
+  }}
+
+  // Resize when iOS keyboard appears/disappears
+  if(window.visualViewport){{
+    window.visualViewport.addEventListener('resize', function(){{
+      var t = document.getElementById('t');
+      t.style.bottom = (window.innerHeight - window.visualViewport.height) + 'px';
+      try{{fit.fit();}}catch(e){{}}
+      if(ws&&ws.readyState===1)
+        ws.send(JSON.stringify({{type:'resize',cols:term.cols,rows:term.rows}}));
+    }});
+  }}
 
   const proto = location.protocol==='https:'?'wss:':'ws:';
   const sessParam = tmuxSession?'&tmux_session='+encodeURIComponent(tmuxSession):'';
