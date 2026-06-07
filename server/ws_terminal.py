@@ -191,8 +191,10 @@ html,body{{background:#0d0d0d;overflow:hidden}}
   if(window.visualViewport){{
     window.visualViewport.addEventListener('resize', function(){{
       var t = document.getElementById('t');
-      t.style.bottom = (window.innerHeight - window.visualViewport.height) + 'px';
+      var kbHeight = Math.max(0, window.innerHeight - window.visualViewport.height);
+      t.style.bottom = kbHeight + 'px';
       try{{fit.fit();}}catch(e){{}}
+      term.scrollToBottom();
       if(ws&&ws.readyState===1)
         ws.send(JSON.stringify({{type:'resize',cols:term.cols,rows:term.rows}}));
     }});
