@@ -197,9 +197,12 @@ html,body{{background:#0d0d0d;overflow:hidden;height:100%}}
   align-items:center;
   gap:6px;
   padding:4px 8px 6px;
+  width:100%;
+  box-sizing:border-box;
 }}
 #inp{{
-  flex:1;
+  flex:1 1 0;
+  min-width:0;
   padding:8px 12px;
   background:#0f0f1a;
   color:#e5e7eb;
@@ -265,6 +268,7 @@ html,body{{background:#0d0d0d;overflow:hidden;height:100%}}
     <button data-k="21">Ctrl-U</button>
     <button data-k="12">Ctrl-L</button>
     <button data-k="13">Enter</button>
+    <button id="kb-dismiss" type="button" title="Hide keyboard">⌨ ▼</button>
   </div>
   <form id="inp-row" onsubmit="event.preventDefault();sendInp();return false;">
     <input id="inp" type="text" placeholder="command…"
@@ -394,7 +398,7 @@ html,body{{background:#0d0d0d;overflow:hidden;height:100%}}
   }};
 
   // Wire up shortcut buttons
-  document.querySelectorAll('#keys button').forEach(function(btn){{
+  document.querySelectorAll('#keys button[data-k]').forEach(function(btn){{
     btn.addEventListener('click', function(ev){{
       ev.preventDefault();
       var k = btn.getAttribute('data-k');
@@ -405,6 +409,13 @@ html,body{{background:#0d0d0d;overflow:hidden;height:100%}}
       // Bring input back into focus so user can keep typing
       document.getElementById('inp').focus();
     }});
+  }});
+
+  // Keyboard-dismiss button — blurs the input, which retracts the iOS keyboard
+  document.getElementById('kb-dismiss').addEventListener('click', function(ev){{
+    ev.preventDefault();
+    document.getElementById('inp').blur();
+    document.activeElement && document.activeElement.blur && document.activeElement.blur();
   }});
 
   // Send text field contents + newline
