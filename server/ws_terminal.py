@@ -141,58 +141,151 @@ _TERMINAL_VIEW_HTML = """\
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <style>
-*{{margin:0;padding:0;box-sizing:border-box}}
-html,body{{background:#0d0d0d;overflow:hidden}}
+*{{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}}
+html,body{{background:#0d0d0d;overflow:hidden;height:100%}}
+/* Terminal canvas — fills space above the input bar */
 #t{{
   position:fixed;
   top:env(safe-area-inset-top,0px);
-  left:env(safe-area-inset-left,0px);
-  right:env(safe-area-inset-right,0px);
-  bottom:0;
-  padding:4px;
+  left:0;right:0;
+  bottom:var(--bar-h,88px);
   overflow:hidden;
 }}
 .xterm{{height:100%!important}}
-.xterm-viewport{{overflow-y:hidden!important}}
+.xterm-viewport{{overflow-y:auto!important}}
+/* Input bar — fixed above keyboard, slides with visualViewport */
+#bar{{
+  position:fixed;
+  left:0;right:0;
+  bottom:0;
+  background:#111827;
+  border-top:1px solid rgba(255,255,255,0.08);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+  z-index:10;
+}}
+/* Shortcut key row */
+#keys{{
+  display:flex;
+  overflow-x:auto;
+  -webkit-overflow-scrolling:touch;
+  gap:6px;
+  padding:6px 8px 4px;
+  scrollbar-width:none;
+}}
+#keys::-webkit-scrollbar{{display:none}}
+#keys button{{
+  flex-shrink:0;
+  padding:5px 10px;
+  background:#1f2937;
+  color:#d1d5db;
+  border:1px solid rgba(255,255,255,0.1);
+  border-radius:6px;
+  font-size:12px;
+  font-family:'SF Mono',monospace;
+  cursor:pointer;
+  white-space:nowrap;
+}}
+#keys button:active{{background:#374151}}
+/* Text input row */
+#inp-row{{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  padding:4px 8px 6px;
+}}
+#inp{{
+  flex:1;
+  padding:8px 12px;
+  background:#0f0f1a;
+  color:#e5e7eb;
+  border:1px solid rgba(255,255,255,0.12);
+  border-radius:8px;
+  font-family:'SF Mono','Fira Code',monospace;
+  font-size:14px;
+  outline:none;
+  -webkit-appearance:none;
+}}
+#inp::placeholder{{color:#4b5563}}
+#send{{
+  padding:8px 14px;
+  background:#7c3aed;
+  color:#fff;
+  border:none;
+  border-radius:8px;
+  font-size:13px;
+  font-weight:600;
+  cursor:pointer;
+  white-space:nowrap;
+}}
+#send:active{{opacity:.8}}
 </style>
 <link rel="stylesheet" href="/static/xterm.css">
 </head>
 <body>
 <div id="t"></div>
+
+<!-- Input bar: shortcut row + text input -->
+<div id="bar">
+  <div id="keys">
+    <button ontouchend="sk(event,'\x03')">Ctrl-C</button>
+    <button ontouchend="sk(event,'\x04')">Ctrl-D</button>
+    <button ontouchend="sk(event,'\x1a')">Ctrl-Z</button>
+    <button ontouchend="sk(event,'\x1b')">Esc</button>
+    <button ontouchend="sk(event,'\t')">Tab</button>
+    <button ontouchend="sk(event,'\x1b[A')">↑</button>
+    <button ontouchend="sk(event,'\x1b[B')">↓</button>
+    <button ontouchend="sk(event,'\x1b[D')">←</button>
+    <button ontouchend="sk(event,'\x1b[C')">→</button>
+    <button ontouchend="sk(event,'\x01')">Ctrl-A</button>
+    <button ontouchend="sk(event,'\x05')">Ctrl-E</button>
+    <button ontouchend="sk(event,'\x0b')">Ctrl-K</button>
+    <button ontouchend="sk(event,'\x15')">Ctrl-U</button>
+    <button ontouchend="sk(event,'\x0c')">Ctrl-L</button>
+  </div>
+  <div id="inp-row">
+    <input id="inp" type="text" placeholder="command…"
+      autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+      inputmode="text"
+      onkeydown="if(event.key==='Enter'){{event.preventDefault();sendInp();}}"
+    >
+    <button id="send" ontouchend="sendInp()">Send</button>
+  </div>
+</div>
+
 <script src="/static/xterm.js"></script>
 <script src="/static/xterm-addon-fit.js"></script>
 <script>
 (function(){{
-  const chatId = {chat_id_json};
-  const tmuxSession = {tmux_json};
-  const term = new Terminal({{
+  var chatId = {chat_id_json};
+  var tmuxSession = {tmux_json};
+
+  var term = new Terminal({{
     cursorBlink:true, fontSize:13,
     fontFamily:"'SF Mono','Fira Code',monospace",
     theme:{{background:'#0d0d0d',foreground:'#e5e7eb',cursor:'#22c55e',
-            selectionBackground:'rgba(124,58,237,0.4)'}},
+            selectionBackground:'rgba(124,58,237,0.35)'}},
     scrollback:5000, allowTransparency:false,
+    disableStdin:true,
   }});
-  const fit = new FitAddon.FitAddon();
+  var fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(document.getElementById('t'));
-  fit.fit();
 
-  // Fix iOS keyboard: patch xterm's hidden textarea after open()
-  var ta = document.querySelector('.xterm-helper-textarea');
-  if(ta){{
-    ta.setAttribute('inputmode','text');
-    ta.setAttribute('autocomplete','off');
-    ta.setAttribute('autocorrect','off');
-    ta.setAttribute('autocapitalize','off');
-    ta.setAttribute('spellcheck','false');
+  // Measure bar height and set CSS var so #t knows how much room to leave
+  function setBarH(){{
+    var h = document.getElementById('bar').offsetHeight;
+    document.documentElement.style.setProperty('--bar-h', h+'px');
+    try{{fit.fit();}}catch(e){{}}
   }}
+  setBarH();
+  new ResizeObserver(setBarH).observe(document.getElementById('bar'));
 
-  // Resize when iOS keyboard appears/disappears
+  // Track keyboard: slide bar up with visualViewport
   if(window.visualViewport){{
     window.visualViewport.addEventListener('resize', function(){{
-      var t = document.getElementById('t');
-      var kbHeight = Math.max(0, window.innerHeight - window.visualViewport.height);
-      t.style.bottom = kbHeight + 'px';
+      var kbH = Math.max(0, window.innerHeight - window.visualViewport.height);
+      document.getElementById('bar').style.bottom = kbH+'px';
+      document.getElementById('t').style.bottom = (kbH + document.getElementById('bar').offsetHeight)+'px';
       try{{fit.fit();}}catch(e){{}}
       term.scrollToBottom();
       if(ws&&ws.readyState===1)
@@ -200,10 +293,11 @@ html,body{{background:#0d0d0d;overflow:hidden}}
     }});
   }}
 
-  const proto = location.protocol==='https:'?'wss:':'ws:';
-  const sessParam = tmuxSession?'&tmux_session='+encodeURIComponent(tmuxSession):'';
-  const url = proto+'//'+location.host+'/ws/terminal?chat_id='+encodeURIComponent(chatId)+sessParam;
-  let ws, attempt=0;
+  // WebSocket
+  var proto = location.protocol==='https:'?'wss:':'ws:';
+  var sessParam = tmuxSession?'&tmux_session='+encodeURIComponent(tmuxSession):'';
+  var url = proto+'//'+location.host+'/ws/terminal?chat_id='+encodeURIComponent(chatId)+sessParam;
+  var ws, attempt=0;
 
   function connect(){{
     ws = new WebSocket(url);
@@ -211,44 +305,47 @@ html,body{{background:#0d0d0d;overflow:hidden}}
     ws.onopen = function(){{
       attempt=0;
       ws.send(JSON.stringify({{type:'resize',cols:term.cols,rows:term.rows}}));
-      term.focus();
     }};
     ws.onmessage = function(e){{
-      if(e.data instanceof ArrayBuffer){{ term.write(new Uint8Array(e.data)); }}
+      if(e.data instanceof ArrayBuffer){{ term.write(new Uint8Array(e.data)); term.scrollToBottom(); }}
       else{{
         try{{
           var c=JSON.parse(e.data);
-          if(c.type==='ping'){{ /* no-op */ }}
+          if(c.type==='exit'||c.type==='timeout'){{
+            term.writeln('\r\n\x1b[33m[session ended]\x1b[0m');
+          }}
         }}catch(ex){{}}
       }}
     }};
-    ws.onclose = function(){{
-      if(attempt<5){{
-        attempt++;
-        setTimeout(connect, Math.min(8000,500*Math.pow(2,attempt)));
-      }}
+    ws.onclose=function(){{
+      if(attempt<5){{ attempt++; setTimeout(connect,Math.min(8000,500*Math.pow(2,attempt))); }}
     }};
     ws.onerror=function(){{}};
   }}
   connect();
 
-  term.onData(function(d){{
+  // Send raw bytes to PTY
+  function send(str){{
     if(ws&&ws.readyState===WebSocket.OPEN)
-      ws.send(new TextEncoder().encode(d).buffer);
-  }});
+      ws.send(new TextEncoder().encode(str).buffer);
+  }}
 
-  var _rt=null, _lc=0, _lr=0;
-  new ResizeObserver(function(){{
-    clearTimeout(_rt);
-    _rt=setTimeout(function(){{
-      try{{fit.fit();}}catch(e){{}}
-      if(ws&&ws.readyState===WebSocket.OPEN&&(term.cols!==_lc||term.rows!==_lr)){{
-        _lc=term.cols; _lr=term.rows;
-        ws.send(JSON.stringify({{type:'resize',cols:_lc,rows:_lr}}));
-      }}
-    }},150);
-  }}).observe(document.getElementById('t'));
+  // Shortcut key button handler (ontouchend to avoid 300ms delay)
+  window.sk=function(e,seq){{
+    e.preventDefault();
+    send(seq);
+  }};
 
+  // Send text field contents + newline
+  window.sendInp=function(){{
+    var inp=document.getElementById('inp');
+    var val=inp.value;
+    if(!val) return;
+    send(val+'\r');
+    inp.value='';
+  }};
+
+  // Heartbeat
   setInterval(function(){{
     if(ws&&ws.readyState===WebSocket.OPEN)
       ws.send(JSON.stringify({{type:'ping'}}));
