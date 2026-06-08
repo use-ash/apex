@@ -144,29 +144,31 @@ _TERMINAL_VIEW_HTML = """\
 <html>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
 <style>
 *{{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}}
-html,body{{background:#0d0d0d;overflow:hidden;height:100%}}
-/* Terminal canvas — fills space above the input bar */
+html,body{{background:#0d0d0d;overflow:hidden}}
+/* Flex column: terminal grows, bar stays its natural size at bottom.
+   Using 100dvh + interactive-widget=resizes-content so the layout
+   viewport shrinks when the iOS keyboard appears — no JS choreography needed. */
+body{{
+  height:100dvh;
+  display:flex;
+  flex-direction:column;
+  padding-top:env(safe-area-inset-top,0px);
+}}
 #t{{
-  position:fixed;
-  top:env(safe-area-inset-top,0px);
-  left:0;right:0;
-  bottom:var(--bar-h,88px);
+  flex:1 1 0;
+  min-height:0;
   overflow:hidden;
 }}
-.xterm{{height:100%!important}}
+.xterm{{height:100%!important;width:100%!important}}
 .xterm-viewport{{overflow-y:auto!important}}
-/* Input bar — fixed above keyboard, slides with visualViewport */
 #bar{{
-  position:fixed;
-  left:0;right:0;
-  bottom:0;
+  flex-shrink:0;
   background:#111827;
   border-top:1px solid rgba(255,255,255,0.08);
   padding-bottom:env(safe-area-inset-bottom,0px);
-  z-index:10;
 }}
 /* Shortcut key row */
 #keys{{
@@ -297,41 +299,35 @@ html,body{{background:#0d0d0d;overflow:hidden;height:100%}}
   }});
   var fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
-
-  // Set bar height CSS var BEFORE opening terminal so #t has correct dimensions
-  function setBarH(andFit){{
-    var h = document.getElementById('bar').offsetHeight || 88;
-    document.documentElement.style.setProperty('--bar-h', h+'px');
-    document.getElementById('t').style.bottom = h+'px';
-    if(andFit){{ try{{fit.fit();}}catch(e){{}} }}
-  }}
-  setBarH(false);
-
   term.open(document.getElementById('t'));
 
-  // After DOM paints, fit and send initial resize
+  // Debounced fit + WS resize on viewport changes.
+  // Body is a flex column — keyboard appearance shrinks layout viewport
+  // (interactive-widget=resizes-content), body shrinks, ResizeObserver fires,
+  // we fit() once after 150ms of quiescence.
+  var _rt = null, _lc = 0, _lr = 0;
+  function refit(){{
+    if(_rt) clearTimeout(_rt);
+    _rt = setTimeout(function(){{
+      try {{ fit.fit(); }} catch(e) {{}}
+      if(ws && ws.readyState === 1 && (term.cols !== _lc || term.rows !== _lr)){{
+        _lc = term.cols; _lr = term.rows;
+        ws.send(JSON.stringify({{type:'resize', cols:_lc, rows:_lr}}));
+      }}
+    }}, 150);
+  }}
+
+  // Initial fit after paint settles
   requestAnimationFrame(function(){{
     requestAnimationFrame(function(){{
-      setBarH(true);
-      if(ws&&ws.readyState===1)
-        ws.send(JSON.stringify({{type:'resize',cols:term.cols,rows:term.rows}}));
+      try {{ fit.fit(); }} catch(e) {{}}
+      _lc = term.cols; _lr = term.rows;
+      if(ws && ws.readyState === 1)
+        ws.send(JSON.stringify({{type:'resize', cols:_lc, rows:_lr}}));
     }});
   }});
 
-  new ResizeObserver(function(){{ setBarH(true); }}).observe(document.getElementById('bar'));
-
-  // Track keyboard: slide bar up with visualViewport
-  if(window.visualViewport){{
-    window.visualViewport.addEventListener('resize', function(){{
-      var kbH = Math.max(0, window.innerHeight - window.visualViewport.height);
-      document.getElementById('bar').style.bottom = kbH+'px';
-      document.getElementById('t').style.bottom = (kbH + document.getElementById('bar').offsetHeight)+'px';
-      try{{fit.fit();}}catch(e){{}}
-      term.scrollToBottom();
-      if(ws&&ws.readyState===1)
-        ws.send(JSON.stringify({{type:'resize',cols:term.cols,rows:term.rows}}));
-    }});
-  }}
+  new ResizeObserver(refit).observe(document.body);
 
   // WebSocket
   var proto = location.protocol==='https:'?'wss:':'ws:';
@@ -353,7 +349,12 @@ html,body{{background:#0d0d0d;overflow:hidden;height:100%}}
     ws.onopen = function(){{
       attempt=0;
       setStatus('ok', tmuxSession ? 'connected · tmux:'+tmuxSession : 'connected · shell');
-      ws.send(JSON.stringify({{type:'resize',cols:term.cols,rows:term.rows}}));
+      // Send a resize using whatever dimensions are CURRENT (post-fit).
+      // refit() also runs on mount, but ws.onopen may race ahead of it;
+      // sending here ensures the PTY learns our size before tmux refresh.
+      try {{ fit.fit(); }} catch(e) {{}}
+      _lc = term.cols; _lr = term.rows;
+      ws.send(JSON.stringify({{type:'resize',cols:_lc,rows:_lr}}));
     }};
     ws.onmessage = function(e){{
       if(e.data instanceof ArrayBuffer){{ term.write(new Uint8Array(e.data)); term.scrollToBottom(); }}

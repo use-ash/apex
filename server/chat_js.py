@@ -8104,6 +8104,11 @@ function _termConnect(chatId, tmuxSession, attempt) {
   ws.onopen = () => {
     sess.state = 'connected';
     _termSetDot('green', tmuxSession || 'shell');
+    // Re-fit just before sending the initial resize so the PTY learns
+    // our actual cols/rows before tmux runs refresh-client. Without this
+    // refit, dimensions sent here could be stale (default 80×24 or values
+    // from a previous mount), causing tmux to redraw at the wrong size.
+    try { sess.fitAddon.fit(); } catch(e) {}
     ws.send(JSON.stringify({type:'resize', cols:sess.term.cols, rows:sess.term.rows}));
     sess.term.focus();
     // Heartbeat
