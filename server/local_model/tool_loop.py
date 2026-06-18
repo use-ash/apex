@@ -332,6 +332,100 @@ def _call_ollama(ollama_url: str, model: str, messages: list, tools: list,
     return final_chunk
 
 
+def _messages_have_images(messages: list) -> bool:
+    """Check if any message carries image content (Ollama or OpenAI format)."""
+    for msg in messages:
+        if msg.get("images"):
+            return True
+        content = msg.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    return True
+    return False
+
+
+def _delegate_vision(
+    messages: list,
+    api_url: str,
+    api_key: str,
+    emit_event=None,
+) -> list:
+    """Delegate image-bearing messages to glm-4v, inject text descriptions.
+
+    For each user message with images, calls glm-4v to get a text description,
+    then replaces the image content with that description so the primary
+    (text-only) model can work with it.
+
+    Returns a new messages list with images replaced by text descriptions.
+    """
+    vision_model = "glm-4v"
+    converted_messages = _convert_ollama_images(messages)
+
+    new_messages = []
+    for msg in converted_messages:
+        content = msg.get("content")
+        has_image = False
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    has_image = True
+                    break
+
+        if not has_image:
+            new_messages.append(msg)
+            continue
+
+        # Call glm-4v for a description of this message's images
+        try:
+            if emit_event:
+                try:
+                    asyncio.get_event_loop().create_task(
+                        emit_event({"type": "text", "text": "[Delegating image to glm-4v…]"})
+                    )
+                except Exception:
+                    pass
+
+            vision_payload = {
+                "model": vision_model,
+                "messages": [msg],
+                "stream": False,
+            }
+            vision_req = urllib.request.Request(
+                f"{api_url}/chat/completions",
+                data=json.dumps(vision_payload).encode(),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                    "User-Agent": "Apex/1.0",
+                },
+            )
+            vision_resp = urllib.request.urlopen(vision_req, timeout=OLLAMA_TIMEOUT)
+            vision_data = json.loads(vision_resp.read().decode())
+            description = (
+                vision_data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+        except Exception as e:
+            description = f"[Image was attached but vision delegation failed: {e}]"
+
+        # Replace image content with the text description
+        text_parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                text_parts.append(part["text"])
+        original_text = " ".join(text_parts) if text_parts else ""
+        replacement = original_text
+        if description:
+            replacement += f"\n\n[Image description from {vision_model}]: {description}"
+        new_msg = {k: v for k, v in msg.items() if k != "content"}
+        new_msg["content"] = replacement
+        new_messages.append(new_msg)
+
+    return new_messages
+
+
 def _convert_ollama_images(messages: list) -> list:
     """Convert Ollama-format message images to OpenAI multipart content.
     
@@ -994,6 +1088,21 @@ async def run_tool_loop(
         _loop_messages = _inject_tool_prompt(messages, tool_prompt)
     else:
         _loop_messages = messages
+
+    # Vision delegation: if the primary model is text-only GLM running on z.ai,
+    # delegate image-bearing messages to glm-4v and replace images with text
+    # descriptions before entering the tool loop.
+    _is_glm_text_only = (
+        is_remote
+        and api_url
+        and "api.z.ai" in api_url
+        and model.startswith("glm")
+        and not model.endswith("-v")  # glm-4v etc. handle images natively
+    )
+    if _is_glm_text_only and _messages_have_images(_loop_messages):
+        _loop_messages = await asyncio.to_thread(
+            _delegate_vision, _loop_messages, api_url, api_key, emit_event
+        )
 
     for iteration in range(iteration_limit):
         try:
