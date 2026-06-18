@@ -332,13 +332,26 @@ def _call_ollama(ollama_url: str, model: str, messages: list, tools: list,
     return final_chunk
 
 
-def _call_openai_compat(api_url: str, model: str, messages: list, tools: list, api_key: str) -> dict:
-    """OpenAI-compatible API call (xAI, OpenAI, etc). Runs in thread."""
+def _call_openai_compat(
+    api_url: str,
+    model: str,
+    messages: list,
+    tools: list,
+    api_key: str,
+    _loop=None,
+    _emit_fn=None,
+) -> dict:
+    """OpenAI-compatible API call (xAI, OpenAI, GLM, etc). Runs in thread."""
     payload: dict = {
         "model": model,
         "messages": messages,
         "tools": tools,
+        "stream": True,
     }
+    # GLM/Z.ai exposes reasoning separately; request it explicitly when the
+    # OpenAI-compatible endpoint is in play.
+    if "api.z.ai" in api_url or model.startswith("glm"):
+        payload["thinking"] = {"type": "enabled"}
     # GPT-5.x and o-series require max_completion_tokens instead of max_tokens
     if model.startswith("gpt-5") or model.startswith("o3") or model.startswith("o4"):
         payload["max_completion_tokens"] = 16384
@@ -356,10 +369,130 @@ def _call_openai_compat(api_url: str, model: str, messages: list, tools: list, a
     except urllib.error.HTTPError as e:
         error_body = e.read().decode()[:500] if hasattr(e, 'read') else ""
         raise RuntimeError(f"API error: {e} body={error_body}") from e
-    data = json.loads(resp.read().decode())
-    # Normalize to Ollama-like format so the rest of the loop works unchanged
-    choice = data.get("choices", [{}])[0]
-    return {"message": choice.get("message", {})}
+
+    def _emit_thinking(text: str) -> None:
+        if text and _loop is not None and _emit_fn is not None:
+            future = asyncio.run_coroutine_threadsafe(
+                _emit_fn({"type": "thinking", "text": text}),
+                _loop,
+            )
+            future.result()
+
+    content_type = ""
+    try:
+        content_type = resp.headers.get("Content-Type", "")
+    except Exception:
+        pass
+
+    # Normalize to Ollama-like format so the rest of the loop works unchanged.
+    # Prefer streamed SSE when available so GLM reasoning can surface live in
+    # the thinking pill; otherwise fall back to a single JSON payload.
+    if "text/event-stream" not in content_type.lower():
+        data = json.loads(resp.read().decode())
+        choice = data.get("choices", [{}])[0]
+        message = choice.get("message", {})
+        reasoning_text = (
+            message.get("reasoning_content")
+            or message.get("reasoning")
+            or data.get("reasoning")
+            or ""
+        )
+        return {"message": message, "reasoning": str(reasoning_text).strip() if reasoning_text else ""}
+
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    tool_calls_by_index: dict[int, dict] = {}
+    final_message: dict = {}
+    reasoning_emitted = False
+
+    def _append_tool_call(delta_item: dict) -> None:
+        index = int(delta_item.get("index", len(tool_calls_by_index)))
+        current = tool_calls_by_index.setdefault(
+            index,
+            {
+                "id": str(delta_item.get("id", "")),
+                "type": "function",
+                "function": {"name": "", "arguments": ""},
+            },
+        )
+        call_id = str(delta_item.get("id", "")).strip()
+        if call_id:
+            current["id"] = call_id
+        func = delta_item.get("function") or {}
+        name = str(func.get("name", "") or "")
+        if name:
+            current["function"]["name"] = name
+        args = func.get("arguments", "")
+        if args:
+            current["function"]["arguments"] += args
+
+    for line in resp:
+        line = line.decode().strip()
+        if not line.startswith("data: "):
+            continue
+        data_str = line[6:]
+        if data_str == "[DONE]":
+            break
+        try:
+            event = json.loads(data_str)
+        except json.JSONDecodeError:
+            continue
+
+        choices = event.get("choices") or []
+        if choices:
+            choice = choices[0] or {}
+            delta = choice.get("delta") or {}
+            message = choice.get("message") or {}
+            if message:
+                final_message = message
+
+            reasoning_delta = (
+                delta.get("reasoning_content")
+                or delta.get("reasoning")
+                or message.get("reasoning_content")
+                or message.get("reasoning")
+                or ""
+            )
+            if reasoning_delta:
+                reasoning_parts.append(str(reasoning_delta))
+                _emit_thinking(str(reasoning_delta))
+                reasoning_emitted = True
+
+            content_delta = delta.get("content") or message.get("content") or ""
+            if content_delta:
+                content_parts.append(str(content_delta))
+
+            for tool_delta in delta.get("tool_calls") or []:
+                if isinstance(tool_delta, dict):
+                    _append_tool_call(tool_delta)
+
+    assembled_msg: dict = {"role": "assistant", "content": "".join(content_parts)}
+    if final_message.get("content") and not assembled_msg["content"]:
+        assembled_msg["content"] = final_message.get("content", "")
+    if final_message.get("tool_calls"):
+        for tc in final_message.get("tool_calls", []):
+            if isinstance(tc, dict):
+                _append_tool_call(tc)
+    if tool_calls_by_index:
+        assembled_msg["tool_calls"] = [tool_calls_by_index[k] for k in sorted(tool_calls_by_index)]
+    reasoning_text = "".join(reasoning_parts).strip()
+    if not reasoning_text:
+        reasoning_text = str(
+            final_message.get("reasoning_content")
+            or final_message.get("reasoning")
+            or ""
+        ).strip()
+        if reasoning_text:
+            _emit_thinking(reasoning_text)
+            reasoning_emitted = True
+    if reasoning_text:
+        assembled_msg["thinking"] = reasoning_text
+    result: dict = {"message": assembled_msg}
+    if reasoning_text:
+        result["reasoning"] = reasoning_text
+    if reasoning_emitted:
+        result["reasoning_streamed"] = True
+    return result
 
 
 def _call_openai_responses(api_url: str, model: str, messages: list, tools: list, api_key: str) -> dict:
@@ -839,8 +972,9 @@ async def run_tool_loop(
                     _call_openai_responses, api_url, model, _loop_messages, tool_schemas, api_key
                 )
             elif api_key and api_url:
+                _loop = asyncio.get_running_loop()
                 response = await asyncio.to_thread(
-                    _call_openai_compat, api_url, model, _loop_messages, tool_schemas, api_key
+                    _call_openai_compat, api_url, model, _loop_messages, tool_schemas, api_key, _loop, emit_event
                 )
             else:
                 response = await asyncio.to_thread(
