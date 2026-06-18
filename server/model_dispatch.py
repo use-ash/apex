@@ -40,6 +40,7 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "codex:gpt-5.1-codex-max": 272_000,
     "deepseek-chat": 128_000,
     "deepseek-reasoner": 128_000,
+    "glm-5.2": 1_000_000,
     "glm-5.1": 128_000,
     "glm-4.7-flash": 128_000,
     "gemini-2.5-pro": 1_000_000,
@@ -61,6 +62,7 @@ MODEL_INPUT_PRICE: dict[str, float] = {
     "claude-haiku-4-5-20251001": 0.80 / 1_000_000,  # $0.80/M input
     "grok-4": 3.0 / 1_000_000,                  # $3/M input
     "grok-4-fast": 3.0 / 1_000_000,             # $3/M input
+    "glm-5.2": 1.0 / 1_000_000,                 # $1/M input (GLM-5 baseline; official pricing TBA)
 }
 MODEL_OUTPUT_PRICE: dict[str, float] = {
     "claude-fable-5": 50.0 / 1_000_000,         # $50/M output
@@ -71,6 +73,7 @@ MODEL_OUTPUT_PRICE: dict[str, float] = {
     "claude-haiku-4-5-20251001": 4.0 / 1_000_000,   # $4/M output
     "grok-4": 15.0 / 1_000_000,                 # $15/M output
     "grok-4-fast": 15.0 / 1_000_000,            # $15/M output
+    "glm-5.2": 3.20 / 1_000_000,                # $3.20/M output (GLM-5 baseline; official pricing TBA)
 }
 
 # ---------------------------------------------------------------------------
@@ -95,6 +98,7 @@ REMOTE_MODEL_OPTIONS = [
     {"id": "codex:gpt-5.1-codex-max","displayName": "GPT-5.1 Max",     "provider": "openai",    "local": False},
     {"id": "deepseek-chat",          "displayName": "DeepSeek V3",      "provider": "deepseek",  "local": False},
     {"id": "deepseek-reasoner",      "displayName": "DeepSeek R1",      "provider": "deepseek",  "local": False},
+    {"id": "glm-5.2",               "displayName": "GLM-5.2",          "provider": "zhipu",     "local": False},
     {"id": "glm-5.1",               "displayName": "GLM-5.1",          "provider": "zhipu",     "local": False},
     {"id": "glm-4.7-flash",         "displayName": "GLM-4.7 Flash",    "provider": "zhipu",     "local": False},
     {"id": "gemini-2.5-pro",        "displayName": "Gemini 2.5 Pro",   "provider": "google",    "local": False},
