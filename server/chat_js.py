@@ -3334,6 +3334,9 @@ function updateChatModelSelect() {
     {id: 'codex:gpt-5.3-codex', name: 'GPT-5.3'},
     {id: 'codex:gpt-5.2', name: 'GPT-5.2'},
     {id: 'codex:gpt-5.1-codex-max', name: 'GPT-5.1 Max'},
+    {id: 'glm-5.2', name: 'GLM-5.2'},
+    {id: 'glm-5.1', name: 'GLM-5.1'},
+    {id: 'glm-4.7-flash', name: 'GLM-4.7 Flash'},
   ];
   sel.innerHTML = '';
   cloudModels.forEach(m => {
@@ -5307,6 +5310,9 @@ async function showNewChatProfilePicker() {
       {id: 'codex:gpt-5.3-codex', name: 'GPT-5.3'},
       {id: 'codex:gpt-5.2', name: 'GPT-5.2'},
       {id: 'codex:gpt-5.1-codex-max', name: 'GPT-5.1 Max'},
+      {id: 'glm-5.2', name: 'GLM-5.2'},
+      {id: 'glm-5.1', name: 'GLM-5.1'},
+      {id: 'glm-4.7-flash', name: 'GLM-4.7 Flash'},
     ];
     const localModels = (_settingsModels || []).map(m => ({
       id: m.id,
@@ -6043,6 +6049,9 @@ async function showChatSettings() {
       {id: 'codex:gpt-5.3-codex', name: 'GPT-5.3'},
       {id: 'codex:gpt-5.2', name: 'GPT-5.2'},
       {id: 'codex:gpt-5.1-codex-max', name: 'GPT-5.1 Max'},
+      {id: 'glm-5.2', name: 'GLM-5.2'},
+      {id: 'glm-5.1', name: 'GLM-5.1'},
+      {id: 'glm-4.7-flash', name: 'GLM-4.7 Flash'},
     ];
     cloudModels.forEach(m => {
       const opt = document.createElement('option');
