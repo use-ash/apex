@@ -321,7 +321,7 @@ async def _validate_optional_key(field: str, value: str) -> str | None:
             elif field == "zhipu_api_key":
                 # Zhipu/Z.ai: list models (OpenAI-compatible)
                 r = await client.get(
-                    "https://open.z.ai/api/paas/v4/models",
+                    "https://api.z.ai/api/paas/v4/models",
                     headers={"Authorization": f"Bearer {value}"},
                 )
                 if r.status_code == 401:
