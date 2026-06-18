@@ -359,7 +359,7 @@ def _delegate_vision(
 
     Returns a new messages list with images replaced by text descriptions.
     """
-    vision_model = "glm-4v"
+    vision_model = "glm-4.6v"
     converted_messages = _convert_ollama_images(messages)
 
     new_messages = []
