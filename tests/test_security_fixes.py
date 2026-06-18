@@ -479,6 +479,47 @@ class SecurityFixTests(unittest.TestCase):
         self.assertEqual(result["text"], "ok")
         self.assertFalse(result["is_error"])
 
+    def test_tool_loop_streams_zhipu_reasoning_into_thinking_event(self) -> None:
+        class _FakeResponse:
+            def __init__(self) -> None:
+                self.headers = {"Content-Type": "text/event-stream; charset=utf-8"}
+
+            def __iter__(self):
+                return iter([
+                    b'data: {"choices":[{"delta":{"reasoning_content":"step one "}}]}\n',
+                    b'data: {"choices":[{"delta":{"reasoning_content":"step two"}}]}\n',
+                    b'data: {"choices":[{"delta":{"content":"final answer"}}]}\n',
+                    b"data: [DONE]\n",
+                ])
+
+            def read(self) -> bytes:
+                raise AssertionError("streaming path should not read the full body")
+
+        events: list[dict] = []
+
+        async def emit(event: dict) -> None:
+            events.append(event)
+
+        with (
+            mock.patch.object(tool_loop, "get_tool_schemas", return_value=[]),
+            mock.patch.object(tool_loop.urllib.request, "urlopen", return_value=_FakeResponse()),
+        ):
+            result = asyncio.run(
+                tool_loop.run_tool_loop(
+                    ollama_url="http://localhost:11434",
+                    model="glm-5.2",
+                    messages=[{"role": "user", "content": "show reasoning"}],
+                    emit_event=emit,
+                    api_key="zhipu-test",
+                    api_url="https://api.z.ai/api/paas/v4",
+                )
+            )
+
+        self.assertEqual(result["text"], "final answer")
+        self.assertEqual(result["thinking"], "step one step two")
+        thinking_events = [evt for evt in events if evt.get("type") == "thinking"]
+        self.assertEqual([evt["text"] for evt in thinking_events], ["step one ", "step two"])
+
     def test_backend_falls_back_to_plain_chat_when_local_tools_disabled(self) -> None:
         chat_id = self._create_direct_chat()
 
