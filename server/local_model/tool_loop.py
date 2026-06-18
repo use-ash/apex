@@ -332,6 +332,34 @@ def _call_ollama(ollama_url: str, model: str, messages: list, tools: list,
     return final_chunk
 
 
+def _convert_ollama_images(messages: list) -> list:
+    """Convert Ollama-format message images to OpenAI multipart content.
+    
+    Ollama uses: {"role": "user", "content": "text", "images": ["b64..."]}
+    OpenAI uses: {"role": "user", "content": [{"type": "text", "text": "..."},
+                   {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}]}
+    
+    Only converts messages that have an "images" key. Others pass through unchanged.
+    """
+    converted = []
+    for msg in messages:
+        images = msg.get("images")
+        if not images:
+            converted.append(msg)
+            continue
+        content = msg.get("content", "")
+        parts: list = [{"type": "text", "text": content}] if content else []
+        for b64 in images:
+            parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{b64}"},
+            })
+        new_msg = {k: v for k, v in msg.items() if k != "images"}
+        new_msg["content"] = parts
+        converted.append(new_msg)
+    return converted
+
+
 def _call_openai_compat(
     api_url: str,
     model: str,
@@ -342,6 +370,7 @@ def _call_openai_compat(
     _emit_fn=None,
 ) -> dict:
     """OpenAI-compatible API call (xAI, OpenAI, GLM, etc). Runs in thread."""
+    messages = _convert_ollama_images(messages)
     payload: dict = {
         "model": model,
         "messages": messages,
@@ -497,6 +526,7 @@ def _call_openai_compat(
 
 def _call_openai_responses(api_url: str, model: str, messages: list, tools: list, api_key: str) -> dict:
     """OpenAI Responses API — supports reasoning summaries for o-series models."""
+    messages = _convert_ollama_images(messages)
     # Convert chat messages to Responses API input format
     input_items = []
     for msg in messages:
@@ -528,7 +558,11 @@ def _call_openai_responses(api_url: str, model: str, messages: list, tools: list
             if content:
                 input_items.append({"role": "assistant", "content": content})
         else:
-            input_items.append({"role": role, "content": content})
+            # If content is already a list of parts (image+multipart), pass through
+            if isinstance(content, list):
+                input_items.append({"role": role, "content": content})
+            else:
+                input_items.append({"role": role, "content": content})
 
     # Convert tool schemas to Responses API format
     resp_tools = []
@@ -660,6 +694,7 @@ def _call_chatgpt_backend(model: str, messages: list, tools: list,
     Wire protocol: OpenAI Responses API (SSE streaming) at chatgpt.com/backend-api/codex/responses.
     Auth: Bearer token + ChatGPT-Account-ID from ~/.codex/auth.json.
     """
+    messages = _convert_ollama_images(messages)
     access_token, account_id = _load_chatgpt_auth()
 
     # Convert messages to Responses API input format
