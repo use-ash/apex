@@ -115,6 +115,8 @@ except ImportError:
 ws_router = APIRouter()
 MAX_QUEUED_TURNS_PER_KEY = 2
 MAX_MENTION_DEPTH = 25
+_TOOL_LOOP_BACKENDS = frozenset({"ollama", "xai", "mlx", "deepseek", "zhipu", "google"})
+_NON_CLAUDE_BACKENDS = _TOOL_LOOP_BACKENDS | {"codex"}
 
 # Premium module — injected by apex.py when loaded. Provides group routing
 # and agent relay functions. When None, all group routing is disabled.
@@ -210,7 +212,7 @@ def _public_backend_error_message(backend: str, err: Exception | str) -> str:
     raw = str(err or "").strip()
     if backend == "codex":
         return _public_codex_error_message(raw)
-    if backend in {"ollama", "xai", "mlx"}:
+    if backend in _TOOL_LOOP_BACKENDS:
         return "The model backend hit an internal error while responding. Retry the turn."
     # Auth errors — give the user something actionable
     _AUTH_HINTS = ("Not logged in", "Invalid API key", "auth error", "Please run /login")
@@ -1230,7 +1232,7 @@ async def _handle_send_action(
         if _recall_context:
             prompt = f"{_recall_context}{prompt}"
 
-        if ENABLE_SUBCONSCIOUS_WHISPER and backend in ("ollama", "xai", "mlx", "codex"):
+        if ENABLE_SUBCONSCIOUS_WHISPER and backend in _NON_CLAUDE_BACKENDS:
             whisper = _get_whisper_text(chat_id, current_prompt=prompt,
                                         model_hint=chat_model)
             if whisper:
@@ -1239,7 +1241,7 @@ async def _handle_send_action(
         # Metacognition: when unified memory is active, metacog results are
         # already merged into the whisper Type 2 path above.
         if ENABLE_METACOGNITION and not ENABLE_UNIFIED_MEMORY \
-                and backend in ("ollama", "xai", "mlx", "codex"):
+                and backend in _NON_CLAUDE_BACKENDS:
             try:
                 from metacognition import retrieve_prior_context
                 metacog = retrieve_prior_context(prompt)
@@ -1263,7 +1265,7 @@ async def _handle_send_action(
             except ValueError as e:
                 await _safe_ws_send_json(websocket, {"type": "error", "message": str(e)}, chat_id=chat_id)
                 return
-        if backend in ("ollama", "xai", "mlx", "codex"):
+        if backend in _NON_CLAUDE_BACKENDS:
             display_prompt = user_visible_prompt
         else:
             try:
@@ -1364,8 +1366,8 @@ async def _handle_send_action(
                         chat_id=chat_id,
                     )
                 return
-        # --- Local model / xAI path ---
-        elif backend in ("ollama", "xai", "mlx"):
+        # --- Tool-loop backends (local and OpenAI-compatible APIs) ---
+        elif backend in _TOOL_LOOP_BACKENDS:
             try:
                 result = await _run_ollama_chat(
                     chat_id,

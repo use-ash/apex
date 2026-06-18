@@ -1714,6 +1714,54 @@ class SecurityFixTests(unittest.TestCase):
         self.assertEqual(msg["type"], "error")
         self.assertIn("not supported for Codex chats yet", msg["message"])
 
+    def test_websocket_send_routes_openai_compatible_backends_through_tool_loop(self) -> None:
+        for model in ("deepseek-chat", "glm-5.2", "gemini-2.5-pro"):
+            with self.subTest(model=model):
+                chat_id = self._create_direct_chat(model=model)
+                routed: list[str] = []
+
+                async def fake_run_ollama_chat(
+                    chat_id_arg: str,
+                    prompt: str,
+                    model=None,
+                    attachments=None,
+                    permission_policy=None,
+                ):
+                    self.assertEqual(chat_id_arg, chat_id)
+                    self.assertEqual(prompt, "hello")
+                    routed.append(model)
+                    return {
+                        "text": "done",
+                        "is_error": False,
+                        "error": None,
+                        "cost_usd": 0,
+                        "tokens_in": 1,
+                        "tokens_out": 1,
+                        "session_id": None,
+                        "thinking": "",
+                        "tool_events": "[]",
+                    }
+
+                with (
+                    self._fast_relay_context(),
+                    mock.patch.object(
+                        ws_handler,
+                        "_get_or_create_client",
+                        side_effect=AssertionError("OpenAI-compatible backend fell through to Claude SDK"),
+                    ),
+                    mock.patch.object(ws_handler, "_run_ollama_chat", side_effect=fake_run_ollama_chat),
+                    self._client() as client,
+                ):
+                    with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+                        ws.send_json({
+                            "action": "send",
+                            "chat_id": chat_id,
+                            "prompt": "hello",
+                        })
+                        self._receive_until(ws, lambda msg: msg.get("type") == "stream_end")
+
+                self.assertEqual(routed, [model])
+
     def test_websocket_send_routes_o3_to_responses_backend_when_api_key_present(self) -> None:
         chat_id = self._create_direct_chat(model="codex:o3")
         routed = {"ollama": 0}
