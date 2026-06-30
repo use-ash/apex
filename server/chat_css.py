@@ -893,7 +893,7 @@ background:rgba(0,0,0,0.6);border-bottom:1px solid rgba(255,255,255,0.06);flex-s
 .term-disconnect-btn{background:none;border:none;color:#6b7280;cursor:pointer;
 font-size:12px;padding:2px 8px;border-radius:4px;transition:all .15s}
 .term-disconnect-btn:hover{color:#f87171;background:rgba(239,68,68,0.1)}
-.term-body{flex:1;min-height:0;overflow:hidden;padding:4px}
+.term-body{flex:1;min-height:0;overflow:hidden;padding:0}
 /* Picker shown before WS connects */
 .term-picker{display:flex;flex-direction:column;align-items:center;justify-content:center;
 height:100%;gap:16px;padding:32px}
