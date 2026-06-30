@@ -55,6 +55,16 @@ def _set_pty_size(fd: int, cols: int, rows: int) -> None:
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
+_TMUX_CONF = os.path.join(os.path.dirname(__file__), "tmux.conf")
+
+
+def _tmux_base() -> list[str]:
+    """tmux command prefix with our config if present."""
+    if os.path.exists(_TMUX_CONF):
+        return ["tmux", "-f", _TMUX_CONF]
+    return ["tmux"]
+
+
 def _allow_resize(chat_id: str) -> bool:
     now = time.monotonic()
     tokens, last = _resize_tokens.get(chat_id, (4.0, now))
@@ -68,7 +78,7 @@ def _allow_resize(chat_id: str) -> bool:
 
 async def _spawn(tmux_session: Optional[str]) -> tuple[int, asyncio.subprocess.Process]:
     master_fd, slave_fd = pty.openpty()
-    _set_pty_size(master_fd, 220, 50)
+    _set_pty_size(master_fd, 80, 24)
     safe_env = {
         "HOME": os.environ.get("HOME", "/"),
         "USER": os.environ.get("USER", ""),
@@ -81,17 +91,17 @@ async def _spawn(tmux_session: Optional[str]) -> tuple[int, asyncio.subprocess.P
     if tmux_session:
         # Create session if it doesn't exist, then attach
         chk = await asyncio.create_subprocess_exec(
-            "tmux", "has-session", "-t", tmux_session,
+            *_tmux_base(), "has-session", "-t", tmux_session,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         )
         await chk.wait()
         if chk.returncode != 0:
             mk = await asyncio.create_subprocess_exec(
-                "tmux", "new-session", "-d", "-s", tmux_session,
+                *_tmux_base(), "new-session", "-d", "-s", tmux_session,
                 env=safe_env,
             )
             await mk.wait()
-        cmd = ["tmux", "attach-session", "-t", tmux_session]
+        cmd = [*_tmux_base(), "attach-session", "-t", tmux_session]
     else:
         cmd = [os.environ.get("SHELL", "/bin/bash"), "-l"]
     proc = await asyncio.create_subprocess_exec(
@@ -460,7 +470,7 @@ async def list_sessions():
     """List running tmux session names."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "tmux", "list-sessions", "-F", "#{session_name}",
+            *_tmux_base(), "list-sessions", "-F", "#{session_name}",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -522,6 +532,7 @@ async def ws_terminal(websocket: WebSocket):
 
     sess.active_ws = websocket
     needs_tmux_refresh = tmux_session is not None and sess.proc.returncode is None
+    first_resize = True  # bypass rate limiter for critical initial sizing
     read_task = asyncio.create_task(_pty_read(sess.master_fd, websocket, sess))
 
     async def _idle_watch():
@@ -547,15 +558,17 @@ async def ws_terminal(websocket: WebSocket):
                 with contextlib.suppress(Exception):
                     ctrl = json.loads(raw_text)
                     t = ctrl.get("type", "")
-                    if t == "resize" and _allow_resize(chat_id):
+                    if t == "resize" and (_allow_resize(chat_id) or first_resize):
+                        first_resize = False
                         cols = max(1, min(1000, int(ctrl.get("cols", 80))))
                         rows = max(1, min(500, int(ctrl.get("rows", 24))))
                         _set_pty_size(sess.master_fd, cols, rows)
                         if needs_tmux_refresh:
                             needs_tmux_refresh = False
+                            await asyncio.sleep(0.08)  # let ioctl propagate before refresh
                             with contextlib.suppress(Exception):
                                 refresh = await asyncio.create_subprocess_exec(
-                                    "tmux", "refresh-client", "-t", tmux_session,
+                                    *_tmux_base(), "refresh-client", "-t", tmux_session,
                                     stdout=asyncio.subprocess.DEVNULL,
                                     stderr=asyncio.subprocess.DEVNULL,
                                 )

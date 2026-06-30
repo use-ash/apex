@@ -8011,7 +8011,14 @@ const _termSessions = {};  // chat_id → { term, fitAddon, ws, state, tmuxSessi
 
 function _closeTerminalChannel() {
   const existing = document.getElementById('_terminalView');
-  if (existing) existing.remove();
+  if (existing) {
+    // Cleanup visualViewport listener
+    if (existing._vvHandler && window.visualViewport) {
+      window.visualViewport.removeEventListener('resize', existing._vvHandler);
+      window.visualViewport.removeEventListener('scroll', existing._vvHandler);
+    }
+    existing.remove();
+  }
   // Disconnect any open WS not belonging to current chat
   Object.keys(_termSessions).forEach(cid => {
     if (cid !== currentChat) {
@@ -8030,6 +8037,31 @@ function _openTerminalChannel(chatId, tmuxSession) {
   view.innerHTML = '<div class="term-toolbar" id="_termToolbar"><div class="term-dot amber" id="_termDot"></div><span class="term-label" id="_termLabel">Connecting…</span><button class="term-disconnect-btn" onclick="_termDisconnect()">Disconnect</button></div><div class="term-body" id="_termBody"></div>';
   document.body.appendChild(view);
 
+  // iOS keyboard handling: position:fixed doesn't respect visualViewport,
+  // so we must manually track the visual viewport to keep the terminal
+  // visible above the keyboard and eliminate the blank gap.
+  if (window.visualViewport) {
+    const _vvHandler = () => {
+      const v = document.getElementById('_terminalView');
+      if (!v) return;
+      const vv = window.visualViewport;
+      v.style.top = vv.offsetTop + 'px';
+      v.style.height = vv.height + 'px';
+      v.style.bottom = 'auto';
+      // Refit terminal to new dimensions after layout settles
+      requestAnimationFrame(() => {
+        const cid = currentChat;
+        const s = _termSessions[cid];
+        if (s && s.fitAddon) { try { s.fitAddon.fit(); } catch(e) {} }
+      });
+    };
+    window.visualViewport.addEventListener('resize', _vvHandler);
+    window.visualViewport.addEventListener('scroll', _vvHandler);
+    // Store handler for cleanup
+    view._vvHandler = _vvHandler;
+    _vvHandler(); // Apply immediately
+  }
+
   const sess = _termSessions[chatId];
   if (sess && sess.state === 'connected' && sess.ws && sess.ws.readyState === WebSocket.OPEN) {
     // Reattach existing live session to new DOM
@@ -8037,7 +8069,7 @@ function _openTerminalChannel(chatId, tmuxSession) {
     if (body && sess.term) {
       body.innerHTML = '';
       sess.term.open(body);
-      try { sess.fitAddon.fit(); } catch(e) {}
+      requestAnimationFrame(() => { try { sess.fitAddon.fit(); } catch(e) {} });
       _termSetDot('green', tmuxSession || 'shell');
     }
     return;
@@ -8085,6 +8117,10 @@ function _termConnect(chatId, tmuxSession, attempt) {
 
   body.innerHTML = '';
   try { sess.term.open(body); sess.fitAddon.fit(); } catch(e) {}
+  // Delayed refit — on mobile the first fit() often runs before layout settles
+  requestAnimationFrame(() => { requestAnimationFrame(() => {
+    try { sess.fitAddon.fit(); } catch(e) {}
+  }); });
 
   if (sess.resizeObs) { try { sess.resizeObs.disconnect(); } catch(e) {} }
   let _resizeTimer = null;
