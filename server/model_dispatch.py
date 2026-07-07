@@ -24,6 +24,7 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-opus-4-8": 1_000_000,
     "claude-opus-4-7": 1_000_000,
     "claude-opus-4-6": 1_000_000,
+    "claude-sonnet-5": 1_000_000,
     "claude-sonnet-4-6": 200_000,
     "claude-haiku-4-5-20251001": 200_000,
     "grok-4": 2_000_000,
@@ -49,6 +50,18 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 MODEL_CONTEXT_DEFAULT = 128_000  # fallback for local/unknown models
 
 # ---------------------------------------------------------------------------
+# Rate-limit fallback map — when the primary model returns rate_limit_error
+# (or an equivalent socket-close from Cloudflare edge), retry once with the
+# mapped fallback. Chain terminates at the first key not present in the map.
+# ---------------------------------------------------------------------------
+MODEL_FALLBACK_ON_RATE_LIMIT: dict[str, str] = {
+    "claude-fable-5":   "claude-opus-4-8",
+    "claude-opus-4-8":  "claude-opus-4-7",
+    "claude-opus-4-7":  "claude-sonnet-5",
+    "claude-sonnet-5":  "claude-sonnet-4-6",
+}
+
+# ---------------------------------------------------------------------------
 # Input token pricing (USD per token) — used for cost-based context estimation
 # when the Claude Agent SDK returns garbage tokens_in values (3-12 instead of
 # real cumulative context counts).
@@ -58,6 +71,7 @@ MODEL_INPUT_PRICE: dict[str, float] = {
     "claude-opus-4-8": 5.0 / 1_000_000,         # $5/M input
     "claude-opus-4-7": 5.0 / 1_000_000,         # $5/M input
     "claude-opus-4-6": 15.0 / 1_000_000,        # $15/M input
+    "claude-sonnet-5": 2.0 / 1_000_000,         # $2/M input (intro thru 2026-08-31; then $3/M)
     "claude-sonnet-4-6": 3.0 / 1_000_000,       # $3/M input
     "claude-haiku-4-5-20251001": 0.80 / 1_000_000,  # $0.80/M input
     "grok-4": 3.0 / 1_000_000,                  # $3/M input
@@ -69,6 +83,7 @@ MODEL_OUTPUT_PRICE: dict[str, float] = {
     "claude-opus-4-8": 25.0 / 1_000_000,        # $25/M output
     "claude-opus-4-7": 25.0 / 1_000_000,        # $25/M output
     "claude-opus-4-6": 75.0 / 1_000_000,        # $75/M output
+    "claude-sonnet-5": 10.0 / 1_000_000,        # $10/M output (intro thru 2026-08-31; then $15/M)
     "claude-sonnet-4-6": 15.0 / 1_000_000,      # $15/M output
     "claude-haiku-4-5-20251001": 4.0 / 1_000_000,   # $4/M output
     "grok-4": 15.0 / 1_000_000,                 # $15/M output
@@ -84,6 +99,7 @@ REMOTE_MODEL_OPTIONS = [
     {"id": "claude-opus-4-8",       "displayName": "Claude Opus 4.8",  "provider": "anthropic", "local": False},
     {"id": "claude-opus-4-7",       "displayName": "Claude Opus 4.7",  "provider": "anthropic", "local": False},
     {"id": "claude-opus-4-6",       "displayName": "Claude Opus 4.6",  "provider": "anthropic", "local": False},
+    {"id": "claude-sonnet-5",       "displayName": "Claude Sonnet 5",  "provider": "anthropic", "local": False},
     {"id": "claude-sonnet-4-6",     "displayName": "Claude Sonnet 4.6","provider": "anthropic", "local": False},
     {"id": "claude-haiku-4-5-20251001", "displayName": "Claude Haiku 4.5", "provider": "anthropic", "local": False},
     {"id": "grok-4",                "displayName": "Grok 4",           "provider": "xai",       "local": False},

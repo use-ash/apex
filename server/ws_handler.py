@@ -50,7 +50,7 @@ from group_coordinator import (
     _strict_group_relay_active,
     _strict_relay_requested,
 )
-from model_dispatch import _get_model_backend, get_available_model_ids
+from model_dispatch import _get_model_backend, get_available_model_ids, MODEL_FALLBACK_ON_RATE_LIMIT
 from state import (
     _compaction_summaries, _recovery_pending,
     _group_profile_override,
@@ -90,7 +90,7 @@ from skills import (
 )
 from agent_sdk import (
     _build_turn_payload, _websocket_origin_allowed, _run_query_turn,
-    _load_attachment,
+    _load_attachment, RateLimitError,
 )
 from memory_extract import _extract_and_save_memories
 from backends import (
@@ -1417,6 +1417,20 @@ async def _handle_send_action(
             except Exception as first_error:
                 if DEBUG: log(f"DBG RECOVERY: chat={chat_id} client_key={client_key} first error: {type(first_error).__name__}: {first_error}")
                 await _disconnect_client(client_key)
+
+                # Rate-limit fallback: swap chat_model to the mapped fallback so
+                # the retry path below runs against a less-loaded model. This
+                # only affects the retry attempt — the chat's persisted model
+                # stays unchanged, so the next user turn hits the primary again
+                # (by which time the rate window may have refilled).
+                if isinstance(first_error, RateLimitError):
+                    fallback = MODEL_FALLBACK_ON_RATE_LIMIT.get(chat_model)
+                    if fallback:
+                        log(f"rate-limit fallback: chat={chat_id} {chat_model} → {fallback}")
+                        chat_model = fallback
+                        # Existing session is tied to the original model's context;
+                        # drop it so the fallback starts a fresh session.
+                        _update_chat(chat_id, claude_session_id=None)
 
                 def _make_retry_input():
                     base = make_query_input()
