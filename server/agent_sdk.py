@@ -82,6 +82,23 @@ _AUTH_ERROR_PATTERNS = (
     "Please run /login",
 )
 
+# Rate-limit / quota-exhaustion patterns.
+# Note: When Anthropic rate-limits an OAuth token the low-level SDK fetch layer
+# often surfaces this as "401 socket closed unexpectedly" rather than a clean
+# 429 — Cloudflare edge terminates the stream mid-handshake. We detect both.
+_RATE_LIMIT_PATTERNS = (
+    "socket connection was closed unexpectedly",
+    "rate_limit_error",
+    "rate limit exceeded",
+    "quota exceeded",
+    "Overloaded",
+)
+
+
+class RateLimitError(RuntimeError):
+    """Raised by _run_query_turn when the model appears to be rate-limited."""
+    pass
+
 _CONTEXT_OVERFLOW_PATTERNS = (
     "prompt is too long",
     "context_window_exceeded",
@@ -182,6 +199,11 @@ def _validate_oauth_expiry(oauth_data: dict) -> bool:
 def _is_auth_error(text: str) -> bool:
     """Check if SDK response text indicates an authentication failure."""
     return any(p in text for p in _AUTH_ERROR_PATTERNS)
+
+
+def _is_rate_limit_error(text: str) -> bool:
+    """Check if SDK response text indicates the model is rate-limited."""
+    return any(p in text for p in _RATE_LIMIT_PATTERNS)
 
 
 def _read_keychain_oauth() -> dict:
@@ -776,6 +798,9 @@ async def _run_query_turn(
             log(f"SDK auth recovery: token refreshed, stale clients evicted for chat={chat_id}")
         # Raise so _handle_send_action creates a fresh client with the new token
         raise RuntimeError(f"SDK auth error (recovered token={'yes' if refreshed else 'no'}): {resp_text.strip()[:60]}")
+    if _is_rate_limit_error(resp_text):
+        log(f"SDK rate limit: chat={chat_id} got '{resp_text.strip()[:80]}' — signaling fallback")
+        raise RateLimitError(resp_text.strip()[:120])
     if DEBUG: log(f"DBG query_turn: chat={chat_id} done. text={len(result.get('text',''))}chars tools={result.get('tool_events','[]').count('tool_use_id')} session={result.get('session_id','?')[:8] if result.get('session_id') else 'none'}")
     return result
 
