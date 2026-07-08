@@ -168,6 +168,7 @@ _USAGE_TRACK_BY_BACKEND = {
 
 _MODEL_PRICING: dict[str, dict[str, Any]] = {
     "claude-haiku-4-5-20251001": {"display": "Haiku 4.5", "track": "subscription", "price_in": 0.80, "price_out": 4.00, "provider": "claude"},
+    "claude-sonnet-5": {"display": "Sonnet 5", "track": "subscription", "price_in": 2.00, "price_out": 10.00, "provider": "claude"},
     "claude-sonnet-4-6": {"display": "Sonnet 4.6", "track": "subscription", "price_in": 3.00, "price_out": 15.00, "provider": "claude"},
     "claude-fable-5": {"display": "Fable 5", "track": "subscription", "price_in": 10.00, "price_out": 50.00, "provider": "claude"},
     "claude-opus-4-8": {"display": "Opus 4.8", "track": "subscription", "price_in": 5.00, "price_out": 25.00, "provider": "claude"},
@@ -177,6 +178,8 @@ _MODEL_PRICING: dict[str, dict[str, Any]] = {
     "codex:gpt-5.4": {"display": "Codex GPT-5.4", "track": "subscription", "price_in": 1.50, "price_out": 6.00, "provider": "codex"},
     "codex:gpt-5.4-mini": {"display": "Codex GPT-5.4 Mini", "track": "subscription", "price_in": 0.30, "price_out": 1.20, "provider": "codex"},
     "codex:o3": {"display": "Codex o3", "track": "subscription", "price_in": 2.00, "price_out": 8.00, "provider": "codex"},
+    "grok-4.5": {"display": "Grok 4.5", "track": "api", "price_in": 2.00, "price_out": 6.00, "provider": "xai"},
+    "grok-4.3": {"display": "Grok 4.3", "track": "api", "price_in": 1.25, "price_out": 2.50, "provider": "xai"},
     "grok-4": {"display": "Grok 4", "track": "api", "price_in": 5.00, "price_out": 15.00, "provider": "xai"},
     "gemma4:26b": {"display": "Gemma 4 26B", "track": "local", "price_in": 0.0, "price_out": 0.0, "provider": "local"},
     "qwen3.5:35b-a3b": {"display": "Qwen 3.5 35B A3B", "track": "local", "price_in": 0.0, "price_out": 0.0, "provider": "local"},
