@@ -1035,21 +1035,110 @@ def _load_compaction_timestamps() -> None:
 
 
 def _get_recent_messages_text(chat_id: str, limit: int = 30) -> str:
-    """Get recent message content for summarization (last N messages)."""
+    """Get recent message content for summarization (last N messages).
+
+    Assistant rows also get compact markers when thinking / tool_events exist
+    so the recovery model sees mid-turn work without full payload dumps.
+    """
     with _db_lock:
         conn = _get_db()
         rows = conn.execute(
-            "SELECT role, content FROM messages WHERE chat_id = ? "
-            "ORDER BY created_at DESC LIMIT ?",
+            "SELECT id, role, content, tool_events, thinking FROM messages "
+            "WHERE chat_id = ? ORDER BY created_at DESC LIMIT ?",
             (chat_id, limit),
         ).fetchall()
         conn.close()
     rows.reverse()  # chronological order
     lines = []
-    for role, content in rows:
+    for mid, role, content, tool_events, thinking in rows:
         text = (content or "")[:500]
-        lines.append(f"[{role}] {text}")
+        suffix = ""
+        if role == "assistant":
+            markers = []
+            if thinking:
+                markers.append(f"thinking:{len(thinking)}c")
+            tool_names = _tool_event_names(tool_events)
+            if tool_names:
+                markers.append("tools:" + ",".join(tool_names[:8]))
+            if markers:
+                suffix = f" {{{'; '.join(markers)}; id={mid}}}"
+        lines.append(f"[{role}] {text}{suffix}")
     return "\n".join(lines)
+
+
+def _tool_event_names(tool_events) -> list[str]:
+    """Extract tool names from a tool_events JSON string/list (best-effort)."""
+    if not tool_events or tool_events == "[]":
+        return []
+    try:
+        events = json.loads(tool_events) if isinstance(tool_events, str) else tool_events
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(events, list):
+        return []
+    names: list[str] = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        name = ev.get("name") or ev.get("tool") or ev.get("tool_name")
+        if not name:
+            fn = ev.get("function")
+            if isinstance(fn, dict):
+                name = fn.get("name")
+        if not name and isinstance(ev.get("input"), dict):
+            name = ev["input"].get("name")
+        if name and name not in names:
+            names.append(str(name))
+    return names
+
+
+def _get_continuity_pointers(chat_id: str, limit: int = 6) -> dict:
+    """Return mid-turn rehydrate pointers for recovery briefings.
+
+    Includes last assistant message id/timestamp plus recent assistant turns
+    that carry thinking and/or tool_events. Full payloads stay in the DB;
+    recovery injects pointers + mTLS fetch commands only.
+    """
+    with _db_lock:
+        conn = _get_db()
+        rows = conn.execute(
+            "SELECT id, role, content, tool_events, thinking, created_at, canceled "
+            "FROM messages WHERE chat_id = ? AND role = 'assistant' "
+            "ORDER BY created_at DESC LIMIT ?",
+            (chat_id, max(limit, 1)),
+        ).fetchall()
+        conn.close()
+
+    recent: list[dict] = []
+    last = None
+    for mid, role, content, tool_events, thinking, created_at, canceled in rows:
+        tool_names = _tool_event_names(tool_events)
+        entry = {
+            "id": mid,
+            "created_at": created_at or "",
+            "thinking_chars": len(thinking or ""),
+            "has_thinking": bool(thinking),
+            "tools": tool_names,
+            "canceled": bool(canceled),
+            "content_chars": len(content or ""),
+        }
+        if last is None:
+            last = entry
+        if entry["has_thinking"] or entry["tools"] or entry["canceled"]:
+            recent.append(entry)
+
+    # Prefer tool/thinking-bearing turns; fall back to last assistant
+    if not recent and last:
+        recent = [last]
+
+    recent.reverse()  # chronological
+    return {
+        "chat_id": chat_id,
+        "last_assistant_id": (last or {}).get("id", ""),
+        "last_assistant_at": (last or {}).get("created_at", ""),
+        "last_canceled": bool((last or {}).get("canceled")),
+        "recent": recent[-limit:],
+    }
 
 
 def _get_session_analysis_data(chat_id: str, since: str | None = None) -> list[dict]:
