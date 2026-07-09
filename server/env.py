@@ -267,6 +267,9 @@ GOOGLE_API_KEY: str = os.environ.get("GOOGLE_API_KEY", "")
 # Codex CLI binary — env-only
 CODEX_CLI: str = os.environ.get("CODEX_CLI_PATH", "codex")
 
+# Grok Build CLI binary — env-only (official xAI CLI)
+GROK_CLI: str = os.environ.get("GROK_CLI_PATH", "grok")
+
 # xAI management (model listing) — env-only
 XAI_MANAGEMENT_KEY: str = os.environ.get("XAI_MANAGEMENT_KEY", "")
 XAI_TEAM_ID: str = os.environ.get("XAI_TEAM_ID", "")
