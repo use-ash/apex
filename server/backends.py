@@ -16,7 +16,7 @@ from pathlib import Path
 
 import env
 from env import (
-    MODEL, DEBUG, CODEX_CLI, OPENAI_API_KEY, XAI_API_KEY,
+    MODEL, DEBUG, CODEX_CLI, GROK_CLI, OPENAI_API_KEY, XAI_API_KEY,
     DEEPSEEK_API_KEY, ZHIPU_API_KEY, GOOGLE_API_KEY,
     MAX_TOOL_ITERATIONS, ALLOW_LOCAL_TOOLS,
 )
@@ -35,10 +35,11 @@ from model_dispatch import (
     _get_model_backend, OLLAMA_BASE_URL, MLX_BASE_URL,
     MODEL_CONTEXT_WINDOWS, MODEL_CONTEXT_DEFAULT,
 )
-from state import _current_group_profile_id, _codex_threads, _codex_thread_turns
+from state import _current_group_profile_id, _codex_threads, _codex_thread_turns, _grok_sessions, _grok_session_turns
 from tool_access import allowed_tool_names_for_level, resolve_profile_extra_tools
 
 _CODEX_MAX_THREAD_TURNS = int(os.environ.get("APEX_CODEX_MAX_TURNS", "8"))
+_GROK_MAX_SESSION_TURNS = int(os.environ.get("APEX_GROK_MAX_TURNS", "12"))
 
 # Valid Codex sandbox modes (passed to -s flag)
 _VALID_CODEX_SANDBOX = {"read-only", "suggest", "full"}
@@ -257,7 +258,10 @@ def validate_backend_attachments(backend: str, attachments: list[dict] | None) -
     if backend == "codex":
         return "Attachments are not supported for Codex chats yet. Switch this chat to Claude to send files."
 
-    if backend in {"ollama", "xai", "deepseek", "zhipu", "google", "mlx"} and any(item["type"] == "text" for item in loaded):
+    if backend == "xai":
+        return "Attachments are not supported for Grok CLI chats yet. Switch this chat to Claude to send files."
+
+    if backend in {"ollama", "deepseek", "zhipu", "google", "mlx"} and any(item["type"] == "text" for item in loaded):
         label = _BACKEND_LABELS.get(backend, backend)
         return f"Text attachments are not supported for {label} chats yet. Image attachments still work."
 
@@ -656,6 +660,490 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
     return {"text": result_text, "is_error": False, "error": None,
             "cost_usd": 0, "tokens_in": tokens_in, "tokens_out": tokens_out,
             "session_id": thread_id or None, "thinking": thinking_text, "tool_events": json.dumps(tool_events)}
+
+
+# ---------------------------------------------------------------------------
+# Grok Build CLI backend (official xAI CLI — subscription / API key auth)
+# ---------------------------------------------------------------------------
+
+def _resolve_grok_cli() -> str:
+    """Return path to grok binary (env override, PATH, then common install locs)."""
+    import shutil
+    candidates = [
+        GROK_CLI,
+        shutil.which("grok") or "",
+        str(Path.home() / ".local" / "bin" / "grok"),
+        str(Path.home() / ".grok" / "bin" / "grok"),
+    ]
+    for c in candidates:
+        if c and Path(c).is_file() and os.access(c, os.X_OK):
+            return c
+    return GROK_CLI or "grok"
+
+
+def _get_grok_scope_key(chat_id: str) -> tuple[str, str]:
+    profile_id = _current_group_profile_id.get("")
+    return (f"{chat_id}:{profile_id}", profile_id) if profile_id else (chat_id, "")
+
+
+def _persist_grok_session(chat_id: str, session_id: str, turns: int) -> None:
+    try:
+        _scope_key, profile_id = _get_grok_scope_key(chat_id)
+        if profile_id:
+            settings = _get_chat_settings(chat_id)
+            sess_map = dict(settings.get("grok_sessions_by_profile") or {})
+            turns_map = dict(settings.get("grok_session_turns_by_profile") or {})
+            sess_map[profile_id] = session_id
+            turns_map[profile_id] = int(turns)
+            _update_chat_settings(
+                chat_id,
+                {
+                    "grok_sessions_by_profile": sess_map,
+                    "grok_session_turns_by_profile": turns_map,
+                },
+            )
+        else:
+            _update_chat_settings(
+                chat_id, {"grok_session_id": session_id, "grok_session_turns": turns}
+            )
+    except Exception:
+        pass
+
+
+def _clear_persisted_grok_session(chat_id: str) -> None:
+    try:
+        _scope_key, profile_id = _get_grok_scope_key(chat_id)
+        if profile_id:
+            settings = _get_chat_settings(chat_id)
+            sess_map = dict(settings.get("grok_sessions_by_profile") or {})
+            turns_map = dict(settings.get("grok_session_turns_by_profile") or {})
+            sess_map.pop(profile_id, None)
+            turns_map.pop(profile_id, None)
+            _update_chat_settings(
+                chat_id,
+                {
+                    "grok_sessions_by_profile": sess_map,
+                    "grok_session_turns_by_profile": turns_map,
+                },
+            )
+        else:
+            _update_chat_settings(chat_id, {"grok_session_id": "", "grok_session_turns": 0})
+    except Exception:
+        pass
+
+
+def _get_grok_session_state(chat_id: str) -> tuple[str, int, str]:
+    scope_key, profile_id = _get_grok_scope_key(chat_id)
+    existing = _grok_sessions.get(scope_key, "")
+    turns = _grok_session_turns.get(scope_key, 0)
+    if existing:
+        return existing, turns, scope_key
+    try:
+        settings = _get_chat_settings(chat_id)
+        if profile_id:
+            sess_map = settings.get("grok_sessions_by_profile") or {}
+            turns_map = settings.get("grok_session_turns_by_profile") or {}
+            existing = str(sess_map.get(profile_id, "") or "")
+            turns = int(turns_map.get(profile_id, 0) or 0)
+        else:
+            existing = str(settings.get("grok_session_id", "") or "")
+            turns = int(settings.get("grok_session_turns", 0) or 0)
+        if existing:
+            _grok_sessions[scope_key] = existing
+            _grok_session_turns[scope_key] = turns
+            log(
+                f"grok session restored from DB: session={scope_key[:24]} "
+                f"sid={existing[:8]} turns={turns}"
+            )
+    except Exception:
+        pass
+    return existing, turns, scope_key
+
+
+def _resolve_grok_workspace(chat_id: str) -> str:
+    """Per-agent workspace from tool_policy, else runtime workspace root."""
+    workspace = str(env.get_runtime_workspace_root())
+    try:
+        from db import _get_db
+        from state import _db_lock
+        pid = _current_group_profile_id.get("")
+        with _db_lock:
+            conn = _get_db()
+            if pid:
+                row = conn.execute(
+                    "SELECT tool_policy FROM agent_profiles WHERE id = ?", (pid,)
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT ap.tool_policy FROM agent_profiles ap "
+                    "INNER JOIN chats c ON c.profile_id = ap.id WHERE c.id = ?",
+                    (chat_id,),
+                ).fetchone()
+            conn.close()
+        if row and row[0]:
+            policy = json.loads(row[0])
+            if isinstance(policy, dict):
+                ws = policy.get("workspace", "")
+                if ws and Path(ws).is_dir():
+                    workspace = ws
+    except Exception as e:
+        log(f"grok workspace resolve: {e}")
+    return workspace
+
+
+def _public_grok_error_message(err_msg: str) -> str:
+    text = str(err_msg or "").strip()
+    lower = text.lower()
+    if any(s in lower for s in ("not logged in", "unauthoriz", "invalid api key", "auth", "login")):
+        return (
+            "Grok CLI is not authenticated. Run `grok login` in a terminal, "
+            "or set XAI_API_KEY in Credentials / .env, then retry."
+        )
+    if "not found" in lower or "no such file" in lower:
+        return (
+            "Grok CLI not found. Install with: curl -fsSL https://x.ai/cli/install.sh | bash"
+        )
+    return "Grok CLI hit an internal error while preparing the response. Retry the turn."
+
+
+async def _run_grok_chat(
+    chat_id: str,
+    prompt: str,
+    model: str | None = None,
+    attachments: list[dict] | None = None,
+) -> dict:
+    """Run a chat response via the official Grok Build CLI (headless streaming-json).
+
+    Mirrors Codex: session resume, context injection on fresh turns, tool events
+    emitted when present. Grok CLI owns its own tools/sandbox/MCP.
+    """
+    effective_model = model or "grok-4.5"
+    cli_model = effective_model  # ids already match CLI (grok-4.5, grok-4.3, …)
+    grok_bin = _resolve_grok_cli()
+
+    existing_session, session_turns, scope_key = _get_grok_session_state(chat_id)
+
+    is_rotation = False
+    if existing_session and session_turns >= _GROK_MAX_SESSION_TURNS:
+        log(
+            f"grok session rotation: session={scope_key[:24]} "
+            f"sid={existing_session[:8]} turns={session_turns}/{_GROK_MAX_SESSION_TURNS}"
+        )
+        _grok_sessions.pop(scope_key, None)
+        _grok_session_turns.pop(scope_key, None)
+        _clear_persisted_grok_session(chat_id)
+        is_rotation = True
+        existing_session = ""
+
+    workspace = _resolve_grok_workspace(chat_id)
+
+    if existing_session:
+        # Resume — CLI holds history; inject only identity anchor for group chats.
+        _anchor_pid = _current_group_profile_id.get("")
+        _anchor_name = ""
+        if _anchor_pid:
+            try:
+                from db import _get_db
+                from state import _db_lock
+                with _db_lock:
+                    _anchor_conn = _get_db()
+                    _anchor_row = _anchor_conn.execute(
+                        "SELECT name FROM agent_profiles WHERE id = ?", (_anchor_pid,)
+                    ).fetchone()
+                    _anchor_conn.close()
+                _anchor_name = _anchor_row[0] if _anchor_row else ""
+            except Exception:
+                pass
+        if _anchor_name:
+            full_prompt = (
+                f"<system-reminder>You are {_anchor_name}. "
+                "Respond only as yourself. Do not write as, speak for, or impersonate "
+                "any other agent. Never prefix your response with another agent's name."
+                f"</system-reminder>\n\n{prompt}"
+            )
+        else:
+            full_prompt = prompt
+        log(
+            f"grok resume: session={scope_key[:24]} sid={existing_session[:8]} "
+            f"(identity anchor={'yes' if _anchor_name else 'no'})"
+        )
+        cmd = [
+            grok_bin,
+            "-r", existing_session,
+            "-p", full_prompt,
+            "--output-format", "streaming-json",
+            "--always-approve",
+            "--permission-mode", "bypassPermissions",
+            "--no-plan",
+            "-m", cli_model,
+            "--cwd", workspace,
+            "--max-turns", "30",
+        ]
+    else:
+        profile_prompt = _get_profile_prompt(chat_id)
+        group_roster_prompt = _get_group_roster_prompt(chat_id, user_message=prompt)
+        memory_prompt = "" if group_roster_prompt else _get_memory_prompt(chat_id, user_message=prompt)
+        workspace_ctx = _get_workspace_context(chat_id)
+        temporal_ctx = _get_temporal_context(chat_id)
+        context_energy = _get_context_energy_prompt(chat_id)
+        calibration = _get_calibration_primer(chat_id)
+        ctx_prefix = (
+            f"{profile_prompt}{group_roster_prompt}{memory_prompt}"
+            f"{workspace_ctx}{temporal_ctx}{context_energy}{calibration}"
+        )
+        full_prompt = f"{ctx_prefix}{prompt}" if ctx_prefix else prompt
+
+        # Speaker-aware recent history for fresh/rotated sessions
+        recent = _get_messages(chat_id, days=1)["messages"]
+        current_pid = _current_group_profile_id.get("")
+        fetch_window = max(_GROK_MAX_SESSION_TURNS + 4, 12)
+        all_recent = [m for m in recent[-fetch_window:] if "<system-reminder>" not in m["content"]]
+
+        def _is_self(m: dict) -> bool:
+            if m["role"] != "assistant":
+                return False
+            sid = m.get("speaker_id", "")
+            if current_pid:
+                return sid == current_pid
+            return True
+
+        history_lines: list[str] = []
+        ordered = all_recent[-_GROK_MAX_SESSION_TURNS:]
+        for m in ordered:
+            role = m["role"]
+            content = m["content"]
+            speaker_id = m.get("speaker_id", "")
+            if _is_self(m):
+                label = "You"
+            elif role == "assistant" and speaker_id:
+                label = m.get("speaker_name", speaker_id)
+            else:
+                label = role
+            line = f"[{label}] {content[:3000]}"
+            tool_json = m.get("tool_events", "[]") or "[]"
+            if role == "assistant" and tool_json != "[]":
+                try:
+                    tools = json.loads(tool_json)
+                    tool_names = [t.get("name", "tool") for t in tools if t.get("type") == "tool_use"]
+                    if tool_names:
+                        line += f"\n  [tools used: {', '.join(tool_names)}]"
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            history_lines.append(line)
+
+        if history_lines:
+            history_block = "\n".join(history_lines)
+            if is_rotation:
+                context_note = (
+                    "\n[System: This is a continuation of your previous work. "
+                    "Continue from where you left off — do not repeat work already completed.]\n\n"
+                )
+            else:
+                context_note = ""
+            full_prompt = (
+                f"<conversation-history>\n{history_block}\n</conversation-history>\n"
+                f"{context_note}\n{full_prompt}"
+            )
+
+        journal_ctx = _build_journal_recovery_context(chat_id)
+        if journal_ctx:
+            full_prompt = f"{journal_ctx}{full_prompt}"
+            log(f"grok journal recovery injected: chat={chat_id[:8]}")
+
+        cmd = [
+            grok_bin,
+            "-p", full_prompt,
+            "--output-format", "streaming-json",
+            "--always-approve",
+            "--permission-mode", "bypassPermissions",
+            "--no-plan",
+            "-m", cli_model,
+            "--cwd", workspace,
+            "--max-turns", "30",
+            "--no-memory",  # Apex owns memory injection
+        ]
+
+    grok_env = {**os.environ}
+    if XAI_API_KEY:
+        grok_env["XAI_API_KEY"] = XAI_API_KEY
+    # Ensure CLI bin dirs are on PATH for child tool processes
+    extra_path = f"{Path.home() / '.local' / 'bin'}:{Path.home() / '.grok' / 'bin'}"
+    grok_env["PATH"] = f"{extra_path}:{grok_env.get('PATH', '')}"
+
+    log(f"grok spawn: bin={grok_bin} model={cli_model} resume={bool(existing_session)} cwd={workspace}")
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=grok_env,
+        cwd=workspace,
+    )
+    _started = time.monotonic()
+
+    result_text = ""
+    thinking_text = ""
+    tool_events: list[dict] = []
+    session_id = existing_session or ""
+    tokens_in = 0
+    tokens_out = 0
+    error_msg = ""
+
+    assert proc.stdout is not None
+    while True:
+        line = await proc.stdout.readline()
+        if not line:
+            break
+        line_str = line.decode(errors="replace").strip()
+        if not line_str:
+            continue
+        try:
+            event = json.loads(line_str)
+        except json.JSONDecodeError:
+            # Non-JSON noise — ignore
+            continue
+
+        et = event.get("type", "")
+
+        if et == "thought":
+            chunk = event.get("data", "") or event.get("text", "") or ""
+            if chunk:
+                thinking_text += chunk
+                await _send_stream_event(chat_id, {"type": "thinking", "text": chunk})
+
+        elif et == "text":
+            chunk = event.get("data", "") or event.get("text", "") or ""
+            if chunk:
+                result_text += chunk
+                await _send_stream_event(chat_id, {"type": "text", "text": chunk})
+
+        elif et in {"tool_use", "tool_call", "tool"}:
+            tool_id = str(event.get("id") or event.get("tool_use_id") or uuid.uuid4())
+            name = event.get("name") or event.get("tool") or "tool"
+            inp = event.get("input") or event.get("arguments") or event.get("data") or ""
+            if not isinstance(inp, str):
+                try:
+                    inp = json.dumps(inp)[:2000]
+                except Exception:
+                    inp = str(inp)[:2000]
+            tool_evt = {"type": "tool_use", "id": tool_id, "name": name, "input": inp}
+            tool_events.append(tool_evt)
+            await _send_stream_event(chat_id, tool_evt)
+
+        elif et in {"tool_result", "tool_response"}:
+            tool_id = str(event.get("id") or event.get("tool_use_id") or uuid.uuid4())
+            content = event.get("content") or event.get("data") or event.get("output") or ""
+            if not isinstance(content, str):
+                try:
+                    content = json.dumps(content)[:2000]
+                except Exception:
+                    content = str(content)[:2000]
+            tool_evt = {"type": "tool_result", "id": tool_id, "content": content[:2000]}
+            tool_events.append(tool_evt)
+            await _send_stream_event(chat_id, tool_evt)
+
+        elif et == "error":
+            error_msg = str(event.get("message") or event.get("data") or "grok error")
+            await _send_stream_event(
+                chat_id,
+                {"type": "error", "message": _public_grok_error_message(error_msg), "retryable": True},
+            )
+
+        elif et == "end":
+            sid = event.get("sessionId") or event.get("session_id") or ""
+            if sid:
+                session_id = sid
+            usage = event.get("usage") or {}
+            tokens_in = int(usage.get("input_tokens") or usage.get("prompt_tokens") or tokens_in or 0)
+            tokens_out = int(usage.get("output_tokens") or usage.get("completion_tokens") or tokens_out or 0)
+
+        elif et == "usage":
+            tokens_in = int(event.get("input_tokens") or event.get("prompt_tokens") or tokens_in or 0)
+            tokens_out = int(event.get("output_tokens") or event.get("completion_tokens") or tokens_out or 0)
+
+        elif et == "start":
+            sid = event.get("sessionId") or event.get("session_id") or ""
+            if sid:
+                session_id = sid
+
+    await proc.wait()
+    stderr_data = await proc.stderr.read() if proc.stderr else b""
+    if proc.returncode not in (0, None) and not result_text:
+        err_msg = error_msg or (
+            stderr_data.decode(errors="replace")[:500]
+            if stderr_data
+            else f"grok exited with code {proc.returncode}"
+        )
+        log(f"grok process error: {err_msg}")
+
+        # Resume failure → clear session and retry fresh once
+        if existing_session:
+            log(
+                f"grok resume failed, retrying fresh: session={scope_key[:24]} "
+                f"sid={existing_session[:8]}"
+            )
+            _grok_sessions.pop(scope_key, None)
+            _grok_session_turns.pop(scope_key, None)
+            _clear_persisted_grok_session(chat_id)
+            return await _run_grok_chat(chat_id, prompt, model=model, attachments=attachments)
+
+        await _send_stream_event(
+            chat_id,
+            {
+                "type": "error",
+                "message": _public_grok_error_message(err_msg),
+                "retryable": True,
+            },
+        )
+        return {
+            "text": "",
+            "is_error": True,
+            "error": err_msg,
+            "cost_usd": 0,
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "session_id": None,
+            "thinking": thinking_text,
+            "tool_events": json.dumps(tool_events),
+        }
+
+    if session_id:
+        _grok_sessions[scope_key] = session_id
+        _grok_session_turns[scope_key] = _grok_session_turns.get(scope_key, 0) + 1
+        turns = _grok_session_turns[scope_key]
+        _persist_grok_session(chat_id, session_id, turns)
+        log(
+            f"grok turn complete: session={scope_key[:24]} sid={session_id[:8]} "
+            f"turn={turns}/{_GROK_MAX_SESSION_TURNS} chars={len(result_text)}"
+        )
+
+    _cw = MODEL_CONTEXT_WINDOWS.get(effective_model, MODEL_CONTEXT_DEFAULT)
+    _est = tokens_in or _estimate_tokens(chat_id)
+    await _send_stream_event(
+        chat_id,
+        {
+            "type": "result",
+            "is_error": False,
+            "cost_usd": 0,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "session_id": session_id or None,
+            "context_tokens_in": _est,
+            "context_window": _cw,
+            "thinking": thinking_text,
+            "duration_ms": int((time.monotonic() - _started) * 1000),
+        },
+    )
+    return {
+        "text": result_text,
+        "is_error": False,
+        "error": None,
+        "cost_usd": 0,
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "session_id": session_id or None,
+        "thinking": thinking_text,
+        "tool_events": json.dumps(tool_events),
+    }
 
 
 # ---------------------------------------------------------------------------
