@@ -1788,7 +1788,7 @@ function openThinkingPanel(pillEl) {
 _JS_EVENT_HANDLER = """function handleEvent(msg) {
   const el = document.getElementById('messages');
   // B-42: drop stream events that belong to a different chat
-  const _B42_STREAM = new Set(['stream_start','stream_ack','stream_queued','text','thinking','tool_use','tool_result','stream_end','active_streams','queue_update']);
+  const _B42_STREAM = new Set(['stream_start','stream_ack','stream_queued','text','thinking','tool_use','tool_result','stream_end','active_streams','queue_update','user_question','user_question_closed','user_question_ack']);
   // B-42b: fall back to sessionStorage so a transiently-nulled currentChat
   // (init race, tab refocus, stream teardown sweep) doesn't silently drop
   // our own in-flight stream events.
@@ -2066,6 +2066,25 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
       _updateToolPillProgress(ctx);
       markStreamActivity(ctx, 'tool-use');
       scrollBottom();
+      break;
+    }
+
+    case 'user_question': {
+      // Fix B: native AskUserQuestion picker
+      if (msg.chat_id && currentChat && msg.chat_id !== currentChat) break;
+      _renderUserQuestionCard(msg);
+      scrollBottom();
+      break;
+    }
+
+    case 'user_question_closed': {
+      if (msg.chat_id && currentChat && msg.chat_id !== currentChat) break;
+      _closeUserQuestionCard(msg.request_id || '', {reason: 'closed'});
+      break;
+    }
+
+    case 'user_question_ack': {
+      // Server confirmed answer receipt — leave card in done state
       break;
     }
 
@@ -3695,8 +3714,215 @@ function toolSummary(name, input) {
     case 'WebSearch': {
       return `Searching: <code>${escHtml(o.query || '')}</code>`;
     }
+    case 'AskUserQuestion': {
+      const qs = Array.isArray(o.questions) ? o.questions : [];
+      if (qs.length === 1) return `Asking: ${escHtml(String(qs[0].question || '').slice(0, 80))}`;
+      if (qs.length > 1) return `Asking ${qs.length} questions`;
+      return 'Asking a question';
+    }
     default: return null;
   }
+}
+
+/* ── Fix B: native AskUserQuestion picker ─────────────────────────── */
+const _userQuestionCards = new Map(); // request_id -> card element
+
+function _renderUserQuestionCard(msg) {
+  const requestId = String(msg.request_id || '');
+  if (!requestId) return;
+  if (_userQuestionCards.has(requestId)) return; // already showing
+
+  const questions = Array.isArray(msg.questions) ? msg.questions : [];
+  if (!questions.length) return;
+
+  const card = document.createElement('div');
+  card.className = 'user-q-card';
+  card.dataset.requestId = requestId;
+
+  const header = document.createElement('div');
+  header.className = 'user-q-header';
+  header.innerHTML = `<span class="user-q-badge">Question</span><span class="user-q-title">Claude needs your input</span>`;
+  card.appendChild(header);
+
+  const state = questions.map((q, qi) => ({
+    question: String(q.question || ''),
+    header: String(q.header || ''),
+    multi: Boolean(q.multiSelect),
+    options: Array.isArray(q.options) ? q.options : [],
+    selected: new Set(),
+    other: '',
+  }));
+
+  state.forEach((qState, qi) => {
+    const item = document.createElement('div');
+    item.className = 'user-q-item';
+    if (qState.header) {
+      const chip = document.createElement('div');
+      chip.className = 'user-q-chip';
+      chip.textContent = qState.header;
+      item.appendChild(chip);
+    }
+    const qText = document.createElement('div');
+    qText.className = 'user-q-text';
+    qText.textContent = qState.question;
+    item.appendChild(qText);
+
+    const opts = document.createElement('div');
+    opts.className = 'user-q-opts';
+    qState.options.forEach((opt, oi) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'user-q-opt' + (qState.multi ? ' multi' : '');
+      btn.dataset.qi = String(qi);
+      btn.dataset.oi = String(oi);
+      const label = String(opt.label || '');
+      const desc = String(opt.description || '');
+      btn.innerHTML =
+        `<span class="user-q-opt-mark"></span>` +
+        `<span class="user-q-opt-body">` +
+          `<div class="user-q-opt-label">${escHtml(label)}</div>` +
+          (desc ? `<div class="user-q-opt-desc">${escHtml(desc)}</div>` : '') +
+        `</span>`;
+      btn.addEventListener('click', () => {
+        if (card.classList.contains('is-done')) return;
+        if (qState.multi) {
+          if (qState.selected.has(label)) qState.selected.delete(label);
+          else qState.selected.add(label);
+        } else {
+          qState.selected.clear();
+          qState.selected.add(label);
+          qState.other = '';
+          const otherInput = item.querySelector('.user-q-other input');
+          if (otherInput) otherInput.value = '';
+        }
+        // refresh selected styles for this question
+        opts.querySelectorAll('.user-q-opt').forEach((el) => {
+          const oLabel = (qState.options[Number(el.dataset.oi)] || {}).label || '';
+          el.classList.toggle('is-selected', qState.selected.has(oLabel));
+          el.querySelector('.user-q-opt-mark').textContent =
+            el.classList.contains('is-selected') ? (qState.multi ? '✓' : '●') : '';
+        });
+        submitBtn.disabled = !state.every((s) => s.selected.size > 0 || (s.other && s.other.trim()));
+      });
+      opts.appendChild(btn);
+    });
+    item.appendChild(opts);
+
+    // Automatic "Other" free-text (SDK always provides this)
+    const otherWrap = document.createElement('div');
+    otherWrap.className = 'user-q-other';
+    const otherInput = document.createElement('input');
+    otherInput.type = 'text';
+    otherInput.placeholder = 'Other…';
+    otherInput.addEventListener('input', () => {
+      if (card.classList.contains('is-done')) return;
+      qState.other = otherInput.value;
+      if (qState.other.trim() && !qState.multi) {
+        qState.selected.clear();
+        opts.querySelectorAll('.user-q-opt').forEach((el) => {
+          el.classList.remove('is-selected');
+          el.querySelector('.user-q-opt-mark').textContent = '';
+        });
+      }
+      submitBtn.disabled = !state.every((s) => s.selected.size > 0 || (s.other && s.other.trim()));
+    });
+    otherWrap.appendChild(otherInput);
+    item.appendChild(otherWrap);
+
+    card.appendChild(item);
+  });
+
+  const actions = document.createElement('div');
+  actions.className = 'user-q-actions';
+  const skipBtn = document.createElement('button');
+  skipBtn.type = 'button';
+  skipBtn.className = 'user-q-btn ghost';
+  skipBtn.textContent = 'Skip';
+  const submitBtn = document.createElement('button');
+  submitBtn.type = 'button';
+  submitBtn.className = 'user-q-btn primary';
+  submitBtn.textContent = 'Submit';
+  submitBtn.disabled = true;
+
+  function finalize(declined) {
+    if (card.classList.contains('is-done')) return;
+    card.classList.add('is-done');
+    card.querySelectorAll('button, input').forEach((el) => { el.disabled = true; });
+    const answers = {};
+    if (!declined) {
+      state.forEach((s) => {
+        let val = '';
+        if (s.other && s.other.trim()) val = s.other.trim();
+        else if (s.selected.size) val = Array.from(s.selected).join(', ');
+        if (val) answers[s.question] = val;
+      });
+    }
+    const payload = {
+      action: 'user_question_answer',
+      request_id: requestId,
+      declined: Boolean(declined),
+      answers,
+    };
+    try {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
+    } catch (e) { dbg('user_question send failed', e); }
+
+    const summary = document.createElement('div');
+    summary.className = 'user-q-summary';
+    if (declined) {
+      summary.textContent = 'Skipped — agent will continue without answers.';
+    } else {
+      const parts = Object.entries(answers).map(([q, a]) =>
+        `<div><b>${escHtml(q.length > 48 ? q.slice(0, 48) + '…' : q)}</b> → ${escHtml(a)}</div>`
+      );
+      summary.innerHTML = parts.join('') || 'Submitted.';
+    }
+    actions.replaceWith(summary);
+  }
+
+  skipBtn.addEventListener('click', () => finalize(true));
+  submitBtn.addEventListener('click', () => finalize(false));
+  actions.appendChild(skipBtn);
+  actions.appendChild(submitBtn);
+  card.appendChild(actions);
+
+  // Mount: prefer active stream bubble, else messages container
+  let mount = null;
+  const sid = (typeof currentStreamId !== 'undefined' && currentStreamId) ? currentStreamId : '';
+  const ctx = sid ? (_streamCtx[sid] || null) : null;
+  if (ctx && ctx.bubble) mount = ctx.bubble;
+  if (!mount) {
+    const ids = (typeof _activeStreamIdsForChat === 'function')
+      ? _activeStreamIdsForChat(currentChat)
+      : Object.keys(_streamCtx || {});
+    for (const id of ids) {
+      const c = _streamCtx[id];
+      if (c && c.bubble) { mount = c.bubble; break; }
+    }
+  }
+  if (!mount) mount = document.getElementById('messages') || document.querySelector('.messages');
+  if (!mount) return;
+  mount.appendChild(card);
+  _userQuestionCards.set(requestId, card);
+}
+
+function _closeUserQuestionCard(requestId, options = {}) {
+  if (!requestId) return;
+  const card = _userQuestionCards.get(requestId);
+  if (!card) return;
+  if (!card.classList.contains('is-done')) {
+    card.classList.add('is-done');
+    card.querySelectorAll('button, input').forEach((el) => { el.disabled = true; });
+    const note = document.createElement('div');
+    note.className = 'user-q-summary';
+    note.textContent = options.reason === 'closed'
+      ? 'Question closed.'
+      : 'No longer awaiting an answer.';
+    const actions = card.querySelector('.user-q-actions');
+    if (actions) actions.replaceWith(note);
+    else card.appendChild(note);
+  }
+  _userQuestionCards.delete(requestId);
 }
 
 function toolResultSummary(name, content) {
