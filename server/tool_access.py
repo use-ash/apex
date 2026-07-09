@@ -27,6 +27,16 @@ SDK_TOOL_NAME_MAP = {
 
 STANDARD_LOCAL_TOOLS = frozenset({"read_file", "list_files", "search_files"})
 
+# Tools that require an interactive CLI surface and still cannot be fulfilled
+# by ApexChat. AskUserQuestion was here until Fix B (native picker) shipped —
+# it is now handled by streaming._make_sdk_tool_gate which awaits a user answer
+# over WebSocket and returns PermissionResultAllow(updated_input=answers).
+HEADLESS_INCOMPATIBLE_TOOLS = frozenset()
+
+# Interactive tools ApexChat fulfills natively (no host shell/TTY required).
+# Always allowed at level >= 1; the SDK gate intercepts and renders UI.
+NATIVE_INTERACTIVE_TOOLS = frozenset({"AskUserQuestion"})
+
 # Guide persona tools — safe-by-design config commands, injected only for guide sessions
 try:
     from local_model.tools.guide_tools import GUIDE_TOOL_NAMES
@@ -637,6 +647,15 @@ def tool_access_decision(
         return False, "This agent is Restricted and cannot use tools or access files."
 
     canonical = canonical_tool_name(tool_name)
+    if tool_name in HEADLESS_INCOMPATIBLE_TOOLS or canonical in HEADLESS_INCOMPATIBLE_TOOLS:
+        return _deny(
+            f"{tool_name} is unavailable in ApexChat — there is no interactive "
+            "UI for it here. Ask your clarifying questions as plain text instead."
+        )
+    # Native interactive tools (AskUserQuestion) are always allowed at level>=1.
+    # The SDK can_use_tool gate intercepts them and awaits a UI answer.
+    if tool_name in NATIVE_INTERACTIVE_TOOLS or canonical in NATIVE_INTERACTIVE_TOOLS:
+        return True, ""
     if not tool_allowed_for_level(canonical, level, extra_allowed_tools=extra_allowed_tools):
         if level == 1:
             return False, "This action requires Elevated or Admin permissions."
