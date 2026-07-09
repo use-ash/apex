@@ -96,7 +96,9 @@ from agent_sdk import (
 from memory_extract import _extract_and_save_memories
 from backends import (
     _public_codex_error_message,
+    _public_grok_error_message,
     _run_codex_chat,
+    _run_grok_chat,
     _run_ollama_chat,
     validate_backend_attachments,
 )
@@ -116,8 +118,8 @@ except ImportError:
 ws_router = APIRouter()
 MAX_QUEUED_TURNS_PER_KEY = 2
 MAX_MENTION_DEPTH = 25
-_TOOL_LOOP_BACKENDS = frozenset({"ollama", "xai", "mlx", "deepseek", "zhipu", "google"})
-_NON_CLAUDE_BACKENDS = _TOOL_LOOP_BACKENDS | {"codex"}
+_TOOL_LOOP_BACKENDS = frozenset({"ollama", "mlx", "deepseek", "zhipu", "google"})
+_NON_CLAUDE_BACKENDS = _TOOL_LOOP_BACKENDS | {"codex", "xai"}
 
 # Premium module — injected by apex.py when loaded. Provides group routing
 # and agent relay functions. When None, all group routing is disabled.
@@ -213,6 +215,8 @@ def _public_backend_error_message(backend: str, err: Exception | str) -> str:
     raw = str(err or "").strip()
     if backend == "codex":
         return _public_codex_error_message(raw)
+    if backend == "xai":
+        return _public_grok_error_message(raw)
     if backend in _TOOL_LOOP_BACKENDS:
         return "The model backend hit an internal error while responding. Retry the turn."
     # Auth errors — give the user something actionable
@@ -1377,6 +1381,28 @@ async def _handle_send_action(
             except Exception as codex_err:
                 log(f"codex chat error: {codex_err}")
                 message = _public_backend_error_message("codex", codex_err)
+                for ws in list(_chat_ws.get(chat_id, {websocket})):
+                    await _safe_ws_send_json(
+                        ws,
+                        {
+                            "type": "error",
+                            "message": message,
+                            "retryable": True,
+                            "target_agent": group_agent["profile_id"] if group_agent else "",
+                            "stream_id": stream_id,
+                        },
+                        chat_id=chat_id,
+                    )
+                return
+        # --- Grok Build CLI path ---
+        elif backend == "xai":
+            try:
+                result = await _run_grok_chat(
+                    chat_id, prompt, model=chat_model, attachments=attachments
+                )
+            except Exception as grok_err:
+                log(f"grok chat error: {grok_err}")
+                message = _public_backend_error_message("xai", grok_err)
                 for ws in list(_chat_ws.get(chat_id, {websocket})):
                     await _safe_ws_send_json(
                         ws,
