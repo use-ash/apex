@@ -489,6 +489,9 @@ async def _cancel_chat_streams(chat_id: str, stream_id: str = "") -> bool:
         if not selected_keys:
             selected_keys = client_keys
 
+    # Cancel any in-flight AskUserQuestion pickers so the gate unblocks.
+    cancel_pending_user_questions(chat_id)
+
     # Interrupt the active turn but keep the SDK client warm in the pool so
     # the next user message reuses the same connect()/session — no fresh
     # SessionStart:resume hook fires and no token-bloat re-injection.
@@ -852,6 +855,143 @@ def _sdk_tool_input_paths(tool_input: dict) -> list[str]:
     return paths
 
 
+# ---------------------------------------------------------------------------
+# Native AskUserQuestion picker (Fix B)
+# ---------------------------------------------------------------------------
+# AskUserQuestion is a CLI-interactive tool. In headless SDK mode the bundled
+# CLI auto-returns empty answers. We intercept the can_use_tool permission
+# request, emit a WS event for the ApexChat picker, await the user's answer,
+# and return PermissionResultAllow(updated_input=answers). The tool's own
+# call() then runs with those answers — no tool_result injection needed.
+_ASK_USER_TIMEOUT_SEC = 600  # 10 minutes
+_pending_user_questions: dict[str, asyncio.Future] = {}
+
+
+def _normalize_ask_user_questions(tool_input: dict) -> list[dict]:
+    raw = tool_input.get("questions") if isinstance(tool_input, dict) else None
+    if not isinstance(raw, list):
+        return []
+    questions: list[dict] = []
+    for item in raw[:4]:
+        if not isinstance(item, dict):
+            continue
+        question = str(item.get("question") or "").strip()
+        if not question:
+            continue
+        header = str(item.get("header") or "").strip()[:12]
+        multi = bool(item.get("multiSelect"))
+        options: list[dict] = []
+        for opt in (item.get("options") or [])[:4]:
+            if not isinstance(opt, dict):
+                continue
+            label = str(opt.get("label") or "").strip()
+            if not label:
+                continue
+            options.append({
+                "label": label,
+                "description": str(opt.get("description") or "").strip(),
+                "preview": str(opt.get("preview") or "").strip() or None,
+            })
+        if len(options) < 2:
+            continue
+        questions.append({
+            "question": question,
+            "header": header or question[:12],
+            "multiSelect": multi,
+            "options": options,
+        })
+    return questions
+
+
+def resolve_user_question(
+    request_id: str,
+    *,
+    answers: dict | None = None,
+    declined: bool = False,
+) -> bool:
+    """Resolve a pending AskUserQuestion future from a WS answer/decline."""
+    fut = _pending_user_questions.get(request_id)
+    if fut is None or fut.done():
+        return False
+    if declined:
+        fut.set_result({"declined": True, "answers": {}})
+    else:
+        fut.set_result({
+            "declined": False,
+            "answers": answers if isinstance(answers, dict) else {},
+        })
+    return True
+
+
+def cancel_pending_user_questions(chat_id: str) -> int:
+    """Cancel all pending questions for a chat (stream stop / disconnect)."""
+    if not chat_id:
+        return 0
+    cancelled = 0
+    for request_id, fut in list(_pending_user_questions.items()):
+        if not request_id.startswith(f"{chat_id}:"):
+            continue
+        if not fut.done():
+            fut.cancel()
+            cancelled += 1
+        _pending_user_questions.pop(request_id, None)
+    return cancelled
+
+
+async def _await_user_question_answers(
+    chat_id: str,
+    tool_input: dict,
+    *,
+    tool_use_id: str | None = None,
+) -> tuple[dict | None, bool]:
+    """Emit picker event and wait for user answers.
+
+    Returns (answers, declined). answers is None on timeout/cancel.
+    """
+    questions = _normalize_ask_user_questions(tool_input)
+    if not questions:
+        return None, True
+
+    request_id = f"{chat_id}:{tool_use_id or uuid.uuid4().hex[:12]}"
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future = loop.create_future()
+    _pending_user_questions[request_id] = fut
+
+    payload = {
+        "type": "user_question",
+        "chat_id": chat_id,
+        "request_id": request_id,
+        "tool_use_id": tool_use_id or "",
+        "questions": questions,
+    }
+    try:
+        await _send_stream_event(chat_id, payload)
+        log(f"user_question pending: chat={chat_id[:8]} req={request_id[-12:]} n={len(questions)}")
+        result = await asyncio.wait_for(fut, timeout=_ASK_USER_TIMEOUT_SEC)
+    except asyncio.TimeoutError:
+        log(f"user_question timeout: chat={chat_id[:8]} req={request_id[-12:]}")
+        return None, True
+    except asyncio.CancelledError:
+        log(f"user_question cancelled: chat={chat_id[:8]} req={request_id[-12:]}")
+        raise
+    finally:
+        _pending_user_questions.pop(request_id, None)
+        # Tell clients to tear down the picker if still open
+        with contextlib.suppress(Exception):
+            await _send_stream_event(chat_id, {
+                "type": "user_question_closed",
+                "chat_id": chat_id,
+                "request_id": request_id,
+            })
+
+    if not isinstance(result, dict):
+        return None, True
+    if result.get("declined"):
+        return {}, True
+    answers = result.get("answers")
+    return (answers if isinstance(answers, dict) else {}), False
+
+
 def _make_sdk_tool_gate(
     level: int,
     *,
@@ -861,6 +1001,33 @@ def _make_sdk_tool_gate(
     extra_allowed_tools: frozenset[str] | set[str] | None = None,
 ):
     async def _can_use_tool(tool_name: str, tool_input: dict, _context):
+        # Fix B: native AskUserQuestion picker. Intercept before the deny-list /
+        # level check so we can await a UI answer and return updated_input.
+        if tool_name == "AskUserQuestion" and chat_id:
+            if level <= 0:
+                return PermissionResultDeny(
+                    message="This agent is Restricted and cannot ask interactive questions.",
+                    interrupt=True,
+                )
+            tool_use_id = None
+            if _context is not None:
+                tool_use_id = getattr(_context, "tool_use_id", None) or (
+                    _context.get("tool_use_id") if isinstance(_context, dict) else None
+                )
+            answers, declined = await _await_user_question_answers(
+                chat_id,
+                tool_input if isinstance(tool_input, dict) else {},
+                tool_use_id=str(tool_use_id) if tool_use_id else None,
+            )
+            if declined or answers is None:
+                return PermissionResultDeny(
+                    message="User declined to answer questions",
+                    interrupt=False,
+                )
+            updated = dict(tool_input) if isinstance(tool_input, dict) else {}
+            updated["answers"] = answers
+            return PermissionResultAllow(updated_input=updated)
+
         allowed, message = tool_access_decision(
             tool_name,
             tool_input if isinstance(tool_input, dict) else {},
@@ -981,6 +1148,21 @@ def _make_options(
     opts = ClaudeAgentOptions(
         model=model or MODEL,
         cwd=str(workspace_root),
+        # Non-destructive append to the bundled Claude Code system prompt.
+        # Fix B: AskUserQuestion is natively rendered in ApexChat. Prefer it for
+        # structured multi-choice clarification over free-form text when choices
+        # are discrete (2-4 options).
+        system_prompt={
+            "type": "preset",
+            "preset": "claude_code",
+            "append": (
+                "You are running inside ApexChat. The AskUserQuestion tool is "
+                "supported: it renders a native multiple-choice picker in the "
+                "chat UI and blocks until the user answers. Prefer "
+                "AskUserQuestion when you need a structured choice (2–4 "
+                "options). For open-ended clarification, ask in plain text."
+            ),
+        },
         permission_mode=_sdk_permission_mode_for_level(permission_level),
         max_turns=50,
         resume=session_id,

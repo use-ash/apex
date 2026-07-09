@@ -72,6 +72,7 @@ from streaming import (
     _send_stream_event, _send_active_streams, _finalize_stream,
     _disconnect_client, _set_model,
     _safe_ws_send_json, _is_valid_chat_id,
+    resolve_user_question,
 )
 from context import (
     _generate_recovery_context, _store_recovery_context, _maybe_compact_chat,
@@ -809,6 +810,29 @@ async def websocket_endpoint(websocket: WebSocket):
                 _clear_queued_turns(chat_id)
                 await _emit_queue_update(chat_id)
                 await _cancel_chat_streams(chat_id)
+            elif action == "user_question_answer":
+                # Fix B: resolve a pending AskUserQuestion picker
+                request_id = str(data.get("request_id") or "").strip()
+                declined = bool(data.get("declined"))
+                answers = data.get("answers") if isinstance(data.get("answers"), dict) else {}
+                if not request_id:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "request_id required for user_question_answer",
+                    })
+                    continue
+                ok = resolve_user_question(
+                    request_id,
+                    answers=answers,
+                    declined=declined,
+                )
+                await websocket.send_json({
+                    "type": "user_question_ack",
+                    "request_id": request_id,
+                    "ok": ok,
+                })
+                if not ok:
+                    log(f"user_question_answer miss: req={request_id[-16:]}")
 
     except WebSocketDisconnect as wd:
         log(f"websocket disconnected ws={ws_id} code={wd.code if hasattr(wd, 'code') else '?'}")
