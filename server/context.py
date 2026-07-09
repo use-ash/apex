@@ -23,7 +23,7 @@ from db import (
     _get_messages, _get_recent_messages_text, _get_cumulative_tokens_in,
     _get_last_turn_tokens_in, _estimate_tokens, _get_last_turn_cost,
     _get_last_turn_cost_delta,
-    _get_session_analysis_data,
+    _get_session_analysis_data, _get_continuity_pointers,
     _get_group_members, _get_persona_memories, _bump_memory_access,
     _get_last_assistant_speaker,
     _now, SYSTEM_PROFILE_ID, _get_chat_settings,
@@ -1750,6 +1750,55 @@ def _get_transcript_tail_from_jsonl(chat_id: str, max_chars: int) -> str:
         return ""
 
 
+def _format_continuity_pointers_block(chat_id: str) -> str:
+    """Build the Continuity Pointers section for recovery injection.
+
+    Pointers only — no full thinking/tool payloads (token bomb). The model
+    rehydrates mid-turn state via /api/chats/{id}/messages when needed.
+    """
+    try:
+        ptr = _get_continuity_pointers(chat_id, limit=6)
+    except Exception as e:
+        log(f"continuity pointers failed chat={chat_id[:8]}: {e}")
+        return ""
+
+    last_id = ptr.get("last_assistant_id") or ""
+    last_at = ptr.get("last_assistant_at") or ""
+    if not last_id and not ptr.get("recent"):
+        return ""
+
+    lines = [
+        "\n\n## Continuity Pointers (mid-turn rehydrate)",
+        f"- chat_id={chat_id}",
+        f"- last_assistant_id={last_id or '(none)'}",
+        f"- last_assistant_at={last_at or '(none)'}",
+    ]
+    if ptr.get("last_canceled"):
+        lines.append("- last_assistant_canceled=true (partial/mid-turn save — rehydrate tool_events/thinking)")
+
+    recent = ptr.get("recent") or []
+    if recent:
+        lines.append("- recent assistant turns with thinking/tools:")
+        for r in recent:
+            tools = ",".join(r.get("tools") or []) or "-"
+            lines.append(
+                f"  - id={r.get('id')} at={r.get('created_at')} "
+                f"thinking={r.get('thinking_chars', 0)}c tools=[{tools}]"
+                f"{' canceled=1' if r.get('canceled') else ''}"
+            )
+
+    lines.append(
+        "- rehydrate (mTLS, includes thinking + tool_events):\n"
+        f"  curl -s --cert ~/.openclaw/apex/state/ssl/client.crt "
+        f"--key ~/.openclaw/apex/state/ssl/client.key -k "
+        f"'https://127.0.0.1:8301/api/chats/{chat_id}/messages?limit=5'\n"
+        "  Walk older with &before_id=<oldest_id>. Prefer last_assistant_id above "
+        "when resuming a compacted mid-turn."
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _build_recovery_block(chat_id: str, summary: str, session_type: str = "task") -> str:
     """Assemble the full recovery system-reminder with summary + transcript tail.
 
@@ -1792,6 +1841,9 @@ def _build_recovery_block(chat_id: str, summary: str, session_type: str = "task"
                 art_parts.append("")
             artifact_block = "\n".join(art_parts)
 
+    # Continuity pointers: mid-turn thinking/tool rehydrate without dumping payloads
+    pointers_block = _format_continuity_pointers_block(chat_id)
+
     briefing = summary if summary else "(Summary generation failed — use transcript below.)"
 
     # Self-orient instructions: the chat history is the source of truth.
@@ -1819,6 +1871,12 @@ def _build_recovery_block(chat_id: str, summary: str, session_type: str = "task"
         "Paginated history (walks backward by created_at):\n"
         f"  curl -s --cert ~/.openclaw/apex/state/ssl/client.crt --key ~/.openclaw/apex/state/ssl/client.key -k 'https://127.0.0.1:8300/api/chats/{chat_id}/messages?limit=100'\n"
         f"  then pass &before_id=<oldest_id_from_prev_page> to go further back\n"
+        "\n"
+        "Mid-turn rehydrate (thinking + tool_events on a specific message):\n"
+        f"  curl -s --cert ~/.openclaw/apex/state/ssl/client.crt --key ~/.openclaw/apex/state/ssl/client.key -k "
+        f"'https://127.0.0.1:8301/api/chats/{chat_id}/messages?before_id=<id>&limit=5'\n"
+        "  Response includes thinking + tool_events when present. Use last_assistant_id "
+        "from Continuity Pointers as the anchor.\n"
         "\n"
         "Local transcript tail (current JSONL session only — narrower scope):\n"
         "  python3 /Users/dana/.openclaw/workspace/tools/pull_session_history.py --tail 50\n"
@@ -1853,6 +1911,7 @@ def _build_recovery_block(chat_id: str, summary: str, session_type: str = "task"
         f"<system-reminder>\n# Session Recovery\n"
         f"You are resuming a conversation after a session reset.\n\n"
         f"## Recovery Briefing\n{briefing}\n"
+        f"{pointers_block}"
         f"{tail_block}\n"
         f"{artifact_block}\n"
         f"{closing}\n</system-reminder>"
