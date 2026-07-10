@@ -4,7 +4,7 @@
 |-------|-------|
 | **Author** | (design agent) |
 | **Date** | 2026-07-09 |
-| **Status** | Approved (rev 4 — 2026-07-09). **PR1a greenlit for implement.** PR1b/PR2/PR3 **blocked** until PR0 spikes executed + results appendix filled. |
+| **Status** | Approved (rev 5 — 2026-07-09). **PR1a merged (`60bdd1f`). PR0 spikes executed** — appendix filled; see `docs/PR0_TOOL_SURFACE_SPIKES.md`. PR1b/PR2/PR3 unblocked pending implementation. |
 | **Branch** | `dev` only (`~/.openclaw/apex`) — never edit on `main` / prod worktree |
 | **Scope** | OSS-suitable (`server/tool_surface.py` + call-site rewires). Personal MCP paths stay in `state/mcp_servers.json` / private overlays. |
 
@@ -689,11 +689,11 @@ Deferred: best fix for cold `npx` cost; not required for correctness. Note under
 
 | Phase | Ships | Gate |
 |-------|-------|------|
-| **PR0 spike** (notes in doc / spike md, may be non-merged scripts) | Grok home+resume+OIDC; Codex `-c`+resume; auth paths; **Grok MCPTool wire names for filesystem writes**; project MCP ignore flag | **Required before PR1b, PR2, PR3** — results appendix must be filled (not TBD) |
-| **P0 / PR1a** ✅ **GREENLIT** | Extract SoT; shim parity; no intentional behavior change; **keep guide inject as-is** | Unit parity tests + existing security MCP tests. **May merge without PR0.** |
-| **P0b / PR1b** 🔒 | Turn workspace rewrite; dual-track `servers_for_level`; Claude L2 execute_code regression tests; **guide inject still keep** | **PR0 results captured** + separate tests; listed deltas |
-| **P1 / PR2** 🔒 | Grok (`xai`) projector | **PR0 Grok notes closed** + PR1a + PR1b; multi-turn smoke |
-| **P2 / PR3** 🔒 | Codex projector (`-c` first) | **PR0 Codex notes closed** + PR1b |
+| **PR0 spike** ✅ | Grok home+resume+OIDC; Codex `-c`+resume; auth paths; Grok MCPTool write names; project MCP residual | **Done** — `docs/PR0_TOOL_SURFACE_SPIKES.md` |
+| **P0 / PR1a** ✅ **MERGED** | Extract SoT; shim parity; no intentional behavior change | `60bdd1f` |
+| **P0b / PR1b** 🟢 | Turn workspace rewrite; dual-track `servers_for_level`; Claude L2 execute_code regression; guide inject keep | PR0 ✅ + tests |
+| **P1 / PR2** 🟢 | Grok (`xai`) projector | PR0 ✅ + PR1a + PR1b; multi-turn smoke |
+| **P2 / PR3** 🟢 | Codex projector (nested `-c`) | PR0 ✅ + PR1b |
 | **P3 / PR4** | Debug endpoint, config packs, tool_loop root gap plan | Admin auth verified |
 | **P4** | Attachments | Separate design |
 
@@ -766,7 +766,7 @@ Deferred: best fix for cold `npx` cost; not required for correctness. Note under
 10. **P0 split PR1a vs PR1b**; **guide inject keep through P2** (no tighten in PR1b).
 11. **Tool-loop per-chat roots deferred** — P0 is load SoT only; Option C claim_store args remain.
 12. **Fail-open for normal chats; fail-closed for gate/auth/required MCP**.
-13. **PR1a greenlit now (pure extract).** **PR0 spikes gate PR1b + PR2 + PR3** — no policy/CLI projector merge until results appendix is filled (Grok wire names, resume/auth, Codex `-c`, project MCP flag).
+13. **PR1a shipped (`60bdd1f`).** **PR0 spikes executed 2026-07-09** — appendix + `docs/PR0_TOOL_SURFACE_SPIKES.md` filled; PR1b/PR2/PR3 unblocked.
 14. **OIDC primary for Grok**; no XAI_API_KEY requirement.
 15. **Attachments out of band (P4)**.
 16. **Project MCP residual risk documented** if no ignore flag.
@@ -775,49 +775,41 @@ Deferred: best fix for cold `npx` cost; not required for correctness. Note under
 
 ## PR Plan
 
-### PR0 — Spikes (**hard gate for PR1b / PR2 / PR3**)
-- **Deps:** none (can run in parallel with PR1a)  
-- **Files:** spike notes under `/tmp` or `docs/`; **no production merge required**  
-- **Prove and paste results into the PR0 results appendix below (must not remain TBD):**  
-  1. Grok: temp `GROK_HOME` + symlink auth/sessions + multi-turn `-r` + no login + MCP list  
-  2. Grok: whether project MCP can be disabled  
-  3. **Grok: spawn with filesystem MCP, list tool wire names, record exact `--deny MCPTool(...)` strings that block writes** (do not assume `filesystem__write_file`)  
-  4. Codex: `-c` multi-server inject (incl. `env={}`) + `exec resume` still works  
-  5. Codex: any fine-deny equivalent for write tools; else L1 omit filesystem  
-  6. Codex: API-key model auth path (if any) without dead `CODEX_CONFIG_DIR`  
-- **DoD:** checklist completed; **PR1b/PR2/PR3 PRs must link to filled appendix**; wire-name table filled  
+### PR0 — Spikes ✅ **DONE 2026-07-09**
+- **Notes:** `docs/PR0_TOOL_SURFACE_SPIKES.md` + appendix below  
+- **DoD:** met — PR1b/PR2/PR3 unblocked  
 
-### PR1a — Pure extract (P0) ✅ **GREENLIT 2026-07-09**
-- **Deps:** none (does **not** wait on PR0)  
-- **Files:** add `server/tool_surface.py` (catalog load + injects + `project_claude`); `streaming.py` shims; `mcp_bridge` shared parse; tests for **byte-identical** enabled-server sets vs old helpers (runtime rewrite only; guide inject on any extras)  
-- **Description:** No intentional behavior change. **Guide inject remains `if extra_allowed_tools`.** Ship when tests pass.  
+### PR1a — Pure extract (P0) ✅ **MERGED `60bdd1f`**
+- **Deps:** none  
+- **Files:** `server/tool_surface.py`; `streaming.py` / `mcp_bridge` shims; `tests/test_tool_surface.py`  
+- **Description:** No intentional behavior change. Guide inject `if extra_allowed_tools`.  
 
-### PR1b — Intentional policy wiring 🔒 **BLOCKED on PR0**
-- **Deps:** PR1a ✅, **PR0 results appendix filled**  
+### PR1b — Intentional policy wiring 🟢 **UNBLOCKED**
+- **Deps:** PR1a ✅, **PR0 ✅**  
 - **Files:** `resolve_turn_policy`; dual-track `servers_for_level`; optional chat workspace rewrite for Claude; unit tests including **Claude L2 execute_code still present** and **CLI L2 execute_code absent**  
-- **Description:** Listed behavior deltas only. **Guide inject: keep (no tighten).** Do not start until PR0 captured.  
+- **Description:** Listed behavior deltas only. **Guide inject: keep (no tighten).**  
 
-### PR2 — Grok / `xai` (P1) 🔒 **BLOCKED on PR0**
-- **Deps:** **PR0 Grok spike ✅** (including MCPTool wire names), PR1a, PR1b  
-- **Files:** `project_grok`; `backends._run_grok_chat`; `--deny` argv using PR0 names; project MCP detection log; `tests/test_tool_surface_grok.py`  
-- **Description:** Core pack + Track B matrix; multi-turn smoke DoD  
+### PR2 — Grok / `xai` (P1) 🟢 **UNBLOCKED**
+- **Deps:** PR0 ✅, PR1a, PR1b  
+- **Files:** `project_grok`; `backends._run_grok_chat`; `--deny` argv using PR0 wire names; project MCP detection log; `tests/test_tool_surface_grok.py`  
+- **Description:** Core pack + Track B matrix; multi-turn smoke DoD; use PR0 symlink/merge algorithm 
 
-### PR0 results appendix (fill during spike — **gate for PR1b+**)
+### PR0 results appendix ✅ **FILLED 2026-07-09** (full notes: `docs/PR0_TOOL_SURFACE_SPIKES.md`)
 
-| Item | Result (paste) |
-|------|----------------|
-| Grok session/auth symlink set | _TBD_ |
-| Grok filesystem MCP tool wire names (writes) | _TBD — e.g. list from `search_tool` / inspect_ |
-| Working `--deny MCPTool(...)` strings | _TBD_ |
-| Project MCP ignore flag? | _TBD_ |
-| Codex `-c` multi-server + resume | _TBD_ |
-| Codex write fine-deny? | _TBD_ |
-| Codex API-key auth home | _TBD_ | 
+| Item | Result |
+|------|--------|
+| Grok session/auth symlink set | **Symlink** `auth.json` + `sessions/` (+ other top-level except `config.toml`); **copy+merge** `config.toml`. Multi-turn `-r` + OIDC OK under temp `GROK_HOME`. |
+| Grok filesystem MCP tool wire names (writes) | `filesystem__write_file`, `filesystem__edit_file`, `filesystem__create_directory`, `filesystem__move_file` (+ 10 read tools; 14 total) |
+| Working `--deny MCPTool(...)` strings | `--deny "MCPTool(filesystem__write_file)"` (and edit/create/move same form). Verified: write blocked, file absent. |
+| Project MCP ignore flag? | **No** full ignore. Project `.grok/config.toml` + `.mcp.json` still load. Only `[compat.cursor/claude] mcps=false`. Residual → log detection. |
+| Codex `-c` multi-server + resume | Nested `-c 'mcp_servers.name.command=...'` + `args` + `env={}` works. Wire: `mcp__name.tool`. Resume: `codex exec resume <id>` on real `CODEX_HOME`; re-pass `-c` for MCP. |
+| Codex write fine-deny? | **`mcp_servers.<name>.enabled_tools=[read…]` allowlist** works (write not exposed). Top-level `tools.disabled_tools` invalid. L1: allowlist or omit server. |
+| Codex API-key auth home | **`~/.codex/auth.json` via `CODEX_HOME` only.** No `CODEX_CONFIG_DIR` in binary. `~/.codex-api` empty/dead. API key: `OPENAI_API_KEY`/`CODEX_API_KEY` or `login --with-api-key`. |
 
-### PR3 — Codex (P2) 🔒 **BLOCKED on PR0**
-- **Deps:** **PR0 Codex spike ✅**, PR1b  
-- **Files:** `project_codex` (`-c` first); `_run_codex_chat`; remove or fix dead API config dir; gate-test claim_store path; unit tests  
-- **Description:** Home-preserving inject  
+### PR3 — Codex (P2) 🟢 **UNBLOCKED**
+- **Deps:** PR0 ✅, PR1b  
+- **Files:** `project_codex` (nested `-c` first); `_run_codex_chat`; drop dead `CODEX_CONFIG_DIR`/`~/.codex-api`; L1 `enabled_tools` allowlist; gate-test claim_store path; unit tests  
+- **Description:** Home-preserving inject; wire names `mcp__server.tool` 
 
 ### PR4 — Policy/debug (P3)
 - **Deps:** PR2, PR3  
@@ -845,4 +837,4 @@ Deferred: best fix for cold `npx` cost; not required for correctness. Note under
 
 ---
 
-*End of design document (rev 4 — Dana: PR1a greenlit; PR1b/PR2/PR3 gated on executed PR0 spikes + filled results appendix).*
+*End of design document (rev 5 — PR1a merged; PR0 spikes filled; PR1b/PR2/PR3 unblocked).*
