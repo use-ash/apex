@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import hmac
 import json
+import os
 import time
 import uuid
 from collections import deque
@@ -1359,16 +1360,18 @@ async def _handle_send_action(
             await _send_active_streams(chat_id)
 
         # --- Codex path ---
+        # PR3: always use the Codex CLI (`_run_codex_chat`) so nested -c MCP
+        # inject + real CODEX_HOME apply. The old "permission_aware" branch
+        # routed every 1:1 chat (and any turn with a tool_policy dict) into
+        # tool_loop, which meant project_codex never ran. Escape hatch:
+        # APEX_CODEX_USE_TOOL_LOOP=1 restores the prior tool_loop path.
         if backend == "codex":
             try:
-                use_permission_aware_codex = (
-                    bool(permission_policy)
-                    or (
-                        chat.get("type") == "chat"
-                        and not chat.get("profile_id")
-                    )
-                )
-                if use_permission_aware_codex or (chat_model in {"codex:o3", "codex:o4-mini"} and env.OPENAI_API_KEY):
+                _force_tool_loop = os.environ.get("APEX_CODEX_USE_TOOL_LOOP", "").strip() in {
+                    "1", "true", "yes",
+                }
+                if _force_tool_loop:
+                    log("codex: APEX_CODEX_USE_TOOL_LOOP=1 → tool_loop path")
                     result = await _run_ollama_chat(
                         chat_id,
                         prompt,
@@ -1377,7 +1380,9 @@ async def _handle_send_action(
                         permission_policy=permission_policy,
                     )
                 else:
-                    result = await _run_codex_chat(chat_id, prompt, model=chat_model, attachments=attachments)
+                    result = await _run_codex_chat(
+                        chat_id, prompt, model=chat_model, attachments=attachments
+                    )
             except Exception as codex_err:
                 log(f"codex chat error: {codex_err}")
                 message = _public_backend_error_message("codex", codex_err)
