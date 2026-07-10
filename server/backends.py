@@ -1265,6 +1265,9 @@ async def _run_grok_chat(
     except Exception as _e_pol:
         log(f"grok policy lookup: {_e_pol}")
     _grok_extras = resolve_profile_extra_tools(_profile_id_pr1c or None) if _profile_id_pr1c else None
+    # PR2: CLI default pack is core (filesystem/fetch/memory). Full pack
+    # is Claude/tool_loop; do not silently attach F-tier MCPs on Grok.
+    _grok_pack = "core"
     _resolved_mcp = tool_surface.resolve_for_grok(
         chat_id,
         workspace=workspace,
@@ -1272,6 +1275,7 @@ async def _run_grok_chat(
         computer_use_target=_cu_target,
         interceptor_enabled=_int_enabled,
         extra_allowed_tools=_grok_extras,
+        pack=_grok_pack,
     )
 
     # Hard-deny grok CLI built-in categories per level (Bash/Edit/Write at
@@ -1293,25 +1297,22 @@ async def _run_grok_chat(
     if _grok_mcp_denies:
         log(f"grok MCP denies at level={_perm_level}: {_grok_mcp_denies}")
     _temp_grok_home: Path | None = None
+    _deny_count = len(_grok_builtin_denies) + len(_grok_mcp_denies)
     if _resolved_mcp:
         try:
             _temp_grok_home, _env_ovr, _deny_args = tool_surface.project_grok(_resolved_mcp)
             grok_env.update(_env_ovr)
             cmd.extend(_deny_args)
+            _deny_count += len(_deny_args) // 2
             log(
-                f"grok MCP: {len(_resolved_mcp)} server(s) via temp home={_temp_grok_home.name} "
-                f"deny_args={len(_deny_args)//2}"
+                f"grok MCP: mcp={len(_resolved_mcp)} pack={_grok_pack} "
+                f"home=tmp/{_temp_grok_home.name} denies={_deny_count}"
             )
             # Log residual project-scoped MCP sources — Grok CLI still merges
             # project .mcp.json / .grok/config.toml even with our compat kill
             # switches (per PR0 §2). Operators need visibility.
             try:
-                _ws_path = Path(workspace)
-                _residual = []
-                if (_ws_path / ".mcp.json").exists():
-                    _residual.append(".mcp.json")
-                if (_ws_path / ".grok" / "config.toml").exists():
-                    _residual.append(".grok/config.toml")
+                _residual = tool_surface.detect_project_mcp_sources(workspace)
                 if _residual:
                     log(f"grok residual project MCP sources under cwd: {_residual}")
             except Exception:
@@ -1320,7 +1321,12 @@ async def _run_grok_chat(
             log(f"grok project_grok failed, falling back to native CLI tools: {_e_proj}")
             _temp_grok_home = None
 
-    log(f"grok spawn: bin={grok_bin} model={cli_model} resume={bool(existing_session)} cwd={workspace}")
+    log(
+        f"grok spawn: bin={grok_bin} model={cli_model} resume={bool(existing_session)} "
+        f"cwd={workspace} level={_perm_level} pack={_grok_pack} "
+        f"mcp={len(_resolved_mcp)} denies={_deny_count} "
+        f"home={'tmp' if _temp_grok_home else 'real'}"
+    )
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
