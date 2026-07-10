@@ -44,21 +44,17 @@ _initialized = False
 
 
 def _load_mcp_config() -> dict[str, dict]:
-    """Load enabled MCP servers from state/mcp_servers.json."""
-    mcp_path = _STATE_DIR / "mcp_servers.json"
-    if not mcp_path.exists():
-        return {}
+    """Load enabled MCP servers from state/mcp_servers.json.
+
+    PR1a: shared catalog loader in tool_surface (preserve ``enabled`` key —
+    historical bridge behavior; Claude path strips it).
+    """
     try:
-        data = json.loads(mcp_path.read_text())
-        servers = data.get("mcpServers", {})
-        if not isinstance(servers, dict):
-            return {}
-        enabled = {
-            name: cfg for name, cfg in servers.items()
-            if isinstance(cfg, dict) and cfg.get("enabled", True)
-        }
-        return env.rewrite_mcp_servers_for_workspace(enabled)
-    except (json.JSONDecodeError, OSError) as e:
+        # Import lazily so mcp_bridge remains usable if log/env import order
+        # differs under unit-test sys.path hacks.
+        from tool_surface import load_enabled_mcp_servers
+        return load_enabled_mcp_servers(strip_enabled_key=False)
+    except Exception as e:
         log.warning("MCP config load failed: %s", e)
         return {}
 
