@@ -4,7 +4,7 @@
 |-------|-------|
 | **Author** | (design agent) |
 | **Date** | 2026-07-09 |
-| **Status** | Approved (rev 8 — 2026-07-10). **PR1a–PR2 merged.** **PR3 (Codex projector) in progress on `dev`.** PR0 spikes: `docs/PR0_TOOL_SURFACE_SPIKES.md`. |
+| **Status** | Approved (rev 9 — 2026-07-10). **PR1a–PR3 merged.** Next: **PR4** debug/packs. |
 | **Branch** | `dev` only (`~/.openclaw/apex`) — never edit on `main` / prod worktree |
 | **Scope** | OSS-suitable (`server/tool_surface.py` + call-site rewires). Personal MCP paths stay in `state/mcp_servers.json` / private overlays. |
 
@@ -693,7 +693,7 @@ Deferred: best fix for cold `npx` cost; not required for correctness. Note under
 | **P0 / PR1a** ✅ **MERGED** | Extract SoT; shim parity; no intentional behavior change | `60bdd1f` |
 | **P0b / PR1b** ✅ **MERGED** | Turn workspace rewrite; dual-track `servers_for_level`; Claude L2 execute_code regression; guide inject keep | main `578b737` / dev `c84c9a9` |
 | **P1 / PR2** ✅ **MERGED** | Grok (`xai`) projector | multi-turn smoke PASS 2026-07-10 (`dfb03525`) |
-| **P2 / PR3** 🟡 | Codex projector (nested `-c`) | PR0 ✅ + PR1b; unit tests on `dev` |
+| **P2 / PR3** ✅ **MERGED** | Codex projector (nested `-c`) | main `60067f1`+fixes; smoke PASS |
 | **P3 / PR4** | Debug endpoint, config packs, tool_loop root gap plan | Admin auth verified |
 | **P4** | Attachments | Separate design |
 
@@ -809,10 +809,12 @@ Deferred: best fix for cold `npx` cost; not required for correctness. Note under
 | Codex write fine-deny? | **`mcp_servers.<name>.enabled_tools=[read…]` allowlist** works (write not exposed). Top-level `tools.disabled_tools` invalid. L1: allowlist or omit server. |
 | Codex API-key auth home | **`~/.codex/auth.json` via `CODEX_HOME` only.** No `CODEX_CONFIG_DIR` in binary. `~/.codex-api` empty/dead. API key: `OPENAI_API_KEY`/`CODEX_API_KEY` or `login --with-api-key`. |
 
-### PR3 — Codex (P2) 🟡 **IN PROGRESS on `dev`**
+### PR3 — Codex (P2) ✅ **MERGED 2026-07-10**
+- **SHAs:** main `60067f1` / `8e7f2c7` / `4f5a8eb` (docs `6bea065`); dev `e333039` / `6735533` / `57f7c20`
 - **Deps:** PR0 ✅, PR1b ✅, PR2 ✅  
-- **Files:** `project_codex` (nested `-c` first); `resolve_for_codex`; `_run_codex_chat`; drop dead `CODEX_CONFIG_DIR`/`~/.codex-api`; L1 `enabled_tools` allowlist; gate-test claim_store fail-closed; `tests/test_tool_surface_codex.py`  
-- **Description:** Home-preserving inject; wire names `mcp__server.tool`; core pack default; API-key models use env + real `CODEX_HOME` only.
+- **Files:** `project_codex`; `resolve_for_codex`; `_run_codex_chat`; CLI route in `ws_handler`; drop dead `CODEX_CONFIG_DIR`/`~/.codex-api`; L1 `enabled_tools`; gate-test fail-closed; `tests/test_tool_surface_codex.py`  
+- **Description:** Home-preserving nested `-c` inject; core pack; real `CODEX_HOME`; persist duration/tools/thinking.  
+- **DoD:** unit tests; multi-turn smoke PASS (`01c1b36e`); tool persist smoke PASS (`03efc44c`).
 
 ### PR4 — Policy/debug (P3)
 - **Deps:** PR2, PR3  
@@ -840,4 +842,4 @@ Deferred: best fix for cold `npx` cost; not required for correctness. Note under
 
 ---
 
-*End of design document (rev 8 — PR1a–PR2 merged; PR3 in progress; PR0 filled).*
+*End of design document (rev 9 — PR1a–PR3 merged; PR0 filled; PR4 next).*
