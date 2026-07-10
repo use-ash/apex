@@ -602,6 +602,91 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
     tokens_out = 0
     thread_id = ""
 
+    def _codex_item_id(item: dict) -> str:
+        return str(item.get("id") or uuid.uuid4())
+
+    def _codex_item_text(item: dict) -> str:
+        text = item.get("text") or item.get("content") or ""
+        if isinstance(text, str) and text:
+            return text
+        if isinstance(text, list):
+            parts: list[str] = []
+            for part in text:
+                if isinstance(part, dict):
+                    parts.append(str(part.get("text") or part.get("output_text") or ""))
+                else:
+                    parts.append(str(part))
+            return "".join(parts)
+        # Nested content array (SDK-style)
+        content = item.get("content")
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                parts.append(str(part.get("text") or part.get("output_text") or ""))
+            return "".join(parts)
+        return str(text or "")
+
+    def _codex_cmd_output(item: dict) -> str:
+        # Live CLI (0.142+) uses aggregated_output; older builds used output.
+        out = item.get("aggregated_output")
+        if out is None or out == "":
+            out = item.get("output") or item.get("stdout") or ""
+        return str(out)
+
+    def _codex_tool_name(item: dict) -> str:
+        """Map Codex item types → UI tool name."""
+        itype = item.get("type") or "tool"
+        if itype == "command_execution":
+            return "command"
+        if itype == "file_change":
+            return "file_change"
+        if itype in {"mcp_tool_call", "function_call", "tool_call", "custom_tool_call"}:
+            return (
+                item.get("name")
+                or item.get("tool")
+                or item.get("server")
+                or item.get("tool_name")
+                or itype
+            )
+        if itype == "web_search":
+            return "web_search"
+        return str(itype)
+
+    def _codex_tool_input(item: dict) -> str:
+        itype = item.get("type") or ""
+        if itype == "command_execution":
+            return str(item.get("command") or "")
+        if itype == "file_change":
+            return str(item.get("filename") or item.get("path") or "unknown")
+        raw = (
+            item.get("arguments")
+            or item.get("input")
+            or item.get("params")
+            or item.get("query")
+            or ""
+        )
+        if not isinstance(raw, str):
+            try:
+                return json.dumps(raw)[:2000]
+            except Exception:
+                return str(raw)[:2000]
+        return raw[:2000]
+
+    # Item types that count as tool uses (not agent_message / reasoning).
+    _CODEX_TOOL_ITEM_TYPES = frozenset({
+        "command_execution",
+        "file_change",
+        "mcp_tool_call",
+        "function_call",
+        "tool_call",
+        "custom_tool_call",
+        "web_search",
+        "image_view",
+        "collab_agent_tool_call",
+    })
+
     assert proc.stdout is not None
     while True:
         line = await proc.stdout.readline()
@@ -630,60 +715,86 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
             continue
 
         if event_type == "item.started":
-            item = event.get("item", {})
-            if item.get("type") == "command_execution":
-                tool_id = str(uuid.uuid4())
-                tool_evt = {"type": "tool_use", "id": tool_id, "name": "command", "input": item.get("command", "")}
+            item = event.get("item") or {}
+            item_type = item.get("type") or ""
+            if item_type in _CODEX_TOOL_ITEM_TYPES:
+                tool_id = _codex_item_id(item)
+                tool_evt = {
+                    "type": "tool_use",
+                    "id": tool_id,
+                    "name": _codex_tool_name(item),
+                    "input": _codex_tool_input(item),
+                }
                 tool_events.append(tool_evt)
                 await _send_stream_event(chat_id, tool_evt)
 
         elif event_type == "item.completed":
-            item = event.get("item", {})
-            item_type = item.get("type", "")
+            item = event.get("item") or {}
+            item_type = item.get("type") or ""
 
             if item_type == "agent_message":
-                text = item.get("text", "")
-                if not text:
-                    for part in item.get("content", []):
-                        if part.get("type") == "output_text":
-                            text += part.get("text", "")
+                text = _codex_item_text(item)
                 if text:
                     # Flush the previous agent_message as thinking — it was narration,
                     # not the final answer (a newer message arrived after it).
                     if pending_agent_message:
                         thinking_text += pending_agent_message
-                        await _send_stream_event(chat_id, {"type": "thinking", "text": pending_agent_message})
+                        await _send_stream_event(
+                            chat_id, {"type": "thinking", "text": pending_agent_message}
+                        )
                     # Hold this message; we won't know if it's the final answer until
                     # the next agent_message arrives or turn.completed fires.
                     pending_agent_message = text
 
-            elif item_type == "command_execution":
-                tool_id = str(uuid.uuid4())
-                output = item.get("output", "")
-                tool_evt = {"type": "tool_result", "id": tool_id, "content": output[:2000]}
-                tool_events.append(tool_evt)
-                await _send_stream_event(chat_id, tool_evt)
-
-            elif item_type == "reasoning":
-                text = item.get("text", "")
-                if not text:
-                    for part in item.get("content", []):
-                        if part.get("type") == "text":
-                            text += part.get("text", "")
+            elif item_type in {"reasoning", "thought", "reasoning_summary"}:
+                text = _codex_item_text(item)
                 if text:
                     thinking_text += text
                     await _send_stream_event(chat_id, {"type": "thinking", "text": text})
 
-            elif item_type == "file_change":
-                tool_id = str(uuid.uuid4())
-                fname = item.get("filename", "unknown")
-                await _send_stream_event(chat_id, {"type": "tool_use", "id": tool_id, "name": "file_change", "input": fname})
-                await _send_stream_event(chat_id, {"type": "tool_result", "id": tool_id, "content": f"File changed: {fname}"})
+            elif item_type in _CODEX_TOOL_ITEM_TYPES:
+                tool_id = _codex_item_id(item)
+                # If we never saw item.started (some builds only emit completed),
+                # synthesize a tool_use so the UI still gets a pill.
+                if not any(
+                    t.get("id") == tool_id and t.get("type") == "tool_use"
+                    for t in tool_events
+                ):
+                    use_evt = {
+                        "type": "tool_use",
+                        "id": tool_id,
+                        "name": _codex_tool_name(item),
+                        "input": _codex_tool_input(item),
+                    }
+                    tool_events.append(use_evt)
+                    await _send_stream_event(chat_id, use_evt)
+                if item_type == "command_execution":
+                    content = _codex_cmd_output(item)[:2000]
+                elif item_type == "file_change":
+                    content = f"File changed: {_codex_tool_input(item)}"
+                else:
+                    content = _codex_item_text(item) or _codex_cmd_output(item)
+                    if not content:
+                        content = str(
+                            item.get("result")
+                            or item.get("output")
+                            or item.get("status")
+                            or "ok"
+                        )[:2000]
+                tool_evt = {"type": "tool_result", "id": tool_id, "content": content}
+                tool_events.append(tool_evt)
+                await _send_stream_event(chat_id, tool_evt)
+
+            elif item_type == "error":
+                # Deprecation noise etc. — log, don't surface as hard error.
+                msg = str(item.get("message") or "")[:300]
+                if msg:
+                    log(f"codex item error: {msg}")
 
         elif event_type == "turn.completed":
-            usage = event.get("usage", {})
-            tokens_in = usage.get("input_tokens", 0)
-            tokens_out = usage.get("output_tokens", 0)
+            usage = event.get("usage", {}) or {}
+            tokens_in = int(usage.get("input_tokens", 0) or 0)
+            tokens_out = int(usage.get("output_tokens", 0) or 0)
             # The last agent_message is the final answer — route it to result_text.
             if pending_agent_message:
                 result_text = pending_agent_message
@@ -734,10 +845,21 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
                 "retryable": True,
             },
         )
-        return {"text": "", "is_error": True, "error": err_msg,
-                "cost_usd": 0, "tokens_in": 0, "tokens_out": 0,
-                "session_id": None, "thinking": "", "tool_events": json.dumps(tool_events)}
+        return {
+            "text": "",
+            "is_error": True,
+            "error": err_msg,
+            "cost_usd": 0,
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "session_id": None,
+            "thinking": thinking_text,
+            "tool_events": json.dumps(tool_events),
+            "duration_ms": int((time.monotonic() - _codex_started_at) * 1000),
+        }
 
+    _duration_ms = int((time.monotonic() - _codex_started_at) * 1000)
+    _tool_events_json = json.dumps(tool_events)
     _cw = MODEL_CONTEXT_WINDOWS.get(effective_model, MODEL_CONTEXT_DEFAULT)
     await _send_stream_event(chat_id, {
         "type": "result", "is_error": False,
@@ -746,7 +868,8 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
         "context_tokens_in": tokens_in,
         "context_window": _cw,
         "thinking": thinking_text,
-        "duration_ms": int((time.monotonic() - _codex_started_at) * 1000),
+        "tool_events": _tool_events_json,
+        "duration_ms": _duration_ms,
     })
     if thread_id:
         _codex_thread_turns[scope_key] = _codex_thread_turns.get(scope_key, 0) + 1
@@ -754,11 +877,22 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
         _persist_codex_thread(chat_id, thread_id, turns)
         log(
             f"codex turn complete: session={scope_key[:24]} thread={thread_id[:8]} "
-            f"turn={turns}/{_CODEX_MAX_THREAD_TURNS} tokens={tokens_in}in/{tokens_out}out"
+            f"turn={turns}/{_CODEX_MAX_THREAD_TURNS} tokens={tokens_in}in/{tokens_out}out "
+            f"tools={len([t for t in tool_events if t.get('type')=='tool_use'])} "
+            f"think_len={len(thinking_text)} dur={_duration_ms}"
         )
-    return {"text": result_text, "is_error": False, "error": None,
-            "cost_usd": 0, "tokens_in": tokens_in, "tokens_out": tokens_out,
-            "session_id": thread_id or None, "thinking": thinking_text, "tool_events": json.dumps(tool_events)}
+    return {
+        "text": result_text,
+        "is_error": False,
+        "error": None,
+        "cost_usd": 0,
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "session_id": thread_id or None,
+        "thinking": thinking_text,
+        "tool_events": _tool_events_json,
+        "duration_ms": _duration_ms,
+    }
 
 
 # ---------------------------------------------------------------------------
