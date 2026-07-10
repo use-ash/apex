@@ -807,6 +807,104 @@ def _public_grok_error_message(err_msg: str) -> str:
     return "Grok CLI hit an internal error while preparing the response. Retry the turn."
 
 
+import re as _re
+
+# Grok CLI debug-log patterns. Locked to 0.2.93 (f00f96316d4b). Update
+# when xAI ships the fix for tool_use on streaming-json stdout.
+_GROK_DBG_TOOL_REQUEST = _re.compile(
+    r"Model requesting tool: name='([^']+)', call_id='([^']+)'"
+)
+_GROK_DBG_TOOL_DISPATCH = _re.compile(
+    r"dispatch_tool tool=(\S+) call_id=(\S+)"
+)
+_GROK_DBG_TOOL_COMPLETE = _re.compile(
+    r"execution complete.*?tool_call_id=([\w-]+).*?exit_code=Some\((-?\d+)\)"
+)
+
+
+async def _tail_grok_debug_log(
+    chat_id: str,
+    debug_path: str,
+    stop_event: asyncio.Event,
+    tool_events_out: list[dict],
+) -> None:
+    """Tail the grok CLI debug log and synthesize tool_use / tool_result events.
+
+    Runs until stop_event fires. Appends any emitted events to tool_events_out
+    so the caller can persist them in the message row. Never raises — logs and
+    returns on failure.
+
+    Grok CLI 0.2.93 does not emit tool events on --output-format streaming-json
+    stdout (bug filed with xAI 2026-07-09 via `/feedback`). Debug log DOES
+    contain them via the ACP channel. Parse pattern is locked to the CLI's
+    logging format; update _GROK_DBG_* regexes when xAI changes the shape.
+    """
+    seen_dispatched: set[str] = set()
+    seen_completed: set[str] = set()
+    pending_names: dict[str, str] = {}  # call_id -> tool name
+    # Wait for the file to exist (grok may not have written yet)
+    _wait_deadline = time.monotonic() + 5.0
+    while not os.path.exists(debug_path):
+        if stop_event.is_set() or time.monotonic() > _wait_deadline:
+            return
+        await asyncio.sleep(0.05)
+    try:
+        with open(debug_path, "r", errors="replace") as f:
+            while not stop_event.is_set():
+                line = f.readline()
+                if not line:
+                    await asyncio.sleep(0.1)
+                    continue
+                # Tool request → tool_use event
+                m = _GROK_DBG_TOOL_REQUEST.search(line)
+                if m:
+                    name, call_id = m.group(1), m.group(2)
+                    pending_names[call_id] = name
+                    continue
+                # Dispatch → confirms the call is actually executing.
+                # Emit tool_use here so we don't stream tools grok merely
+                # considered but never dispatched.
+                m = _GROK_DBG_TOOL_DISPATCH.search(line)
+                if m:
+                    name, call_id = m.group(1), m.group(2)
+                    if call_id in seen_dispatched:
+                        continue
+                    seen_dispatched.add(call_id)
+                    pending_names.setdefault(call_id, name)
+                    evt = {
+                        "type": "tool_use",
+                        "id": call_id,
+                        "name": name,
+                        "input": "",  # not exposed in debug log
+                    }
+                    tool_events_out.append(evt)
+                    try:
+                        await _send_stream_event(chat_id, evt)
+                    except Exception as _e:
+                        log(f"grok debug tailer tool_use send failed: {_e}")
+                    continue
+                # Completion → tool_result event
+                m = _GROK_DBG_TOOL_COMPLETE.search(line)
+                if m:
+                    call_id, exit_code = m.group(1), m.group(2)
+                    if call_id in seen_completed:
+                        continue
+                    seen_completed.add(call_id)
+                    evt = {
+                        "type": "tool_result",
+                        "id": call_id,
+                        "content": f"exit code: {exit_code}",
+                    }
+                    tool_events_out.append(evt)
+                    try:
+                        await _send_stream_event(chat_id, evt)
+                    except Exception as _e:
+                        log(f"grok debug tailer tool_result send failed: {_e}")
+                    continue
+    except (OSError, ValueError) as e:
+        log(f"grok debug tailer error: {e}")
+
+
 async def _run_grok_chat(
     chat_id: str,
     prompt: str,
@@ -880,6 +978,12 @@ async def _run_grok_chat(
             "--cwd", workspace,
             "--max-turns", "30",
         ]
+        # Debug log so we can surface tool_use events. Grok CLI 0.2.93 does
+        # not emit tool_use on streaming-json stdout (bug filed 2026-07-09);
+        # we tail the debug log and synthesize events. See _tail_grok_debug_log
+        # below.
+        _grok_debug_path = f"/tmp/apex-grok-debug-{chat_id[:8]}-{int(time.time()*1000)}.log"
+        cmd.extend(["--debug", "--debug-file", _grok_debug_path])
     else:
         profile_prompt = _get_profile_prompt(chat_id)
         group_roster_prompt = _get_group_roster_prompt(chat_id, user_message=prompt)
@@ -963,6 +1067,8 @@ async def _run_grok_chat(
             "--max-turns", "30",
             "--no-memory",  # Apex owns memory injection
         ]
+        _grok_debug_path = f"/tmp/apex-grok-debug-{chat_id[:8]}-{int(time.time()*1000)}.log"
+        cmd.extend(["--debug", "--debug-file", _grok_debug_path])
 
     grok_env = {**os.environ}
     if XAI_API_KEY:
@@ -1021,6 +1127,12 @@ async def _run_grok_chat(
     result_text = ""
     thinking_text = ""
     tool_events: list[dict] = []
+    # Start debug-log tailer so tool_use / tool_result events reach the UI
+    # even though grok CLI 0.2.93 omits them from streaming-json stdout.
+    _debug_stop = asyncio.Event()
+    _debug_task = asyncio.create_task(
+        _tail_grok_debug_log(chat_id, _grok_debug_path, _debug_stop, tool_events)
+    )
     session_id = existing_session or ""
     tokens_in = 0
     tokens_out = 0
@@ -1104,6 +1216,22 @@ async def _run_grok_chat(
                 session_id = sid
 
     await proc.wait()
+    # Signal + await debug tailer so any final tool events are flushed
+    # before we return. Cap wait at 0.5s so a hung tailer can't block the
+    # response.
+    _debug_stop.set()
+    try:
+        await asyncio.wait_for(_debug_task, timeout=0.5)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        _debug_task.cancel()
+    except Exception as _e:
+        log(f"grok debug tailer join error: {_e}")
+    # Best-effort remove the debug log file — small, in /tmp, but keep it tidy.
+    try:
+        if os.path.exists(_grok_debug_path):
+            os.unlink(_grok_debug_path)
+    except OSError:
+        pass
     stderr_data = await proc.stderr.read() if proc.stderr else b""
     if proc.returncode not in (0, None) and not result_text:
         err_msg = error_msg or (
