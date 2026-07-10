@@ -439,6 +439,78 @@ def resolve_for_grok(
     return {k: v for k, v in servers.items() if k in admitted}
 
 
+def resolve_for_codex(
+    chat_id: str | None,
+    *,
+    workspace: str,
+    permission_level: int = 2,
+    computer_use_target: str | None = None,
+    interceptor_enabled: bool = False,
+    extra_allowed_tools: frozenset[str] | None = None,
+    pack: str = "core",
+) -> dict[str, dict]:
+    """Load + inject Apex MCP catalog for a Codex CLI turn (Track B, core pack).
+
+    Caller passes the result to ``project_codex(servers, permission_level=...)``
+    which emits nested ``-c mcp_servers.*`` argv fragments (no temp home).
+    """
+    servers = load_enabled_mcp_servers(strip_enabled_key=True)
+    # Align filesystem roots with this turn's Codex -C workspace.
+    if workspace:
+        servers = env.rewrite_mcp_servers_for_workspace(servers, workspace)
+    servers = inject_execute_code_mcp(
+        servers,
+        chat_id=chat_id,
+        workspace=workspace,
+        permission_level=permission_level,
+    )
+    servers = inject_claim_store_mcp(servers, chat_id=chat_id)
+    servers = inject_computer_use_mcp(
+        servers,
+        chat_id=chat_id,
+        permission_level=permission_level,
+        computer_use_target=computer_use_target,
+    )
+    servers = inject_interceptor_mcp(
+        servers,
+        chat_id=chat_id,
+        interceptor_enabled=interceptor_enabled,
+    )
+    if extra_allowed_tools:
+        servers = inject_guide_tools_mcp(servers)
+    admitted, denied = servers_for_level(
+        servers.keys(),
+        level=permission_level,
+        backend="codex",
+        pack=pack,
+        extras=extra_allowed_tools,
+    )
+    if denied:
+        log(
+            "codex tool_surface denied "
+            f"(L{permission_level}/pack={pack}): {denied}"
+        )
+    return {k: v for k, v in servers.items() if k in admitted}
+
+
+def claim_store_required(
+    *,
+    extras: frozenset[str] | None = None,
+    profile_id: str | None = None,
+) -> bool:
+    """True when gate-test / extras force claim_store (fail-closed if missing)."""
+    if _extras_include_claim_store(extras):
+        return True
+    if profile_id:
+        try:
+            from tool_access import GATE_TEST_PROFILE_IDS
+            if profile_id in GATE_TEST_PROFILE_IDS:
+                return True
+        except Exception:
+            pass
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Grok CLI projector (PR1b) — locked to PR0 spike results 2026-07-09
 # ---------------------------------------------------------------------------
@@ -759,3 +831,103 @@ def cleanup_projected_home(path: Path | None) -> None:
         _shutil.rmtree(resolved, ignore_errors=True)
     except (OSError, ValueError) as e:
         log(f"cleanup_projected_home error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Codex CLI projector (PR3) — real CODEX_HOME + nested -c mcp_servers.*
+# Locked to PR0 spike results 2026-07-09 (docs/PR0_TOOL_SURFACE_SPIKES.md §4–6).
+# ---------------------------------------------------------------------------
+
+# Filesystem MCP tools that remain available at L1 (read-only allowlist).
+# Write tools (write_file, edit_file, create_directory, move_file) omitted so
+# CLI cannot mutate the workspace at L1 under sandbox=workspace-write.
+_CODEX_FILESYSTEM_READ_TOOLS: tuple[str, ...] = (
+    "read_file",
+    "read_text_file",
+    "read_media_file",
+    "read_multiple_files",
+    "list_directory",
+    "list_directory_with_sizes",
+    "directory_tree",
+    "search_files",
+    "get_file_info",
+    "list_allowed_directories",
+)
+
+
+def _codex_toml_value(value: Any) -> str:
+    """Serialize a Python value as a TOML fragment for ``codex -c key=<value>``.
+
+    Matches shapes verified in PR0: strings, bools, numbers, list[str],
+    and inline tables for env maps (``{FOO="bar"}``).
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_codex_toml_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        parts = [f"{k} = {_codex_toml_value(v)}" for k, v in value.items()]
+        return "{ " + ", ".join(parts) + " }"
+    return json.dumps(str(value))
+
+
+def _codex_server_c_key(name: str) -> str:
+    """Dotted-path safe MCP server key for ``mcp_servers.<name>.*`` overrides.
+
+    Hyphens are rare in core pack; map to underscore so clap/TOML dotted
+    paths do not mis-parse (e.g. code-review-graph).
+    """
+    return name.replace("-", "_")
+
+
+def project_codex(
+    servers: dict[str, dict],
+    *,
+    permission_level: int = 2,
+    real_codex_home: Path | None = None,
+) -> tuple[list[str], dict[str, str], Path | None]:
+    """Project Apex MCP servers into Codex nested ``-c`` overrides.
+
+    Preferred strategy (locked): keep real ``CODEX_HOME`` — no temp home.
+    Returns:
+      (cli_args, env_overrides, temp_home)
+      - cli_args: flat argv fragments ``['-c', 'mcp_servers.fs.command="npx"', ...]``
+      - env_overrides: optional ``CODEX_HOME`` if *real_codex_home* passed
+      - temp_home: always ``None`` on the preferred path
+
+    L1 filesystem: attaches server with ``enabled_tools`` read-only allowlist
+    (PR0 §5). L2+ omits the allowlist so write tools stay available.
+    """
+    cli_args: list[str] = []
+    for name, spec in servers.items():
+        if not isinstance(spec, dict):
+            continue
+        key = _codex_server_c_key(name)
+        for field in ("command", "args", "env", "cwd"):
+            if field not in spec or spec[field] is None:
+                continue
+            val = spec[field]
+            # Skip empty env maps
+            if field == "env" and isinstance(val, dict) and not val:
+                continue
+            cli_args.extend(
+                ["-c", f"mcp_servers.{key}.{field}={_codex_toml_value(val)}"]
+            )
+        if name == "filesystem" and permission_level == 1:
+            cli_args.extend(
+                [
+                    "-c",
+                    "mcp_servers."
+                    f"{key}.enabled_tools={_codex_toml_value(list(_CODEX_FILESYSTEM_READ_TOOLS))}",
+                ]
+            )
+
+    env_overrides: dict[str, str] = {}
+    if real_codex_home is not None:
+        env_overrides["CODEX_HOME"] = str(Path(real_codex_home).expanduser())
+    # Preferred path never materializes a temp home.
+    return cli_args, env_overrides, None
