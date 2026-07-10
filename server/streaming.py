@@ -1151,6 +1151,23 @@ def _make_options(
     if extra_allowed_tools:
         mcp_servers = _inject_guide_tools_mcp(mcp_servers)
         log(f"Guide tools MCP injected for client_key={client_key}")
+    # PR1b: apply Track A (SDK) admission matrix. At L2+ this is largely a
+    # no-op for Claude since the SDK retains a runtime gate via
+    # tool_access_decision + PreToolUse hooks. It DOES enforce:
+    #   - claim_store denied at L1/L2 without extras (was previously always
+    #     attached and gated by runtime; matrix aligns admission with intent)
+    #   - execute_code / computer_use / interceptor denied below L2
+    if mcp_servers:
+        _admitted, _denied = _tool_surface.servers_for_level(
+            mcp_servers.keys(),
+            level=permission_level,
+            backend="claude",
+            pack="full",
+            extras=extra_allowed_tools,
+        )
+        if _denied:
+            log(f"Claude tool_surface denied (L{permission_level}): {_denied}")
+        mcp_servers = {k: v for k, v in mcp_servers.items() if k in _admitted}
     if mcp_servers:
         opts.mcp_servers = mcp_servers
         log(f"MCP: {len(mcp_servers)} server(s) attached to SDK options")

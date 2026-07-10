@@ -1284,6 +1284,14 @@ async def _run_grok_chat(
         cmd.extend(["--deny", _rule])
     if _grok_builtin_denies:
         log(f"grok builtin denies at level={_perm_level}: {_grok_builtin_denies}")
+
+    # PR1b: fine-deny filesystem MCP write tools at L1 (server admitted, writes
+    # blocked). At L2+ writes are allowed; at L0 filesystem itself isn't admitted.
+    _grok_mcp_denies = tool_surface.grok_mcp_deny_rules_for_level(_perm_level)
+    for _rule in _grok_mcp_denies:
+        cmd.extend(["--deny", _rule])
+    if _grok_mcp_denies:
+        log(f"grok MCP denies at level={_perm_level}: {_grok_mcp_denies}")
     _temp_grok_home: Path | None = None
     if _resolved_mcp:
         try:

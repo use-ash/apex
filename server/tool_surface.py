@@ -199,6 +199,172 @@ def project_claude(servers: dict[str, Any]) -> dict[str, dict]:
 
 
 # ---------------------------------------------------------------------------
+# Level × server admission matrix (PR1b) — dual-track (SDK vs CLI)
+# ---------------------------------------------------------------------------
+#
+# Design ref: docs/UNIFIED_TOOL_SURFACE_DESIGN.md §"Level × server admission
+# matrix (dual-track — locked for P1+)". Rationale: Claude SDK gates
+# individual tool CALLS at runtime via tool_access_decision + PreToolUse
+# hooks; CLI backends run under --always-approve and have no equivalent
+# mid-call gate, so admission must be stricter for CLI at the same level.
+#
+# Track A (SDK):  claude, tool_loop
+# Track B (CLI):  xai/grok, codex
+
+CORE_PACK_SERVERS: frozenset[str] = frozenset({"filesystem", "fetch", "memory"})
+
+CLI_DEFAULT_DENY_SERVERS: frozenset[str] = frozenset(
+    {"computer_use", "interceptor"}
+)
+
+_BACKEND_TRACKS: dict[str, str] = {
+    "claude": "sdk",
+    "tool_loop": "sdk",
+    "xai": "cli",
+    "grok": "cli",  # alias for xai
+    "codex": "cli",
+}
+
+
+def backend_track(backend: str) -> str:
+    """Map backend id to admission track. Unknown → sdk (conservative)."""
+    return _BACKEND_TRACKS.get(backend, "sdk")
+
+
+def _extras_include_claim_store(extras: frozenset[str] | None) -> bool:
+    if not extras:
+        return False
+    for t in extras:
+        if not isinstance(t, str):
+            continue
+        if t == "claim_store" or t.startswith("claim_store"):
+            return True
+    return False
+
+
+def admit_server(
+    server_name: str,
+    *,
+    level: int,
+    backend: str,
+    pack: str = "full",
+    extras: frozenset[str] | None = None,
+    in_catalog: bool = True,
+    allow_cli_dangerous: bool = False,
+) -> tuple[bool, str]:
+    """Pure admission decision for a single MCP server.
+
+    Returns (admit, reason). Reason is empty on admit; a short human-readable
+    string on deny (for log/debug). See design doc for the full matrix.
+
+    Args:
+      server_name: The MCP server key (filesystem, fetch, execute_code, ...).
+      level: Apex permission level (0=guide-only ... 4=full).
+      backend: Apex backend id — claude, tool_loop, xai/grok, codex.
+      pack: "core" (filesystem+fetch+memory) or "full" (everything except D).
+      extras: extra_allowed_tools set (drives claim_store + guide_tools gates).
+      in_catalog: Server is present in mcp_servers.json / injected.
+      allow_cli_dangerous: Override CLI_DEFAULT_DENY_SERVERS (computer_use,
+        interceptor). Never true in normal chats.
+    """
+    if not in_catalog:
+        return False, "not in catalog"
+
+    track = backend_track(backend)
+
+    # L0 guide-only: only guide_tools admitted, and only via extras.
+    if level <= 0:
+        if server_name == "guide_tools" and extras:
+            return True, ""
+        return False, "L0 admits only guide_tools+extras"
+
+    # claim_store — same rule both tracks (pure function in design §admit_claim_store)
+    if server_name == "claim_store":
+        if _extras_include_claim_store(extras):
+            return True, ""
+        if level >= 3 and pack == "full":
+            return True, ""
+        return False, f"claim_store needs extras or L3+ full (level={level}, pack={pack})"
+
+    # guide_tools — extras-only regardless of track/level
+    if server_name == "guide_tools":
+        if extras:
+            return True, ""
+        return False, "guide_tools requires extras"
+
+    if track == "sdk":
+        # Track A — SDK / tool_loop
+        if server_name == "filesystem":
+            return (True, "") if level >= 1 else (False, "filesystem L1+")
+        if server_name in {"fetch", "memory"}:
+            return (True, "") if level >= 2 else (False, f"{server_name} L2+")
+        if server_name == "execute_code":
+            # L2+ on SDK; Claude L2 already permits via DEFAULT_LEVEL2_TOOL_PATTERNS.
+            return (True, "") if level >= 2 else (False, "execute_code L2+")
+        if server_name in {"computer_use", "interceptor"}:
+            # Inject already filtered by target/enabled + darwin; matrix
+            # permits at L2+ once conditions met.
+            return (True, "") if level >= 2 else (False, f"{server_name} L2+")
+        # F = full-pack-only servers (playwright, tradingview, gdrive,
+        # google-drive, code-review-graph, ...).
+        if level >= 2:
+            if pack == "full":
+                return True, ""
+            return False, f"{server_name} requires full pack"
+        return False, f"{server_name} L2+"
+
+    # Track B — CLI (xai/grok, codex)
+    if server_name in CLI_DEFAULT_DENY_SERVERS and not allow_cli_dangerous:
+        return False, f"{server_name} in CLI default deny"
+    if server_name == "filesystem":
+        # L1: admitted (writes fine-denied via grok_mcp_deny_rules_for_level).
+        return (True, "") if level >= 1 else (False, "filesystem L1+")
+    if server_name in {"fetch", "memory"}:
+        return (True, "") if level >= 2 else (False, f"{server_name} L2+")
+    if server_name == "execute_code":
+        # L3+ only on CLI — prevents arbitrary code exec under --always-approve.
+        return (True, "") if level >= 3 else (False, "execute_code CLI L3+")
+    if level >= 2:
+        if pack == "full":
+            return True, ""
+        return False, f"{server_name} requires full pack"
+    return False, f"{server_name} L2+"
+
+
+def servers_for_level(
+    server_names,
+    *,
+    level: int,
+    backend: str,
+    pack: str = "full",
+    extras: frozenset[str] | None = None,
+    allow_cli_dangerous: bool = False,
+) -> tuple[frozenset[str], list[tuple[str, str]]]:
+    """Filter a collection of server names through the admission matrix.
+
+    Returns (admitted_names, denied_with_reasons). Deny reasons are stable
+    strings suitable for logging or the ResolvedToolSurface.debug payload.
+    """
+    admitted: set[str] = set()
+    denied: list[tuple[str, str]] = []
+    for name in server_names:
+        ok, reason = admit_server(
+            name,
+            level=level,
+            backend=backend,
+            pack=pack,
+            extras=extras,
+            in_catalog=True,
+            allow_cli_dangerous=allow_cli_dangerous,
+        )
+        if ok:
+            admitted.add(name)
+        else:
+            denied.append((name, reason))
+    return frozenset(admitted), denied
+
+
+# ---------------------------------------------------------------------------
 # Turn-level resolvers (PR1c) — one-stop load+inject for a specific chat turn
 # ---------------------------------------------------------------------------
 
@@ -211,6 +377,7 @@ def resolve_for_grok(
     computer_use_target: str | None = None,
     interceptor_enabled: bool = False,
     extra_allowed_tools: frozenset[str] | None = None,
+    pack: str = "full",
 ) -> dict[str, dict]:
     """Load + inject the Apex MCP catalog for a Grok CLI turn.
 
@@ -242,7 +409,22 @@ def resolve_for_grok(
     )
     if extra_allowed_tools:
         servers = inject_guide_tools_mcp(servers)
-    return servers
+    # PR1b: apply Track B (CLI) admission matrix. Denies computer_use /
+    # interceptor / execute_code at L2 on CLI (would run under --always-approve
+    # with no runtime gate), gates claim_store to extras or L3+ full pack.
+    admitted, denied = servers_for_level(
+        servers.keys(),
+        level=permission_level,
+        backend="xai",
+        pack=pack,
+        extras=extra_allowed_tools,
+    )
+    if denied:
+        log(
+            "grok tool_surface denied "
+            f"(L{permission_level}/pack={pack}): {denied}"
+        )
+    return {k: v for k, v in servers.items() if k in admitted}
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +474,26 @@ def grok_deny_rules_for_level(level: int) -> list[str]:
     if level <= 0:
         return list(_GROK_DENY_WRITE_RULES) + list(_GROK_DENY_WEB_RULES)
     return list(_GROK_DENY_WRITE_RULES)
+
+
+def grok_mcp_deny_rules_for_level(level: int) -> list[str]:
+    """Return grok CLI --deny MCPTool(...) rules for the given level.
+
+    L1 (read-only): fine-deny filesystem MCP write tools per PR0 §3
+      (write_file, edit_file, create_directory, move_file). Server itself
+      is still attached so reads work — CLI has no runtime gate, so writes
+      must be blocked at admission.
+
+    L0: filesystem is denied at server admission (see servers_for_level),
+      so no per-tool rule needed here.
+
+    L2+: filesystem writes are allowed. Matches Claude L2 which relies on
+      the SDK's runtime gate; Grok has no runtime gate but the level
+      threshold is chosen to match Claude L2's effective write capability.
+    """
+    if level == 1:
+        return [f"MCPTool({name})" for name in _GROK_FILESYSTEM_WRITE_TOOLS]
+    return []
 
 
 def _serialize_toml_value(value: Any) -> str:
@@ -433,7 +635,7 @@ def project_grok(
     servers: dict[str, dict],
     *,
     real_grok_home: Path | None = None,
-    cli_deny_tools: tuple[str, ...] = _GROK_FILESYSTEM_WRITE_TOOLS,
+    cli_deny_tools: tuple[str, ...] = (),
 ) -> tuple[Path, dict[str, str], list[str]]:
     """Materialize a temp GROK_HOME with Apex MCP servers merged in.
 
@@ -453,7 +655,9 @@ def project_grok(
         (Env may already point at a prior Apex temp home; chaining those
         broke sessions/ tool-history capture — 2026-07-09.)
       cli_deny_tools: Wire names to append via --deny MCPTool(<name>).
-        Defaults to filesystem write tools per PR0 §3.
+        PR1b: default empty; deny rules are driven by
+        ``grok_mcp_deny_rules_for_level`` in the caller so denies match
+        the chat's permission level (writes denied only at L1).
 
     Design ref: docs/UNIFIED_TOOL_SURFACE_DESIGN.md §"Grok / backend xai —
     hard algorithm". PR0 spike results: docs/PR0_TOOL_SURFACE_SPIKES.md.
