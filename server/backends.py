@@ -37,6 +37,7 @@ from model_dispatch import (
 )
 from state import _current_group_profile_id, _codex_threads, _codex_thread_turns, _grok_sessions, _grok_session_turns
 from tool_access import allowed_tool_names_for_level, resolve_profile_extra_tools
+import tool_surface
 
 _CODEX_MAX_THREAD_TURNS = int(os.environ.get("APEX_CODEX_MAX_TURNS", "8"))
 _GROK_MAX_SESSION_TURNS = int(os.environ.get("APEX_GROK_MAX_TURNS", "12"))
@@ -970,6 +971,43 @@ async def _run_grok_chat(
     extra_path = f"{Path.home() / '.local' / 'bin'}:{Path.home() / '.grok' / 'bin'}"
     grok_env["PATH"] = f"{extra_path}:{grok_env.get('PATH', '')}"
 
+    # PR1c — resolve Apex MCP for this turn and project a temp GROK_HOME
+    # so Grok gets Apex's fetch/playwright/memory/tradingview/claim_store etc.
+    # Also adds --deny MCPTool(filesystem__write_file) etc. per PR0 wire names.
+    # Cleanup is in the finally block below; safe against exceptions and the
+    # resume-failure retry (retry gets a fresh temp_home on its own call).
+    _cu_target: str | None = None
+    _int_enabled = False
+    try:
+        from db import _get_chat as _chat_lookup
+        _chat_row_pr1c = _chat_lookup(chat_id) if chat_id else None
+        if _chat_row_pr1c:
+            _cu_target = _chat_row_pr1c.get("computer_use_target") or None
+            _int_enabled = bool(_chat_row_pr1c.get("interceptor_enabled"))
+    except Exception as _e_pr1c:
+        log(f"grok pr1c chat lookup: {_e_pr1c}")
+    _resolved_mcp = tool_surface.resolve_for_grok(
+        chat_id,
+        workspace=workspace,
+        permission_level=2,
+        computer_use_target=_cu_target,
+        interceptor_enabled=_int_enabled,
+        extra_allowed_tools=None,
+    )
+    _temp_grok_home: Path | None = None
+    if _resolved_mcp:
+        try:
+            _temp_grok_home, _env_ovr, _deny_args = tool_surface.project_grok(_resolved_mcp)
+            grok_env.update(_env_ovr)
+            cmd.extend(_deny_args)
+            log(
+                f"grok MCP: {len(_resolved_mcp)} server(s) via temp home={_temp_grok_home.name} "
+                f"deny_args={len(_deny_args)//2}"
+            )
+        except Exception as _e_proj:
+            log(f"grok project_grok failed, falling back to native CLI tools: {_e_proj}")
+            _temp_grok_home = None
+
     log(f"grok spawn: bin={grok_bin} model={cli_model} resume={bool(existing_session)} cwd={workspace}")
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -1084,6 +1122,10 @@ async def _run_grok_chat(
             _grok_sessions.pop(scope_key, None)
             _grok_session_turns.pop(scope_key, None)
             _clear_persisted_grok_session(chat_id)
+            # PR1c — clean up THIS attempt's temp home before recursing.
+            # The recursive call will project its own fresh temp home.
+            tool_surface.cleanup_projected_home(_temp_grok_home)
+            _temp_grok_home = None
             return await _run_grok_chat(chat_id, prompt, model=model, attachments=attachments)
 
         await _send_stream_event(
@@ -1094,6 +1136,7 @@ async def _run_grok_chat(
                 "retryable": True,
             },
         )
+        tool_surface.cleanup_projected_home(_temp_grok_home)
         return {
             "text": "",
             "is_error": True,
@@ -1133,6 +1176,7 @@ async def _run_grok_chat(
             "duration_ms": int((time.monotonic() - _started) * 1000),
         },
     )
+    tool_surface.cleanup_projected_home(_temp_grok_home)
     return {
         "text": result_text,
         "is_error": False,
