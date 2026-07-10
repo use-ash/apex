@@ -4,7 +4,7 @@
 |-------|-------|
 | **Author** | (design agent) |
 | **Date** | 2026-07-09 |
-| **Status** | Approved (rev 5 — 2026-07-09). **PR1a merged (`60bdd1f`). PR0 spikes executed** — appendix filled; see `docs/PR0_TOOL_SURFACE_SPIKES.md`. PR1b/PR2/PR3 unblocked pending implementation. |
+| **Status** | Approved (rev 6 — 2026-07-10). **PR1a merged (`60bdd1f`). PR1b merged** (main `578b737` / dev `c84c9a9`). PR0 spikes done — `docs/PR0_TOOL_SURFACE_SPIKES.md`. **PR2 (Grok projector) in progress on `dev`.** PR3 unblocked after PR1b. |
 | **Branch** | `dev` only (`~/.openclaw/apex`) — never edit on `main` / prod worktree |
 | **Scope** | OSS-suitable (`server/tool_surface.py` + call-site rewires). Personal MCP paths stay in `state/mcp_servers.json` / private overlays. |
 
@@ -451,8 +451,8 @@ Grok stores sessions under `$GROK_HOME/sessions`. Resume uses `-r <session_id>`.
 
 **Locked algorithm:**
 
-1. `real_home = Path(os.environ.get("GROK_HOME") or Path.home()/".grok").resolve()`  
-   - If Apex itself was started with `GROK_HOME` already set, that is `real_home` (document + log).
+1. `real_home = (Path.home() / ".grok").resolve()`  
+   - **Never** use process env `GROK_HOME` as real_home (Apex may still hold a prior turn's temp path → session symlink chaining; fixed 2026-07-09).
 2. `temp_home = Path(tempfile.mkdtemp(prefix="apex-grok-home-"))` with mode `0700`.
 3. **Symlink required live state from `real_home` → `temp_home`** (do not copy session DBs):  
    - **Required:** `sessions/` (or whatever the installed CLI uses for session store), auth/OIDC material (whatever files exist: e.g. `auth.json`, token caches — **exact set is PR0 spike output**, fail P1 merge if incomplete).  
@@ -691,8 +691,8 @@ Deferred: best fix for cold `npx` cost; not required for correctness. Note under
 |-------|-------|------|
 | **PR0 spike** ✅ | Grok home+resume+OIDC; Codex `-c`+resume; auth paths; Grok MCPTool write names; project MCP residual | **Done** — `docs/PR0_TOOL_SURFACE_SPIKES.md` |
 | **P0 / PR1a** ✅ **MERGED** | Extract SoT; shim parity; no intentional behavior change | `60bdd1f` |
-| **P0b / PR1b** 🟢 | Turn workspace rewrite; dual-track `servers_for_level`; Claude L2 execute_code regression; guide inject keep | PR0 ✅ + tests |
-| **P1 / PR2** 🟢 | Grok (`xai`) projector | PR0 ✅ + PR1a + PR1b; multi-turn smoke |
+| **P0b / PR1b** ✅ **MERGED** | Turn workspace rewrite; dual-track `servers_for_level`; Claude L2 execute_code regression; guide inject keep | main `578b737` / dev `c84c9a9` |
+| **P1 / PR2** 🟡 | Grok (`xai`) projector | PR0 ✅ + PR1a + PR1b; multi-turn smoke |
 | **P2 / PR3** 🟢 | Codex projector (nested `-c`) | PR0 ✅ + PR1b |
 | **P3 / PR4** | Debug endpoint, config packs, tool_loop root gap plan | Admin auth verified |
 | **P4** | Attachments | Separate design |
@@ -766,7 +766,7 @@ Deferred: best fix for cold `npx` cost; not required for correctness. Note under
 10. **P0 split PR1a vs PR1b**; **guide inject keep through P2** (no tighten in PR1b).
 11. **Tool-loop per-chat roots deferred** — P0 is load SoT only; Option C claim_store args remain.
 12. **Fail-open for normal chats; fail-closed for gate/auth/required MCP**.
-13. **PR1a shipped (`60bdd1f`).** **PR0 spikes executed 2026-07-09** — appendix + `docs/PR0_TOOL_SURFACE_SPIKES.md` filled; PR1b/PR2/PR3 unblocked.
+13. **PR1a shipped (`60bdd1f`).** **PR0 spikes executed 2026-07-09.** **PR1b shipped** (main `578b737` / dev `c84c9a9`). PR2 in progress; PR3 unblocked.
 14. **OIDC primary for Grok**; no XAI_API_KEY requirement.
 15. **Attachments out of band (P4)**.
 16. **Project MCP residual risk documented** if no ignore flag.
@@ -784,15 +784,16 @@ Deferred: best fix for cold `npx` cost; not required for correctness. Note under
 - **Files:** `server/tool_surface.py`; `streaming.py` / `mcp_bridge` shims; `tests/test_tool_surface.py`  
 - **Description:** No intentional behavior change. Guide inject `if extra_allowed_tools`.  
 
-### PR1b — Intentional policy wiring 🟢 **UNBLOCKED**
+### PR1b — Intentional policy wiring ✅ **MERGED 2026-07-10**
 - **Deps:** PR1a ✅, **PR0 ✅**  
-- **Files:** `resolve_turn_policy`; dual-track `servers_for_level`; optional chat workspace rewrite for Claude; unit tests including **Claude L2 execute_code still present** and **CLI L2 execute_code absent**  
-- **Description:** Listed behavior deltas only. **Guide inject: keep (no tighten).**  
+- **SHAs:** main `578b737` / dev `c84c9a9` (`feat(tools): PR1b level × server admission matrix`)  
+- **Files:** dual-track `servers_for_level` / `admit_server`; Track A/B wiring in `streaming` + `resolve_for_grok`; `grok_mcp_deny_rules_for_level`; `tests/test_tool_surface_level_matrix.py`  
+- **Description:** Listed behavior deltas only. **Guide inject: keep (no tighten).** DoD met (unit matrix + Claude L2 execute_code regression).  
 
-### PR2 — Grok / `xai` (P1) 🟢 **UNBLOCKED**
-- **Deps:** PR0 ✅, PR1a, PR1b  
+### PR2 — Grok / `xai` (P1) 🟡 **IN PROGRESS on `dev`**
+- **Deps:** PR0 ✅, PR1a ✅, PR1b ✅  
 - **Files:** `project_grok`; `backends._run_grok_chat`; `--deny` argv using PR0 wire names; project MCP detection log; `tests/test_tool_surface_grok.py`  
-- **Description:** Core pack + Track B matrix; multi-turn smoke DoD; use PR0 symlink/merge algorithm 
+- **Description:** Core pack + Track B matrix; multi-turn smoke DoD; use PR0 symlink/merge algorithm. Note: durable real home is always `~/.grok` (never env `GROK_HOME`) — locks the 2026-07-09 temp-home chaining fix.
 
 ### PR0 results appendix ✅ **FILLED 2026-07-09** (full notes: `docs/PR0_TOOL_SURFACE_SPIKES.md`)
 
@@ -837,4 +838,4 @@ Deferred: best fix for cold `npx` cost; not required for correctness. Note under
 
 ---
 
-*End of design document (rev 5 — PR1a merged; PR0 spikes filled; PR1b/PR2/PR3 unblocked).*
+*End of design document (rev 6 — PR1a+PR1b merged; PR0 filled; PR2 in progress; PR3 unblocked).*

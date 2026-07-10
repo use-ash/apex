@@ -369,6 +369,21 @@ def servers_for_level(
 # ---------------------------------------------------------------------------
 
 
+def detect_project_mcp_sources(workspace: str | Path) -> list[str]:
+    """Return residual project MCP sources under *workspace* (PR0 residual risk).
+
+    Grok still loads project ``.mcp.json`` / ``.grok/config.toml`` even with
+    compat kill switches. Callers should log any non-empty result.
+    """
+    ws = Path(workspace)
+    found: list[str] = []
+    if (ws / ".mcp.json").exists():
+        found.append(".mcp.json")
+    if (ws / ".grok" / "config.toml").exists():
+        found.append(".grok/config.toml")
+    return found
+
+
 def resolve_for_grok(
     chat_id: str | None,
     *,
@@ -377,16 +392,13 @@ def resolve_for_grok(
     computer_use_target: str | None = None,
     interceptor_enabled: bool = False,
     extra_allowed_tools: frozenset[str] | None = None,
-    pack: str = "full",
+    pack: str = "core",
 ) -> dict[str, dict]:
     """Load + inject the Apex MCP catalog for a Grok CLI turn.
 
-    Mirrors the sequence in ``streaming._build_sdk_options`` so Grok gets the
-    same server set Claude would. Caller passes the result to
-    ``project_grok(servers)`` to render the temp GROK_HOME.
-
-    Args mirror ``streaming.py`` call sites; safe defaults so ``_run_grok_chat``
-    can call this without extra plumbing on day one.
+    Default pack is ``core`` (filesystem/fetch/memory) per design —
+    CLI backends do not get full-pack F-tier servers unless explicitly
+    requested. Caller passes the result to ``project_grok(servers)``.
     """
     servers = load_enabled_mcp_servers(strip_enabled_key=True)
     servers = inject_execute_code_mcp(
