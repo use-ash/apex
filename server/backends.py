@@ -279,6 +279,11 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
     """Run a chat response via the Codex CLI (gpt-5.6*, gpt-5.5, gpt-5.4, o3, o4-mini)."""
     effective_model = model or "codex:gpt-5.5"
     cli_model = effective_model.removeprefix("codex:")
+    # ChatGPT OAuth does not accept bare `gpt-5.6` — map to Sol (CLI slug).
+    _CODEX_CLI_MODEL_ALIASES = {
+        "gpt-5.6": "gpt-5.6-sol",
+    }
+    cli_model = _CODEX_CLI_MODEL_ALIASES.get(cli_model, cli_model)
 
     # Models that require OpenAI API key (not available on ChatGPT OAuth)
     _API_KEY_MODELS = {"o3", "o4-mini"}
