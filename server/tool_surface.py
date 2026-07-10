@@ -257,6 +257,42 @@ _GROK_FILESYSTEM_WRITE_TOOLS = (
     "filesystem__move_file",
 )
 
+# Grok CLI permission rules use CLAUDE CODE category names (Bash, Edit,
+# Write, etc.), not the internal tool names (run_terminal_command, etc.).
+# Verified 2026-07-09: `--deny 'Bash'` denies run_terminal_command via
+# "Denied by permission policy: deny rule on bash". `--disallowed-tools`
+# does NOT gate builtins — must use `--deny` with rule syntax.
+#
+# Rule categories:
+#   Bash    — shell (run_terminal_command)
+#   Edit    — search_replace, edit_file variants
+#   Write   — write, write_file, create_file
+#   Read    — file reads (always safe; never deny)
+#   Grep    — content search (always safe; never deny)
+#   WebFetch, WebSearch — web ops
+
+_GROK_DENY_WRITE_RULES = ("Bash", "Edit", "Write")
+_GROK_DENY_WEB_RULES = ("WebFetch",)
+
+
+def grok_deny_rules_for_level(level: int) -> list[str]:
+    """Return grok CLI --deny rules to pass for the given Apex permission
+    level. Each returned string is a rule ready for `--deny <rule>`.
+
+    Matches Claude SDK level semantics so a chat switched between Claude
+    and Grok has the same effective capability:
+      L0 (guide-only):  Bash, Edit, Write + WebFetch
+      L1 (read-only):   Bash, Edit, Write
+      L2 (default):     Bash, Edit, Write  (Claude L2 has no bash either)
+      L3 (elevated):    no builtin denies
+      L4 (full):        no builtin denies
+    """
+    if level >= 3:
+        return []
+    if level <= 0:
+        return list(_GROK_DENY_WRITE_RULES) + list(_GROK_DENY_WEB_RULES)
+    return list(_GROK_DENY_WRITE_RULES)
+
 
 def _serialize_toml_value(value: Any) -> str:
     """Minimal TOML value serializer for MCP server blocks.
