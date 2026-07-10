@@ -820,15 +820,9 @@ def _grok_session_history_path(session_id: str, cwd: str) -> Path | None:
     return p if p.exists() else None
 
 
-def _extract_tool_events_from_history(hist_path: Path) -> list[dict]:
-    """Read grok's chat_history.jsonl and reconstruct tool_use / tool_result
-    events matching apex's stream event shape.
-
-    Returns interleaved tool_use / tool_result events in chronological order.
-    Each `assistant` row with `tool_calls` becomes N tool_use events. Each
-    `tool_result` row becomes a tool_result event carrying the actual output.
-    """
-    events: list[dict] = []
+def _load_grok_history_rows(hist_path: Path) -> list[dict]:
+    """Parse chat_history.jsonl into a list of row dicts (skip bad lines)."""
+    rows: list[dict] = []
     try:
         with hist_path.open() as f:
             for line in f:
@@ -836,53 +830,102 @@ def _extract_tool_events_from_history(hist_path: Path) -> list[dict]:
                     row = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                # Assistant row can carry structured tool_calls.
-                if row.get("type") == "assistant" and isinstance(
-                    row.get("tool_calls"), list
-                ):
-                    for call in row["tool_calls"]:
-                        events.append({
-                            "type": "tool_use",
-                            "id": str(call.get("id") or uuid.uuid4()),
-                            "name": call.get("name") or "tool",
-                            "input": call.get("arguments") or "",
-                        })
-                elif row.get("type") == "tool_result":
-                    content = row.get("content")
-                    if not isinstance(content, str):
-                        content = json.dumps(content) if content is not None else ""
-                    events.append({
-                        "type": "tool_result",
-                        "id": str(row.get("tool_call_id") or uuid.uuid4()),
-                        "content": content[:4000],
-                    })
+                if isinstance(row, dict):
+                    rows.append(row)
     except OSError as e:
         log(f"grok history parse error: {e}")
+    return rows
+
+
+def _slice_history_this_turn(rows: list[dict]) -> list[dict]:
+    """Keep only rows after the last user message (current turn).
+
+    Prevents stuffing every prior turn's tool_calls into the latest assistant
+    message (was dumping 100+ events per Grok turn).
+    """
+    if not rows:
+        return rows
+    last_user = -1
+    for i, row in enumerate(rows):
+        if row.get("type") == "user":
+            last_user = i
+    if last_user < 0:
+        return rows
+    return rows[last_user + 1 :]
+
+
+def _rows_to_tool_events(rows: list[dict]) -> list[dict]:
+    """Convert history rows to interleaved tool_use / tool_result events."""
+    events: list[dict] = []
+    for row in rows:
+        if row.get("type") == "assistant" and isinstance(row.get("tool_calls"), list):
+            for call in row["tool_calls"]:
+                if not isinstance(call, dict):
+                    continue
+                events.append({
+                    "type": "tool_use",
+                    "id": str(call.get("id") or uuid.uuid4()),
+                    "name": call.get("name") or "tool",
+                    "input": call.get("arguments") or "",
+                })
+        elif row.get("type") == "tool_result":
+            content = row.get("content")
+            if not isinstance(content, str):
+                content = json.dumps(content) if content is not None else ""
+            events.append({
+                "type": "tool_result",
+                "id": str(row.get("tool_call_id") or uuid.uuid4()),
+                "content": content[:4000],
+            })
     return events
+
+
+def _extract_tool_events_from_history(
+    hist_path: Path,
+    *,
+    this_turn_only: bool = True,
+) -> list[dict]:
+    """Read grok's chat_history.jsonl and reconstruct tool_use / tool_result
+    events matching apex's stream event shape.
+
+    Returns interleaved tool_use / tool_result events in chronological order.
+    Each `assistant` row with `tool_calls` becomes N tool_use events. Each
+    `tool_result` row becomes a tool_result event carrying the actual output.
+
+    When ``this_turn_only`` (default), only rows after the last user message
+    are included so multi-turn sessions don't re-attach prior tools.
+    """
+    rows = _load_grok_history_rows(hist_path)
+    if this_turn_only:
+        rows = _slice_history_this_turn(rows)
+    return _rows_to_tool_events(rows)
 
 
 def _collect_tool_events_from_history(
     session_id: str,
     cwd: str,
     already_recorded: list[dict],
+    *,
+    this_turn_only: bool = True,
 ) -> int:
-    """Read grok's session chat_history.jsonl and APPEND (do not stream) tool
-    events into ``already_recorded`` so they persist in the message DB row.
+    """Read grok's session chat_history.jsonl and APPEND tool events into
+    ``already_recorded`` so they persist in the message DB row and can be
+    attached to the ``result`` WS payload for live UI hydration.
 
     Returns the number of new tool events added.
 
     Grok CLI 0.2.93 does not emit tool events on streaming-json stdout (bug
-    filed with xAI 2026-07-09). We keep the DB record complete for auditing
-    but deliberately do NOT stream these events, because tool_use / tool_result
-    events fired AFTER text-stream completion cause the frontend to teardown
-    the just-created static thinking pill and re-render with a stale duration
-    (regression Dana caught 2026-07-09). When the user refreshes the message
-    history, the persisted tool_events render correctly.
+    filed with xAI 2026-07-09). We collect post-hoc from history, scope to
+    this turn by default, and deliver via the ``result`` event (not mid-stream
+    tool_use frames) so the thinking pill is finalized once with the correct
+    duration before tools appear.
     """
     hist_path = _grok_session_history_path(session_id, cwd)
     if hist_path is None:
         return 0
-    all_events = _extract_tool_events_from_history(hist_path)
+    all_events = _extract_tool_events_from_history(
+        hist_path, this_turn_only=this_turn_only
+    )
     if not all_events:
         return 0
     seen_ids = {e.get("id") for e in already_recorded if e.get("type") == "tool_use"}
@@ -1315,6 +1358,7 @@ async def _run_grok_chat(
             "session_id": None,
             "thinking": thinking_text,
             "tool_events": json.dumps(tool_events),
+            "duration_ms": int((time.monotonic() - _started) * 1000),
         }
 
     if session_id:
@@ -1327,19 +1371,22 @@ async def _run_grok_chat(
             f"turn={turns}/{_GROK_MAX_SESSION_TURNS} chars={len(result_text)}"
         )
 
-    # Append (don't stream) tool events from chat_history.jsonl so the message
-    # DB row has full tool activity for auditing. Streaming them would
-    # interrupt the thinking-pill lifecycle (see docstring on
-    # _collect_tool_events_from_history). Persisted events render correctly
-    # on message-history reload.
+    # Collect this-turn tool events from chat_history.jsonl (CLI omits them on
+    # streaming-json stdout). Attach to result payload for live UI hydrate +
+    # DB persistence — do NOT emit mid-stream tool_use frames (that broke
+    # thinking-pill duration). Frontend hydrates on the single `result` event.
     if session_id:
         try:
-            _added = _collect_tool_events_from_history(session_id, workspace, tool_events)
+            _added = _collect_tool_events_from_history(
+                session_id, workspace, tool_events, this_turn_only=True
+            )
             if _added:
                 log(f"grok tool_events collected from history: {_added} events")
         except Exception as _e:
             log(f"grok history-collect failed: {_e}")
 
+    _duration_ms = int((time.monotonic() - _started) * 1000)
+    _tool_events_json = json.dumps(tool_events)
     _cw = MODEL_CONTEXT_WINDOWS.get(effective_model, MODEL_CONTEXT_DEFAULT)
     _est = tokens_in or _estimate_tokens(chat_id)
     await _send_stream_event(
@@ -1354,7 +1401,10 @@ async def _run_grok_chat(
             "context_tokens_in": _est,
             "context_window": _cw,
             "thinking": thinking_text,
-            "duration_ms": int((time.monotonic() - _started) * 1000),
+            "duration_ms": _duration_ms,
+            # Live hydrate: chat_js result handler applies these before
+            # finalizing the thinking pill so tools appear without refresh.
+            "tool_events": _tool_events_json,
         },
     )
     _do_cleanup()
@@ -1367,7 +1417,8 @@ async def _run_grok_chat(
         "tokens_out": tokens_out,
         "session_id": session_id or None,
         "thinking": thinking_text,
-        "tool_events": json.dumps(tool_events),
+        "tool_events": _tool_events_json,
+        "duration_ms": _duration_ms,
     }
 
 
