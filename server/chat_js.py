@@ -1513,9 +1513,33 @@ function _restoreThinkingFromPill(streamId) {
   _setThinkingCollapsed(ctx, false);
 }
 
+function _hydrateToolsFromResult(ctx, resultMsg) {
+  // Grok CLI (and similar) omit live tool_use frames; tools arrive on `result`
+  // as tool_events JSON. Apply before finalize so the pill appears without refresh
+  // and after thinking is locked to a static duration (no mid-stream tool churn).
+  if (!ctx || !resultMsg || resultMsg.tool_events == null) return;
+  if (ctx.toolCalls && ctx.toolCalls.length > 0) return;  // already streamed
+  let raw = resultMsg.tool_events;
+  try {
+    if (typeof raw === 'string') raw = JSON.parse(raw || '[]');
+  } catch (e) {
+    return;
+  }
+  if (!Array.isArray(raw) || raw.length === 0) return;
+  const normalized = _normalizeToolEvents(raw);
+  if (!normalized.length) return;
+  ctx.toolCalls = normalized;
+  if (!ctx.toolsStart) ctx.toolsStart = Date.now();
+}
+
 function _finalizeStreamUi(ctx, resultMsg = null) {
   if (!ctx || !ctx.bubble) return;
-  if (resultMsg?.duration_ms) ctx.turnDurationMs = resultMsg.duration_ms;
+  // Prefer server-reported wall time; accept 0 only if explicitly provided.
+  if (resultMsg && resultMsg.duration_ms != null && resultMsg.duration_ms !== '') {
+    const d = Number(resultMsg.duration_ms);
+    if (!Number.isNaN(d) && d >= 0) ctx.turnDurationMs = d;
+  }
+  _hydrateToolsFromResult(ctx, resultMsg);
   _finalizeThinking(ctx);
   _renderWatchdogPills();
   ctx.awaitingAck = false;
@@ -2119,9 +2143,25 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
       // Backfill thinking text from result payload if real-time events were
       // missed or empty (e.g. single-turn codex responses where pending_agent_message
       // was never flushed as thinking, or non-streaming _call_openai_responses path).
-      if (ctx && msg.thinking && !ctx.thinkingText) {
-        ctx.thinkingText = msg.thinking;
-        if (!ctx.thinkingStart) ctx.thinkingStart = Date.now();
+      if (ctx) {
+        if (msg.thinking && !ctx.thinkingText) {
+          ctx.thinkingText = msg.thinking;
+        }
+        // Lock wall-clock duration from server before finalize so the static
+        // thinking pill keeps "Thought for Xs" (Grok previously saved 0ms and
+        // dropped the pill on stream teardown).
+        if (msg.duration_ms != null && msg.duration_ms !== '') {
+          const d = Number(msg.duration_ms);
+          if (!Number.isNaN(d) && d >= 0) {
+            ctx.turnDurationMs = d;
+            if (!ctx.thinkingStart) ctx.thinkingStart = Date.now() - d;
+          }
+        } else if (!ctx.thinkingStart) {
+          ctx.thinkingStart = Date.now();
+        }
+        // Grok: tools arrive on result.tool_events (not live frames). Hydrate
+        // here so _finalizeStreamUi can render the tool pill without a reload.
+        _hydrateToolsFromResult(ctx, msg);
       }
       // B-25: Finalize the stream state immediately on 'result' so the Stop
       // button and busy flag are cleared as soon as the agent's response is
