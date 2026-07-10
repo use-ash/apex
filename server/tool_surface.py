@@ -448,8 +448,10 @@ def project_grok(
 
     Args:
       servers: Apex-resolved MCP server dict (post-injects, post-filter).
-      real_grok_home: Override for the real ~/.grok. Defaults to
-        Path(env GROK_HOME) or ~/.grok. Never modified.
+      real_grok_home: Override for the durable ~/.grok. Defaults to
+        ``Path.home() / ".grok"`` — **never** process env ``GROK_HOME``.
+        (Env may already point at a prior Apex temp home; chaining those
+        broke sessions/ tool-history capture — 2026-07-09.)
       cli_deny_tools: Wire names to append via --deny MCPTool(<name>).
         Defaults to filesystem write tools per PR0 §3.
 
@@ -460,8 +462,17 @@ def project_grok(
     import shutil
 
     if real_grok_home is None:
-        real_grok_home = Path(os.environ.get("GROK_HOME") or Path.home() / ".grok")
-    real_grok_home = real_grok_home.resolve()
+        # Durable user home only. Do NOT read os.environ["GROK_HOME"] — the
+        # Apex server process may still hold a previous turn's temp path.
+        real_grok_home = Path.home() / ".grok"
+    real_grok_home = real_grok_home.expanduser().resolve()
+    # Guard against accidental temp-home chaining if a caller passes garbage.
+    if "apex-grok-home-" in real_grok_home.name:
+        log(
+            f"project_grok: refusing temp real_grok_home={real_grok_home}, "
+            "falling back to ~/.grok"
+        )
+        real_grok_home = (Path.home() / ".grok").resolve()
 
     temp_home = Path(tempfile.mkdtemp(prefix="apex-grok-home-"))
     temp_home.chmod(0o700)

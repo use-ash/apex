@@ -811,13 +811,40 @@ def _public_grok_error_message(err_msg: str) -> str:
 from urllib.parse import quote as _urlquote
 
 
-def _grok_session_history_path(session_id: str, cwd: str) -> Path | None:
-    """Locate ~/.grok/sessions/<encoded-cwd>/<session_id>/chat_history.jsonl."""
+def _grok_session_history_path(
+    session_id: str,
+    cwd: str,
+    *,
+    temp_grok_home: Path | None = None,
+) -> Path | None:
+    """Locate chat_history.jsonl for a Grok session.
+
+    Prefer the turn's temp GROK_HOME (if Grok replaced the sessions symlink
+    with a real dir under the temp home), then the durable ~/.grok/sessions
+    tree. Call this *before* cleanup_projected_home.
+    """
     if not session_id:
         return None
     encoded_cwd = _urlquote(cwd, safe="")
-    p = Path.home() / ".grok" / "sessions" / encoded_cwd / session_id / "chat_history.jsonl"
-    return p if p.exists() else None
+    candidates: list[Path] = []
+    if temp_grok_home is not None:
+        th = Path(temp_grok_home)
+        candidates.append(th / "sessions" / encoded_cwd / session_id / "chat_history.jsonl")
+        # Some CLI builds nest sessions flat under sessions/<id>/
+        candidates.append(th / "sessions" / session_id / "chat_history.jsonl")
+    real_home = Path(os.environ.get("GROK_HOME") or (Path.home() / ".grok"))
+    # When Apex sets GROK_HOME to a temp dir, still probe the durable user home.
+    candidates.append(Path.home() / ".grok" / "sessions" / encoded_cwd / session_id / "chat_history.jsonl")
+    candidates.append(Path.home() / ".grok" / "sessions" / session_id / "chat_history.jsonl")
+    if real_home.resolve() != (Path.home() / ".grok").resolve():
+        candidates.append(real_home / "sessions" / encoded_cwd / session_id / "chat_history.jsonl")
+    for p in candidates:
+        try:
+            if p.exists():
+                return p
+        except OSError:
+            continue
+    return None
 
 
 def _load_grok_history_rows(hist_path: Path) -> list[dict]:
@@ -880,6 +907,68 @@ def _rows_to_tool_events(rows: list[dict]) -> list[dict]:
     return events
 
 
+def _extract_tool_events_from_events_jsonl(
+    events_path: Path,
+    *,
+    this_turn_only: bool = True,
+) -> list[dict]:
+    """Fallback: build tool_use/result pairs from session events.jsonl.
+
+    Grok emits tool_started / tool_completed with tool_name (no full args).
+    Better than empty when chat_history is missing or incomplete.
+    """
+    if not events_path.exists():
+        return []
+    started: list[dict] = []
+    completed: list[dict] = []
+    try:
+        with events_path.open() as f:
+            for line in f:
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                t = row.get("type")
+                if t == "turn_started" and this_turn_only:
+                    # Reset — only keep tools from the latest turn.
+                    started.clear()
+                    completed.clear()
+                elif t == "tool_started":
+                    tid = str(row.get("tool_call_id") or row.get("id") or uuid.uuid4())
+                    started.append({
+                        "type": "tool_use",
+                        "id": tid,
+                        "name": row.get("tool_name") or "tool",
+                        "input": row.get("input") or row.get("args") or "",
+                    })
+                elif t == "tool_completed":
+                    tid = str(row.get("tool_call_id") or row.get("id") or "")
+                    content = row.get("result") or row.get("output") or row.get("content") or ""
+                    if not isinstance(content, str):
+                        content = json.dumps(content)[:4000]
+                    completed.append({
+                        "type": "tool_result",
+                        "id": tid or str(uuid.uuid4()),
+                        "content": content[:4000],
+                    })
+    except OSError as e:
+        log(f"grok events.jsonl parse error: {e}")
+        return []
+    # Interleave started then matching completed by id when possible
+    by_id = {e["id"]: e for e in completed if e.get("id")}
+    out: list[dict] = []
+    for s in started:
+        out.append(s)
+        c = by_id.pop(s["id"], None)
+        if c:
+            out.append(c)
+    for c in by_id.values():
+        out.append(c)
+    return out
+
+
 def _extract_tool_events_from_history(
     hist_path: Path,
     *,
@@ -898,7 +987,14 @@ def _extract_tool_events_from_history(
     rows = _load_grok_history_rows(hist_path)
     if this_turn_only:
         rows = _slice_history_this_turn(rows)
-    return _rows_to_tool_events(rows)
+    events = _rows_to_tool_events(rows)
+    if events:
+        return events
+    # Fallback: events.jsonl next to chat_history.jsonl
+    events_path = hist_path.parent / "events.jsonl"
+    return _extract_tool_events_from_events_jsonl(
+        events_path, this_turn_only=this_turn_only
+    )
 
 
 def _collect_tool_events_from_history(
@@ -907,6 +1003,7 @@ def _collect_tool_events_from_history(
     already_recorded: list[dict],
     *,
     this_turn_only: bool = True,
+    temp_grok_home: Path | None = None,
 ) -> int:
     """Read grok's session chat_history.jsonl and APPEND tool events into
     ``already_recorded`` so they persist in the message DB row and can be
@@ -920,12 +1017,43 @@ def _collect_tool_events_from_history(
     tool_use frames) so the thinking pill is finalized once with the correct
     duration before tools appear.
     """
-    hist_path = _grok_session_history_path(session_id, cwd)
-    if hist_path is None:
-        return 0
-    all_events = _extract_tool_events_from_history(
-        hist_path, this_turn_only=this_turn_only
+    hist_path = _grok_session_history_path(
+        session_id, cwd, temp_grok_home=temp_grok_home
     )
+    all_events: list[dict] = []
+    if hist_path is not None:
+        all_events = _extract_tool_events_from_history(
+            hist_path, this_turn_only=this_turn_only
+        )
+    else:
+        # Last-ditch: rglob session id under durable sessions + temp home
+        search_roots: list[Path] = [Path.home() / ".grok" / "sessions"]
+        if temp_grok_home is not None:
+            search_roots.insert(0, Path(temp_grok_home) / "sessions")
+        found: Path | None = None
+        for root in search_roots:
+            if not root.exists():
+                continue
+            try:
+                for p in root.rglob("chat_history.jsonl"):
+                    if session_id in str(p):
+                        found = p
+                        break
+            except OSError:
+                continue
+            if found:
+                break
+        if found:
+            log(f"grok history rglob hit: {found}")
+            all_events = _extract_tool_events_from_history(
+                found, this_turn_only=this_turn_only
+            )
+        else:
+            log(
+                f"grok history missing: sid={session_id[:8]} cwd={cwd!r} "
+                f"temp_home={temp_grok_home}"
+            )
+            return 0
     if not all_events:
         return 0
     seen_ids = {e.get("id") for e in already_recorded if e.get("type") == "tool_use"}
@@ -1378,7 +1506,11 @@ async def _run_grok_chat(
     if session_id:
         try:
             _added = _collect_tool_events_from_history(
-                session_id, workspace, tool_events, this_turn_only=True
+                session_id,
+                workspace,
+                tool_events,
+                this_turn_only=True,
+                temp_grok_home=_temp_grok_home,
             )
             if _added:
                 log(f"grok tool_events collected from history: {_added} events")
