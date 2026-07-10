@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import os
 import time
@@ -1084,21 +1085,29 @@ async def _run_grok_chat(
     # resume-failure retry (retry gets a fresh temp_home on its own call).
     _cu_target: str | None = None
     _int_enabled = False
+    _profile_id_pr1c = ""
     try:
         from db import _get_chat as _chat_lookup
         _chat_row_pr1c = _chat_lookup(chat_id) if chat_id else None
         if _chat_row_pr1c:
             _cu_target = _chat_row_pr1c.get("computer_use_target") or None
             _int_enabled = bool(_chat_row_pr1c.get("interceptor_enabled"))
+            _profile_id_pr1c = str(_chat_row_pr1c.get("profile_id") or "")
     except Exception as _e_pr1c:
         log(f"grok pr1c chat lookup: {_e_pr1c}")
+    # Prefer active group speaker over chat's default profile — matches Claude
+    # SDK path's client_key resolution.
+    _group_pid = _current_group_profile_id.get("")
+    if _group_pid:
+        _profile_id_pr1c = _group_pid
+    _grok_extras = resolve_profile_extra_tools(_profile_id_pr1c or None) if _profile_id_pr1c else None
     _resolved_mcp = tool_surface.resolve_for_grok(
         chat_id,
         workspace=workspace,
         permission_level=2,
         computer_use_target=_cu_target,
         interceptor_enabled=_int_enabled,
-        extra_allowed_tools=None,
+        extra_allowed_tools=_grok_extras,
     )
     _temp_grok_home: Path | None = None
     if _resolved_mcp:
@@ -1110,6 +1119,20 @@ async def _run_grok_chat(
                 f"grok MCP: {len(_resolved_mcp)} server(s) via temp home={_temp_grok_home.name} "
                 f"deny_args={len(_deny_args)//2}"
             )
+            # Log residual project-scoped MCP sources — Grok CLI still merges
+            # project .mcp.json / .grok/config.toml even with our compat kill
+            # switches (per PR0 §2). Operators need visibility.
+            try:
+                _ws_path = Path(workspace)
+                _residual = []
+                if (_ws_path / ".mcp.json").exists():
+                    _residual.append(".mcp.json")
+                if (_ws_path / ".grok" / "config.toml").exists():
+                    _residual.append(".grok/config.toml")
+                if _residual:
+                    log(f"grok residual project MCP sources under cwd: {_residual}")
+            except Exception:
+                pass
         except Exception as _e_proj:
             log(f"grok project_grok failed, falling back to native CLI tools: {_e_proj}")
             _temp_grok_home = None
@@ -1138,9 +1161,36 @@ async def _run_grok_chat(
     tokens_out = 0
     error_msg = ""
 
+    # Fix (Grok review 2026-07-09 blocker: "No `finally` — temp home leaks on
+    # exception mid-stream"). Idempotent cleanup closure invoked at every
+    # exit path AND from a bare `except` at the bottom, so we always release
+    # temp GROK_HOME + debug log + tailer task even if the parse loop raises.
+    _cleanup_done = False
+
+    def _do_cleanup() -> None:
+        nonlocal _cleanup_done
+        if _cleanup_done:
+            return
+        _cleanup_done = True
+        if not _debug_task.done():
+            _debug_stop.set()
+            _debug_task.cancel()
+        try:
+            if os.path.exists(_grok_debug_path):
+                os.unlink(_grok_debug_path)
+        except OSError:
+            pass
+        tool_surface.cleanup_projected_home(_temp_grok_home)
+
     assert proc.stdout is not None
+    _parse_interrupted: BaseException | None = None
     while True:
-        line = await proc.stdout.readline()
+        try:
+            line = await proc.stdout.readline()
+        except BaseException as _e_read:
+            _parse_interrupted = _e_read
+            log(f"grok parse loop interrupted: {type(_e_read).__name__}")
+            break
         if not line:
             break
         line_str = line.decode(errors="replace").strip()
@@ -1215,7 +1265,24 @@ async def _run_grok_chat(
             if sid:
                 session_id = sid
 
-    await proc.wait()
+    try:
+        await proc.wait()
+    except BaseException as _e_wait:
+        # await proc.wait() got cancelled (WS disconnect / task cancel).
+        # Guarantee cleanup then re-raise so callers see the original exception.
+        log(f"grok wait interrupted, running cleanup: {type(_e_wait).__name__}")
+        with contextlib.suppress(BaseException):
+            proc.kill()
+        _do_cleanup()
+        raise
+    # If the parse loop was interrupted mid-stream (WS closed / task cancel),
+    # kill the subprocess so it doesn't linger, run cleanup, and re-raise the
+    # original interrupt for the caller.
+    if _parse_interrupted is not None:
+        with contextlib.suppress(BaseException):
+            proc.kill()
+        _do_cleanup()
+        raise _parse_interrupted
     # Signal + await debug tailer so any final tool events are flushed
     # before we return. Cap wait at 0.5s so a hung tailer can't block the
     # response.
@@ -1252,7 +1319,7 @@ async def _run_grok_chat(
             _clear_persisted_grok_session(chat_id)
             # PR1c — clean up THIS attempt's temp home before recursing.
             # The recursive call will project its own fresh temp home.
-            tool_surface.cleanup_projected_home(_temp_grok_home)
+            _do_cleanup()
             _temp_grok_home = None
             return await _run_grok_chat(chat_id, prompt, model=model, attachments=attachments)
 
@@ -1264,7 +1331,7 @@ async def _run_grok_chat(
                 "retryable": True,
             },
         )
-        tool_surface.cleanup_projected_home(_temp_grok_home)
+        _do_cleanup()
         return {
             "text": "",
             "is_error": True,
@@ -1304,7 +1371,7 @@ async def _run_grok_chat(
             "duration_ms": int((time.monotonic() - _started) * 1000),
         },
     )
-    tool_surface.cleanup_projected_home(_temp_grok_home)
+    _do_cleanup()
     return {
         "text": result_text,
         "is_error": False,
