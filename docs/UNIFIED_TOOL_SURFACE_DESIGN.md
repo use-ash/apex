@@ -791,6 +791,7 @@ Deferred: best fix for cold `npx` cost; not required for correctness. Note under
 - **Description:** Listed behavior deltas only. **Guide inject: keep (no tighten).** DoD met (unit matrix + Claude L2 execute_code regression).  
 
 ### PR2 — Grok / `xai` (P1) ✅ **MERGED 2026-07-10**
+- **SHAs:** main `56b33fc` / dev `3a5fe7c`
 - **Deps:** PR0 ✅, PR1a ✅, PR1b ✅  
 - **Files:** `project_grok`; `backends._run_grok_chat`; `--deny` argv using PR0 wire names; `detect_project_mcp_sources`; `tests/test_tool_surface_grok.py`  
 - **Description:** Core pack + Track B matrix; multi-turn smoke DoD; PR0 symlink/merge algorithm. Durable real home always `~/.grok` (never env `GROK_HOME`).  
