@@ -27,10 +27,15 @@ class GrokDenyRulesTests(unittest.TestCase):
         rules = self.ts.grok_deny_rules_for_level(0)
         self.assertEqual(set(rules), {"Bash", "Edit", "Write", "WebFetch"})
 
-    def test_L1_and_L2_deny_write_builtins(self) -> None:
-        for level in (1, 2):
-            rules = self.ts.grok_deny_rules_for_level(level)
-            self.assertEqual(set(rules), {"Bash", "Edit", "Write"}, msg=f"L{level}")
+    def test_L1_denies_bash_edit_write(self) -> None:
+        rules = self.ts.grok_deny_rules_for_level(1)
+        self.assertEqual(set(rules), {"Bash", "Edit", "Write"})
+
+    def test_L2_denies_edit_write_only(self) -> None:
+        """L2 omits Bash from denies to avoid interactive popups
+        (--always-approve handles it). Edit/Write still denied."""
+        rules = self.ts.grok_deny_rules_for_level(2)
+        self.assertEqual(set(rules), {"Edit", "Write"})
 
     def test_L3_plus_no_builtin_denies(self) -> None:
         self.assertEqual(self.ts.grok_deny_rules_for_level(3), [])

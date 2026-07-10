@@ -549,15 +549,25 @@ def grok_deny_rules_for_level(level: int) -> list[str]:
     and Grok has the same effective capability:
       L0 (guide-only):  Bash, Edit, Write + WebFetch
       L1 (read-only):   Bash, Edit, Write
-      L2 (default):     Bash, Edit, Write  (Claude L2 has no bash either)
+      L2 (default):     Edit, Write  (Bash omitted — see note)
       L3 (elevated):    no builtin denies
       L4 (full):        no builtin denies
+
+    L2 note: Claude L2 silently blocks Bash at the SDK level. Grok's --deny
+    Bash causes an interactive permission popup instead of a silent block,
+    even with --always-approve. Since L2 is the default level and --always-
+    approve is always passed, we omit Bash from L2 denies to avoid the
+    popup. This makes Grok L2 slightly more permissive than Claude L2
+    (bash execution is auto-approved). Use L1 for strict read-only parity.
     """
     if level >= 3:
         return []
     if level <= 0:
         return list(_GROK_DENY_WRITE_RULES) + list(_GROK_DENY_WEB_RULES)
-    return list(_GROK_DENY_WRITE_RULES)
+    if level == 1:
+        return list(_GROK_DENY_WRITE_RULES)
+    # L2: deny Edit + Write only (not Bash — avoids popup)
+    return ["Edit", "Write"]
 
 
 def grok_mcp_deny_rules_for_level(level: int) -> list[str]:

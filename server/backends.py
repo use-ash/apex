@@ -1006,6 +1006,97 @@ def _get_grok_session_state(chat_id: str) -> tuple[str, int, str]:
     return existing, turns, scope_key
 
 
+def _refresh_grok_token_if_needed() -> None:
+    """Pre-flight token refresh for grok CLI OAuth.
+
+    The grok CLI stores an OIDC access_token in ~/.grok/auth.json with a
+    6-hour TTL. When it expires, the CLI falls back to the device-code flow
+    — which opens a browser authorization prompt. The CLI does NOT
+    auto-refresh using the stored refresh_token.
+
+    This function checks the token's expiry and, if it's expired or about
+    to expire (< 10 min TTL), refreshes it via the OAuth2 token endpoint
+    and rewrites auth.json in place. Called before every grok spawn.
+    """
+    auth_path = Path.home() / ".grok" / "auth.json"
+    if not auth_path.exists():
+        return  # never logged in; CLI will prompt on first use
+    try:
+        auth = json.loads(auth_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return
+
+    updated = False
+    for key, entry in auth.items():
+        if not isinstance(entry, dict) or "refresh_token" not in entry:
+            continue
+        expires_at = entry.get("expires_at", "")
+        if expires_at:
+            try:
+                from datetime import datetime, timezone
+                exp_dt = datetime.fromisoformat(
+                    expires_at.replace("Z", "+00:00")
+                )
+                now_dt = datetime.now(timezone.utc)
+                ttl = (exp_dt - now_dt).total_seconds()
+                if ttl > 600:  # >10 min remaining, skip
+                    continue
+            except (ValueError, TypeError):
+                pass  # can't parse — try refresh anyway
+
+        issuer = entry.get("oidc_issuer", "https://auth.x.ai")
+        client_id = entry.get("oidc_client_id", "")
+        refresh_token = entry.get("refresh_token", "")
+        if not client_id or not refresh_token:
+            continue
+
+        try:
+            import urllib.parse
+            data = urllib.parse.urlencode({
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": client_id,
+            }).encode()
+            req = urllib.request.Request(
+                f"{issuer}/oauth2/token",
+                data=data,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                token_resp = json.loads(resp.read())
+        except Exception as e:
+            log(f"grok token refresh failed for {key[:40]}: {e}")
+            continue
+
+        new_access = token_resp.get("access_token", "")
+        new_refresh = token_resp.get("refresh_token", "")
+        new_expires_in = token_resp.get("expires_in", 21600)
+        if not new_access:
+            continue
+
+        from datetime import datetime, timezone, timedelta
+        now_dt = datetime.now(timezone.utc)
+        entry["key"] = new_access
+        entry["expires_at"] = (
+            now_dt + timedelta(seconds=new_expires_in)
+        ).isoformat().replace("+00:00", "Z")
+        if new_refresh:
+            entry["refresh_token"] = new_refresh
+        updated = True
+        log(f"grok token refreshed for {key[:40]}: ttl={new_expires_in}s")
+
+    if updated:
+        try:
+            tmp = auth_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(auth, indent=2))
+            tmp.replace(auth_path)
+        except OSError as e:
+            log(f"grok token refresh write failed: {e}")
+
+
 def _resolve_grok_workspace(chat_id: str) -> str:
     """Per-agent workspace from tool_policy, else runtime workspace root."""
     workspace = str(env.get_runtime_workspace_root())
@@ -1575,6 +1666,10 @@ async def _run_grok_chat(
         f"mcp={len(_resolved_mcp)} denies={_deny_count} "
         f"home={'tmp' if _temp_grok_home else 'real'}"
     )
+
+    # Pre-flight: refresh OAuth token if expired to avoid device-code popup.
+    _refresh_grok_token_if_needed()
+
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
