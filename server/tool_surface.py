@@ -312,6 +312,58 @@ def _strip_mcp_server_sections(toml_text: str) -> str:
     return "".join(out_lines)
 
 
+def _force_compat_mcps_off(toml_text: str) -> str:
+    """Ensure `[compat.claude]` and `[compat.cursor]` both have `mcps = false`.
+
+    - If the section exists, rewrite any `mcps = ...` inside it to `false`
+      (and add the line if missing before the next section).
+    - If the section is absent, append a fresh `[section]\\nmcps = false`.
+
+    Naive line scanner — matches the same TOML shape assumptions as
+    _strip_mcp_server_sections.
+    """
+    lines = toml_text.splitlines(keepends=True)
+    tail_nl = "\n" if lines and not lines[-1].endswith("\n") else ""
+    if tail_nl:
+        lines.append(tail_nl)
+
+    def _rewrite(section_header: str) -> None:
+        in_section = False
+        wrote_mcps = False
+        idx = 0
+        while idx < len(lines):
+            stripped = lines[idx].strip()
+            if stripped == section_header:
+                in_section = True
+                idx += 1
+                continue
+            if in_section:
+                if stripped.startswith("[") and stripped.endswith("]"):
+                    # Section ended; if we never saw `mcps = ...`, inject before this line.
+                    if not wrote_mcps:
+                        lines.insert(idx, "mcps = false\n")
+                        idx += 1
+                        wrote_mcps = True
+                    in_section = False
+                    continue
+                if stripped.startswith("mcps"):
+                    lines[idx] = "mcps = false\n"
+                    wrote_mcps = True
+            idx += 1
+        # Section was the last one in the file and had no mcps line.
+        if in_section and not wrote_mcps:
+            lines.append("mcps = false\n")
+
+    for section in ("[compat.claude]", "[compat.cursor]"):
+        section_present = any(l.strip() == section for l in lines)
+        if section_present:
+            _rewrite(section)
+        else:
+            lines.append(f"\n{section}\nmcps = false\n")
+
+    return "".join(lines)
+
+
 def _grok_home_symlink_layout(real_home: Path, temp_home: Path) -> None:
     """Symlink required + defensive-default entries from real_home into temp_home.
 
@@ -390,12 +442,11 @@ def project_grok(
         merged += "\n"
 
     # Ensure compat kill switches — force off both Claude & Cursor MCP merges
-    # so project .mcp.json etc. don't leak in. Idempotent: if already off in
-    # base config we overwrite; if never set we add.
-    if "[compat.claude]" not in merged:
-        merged += "\n[compat.claude]\nmcps = false\n"
-    if "[compat.cursor]" not in merged:
-        merged += "\n[compat.cursor]\nmcps = false\n"
+    # so project .mcp.json etc. don't leak in. Rewrites existing `mcps = true`
+    # to `false` inside [compat.claude] / [compat.cursor] blocks (Grok's review
+    # 2026-07-09: earlier "append only if missing" logic failed to force
+    # `false` when user had explicitly set `true`).
+    merged = _force_compat_mcps_off(merged)
 
     for name, spec in servers.items():
         merged += "\n" + _render_grok_mcp_block(name, spec)
