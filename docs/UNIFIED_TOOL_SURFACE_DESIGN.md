@@ -4,7 +4,7 @@
 |-------|-------|
 | **Author** | (design agent) |
 | **Date** | 2026-07-09 |
-| **Status** | Approved (rev 6 — 2026-07-10). **PR1a merged (`60bdd1f`). PR1b merged** (main `578b737` / dev `c84c9a9`). PR0 spikes done — `docs/PR0_TOOL_SURFACE_SPIKES.md`. **PR2 (Grok projector) in progress on `dev`.** PR3 unblocked after PR1b. |
+| **Status** | Approved (rev 7 — 2026-07-10). **PR1a–PR2 merged.** PR0 spikes done — `docs/PR0_TOOL_SURFACE_SPIKES.md`. Next: **PR3 Codex projector**. |
 | **Branch** | `dev` only (`~/.openclaw/apex`) — never edit on `main` / prod worktree |
 | **Scope** | OSS-suitable (`server/tool_surface.py` + call-site rewires). Personal MCP paths stay in `state/mcp_servers.json` / private overlays. |
 
@@ -692,7 +692,7 @@ Deferred: best fix for cold `npx` cost; not required for correctness. Note under
 | **PR0 spike** ✅ | Grok home+resume+OIDC; Codex `-c`+resume; auth paths; Grok MCPTool write names; project MCP residual | **Done** — `docs/PR0_TOOL_SURFACE_SPIKES.md` |
 | **P0 / PR1a** ✅ **MERGED** | Extract SoT; shim parity; no intentional behavior change | `60bdd1f` |
 | **P0b / PR1b** ✅ **MERGED** | Turn workspace rewrite; dual-track `servers_for_level`; Claude L2 execute_code regression; guide inject keep | main `578b737` / dev `c84c9a9` |
-| **P1 / PR2** 🟡 | Grok (`xai`) projector | PR0 ✅ + PR1a + PR1b; multi-turn smoke |
+| **P1 / PR2** ✅ **MERGED** | Grok (`xai`) projector | multi-turn smoke PASS 2026-07-10 (`dfb03525`) |
 | **P2 / PR3** 🟢 | Codex projector (nested `-c`) | PR0 ✅ + PR1b |
 | **P3 / PR4** | Debug endpoint, config packs, tool_loop root gap plan | Admin auth verified |
 | **P4** | Attachments | Separate design |
@@ -766,7 +766,7 @@ Deferred: best fix for cold `npx` cost; not required for correctness. Note under
 10. **P0 split PR1a vs PR1b**; **guide inject keep through P2** (no tighten in PR1b).
 11. **Tool-loop per-chat roots deferred** — P0 is load SoT only; Option C claim_store args remain.
 12. **Fail-open for normal chats; fail-closed for gate/auth/required MCP**.
-13. **PR1a shipped (`60bdd1f`).** **PR0 spikes executed 2026-07-09.** **PR1b shipped** (main `578b737` / dev `c84c9a9`). PR2 in progress; PR3 unblocked.
+13. **PR1a–PR2 shipped** (PR0 spikes 2026-07-09; PR1b main `578b737`/dev `c84c9a9`; PR2 multi-turn smoke PASS). PR3 unblocked.
 14. **OIDC primary for Grok**; no XAI_API_KEY requirement.
 15. **Attachments out of band (P4)**.
 16. **Project MCP residual risk documented** if no ignore flag.
@@ -790,10 +790,12 @@ Deferred: best fix for cold `npx` cost; not required for correctness. Note under
 - **Files:** dual-track `servers_for_level` / `admit_server`; Track A/B wiring in `streaming` + `resolve_for_grok`; `grok_mcp_deny_rules_for_level`; `tests/test_tool_surface_level_matrix.py`  
 - **Description:** Listed behavior deltas only. **Guide inject: keep (no tighten).** DoD met (unit matrix + Claude L2 execute_code regression).  
 
-### PR2 — Grok / `xai` (P1) 🟡 **IN PROGRESS on `dev`**
+### PR2 — Grok / `xai` (P1) ✅ **MERGED 2026-07-10**
+- **SHAs:** main `56b33fc` / dev `3a5fe7c`
 - **Deps:** PR0 ✅, PR1a ✅, PR1b ✅  
-- **Files:** `project_grok`; `backends._run_grok_chat`; `--deny` argv using PR0 wire names; project MCP detection log; `tests/test_tool_surface_grok.py`  
-- **Description:** Core pack + Track B matrix; multi-turn smoke DoD; use PR0 symlink/merge algorithm. Note: durable real home is always `~/.grok` (never env `GROK_HOME`) — locks the 2026-07-09 temp-home chaining fix.
+- **Files:** `project_grok`; `backends._run_grok_chat`; `--deny` argv using PR0 wire names; `detect_project_mcp_sources`; `tests/test_tool_surface_grok.py`  
+- **Description:** Core pack + Track B matrix; multi-turn smoke DoD; PR0 symlink/merge algorithm. Durable real home always `~/.grok` (never env `GROK_HOME`).  
+- **DoD:** unit tests 16/16; multi-turn mTLS smoke **PASS** (`chat_id=dfb03525`: resume=True, pack=core mcp=4, OIDC, temp cleaned, secret recall).
 
 ### PR0 results appendix ✅ **FILLED 2026-07-09** (full notes: `docs/PR0_TOOL_SURFACE_SPIKES.md`)
 
@@ -831,11 +833,11 @@ Deferred: best fix for cold `npx` cost; not required for correctness. Note under
 | Existing MCP security tests | | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Level matrix unit tests (dual-track; Claude L2 execute_code) | | | ✓ | ✓ | ✓ | |
 | PR0 MCPTool wire names recorded | ✓ | | | | | |
-| Grok multi-turn + OIDC manual | | | | ✓ | | |
+| Grok multi-turn + OIDC manual | | | | ✓ (2026-07-10 smoke) | | |
 | Codex resume + mcp list manual | | | | | ✓ | |
 | Admin debug redaction | | | | | | ✓ |
 | Gate-test fail-closed | | | ✓ | ✓ | ✓ | |
 
 ---
 
-*End of design document (rev 6 — PR1a+PR1b merged; PR0 filled; PR2 in progress; PR3 unblocked).*
+*End of design document (rev 7 — PR1a–PR2 merged; PR0 filled; PR3 unblocked).*
