@@ -21,6 +21,7 @@ from pathlib import Path
 import env
 from env import APEX_ROOT, MODEL, DEBUG, SDK_QUERY_TIMEOUT
 from compat import safe_chmod
+import tool_surface as _tool_surface
 
 from fastapi import WebSocket
 
@@ -578,54 +579,25 @@ async def _broadcast_alert(alert: dict) -> None:
 # Claude SDK client management
 # ---------------------------------------------------------------------------
 
+# PR1a: MCP catalog load + injects live in tool_surface.py (thin shims keep
+# existing call sites / tests stable). No intentional behavior change.
+
+
 def _load_mcp_servers() -> dict[str, dict]:
     """Load enabled MCP server configs from state/mcp_servers.json."""
-    mcp_path = APEX_ROOT / "state" / "mcp_servers.json"
-    if not mcp_path.exists():
-        return {}
-    try:
-        data = json.loads(mcp_path.read_text())
-        servers = data.get("mcpServers", {})
-        if not isinstance(servers, dict):
-            return {}
-        servers = {
-            name: {k: v for k, v in cfg.items() if k != "enabled"}
-            for name, cfg in servers.items()
-            if isinstance(cfg, dict) and cfg.get("enabled", True)
-        }
-        return env.rewrite_mcp_servers_for_workspace(servers)
-    except (json.JSONDecodeError, OSError) as e:
-        log(f"MCP config load failed: {e}")
-        return {}
+    return _tool_surface.load_enabled_mcp_servers(strip_enabled_key=True)
 
 
 def _inject_execute_code_mcp(servers: dict, *, chat_id: str | None = None,
                               workspace: str | None = None,
                               permission_level: int = 2) -> dict:
     """Auto-inject the execute_code MCP server if Jupyter is installed."""
-    if "execute_code" in servers:
-        return servers  # user already configured it manually
-    try:
-        # Check if jupyter_client is available
-        import jupyter_client  # noqa: F401
-    except ImportError:
-        return servers  # no Jupyter — skip
-    mcp_script = APEX_ROOT / "server" / "local_model" / "mcp_execute_code.py"
-    if not mcp_script.exists():
-        return servers
-    # Build env vars so the MCP server knows the chat context
-    mcp_env = {"APEX_PERMISSION_LEVEL": str(permission_level)}
-    if chat_id:
-        mcp_env["APEX_CHAT_ID"] = chat_id
-    if workspace:
-        mcp_env["APEX_WORKSPACE"] = workspace
-    servers = dict(servers)  # don't mutate caller's dict
-    servers["execute_code"] = {
-        "command": sys.executable,
-        "args": [str(mcp_script)],
-        "env": mcp_env,
-    }
-    return servers
+    return _tool_surface.inject_execute_code_mcp(
+        servers,
+        chat_id=chat_id,
+        workspace=workspace,
+        permission_level=permission_level,
+    )
 
 
 def _inject_claim_store_mcp(servers: dict, *, chat_id: str | None = None) -> dict:
@@ -639,15 +611,7 @@ def _inject_claim_store_mcp(servers: dict, *, chat_id: str | None = None) -> dic
     Mutates only env['APEX_CHAT_ID'] — preserves the static config's other
     env vars (APEX_DB_NAME, etc.).
     """
-    if not chat_id or "claim_store" not in servers:
-        return servers
-    servers = dict(servers)  # don't mutate caller's dict
-    spec = dict(servers["claim_store"])
-    env = dict(spec.get("env") or {})
-    env["APEX_CHAT_ID"] = chat_id
-    spec["env"] = env
-    servers["claim_store"] = spec
-    return servers
+    return _tool_surface.inject_claim_store_mcp(servers, chat_id=chat_id)
 
 
 def _inject_computer_use_mcp(servers: dict, *, chat_id: str | None = None,
@@ -660,28 +624,12 @@ def _inject_computer_use_mcp(servers: dict, *, chat_id: str | None = None,
       - computer_use_target is a non-empty string
       - MCP script exists at server/local_model/mcp_computer_use.py
     """
-    if sys.platform != "darwin":
-        return servers
-    if not (isinstance(computer_use_target, str) and computer_use_target.strip()):
-        return servers
-    if "computer_use" in servers:
-        return servers  # user already configured it manually
-    mcp_script = APEX_ROOT / "server" / "local_model" / "mcp_computer_use.py"
-    if not mcp_script.exists():
-        return servers
-    mcp_env = {
-        "APEX_CU_TARGET_BUNDLE": computer_use_target.strip(),
-        "APEX_CU_CHAT_ID": chat_id or "",
-        "APEX_CU_STATE_DIR": str(APEX_ROOT / "state" / "computer_use"),
-        "APEX_PERMISSION_LEVEL": str(permission_level),
-    }
-    servers = dict(servers)  # don't mutate caller's dict
-    servers["computer_use"] = {
-        "command": sys.executable,
-        "args": [str(mcp_script)],
-        "env": mcp_env,
-    }
-    return servers
+    return _tool_surface.inject_computer_use_mcp(
+        servers,
+        chat_id=chat_id,
+        permission_level=permission_level,
+        computer_use_target=computer_use_target,
+    )
 
 
 def _inject_interceptor_mcp(servers: dict, *, chat_id: str | None = None,
@@ -697,35 +645,11 @@ def _inject_interceptor_mcp(servers: dict, *, chat_id: str | None = None,
     The MCP server itself is platform-agnostic, but Interceptor is macOS-only
     today so we skip on non-darwin to avoid spawning a doomed subprocess.
     """
-    if not interceptor_enabled:
-        return servers
-    if sys.platform != "darwin":
-        return servers
-    if "interceptor" in servers:
-        return servers
-    mcp_script = APEX_ROOT / "server" / "local_model" / "mcp_interceptor.py"
-    if not mcp_script.exists():
-        return servers
-    bin_path = os.environ.get("APEX_INTERCEPTOR_BIN") or str(
-        (APEX_ROOT.parent.parent / ".interceptor" / "bin" / "interceptor").resolve()
-        if False else os.path.expanduser("~/.interceptor/bin/interceptor")
+    return _tool_surface.inject_interceptor_mcp(
+        servers,
+        chat_id=chat_id,
+        interceptor_enabled=interceptor_enabled,
     )
-    if not os.path.exists(bin_path):
-        # No binary installed — skip rather than injecting a guaranteed-fail tool.
-        log(f"interceptor MCP skipped: binary missing at {bin_path}")
-        return servers
-    mcp_env = {
-        "APEX_INT_CHAT_ID": chat_id or "",
-        "APEX_INT_STATE_DIR": str(APEX_ROOT / "state" / "interceptor"),
-        "APEX_INTERCEPTOR_BIN": bin_path,
-    }
-    servers = dict(servers)
-    servers["interceptor"] = {
-        "command": sys.executable,
-        "args": [str(mcp_script)],
-        "env": mcp_env,
-    }
-    return servers
 
 
 _GUIDE_PROFILE_ID = "sys-guide"
@@ -733,18 +657,7 @@ _GUIDE_PROFILE_ID = "sys-guide"
 
 def _inject_guide_tools_mcp(servers: dict) -> dict:
     """Auto-inject the guide config tools MCP server for guide sessions."""
-    if "guide_tools" in servers:
-        return servers  # already configured
-    mcp_script = APEX_ROOT / "server" / "local_model" / "mcp_guide_tools.py"
-    if not mcp_script.exists():
-        return servers
-    servers = dict(servers)
-    servers["guide_tools"] = {
-        "command": sys.executable,
-        "args": [str(mcp_script)],
-        "env": {"APEX_ROOT": str(APEX_ROOT)},
-    }
-    return servers
+    return _tool_surface.inject_guide_tools_mcp(servers)
 
 
 def _is_guide_session(client_key: str | None) -> bool:
