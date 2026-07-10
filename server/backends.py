@@ -861,41 +861,38 @@ def _extract_tool_events_from_history(hist_path: Path) -> list[dict]:
     return events
 
 
-async def _emit_tool_events_from_history(
-    chat_id: str,
+def _collect_tool_events_from_history(
     session_id: str,
     cwd: str,
     already_recorded: list[dict],
-) -> None:
-    """After grok's stream ends, read chat_history.jsonl for the session and
-    emit any tool_use / tool_result events we haven't already streamed.
+) -> int:
+    """Read grok's session chat_history.jsonl and APPEND (do not stream) tool
+    events into ``already_recorded`` so they persist in the message DB row.
 
-    Called from _run_grok_chat AFTER proc.wait so timing of tool pill rendering
-    doesn't interfere with the live thinking pill (which now runs uninterrupted
-    for the whole turn). Events appended to `already_recorded` so the message
-    persist path sees them.
+    Returns the number of new tool events added.
 
     Grok CLI 0.2.93 does not emit tool events on streaming-json stdout (bug
-    filed with xAI 2026-07-09). This is the fallback.
+    filed with xAI 2026-07-09). We keep the DB record complete for auditing
+    but deliberately do NOT stream these events, because tool_use / tool_result
+    events fired AFTER text-stream completion cause the frontend to teardown
+    the just-created static thinking pill and re-render with a stale duration
+    (regression Dana caught 2026-07-09). When the user refreshes the message
+    history, the persisted tool_events render correctly.
     """
     hist_path = _grok_session_history_path(session_id, cwd)
     if hist_path is None:
-        return
+        return 0
     all_events = _extract_tool_events_from_history(hist_path)
     if not all_events:
-        return
-    # Only emit events for tool_call_ids we haven't seen on the stdout stream.
-    # Currently streaming-json emits none, but future CLI versions might, and
-    # this is dedup-safe against both cases.
+        return 0
     seen_ids = {e.get("id") for e in already_recorded if e.get("type") == "tool_use"}
+    added = 0
     for evt in all_events:
         if evt.get("type") == "tool_use" and evt.get("id") in seen_ids:
             continue
         already_recorded.append(evt)
-        try:
-            await _send_stream_event(chat_id, evt)
-        except Exception as e:
-            log(f"grok history emit failed: {e}")
+        added += 1
+    return added
 
 
 async def _run_grok_chat(
@@ -1307,19 +1304,18 @@ async def _run_grok_chat(
             f"turn={turns}/{_GROK_MAX_SESSION_TURNS} chars={len(result_text)}"
         )
 
-    # Read grok's session chat_history.jsonl and emit synthesized
-    # tool_use / tool_result events with real inputs + outputs. Grok CLI 0.2.93
-    # omits these from streaming-json stdout (bug filed with xAI 2026-07-09).
-    # Emitting AFTER text streaming completes leaves the live thinking pill
-    # + timer intact for the whole turn; the tool pill lands right before
-    # stream_end so the message DB row has full tool activity persisted.
+    # Append (don't stream) tool events from chat_history.jsonl so the message
+    # DB row has full tool activity for auditing. Streaming them would
+    # interrupt the thinking-pill lifecycle (see docstring on
+    # _collect_tool_events_from_history). Persisted events render correctly
+    # on message-history reload.
     if session_id:
         try:
-            await _emit_tool_events_from_history(
-                chat_id, session_id, workspace, tool_events
-            )
+            _added = _collect_tool_events_from_history(session_id, workspace, tool_events)
+            if _added:
+                log(f"grok tool_events collected from history: {_added} events")
         except Exception as _e:
-            log(f"grok history-emit failed: {_e}")
+            log(f"grok history-collect failed: {_e}")
 
     _cw = MODEL_CONTEXT_WINDOWS.get(effective_model, MODEL_CONTEXT_DEFAULT)
     _est = tokens_in or _estimate_tokens(chat_id)
