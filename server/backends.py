@@ -303,6 +303,85 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
     # Per-agent workspace + sandbox from tool_policy
     codex_workspace, codex_sandbox = _resolve_codex_profile_overrides(chat_id)
 
+    # PR3 — resolve Apex MCP (Track B / core pack) and project nested -c args.
+    # Prefer real CODEX_HOME; never CODEX_CONFIG_DIR / ~/.codex-api (PR0 §6 dead).
+    _cu_target_cx: str | None = None
+    _int_enabled_cx = False
+    _profile_id_cx = ""
+    _perm_level_cx = 2
+    try:
+        _chat_row_cx = _get_chat(chat_id) if chat_id else None
+        if _chat_row_cx:
+            _cu_target_cx = _chat_row_cx.get("computer_use_target") or None
+            _int_enabled_cx = bool(_chat_row_cx.get("interceptor_enabled"))
+            _profile_id_cx = str(_chat_row_cx.get("profile_id") or "")
+    except Exception as _e_cx:
+        log(f"codex pr3 chat lookup: {_e_cx}")
+    _group_pid_cx = _current_group_profile_id.get("")
+    if _group_pid_cx:
+        _profile_id_cx = _group_pid_cx
+    try:
+        if _profile_id_cx:
+            _policy_cx = _get_profile_tool_policy(_profile_id_cx) or {}
+        else:
+            _policy_cx = _get_chat_tool_policy(chat_id) if chat_id else {}
+        _perm_level_cx = int(_policy_cx.get("level", 2))
+    except Exception as _e_pol_cx:
+        log(f"codex policy lookup: {_e_pol_cx}")
+    _codex_extras = (
+        resolve_profile_extra_tools(_profile_id_cx or None) if _profile_id_cx else None
+    )
+    _codex_pack = "core"
+    _resolved_mcp_cx: dict = {}
+    _codex_c_args: list[str] = []
+    _codex_env_ovr: dict[str, str] = {}
+    try:
+        _resolved_mcp_cx = tool_surface.resolve_for_codex(
+            chat_id,
+            workspace=codex_workspace,
+            permission_level=_perm_level_cx,
+            computer_use_target=_cu_target_cx,
+            interceptor_enabled=_int_enabled_cx,
+            extra_allowed_tools=_codex_extras,
+            pack=_codex_pack,
+        )
+        # Fail-closed when gate-test / extras require claim_store but it is absent.
+        if tool_surface.claim_store_required(
+            extras=_codex_extras, profile_id=_profile_id_cx or None
+        ) and "claim_store" not in _resolved_mcp_cx:
+            err = (
+                "CLAIM_STORE_REQUIRED: claim_store MCP not admitted for this Codex "
+                "turn (gate-test / extras fail-closed). Check catalog + level."
+            )
+            log(f"codex {err}")
+            await _send_stream_event(
+                chat_id, {"type": "error", "message": err, "retryable": False}
+            )
+            return {
+                "text": "",
+                "is_error": True,
+                "error": err,
+                "cost_usd": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "session_id": None,
+                "thinking": "",
+                "tool_events": "[]",
+            }
+        if _resolved_mcp_cx:
+            _codex_c_args, _env_ovr_cx, _ = tool_surface.project_codex(
+                _resolved_mcp_cx, permission_level=_perm_level_cx
+            )
+            # env overrides applied later into codex_env
+            _codex_env_ovr = _env_ovr_cx
+        else:
+            _codex_env_ovr = {}
+    except Exception as _e_proj_cx:
+        log(f"codex project_codex failed, fail-open without Apex MCP: {_e_proj_cx}")
+        _resolved_mcp_cx = {}
+        _codex_c_args = []
+        _codex_env_ovr = {}
+
     if existing_thread:
         # Resume existing session — Codex already has full conversation history.
         # Skip context injection: the thread carries profile/roster/workspace from
@@ -336,8 +415,11 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
         else:
             full_prompt = prompt
         log(f"codex resume: session={scope_key[:24]} thread={existing_thread[:8]} (identity anchor={'yes' if _anchor_name else 'no'})")
+        # Re-pass -c MCP overlays on resume (PR0 §4) so MCP stays attached.
         cmd = [
-            CODEX_CLI, "exec", "resume", existing_thread,
+            CODEX_CLI, "exec",
+            *_codex_c_args,
+            "resume", existing_thread,
             "--json", "--skip-git-repo-check",
             "-m", cli_model, "-",
         ]
@@ -469,20 +551,35 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
             log(f"codex journal recovery injected: chat={chat_id[:8]}")
 
         cmd = [
-            CODEX_CLI, "exec", "--json",
+            CODEX_CLI, "exec",
+            *_codex_c_args,
+            "--json",
             "--skip-git-repo-check",
             "-m", cli_model, "-s", codex_sandbox, "-C", codex_workspace, "-",
         ]
 
-    # Spawn codex CLI — API-key models use a separate config dir with API auth
-    codex_env = {**os.environ, "OPENAI_API_KEY": OPENAI_API_KEY}
+    # Spawn codex CLI — always real CODEX_HOME (~/.codex). API-key models
+    # (o3/o4-mini) authenticate via OPENAI_API_KEY / CODEX_API_KEY env or
+    # auth.json under CODEX_HOME (PR0 §6). Do NOT set CODEX_CONFIG_DIR or
+    # point at empty ~/.codex-api (dead path; not in modern CLI).
+    codex_env = {**os.environ}
+    if OPENAI_API_KEY:
+        codex_env["OPENAI_API_KEY"] = OPENAI_API_KEY
     if use_api_key:
-        api_config = Path.home() / ".codex-api"
-        if api_config.is_dir():
-            codex_env["CODEX_CONFIG_DIR"] = str(api_config)
-            log(f"codex: using API key auth for {cli_model}")
+        if not (OPENAI_API_KEY or codex_env.get("CODEX_API_KEY") or codex_env.get("OPENAI_API_KEY")):
+            log(
+                f"codex: WARNING — {cli_model} typically needs OPENAI_API_KEY/"
+                "CODEX_API_KEY; using real CODEX_HOME auth.json only"
+            )
         else:
-            log(f"codex: WARNING — {cli_model} requires API key but ~/.codex-api not configured")
+            log(f"codex: API-key model {cli_model} via env + real CODEX_HOME")
+    if _codex_env_ovr:
+        codex_env.update(_codex_env_ovr)
+    log(
+        f"codex spawn: model={cli_model} resume={bool(existing_thread)} "
+        f"level={_perm_level_cx} pack={_codex_pack} mcp={len(_resolved_mcp_cx)} "
+        f"c_args={len(_codex_c_args)//2} home=real cwd={codex_workspace}"
+    )
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=asyncio.subprocess.PIPE,
