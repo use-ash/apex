@@ -199,6 +199,53 @@ def project_claude(servers: dict[str, Any]) -> dict[str, dict]:
 
 
 # ---------------------------------------------------------------------------
+# Turn-level resolvers (PR1c) — one-stop load+inject for a specific chat turn
+# ---------------------------------------------------------------------------
+
+
+def resolve_for_grok(
+    chat_id: str | None,
+    *,
+    workspace: str,
+    permission_level: int = 2,
+    computer_use_target: str | None = None,
+    interceptor_enabled: bool = False,
+    extra_allowed_tools: frozenset[str] | None = None,
+) -> dict[str, dict]:
+    """Load + inject the Apex MCP catalog for a Grok CLI turn.
+
+    Mirrors the sequence in ``streaming._build_sdk_options`` so Grok gets the
+    same server set Claude would. Caller passes the result to
+    ``project_grok(servers)`` to render the temp GROK_HOME.
+
+    Args mirror ``streaming.py`` call sites; safe defaults so ``_run_grok_chat``
+    can call this without extra plumbing on day one.
+    """
+    servers = load_enabled_mcp_servers(strip_enabled_key=True)
+    servers = inject_execute_code_mcp(
+        servers,
+        chat_id=chat_id,
+        workspace=workspace,
+        permission_level=permission_level,
+    )
+    servers = inject_claim_store_mcp(servers, chat_id=chat_id)
+    servers = inject_computer_use_mcp(
+        servers,
+        chat_id=chat_id,
+        permission_level=permission_level,
+        computer_use_target=computer_use_target,
+    )
+    servers = inject_interceptor_mcp(
+        servers,
+        chat_id=chat_id,
+        interceptor_enabled=interceptor_enabled,
+    )
+    if extra_allowed_tools:
+        servers = inject_guide_tools_mcp(servers)
+    return servers
+
+
+# ---------------------------------------------------------------------------
 # Grok CLI projector (PR1b) — locked to PR0 spike results 2026-07-09
 # ---------------------------------------------------------------------------
 
