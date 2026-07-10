@@ -808,102 +808,94 @@ def _public_grok_error_message(err_msg: str) -> str:
     return "Grok CLI hit an internal error while preparing the response. Retry the turn."
 
 
-import re as _re
-
-# Grok CLI debug-log patterns. Locked to 0.2.93 (f00f96316d4b). Update
-# when xAI ships the fix for tool_use on streaming-json stdout.
-_GROK_DBG_TOOL_REQUEST = _re.compile(
-    r"Model requesting tool: name='([^']+)', call_id='([^']+)'"
-)
-_GROK_DBG_TOOL_DISPATCH = _re.compile(
-    r"dispatch_tool tool=(\S+) call_id=(\S+)"
-)
-_GROK_DBG_TOOL_COMPLETE = _re.compile(
-    r"execution complete.*?tool_call_id=([\w-]+).*?exit_code=Some\((-?\d+)\)"
-)
+from urllib.parse import quote as _urlquote
 
 
-async def _tail_grok_debug_log(
-    chat_id: str,
-    debug_path: str,
-    stop_event: asyncio.Event,
-    tool_events_out: list[dict],
-) -> None:
-    """Tail the grok CLI debug log and synthesize tool_use / tool_result events.
+def _grok_session_history_path(session_id: str, cwd: str) -> Path | None:
+    """Locate ~/.grok/sessions/<encoded-cwd>/<session_id>/chat_history.jsonl."""
+    if not session_id:
+        return None
+    encoded_cwd = _urlquote(cwd, safe="")
+    p = Path.home() / ".grok" / "sessions" / encoded_cwd / session_id / "chat_history.jsonl"
+    return p if p.exists() else None
 
-    Runs until stop_event fires. Appends any emitted events to tool_events_out
-    so the caller can persist them in the message row. Never raises — logs and
-    returns on failure.
 
-    Grok CLI 0.2.93 does not emit tool events on --output-format streaming-json
-    stdout (bug filed with xAI 2026-07-09 via `/feedback`). Debug log DOES
-    contain them via the ACP channel. Parse pattern is locked to the CLI's
-    logging format; update _GROK_DBG_* regexes when xAI changes the shape.
+def _extract_tool_events_from_history(hist_path: Path) -> list[dict]:
+    """Read grok's chat_history.jsonl and reconstruct tool_use / tool_result
+    events matching apex's stream event shape.
+
+    Returns interleaved tool_use / tool_result events in chronological order.
+    Each `assistant` row with `tool_calls` becomes N tool_use events. Each
+    `tool_result` row becomes a tool_result event carrying the actual output.
     """
-    seen_dispatched: set[str] = set()
-    seen_completed: set[str] = set()
-    pending_names: dict[str, str] = {}  # call_id -> tool name
-    # Wait for the file to exist (grok may not have written yet)
-    _wait_deadline = time.monotonic() + 5.0
-    while not os.path.exists(debug_path):
-        if stop_event.is_set() or time.monotonic() > _wait_deadline:
-            return
-        await asyncio.sleep(0.05)
+    events: list[dict] = []
     try:
-        with open(debug_path, "r", errors="replace") as f:
-            while not stop_event.is_set():
-                line = f.readline()
-                if not line:
-                    await asyncio.sleep(0.1)
+        with hist_path.open() as f:
+            for line in f:
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
                     continue
-                # Tool request → tool_use event
-                m = _GROK_DBG_TOOL_REQUEST.search(line)
-                if m:
-                    name, call_id = m.group(1), m.group(2)
-                    pending_names[call_id] = name
-                    continue
-                # Dispatch → confirms the call is actually executing.
-                # Emit tool_use here so we don't stream tools grok merely
-                # considered but never dispatched.
-                m = _GROK_DBG_TOOL_DISPATCH.search(line)
-                if m:
-                    name, call_id = m.group(1), m.group(2)
-                    if call_id in seen_dispatched:
-                        continue
-                    seen_dispatched.add(call_id)
-                    pending_names.setdefault(call_id, name)
-                    evt = {
-                        "type": "tool_use",
-                        "id": call_id,
-                        "name": name,
-                        "input": "",  # not exposed in debug log
-                    }
-                    tool_events_out.append(evt)
-                    try:
-                        await _send_stream_event(chat_id, evt)
-                    except Exception as _e:
-                        log(f"grok debug tailer tool_use send failed: {_e}")
-                    continue
-                # Completion → tool_result event
-                m = _GROK_DBG_TOOL_COMPLETE.search(line)
-                if m:
-                    call_id, exit_code = m.group(1), m.group(2)
-                    if call_id in seen_completed:
-                        continue
-                    seen_completed.add(call_id)
-                    evt = {
+                # Assistant row can carry structured tool_calls.
+                if row.get("type") == "assistant" and isinstance(
+                    row.get("tool_calls"), list
+                ):
+                    for call in row["tool_calls"]:
+                        events.append({
+                            "type": "tool_use",
+                            "id": str(call.get("id") or uuid.uuid4()),
+                            "name": call.get("name") or "tool",
+                            "input": call.get("arguments") or "",
+                        })
+                elif row.get("type") == "tool_result":
+                    content = row.get("content")
+                    if not isinstance(content, str):
+                        content = json.dumps(content) if content is not None else ""
+                    events.append({
                         "type": "tool_result",
-                        "id": call_id,
-                        "content": f"exit code: {exit_code}",
-                    }
-                    tool_events_out.append(evt)
-                    try:
-                        await _send_stream_event(chat_id, evt)
-                    except Exception as _e:
-                        log(f"grok debug tailer tool_result send failed: {_e}")
-                    continue
-    except (OSError, ValueError) as e:
-        log(f"grok debug tailer error: {e}")
+                        "id": str(row.get("tool_call_id") or uuid.uuid4()),
+                        "content": content[:4000],
+                    })
+    except OSError as e:
+        log(f"grok history parse error: {e}")
+    return events
+
+
+async def _emit_tool_events_from_history(
+    chat_id: str,
+    session_id: str,
+    cwd: str,
+    already_recorded: list[dict],
+) -> None:
+    """After grok's stream ends, read chat_history.jsonl for the session and
+    emit any tool_use / tool_result events we haven't already streamed.
+
+    Called from _run_grok_chat AFTER proc.wait so timing of tool pill rendering
+    doesn't interfere with the live thinking pill (which now runs uninterrupted
+    for the whole turn). Events appended to `already_recorded` so the message
+    persist path sees them.
+
+    Grok CLI 0.2.93 does not emit tool events on streaming-json stdout (bug
+    filed with xAI 2026-07-09). This is the fallback.
+    """
+    hist_path = _grok_session_history_path(session_id, cwd)
+    if hist_path is None:
+        return
+    all_events = _extract_tool_events_from_history(hist_path)
+    if not all_events:
+        return
+    # Only emit events for tool_call_ids we haven't seen on the stdout stream.
+    # Currently streaming-json emits none, but future CLI versions might, and
+    # this is dedup-safe against both cases.
+    seen_ids = {e.get("id") for e in already_recorded if e.get("type") == "tool_use"}
+    for evt in all_events:
+        if evt.get("type") == "tool_use" and evt.get("id") in seen_ids:
+            continue
+        already_recorded.append(evt)
+        try:
+            await _send_stream_event(chat_id, evt)
+        except Exception as e:
+            log(f"grok history emit failed: {e}")
 
 
 async def _run_grok_chat(
@@ -979,12 +971,6 @@ async def _run_grok_chat(
             "--cwd", workspace,
             "--max-turns", "30",
         ]
-        # Debug log so we can surface tool_use events. Grok CLI 0.2.93 does
-        # not emit tool_use on streaming-json stdout (bug filed 2026-07-09);
-        # we tail the debug log and synthesize events. See _tail_grok_debug_log
-        # below.
-        _grok_debug_path = f"/tmp/apex-grok-debug-{chat_id[:8]}-{int(time.time()*1000)}.log"
-        cmd.extend(["--debug", "--debug-file", _grok_debug_path])
     else:
         profile_prompt = _get_profile_prompt(chat_id)
         group_roster_prompt = _get_group_roster_prompt(chat_id, user_message=prompt)
@@ -1068,8 +1054,6 @@ async def _run_grok_chat(
             "--max-turns", "30",
             "--no-memory",  # Apex owns memory injection
         ]
-        _grok_debug_path = f"/tmp/apex-grok-debug-{chat_id[:8]}-{int(time.time()*1000)}.log"
-        cmd.extend(["--debug", "--debug-file", _grok_debug_path])
 
     grok_env = {**os.environ}
     if XAI_API_KEY:
@@ -1150,21 +1134,14 @@ async def _run_grok_chat(
     result_text = ""
     thinking_text = ""
     tool_events: list[dict] = []
-    # Start debug-log tailer so tool_use / tool_result events reach the UI
-    # even though grok CLI 0.2.93 omits them from streaming-json stdout.
-    _debug_stop = asyncio.Event()
-    _debug_task = asyncio.create_task(
-        _tail_grok_debug_log(chat_id, _grok_debug_path, _debug_stop, tool_events)
-    )
     session_id = existing_session or ""
     tokens_in = 0
     tokens_out = 0
     error_msg = ""
 
-    # Fix (Grok review 2026-07-09 blocker: "No `finally` — temp home leaks on
-    # exception mid-stream"). Idempotent cleanup closure invoked at every
-    # exit path AND from a bare `except` at the bottom, so we always release
-    # temp GROK_HOME + debug log + tailer task even if the parse loop raises.
+    # Idempotent cleanup closure invoked at every exit path AND from bare
+    # except guards below, so we always release temp GROK_HOME even when the
+    # parse loop or proc.wait raises (WS disconnect, cancel).
     _cleanup_done = False
 
     def _do_cleanup() -> None:
@@ -1172,14 +1149,6 @@ async def _run_grok_chat(
         if _cleanup_done:
             return
         _cleanup_done = True
-        if not _debug_task.done():
-            _debug_stop.set()
-            _debug_task.cancel()
-        try:
-            if os.path.exists(_grok_debug_path):
-                os.unlink(_grok_debug_path)
-        except OSError:
-            pass
         tool_surface.cleanup_projected_home(_temp_grok_home)
 
     assert proc.stdout is not None
@@ -1283,22 +1252,6 @@ async def _run_grok_chat(
             proc.kill()
         _do_cleanup()
         raise _parse_interrupted
-    # Signal + await debug tailer so any final tool events are flushed
-    # before we return. Cap wait at 0.5s so a hung tailer can't block the
-    # response.
-    _debug_stop.set()
-    try:
-        await asyncio.wait_for(_debug_task, timeout=0.5)
-    except (asyncio.TimeoutError, asyncio.CancelledError):
-        _debug_task.cancel()
-    except Exception as _e:
-        log(f"grok debug tailer join error: {_e}")
-    # Best-effort remove the debug log file — small, in /tmp, but keep it tidy.
-    try:
-        if os.path.exists(_grok_debug_path):
-            os.unlink(_grok_debug_path)
-    except OSError:
-        pass
     stderr_data = await proc.stderr.read() if proc.stderr else b""
     if proc.returncode not in (0, None) and not result_text:
         err_msg = error_msg or (
@@ -1353,6 +1306,20 @@ async def _run_grok_chat(
             f"grok turn complete: session={scope_key[:24]} sid={session_id[:8]} "
             f"turn={turns}/{_GROK_MAX_SESSION_TURNS} chars={len(result_text)}"
         )
+
+    # Read grok's session chat_history.jsonl and emit synthesized
+    # tool_use / tool_result events with real inputs + outputs. Grok CLI 0.2.93
+    # omits these from streaming-json stdout (bug filed with xAI 2026-07-09).
+    # Emitting AFTER text streaming completes leaves the live thinking pill
+    # + timer intact for the whole turn; the tool pill lands right before
+    # stream_end so the message DB row has full tool activity persisted.
+    if session_id:
+        try:
+            await _emit_tool_events_from_history(
+                chat_id, session_id, workspace, tool_events
+            )
+        except Exception as _e:
+            log(f"grok history-emit failed: {_e}")
 
     _cw = MODEL_CONTEXT_WINDOWS.get(effective_model, MODEL_CONTEXT_DEFAULT)
     _est = tokens_in or _estimate_tokens(chat_id)
