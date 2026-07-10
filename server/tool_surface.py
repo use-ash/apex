@@ -196,3 +196,205 @@ def project_claude(servers: dict[str, Any]) -> dict[str, dict]:
     PR1a: identical to assigning opts.mcp_servers = servers after injects.
     """
     return dict(servers)
+
+
+# ---------------------------------------------------------------------------
+# Grok CLI projector (PR1b) — locked to PR0 spike results 2026-07-09
+# ---------------------------------------------------------------------------
+
+# Filesystem write tools requiring --deny at L1 (verified in PR0 §3).
+_GROK_FILESYSTEM_WRITE_TOOLS = (
+    "filesystem__write_file",
+    "filesystem__edit_file",
+    "filesystem__create_directory",
+    "filesystem__move_file",
+)
+
+
+def _serialize_toml_value(value: Any) -> str:
+    """Minimal TOML value serializer for MCP server blocks.
+
+    Handles str, int, bool, list[str], dict[str, str] — the shapes Apex's
+    MCP server specs actually use. Not a general TOML serializer.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return json.dumps(value)  # JSON string escaping is TOML-compatible
+    if isinstance(value, list):
+        return "[" + ", ".join(_serialize_toml_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        parts = [f"{k} = {_serialize_toml_value(v)}" for k, v in value.items()]
+        return "{ " + ", ".join(parts) + " }"
+    return json.dumps(str(value))
+
+
+def _render_grok_mcp_block(name: str, spec: dict) -> str:
+    """Render a single [mcp_servers.<name>] TOML block from an Apex spec."""
+    lines = [f'[mcp_servers."{name}"]']
+    for key in ("command", "args", "env", "cwd"):
+        if key in spec:
+            lines.append(f"{key} = {_serialize_toml_value(spec[key])}")
+    # Default startup timeout for npx-launched servers (spec §4.d)
+    if spec.get("command", "").endswith("npx"):
+        lines.append("startup_timeout_sec = 60")
+    return "\n".join(lines) + "\n"
+
+
+def _strip_mcp_server_sections(toml_text: str) -> str:
+    """Remove existing [mcp_servers.*] blocks from a TOML file's text.
+
+    Naive block-based scanner — Grok's own config.toml is line-oriented and
+    doesn't nest mcp_servers under other tables, so this holds. If the CLI
+    starts nesting we'll need a real TOML parser.
+    """
+    out_lines: list[str] = []
+    skipping = False
+    for line in toml_text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("[mcp_servers.") or stripped == "[mcp_servers]":
+            skipping = True
+            continue
+        if skipping and stripped.startswith("[") and stripped.endswith("]"):
+            # New non-mcp_servers section starts — resume copying.
+            skipping = False
+        if not skipping:
+            out_lines.append(line)
+    return "".join(out_lines)
+
+
+def _grok_home_symlink_layout(real_home: Path, temp_home: Path) -> None:
+    """Symlink required + defensive-default entries from real_home into temp_home.
+
+    Locked layout (PR0 §1):
+      - REQUIRED: `auth.json`, `sessions/`
+      - DEFENSIVE DEFAULT: every other real_home entry EXCEPT `config.toml`
+      - `config.toml` is copied+merged separately by caller
+
+    Never copies auth material — symlinks so CLI reads real files. Skips
+    entries that don't exist in real_home. Any symlink target that doesn't
+    exist is silently omitted so PR1b won't fail on a partial real home.
+    """
+    if not real_home.exists():
+        # Real home doesn't exist yet — CLI will bootstrap it on next real
+        # `grok login`; temp home just gets no symlinks. This is a corner
+        # case for first-time users; not an error.
+        return
+    for entry in real_home.iterdir():
+        if entry.name == "config.toml":
+            continue
+        target = temp_home / entry.name
+        if target.exists() or target.is_symlink():
+            continue
+        try:
+            os.symlink(entry, target)
+        except OSError as e:
+            log(f"grok temp home symlink skipped {entry.name}: {e}")
+
+
+def project_grok(
+    servers: dict[str, dict],
+    *,
+    real_grok_home: Path | None = None,
+    cli_deny_tools: tuple[str, ...] = _GROK_FILESYSTEM_WRITE_TOOLS,
+) -> tuple[Path, dict[str, str], list[str]]:
+    """Materialize a temp GROK_HOME with Apex MCP servers merged in.
+
+    Returns:
+      (temp_home, env_overrides, extra_cli_args)
+      - temp_home: Path to a fresh mkdtemp'd home. Caller MUST pass to
+        cleanup_projected_home() in a finally block.
+      - env_overrides: dict to merge into subprocess env. Sets GROK_HOME +
+        compat kill switches.
+      - extra_cli_args: list of --deny MCPTool(...) argv fragments for the
+        write-tool denylist. Concatenate into the grok CLI command.
+
+    Args:
+      servers: Apex-resolved MCP server dict (post-injects, post-filter).
+      real_grok_home: Override for the real ~/.grok. Defaults to
+        Path(env GROK_HOME) or ~/.grok. Never modified.
+      cli_deny_tools: Wire names to append via --deny MCPTool(<name>).
+        Defaults to filesystem write tools per PR0 §3.
+
+    Design ref: docs/UNIFIED_TOOL_SURFACE_DESIGN.md §"Grok / backend xai —
+    hard algorithm". PR0 spike results: docs/PR0_TOOL_SURFACE_SPIKES.md.
+    """
+    import tempfile
+    import shutil
+
+    if real_grok_home is None:
+        real_grok_home = Path(os.environ.get("GROK_HOME") or Path.home() / ".grok")
+    real_grok_home = real_grok_home.resolve()
+
+    temp_home = Path(tempfile.mkdtemp(prefix="apex-grok-home-"))
+    temp_home.chmod(0o700)
+
+    # 1. Symlink required + defensive-default entries (excludes config.toml).
+    _grok_home_symlink_layout(real_grok_home, temp_home)
+
+    # 2. Copy + merge config.toml — strip existing MCP blocks, append Apex ones,
+    #    force compat kill switches.
+    real_config = real_grok_home / "config.toml"
+    base_toml = real_config.read_text() if real_config.exists() else ""
+    merged = _strip_mcp_server_sections(base_toml)
+    if merged and not merged.endswith("\n"):
+        merged += "\n"
+
+    # Ensure compat kill switches — force off both Claude & Cursor MCP merges
+    # so project .mcp.json etc. don't leak in. Idempotent: if already off in
+    # base config we overwrite; if never set we add.
+    if "[compat.claude]" not in merged:
+        merged += "\n[compat.claude]\nmcps = false\n"
+    if "[compat.cursor]" not in merged:
+        merged += "\n[compat.cursor]\nmcps = false\n"
+
+    for name, spec in servers.items():
+        merged += "\n" + _render_grok_mcp_block(name, spec)
+
+    (temp_home / "config.toml").write_text(merged)
+
+    # 3. Env overrides — never mutate os.environ; caller merges into subprocess env.
+    env_overrides = {
+        "GROK_HOME": str(temp_home),
+        "GROK_CLAUDE_MCPS_ENABLED": "0",
+        "GROK_CURSOR_MCPS_ENABLED": "0",
+    }
+
+    # 4. --deny MCPTool(<tool>) argv fragments for write denies.
+    extra_cli_args: list[str] = []
+    for tool in cli_deny_tools:
+        extra_cli_args.extend(["--deny", f"MCPTool({tool})"])
+
+    return temp_home, env_overrides, extra_cli_args
+
+
+def cleanup_projected_home(path: Path | None) -> None:
+    """Best-effort rmtree of a temp home only. NEVER touches real ~/.grok/~/.codex.
+
+    Safety: path must be under $TMPDIR / /tmp / /var/folders (macOS mkdtemp)
+    and must have the apex-grok-home- or apex-codex-home- prefix. Guards
+    against accidentally being pointed at a real home.
+    """
+    if path is None:
+        return
+    import tempfile
+    import shutil as _shutil
+    try:
+        resolved = path.resolve()
+        # Must be under system tempdir.
+        tmp_root = Path(tempfile.gettempdir()).resolve()
+        if not str(resolved).startswith(str(tmp_root)):
+            log(f"cleanup_projected_home refused: {resolved} not under {tmp_root}")
+            return
+        # Must have expected prefix.
+        if not (
+            resolved.name.startswith("apex-grok-home-")
+            or resolved.name.startswith("apex-codex-home-")
+        ):
+            log(f"cleanup_projected_home refused: {resolved} lacks apex prefix")
+            return
+        _shutil.rmtree(resolved, ignore_errors=True)
+    except (OSError, ValueError) as e:
+        log(f"cleanup_projected_home error: {e}")
