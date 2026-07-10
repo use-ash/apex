@@ -781,7 +781,15 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
                             or item.get("status")
                             or "ok"
                         )[:2000]
-                tool_evt = {"type": "tool_result", "id": tool_id, "content": content}
+                # iOS / Claude convention: pair results via tool_use_id (not only id).
+                # Missing tool_use_id leaves the tool_use row isComplete=false forever
+                # ("Running command" spinner + 1/2 in Tools sheet).
+                tool_evt = {
+                    "type": "tool_result",
+                    "id": tool_id,
+                    "tool_use_id": tool_id,
+                    "content": content,
+                }
                 tool_events.append(tool_evt)
                 await _send_stream_event(chat_id, tool_evt)
 
@@ -1130,9 +1138,11 @@ def _rows_to_tool_events(rows: list[dict]) -> list[dict]:
             content = row.get("content")
             if not isinstance(content, str):
                 content = json.dumps(content) if content is not None else ""
+            tid = str(row.get("tool_call_id") or uuid.uuid4())
             events.append({
                 "type": "tool_result",
-                "id": str(row.get("tool_call_id") or uuid.uuid4()),
+                "id": tid,
+                "tool_use_id": tid,
                 "content": content[:4000],
             })
     return events
@@ -1179,9 +1189,11 @@ def _extract_tool_events_from_events_jsonl(
                     content = row.get("result") or row.get("output") or row.get("content") or ""
                     if not isinstance(content, str):
                         content = json.dumps(content)[:4000]
+                    rid = tid or str(uuid.uuid4())
                     completed.append({
                         "type": "tool_result",
-                        "id": tid or str(uuid.uuid4()),
+                        "id": rid,
+                        "tool_use_id": rid,
                         "content": content[:4000],
                     })
     except OSError as e:
@@ -1642,7 +1654,12 @@ async def _run_grok_chat(
                     content = json.dumps(content)[:2000]
                 except Exception:
                     content = str(content)[:2000]
-            tool_evt = {"type": "tool_result", "id": tool_id, "content": content[:2000]}
+            tool_evt = {
+                "type": "tool_result",
+                "id": tool_id,
+                "tool_use_id": tool_id,
+                "content": content[:2000],
+            }
             tool_events.append(tool_evt)
             await _send_stream_event(chat_id, tool_evt)
 
