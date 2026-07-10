@@ -121,7 +121,7 @@ REMOTE_MODEL_OPTIONS = [
     {"id": "grok-4",                "displayName": "Grok 4",           "provider": "xai",       "local": False},
     {"id": "grok-4-fast",           "displayName": "Grok 4 Fast",      "provider": "xai",       "local": False},
     {"id": "codex:gpt-5.6-sol",     "displayName": "GPT-5.6 Sol",      "provider": "openai",    "local": False},
-    {"id": "codex:gpt-5.6",         "displayName": "GPT-5.6",          "provider": "openai",    "local": False},
+    {"id": "codex:gpt-5.6",         "displayName": "GPT-5.6 (Sol)",    "provider": "openai",    "local": False},
     {"id": "codex:gpt-5.6-terra",   "displayName": "GPT-5.6 Terra",    "provider": "openai",    "local": False},
     {"id": "codex:gpt-5.6-luna",    "displayName": "GPT-5.6 Luna",     "provider": "openai",    "local": False},
     {"id": "codex:gpt-5.5-pro",     "displayName": "GPT-5.5 Pro",      "provider": "openai",    "local": False},
