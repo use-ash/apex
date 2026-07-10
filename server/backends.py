@@ -1067,6 +1067,7 @@ async def _run_grok_chat(
     _cu_target: str | None = None
     _int_enabled = False
     _profile_id_pr1c = ""
+    _perm_level = 2  # default level if lookup fails
     try:
         from db import _get_chat as _chat_lookup
         _chat_row_pr1c = _chat_lookup(chat_id) if chat_id else None
@@ -1081,15 +1082,37 @@ async def _run_grok_chat(
     _group_pid = _current_group_profile_id.get("")
     if _group_pid:
         _profile_id_pr1c = _group_pid
+    # Resolve permission level via the same path Claude uses
+    # (_resolve_effective_tool_policy pattern) — chat's tool_policy is
+    # authoritative; profile overrides for group speakers.
+    try:
+        if _profile_id_pr1c:
+            _policy = _get_profile_tool_policy(_profile_id_pr1c) or {}
+        else:
+            _policy = _get_chat_tool_policy(chat_id) if chat_id else {}
+        _perm_level = int(_policy.get("level", 2))
+    except Exception as _e_pol:
+        log(f"grok policy lookup: {_e_pol}")
     _grok_extras = resolve_profile_extra_tools(_profile_id_pr1c or None) if _profile_id_pr1c else None
     _resolved_mcp = tool_surface.resolve_for_grok(
         chat_id,
         workspace=workspace,
-        permission_level=2,
+        permission_level=_perm_level,
         computer_use_target=_cu_target,
         interceptor_enabled=_int_enabled,
         extra_allowed_tools=_grok_extras,
     )
+
+    # Hard-deny grok CLI built-in categories per level (Bash/Edit/Write at
+    # L0-L2, WebFetch at L0). Matches Claude L2 semantics so switching a chat
+    # between backends gives the same effective capability. Uses --deny with
+    # rule syntax (Bash, Edit, Write) — verified 2026-07-09 that
+    # --disallowed-tools does NOT gate builtins in headless mode.
+    _grok_builtin_denies = tool_surface.grok_deny_rules_for_level(_perm_level)
+    for _rule in _grok_builtin_denies:
+        cmd.extend(["--deny", _rule])
+    if _grok_builtin_denies:
+        log(f"grok builtin denies at level={_perm_level}: {_grok_builtin_denies}")
     _temp_grok_home: Path | None = None
     if _resolved_mcp:
         try:
