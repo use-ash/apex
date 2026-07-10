@@ -174,6 +174,10 @@ _MODEL_PRICING: dict[str, dict[str, Any]] = {
     "claude-opus-4-8": {"display": "Opus 4.8", "track": "subscription", "price_in": 5.00, "price_out": 25.00, "provider": "claude"},
     "claude-opus-4-7": {"display": "Opus 4.7", "track": "subscription", "price_in": 5.00, "price_out": 25.00, "provider": "claude"},
     "claude-opus-4-6": {"display": "Opus 4.6", "track": "subscription", "price_in": 15.00, "price_out": 75.00, "provider": "claude"},
+    "codex:gpt-5.6-sol": {"display": "Codex GPT-5.6 Sol", "track": "subscription", "price_in": 5.00, "price_out": 30.00, "provider": "codex"},
+    "codex:gpt-5.6": {"display": "Codex GPT-5.6", "track": "subscription", "price_in": 5.00, "price_out": 30.00, "provider": "codex"},
+    "codex:gpt-5.6-terra": {"display": "Codex GPT-5.6 Terra", "track": "subscription", "price_in": 2.50, "price_out": 15.00, "provider": "codex"},
+    "codex:gpt-5.6-luna": {"display": "Codex GPT-5.6 Luna", "track": "subscription", "price_in": 1.00, "price_out": 6.00, "provider": "codex"},
     "codex:gpt-5.5": {"display": "Codex GPT-5.5", "track": "subscription", "price_in": 5.00, "price_out": 30.00, "provider": "codex"},
     "codex:gpt-5.4": {"display": "Codex GPT-5.4", "track": "subscription", "price_in": 1.50, "price_out": 6.00, "provider": "codex"},
     "codex:gpt-5.4-mini": {"display": "Codex GPT-5.4 Mini", "track": "subscription", "price_in": 0.30, "price_out": 1.20, "provider": "codex"},
@@ -2915,6 +2919,10 @@ _PROVIDER_KEY_MAP: dict[str, str] = {
 }
 
 _CODEX_MODEL_OPTIONS: list[str] = [
+    "gpt-5.6-sol",
+    "gpt-5.6",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
     "gpt-5.5",
     "gpt-5.4",
     "gpt-5.4-mini",
