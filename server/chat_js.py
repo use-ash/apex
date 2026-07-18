@@ -3770,11 +3770,14 @@ function toolSummary(name, input) {
 
 /* ── Fix B: native AskUserQuestion picker ─────────────────────────── */
 const _userQuestionCards = new Map(); // request_id -> card element
+const _pendingUserQuestions = new Map(); // request_id -> msg payload (survives DOM wipes)
 
 function _renderUserQuestionCard(msg) {
   const requestId = String(msg.request_id || '');
   if (!requestId) return;
-  if (_userQuestionCards.has(requestId)) return; // already showing
+  _pendingUserQuestions.set(requestId, msg);
+  const existing = _userQuestionCards.get(requestId);
+  if (existing && existing.isConnected) return; // already showing in the live DOM
 
   const questions = Array.isArray(msg.questions) ? msg.questions : [];
   if (!questions.length) return;
@@ -3891,6 +3894,7 @@ function _renderUserQuestionCard(msg) {
   function finalize(declined) {
     if (card.classList.contains('is-done')) return;
     card.classList.add('is-done');
+    _pendingUserQuestions.delete(requestId);
     card.querySelectorAll('button, input').forEach((el) => { el.disabled = true; });
     const answers = {};
     if (!declined) {
@@ -3952,6 +3956,7 @@ function _renderUserQuestionCard(msg) {
 
 function _closeUserQuestionCard(requestId, options = {}) {
   if (!requestId) return;
+  _pendingUserQuestions.delete(requestId);
   const card = _userQuestionCards.get(requestId);
   if (!card) return;
   if (!card.classList.contains('is-done')) {
@@ -4803,6 +4808,14 @@ async function selectChat(id, title, chatType, category, options) {
     // at a foreign ctx's (now-null) bubble.
     _syncLegacyStreamGlobals('', {clearSessionWhenIdle: false});
   }
+
+  // Re-render any pending AskUserQuestion picker for this chat. The
+  // el.innerHTML='' above wipes the live picker card and history messages
+  // don't include it, so a refresh mid-question would otherwise lose the
+  // picker forever (the card element stays detached and its guard blocks it).
+  _pendingUserQuestions.forEach((qmsg) => {
+    if (qmsg && (!qmsg.chat_id || qmsg.chat_id === id)) _renderUserQuestionCard(qmsg);
+  });
 
   refreshDebugState('messages-loaded');
 }
