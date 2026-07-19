@@ -1563,8 +1563,12 @@ async def _run_grok_chat(
         ]
 
     grok_env = {**os.environ}
-    if XAI_API_KEY:
-        grok_env["XAI_API_KEY"] = XAI_API_KEY
+    # Prefer SuperGrok / OIDC subscription via ~/.grok/auth.json — do NOT inject
+    # XAI_API_KEY into the CLI env. Pay-per-token API keys bill differently and
+    # confuse operators who want subscription-only usage. Pre-flight refresh is
+    # `_refresh_grok_token_if_needed()` below; keep tokens warm with
+    # apex-private/scripts/refresh_grok_oauth.py (cron every 4h).
+    grok_env.pop("XAI_API_KEY", None)
     # Ensure CLI bin dirs are on PATH for child tool processes
     extra_path = f"{Path.home() / '.local' / 'bin'}:{Path.home() / '.grok' / 'bin'}"
     grok_env["PATH"] = f"{extra_path}:{grok_env.get('PATH', '')}"
