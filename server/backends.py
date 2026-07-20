@@ -42,6 +42,9 @@ import tool_surface
 
 _CODEX_MAX_THREAD_TURNS = int(os.environ.get("APEX_CODEX_MAX_TURNS", "8"))
 _GROK_MAX_SESSION_TURNS = int(os.environ.get("APEX_GROK_MAX_TURNS", "12"))
+# Spawn→first stdout line. Hung `-r` resumes (dead TCP to xAI) never exit the CLI;
+# kill + resume-failure retry heals them. 0 disables. Override via env.
+_GROK_FIRST_OUTPUT_TIMEOUT_S = float(os.environ.get("APEX_GROK_FIRST_OUTPUT_TIMEOUT_S", "60"))
 
 # Valid Codex sandbox modes (passed to -s flag)
 _VALID_CODEX_SANDBOX = {"read-only", "suggest", "full"}
@@ -1006,6 +1009,97 @@ def _get_grok_session_state(chat_id: str) -> tuple[str, int, str]:
     return existing, turns, scope_key
 
 
+def _refresh_grok_token_if_needed() -> None:
+    """Pre-flight token refresh for grok CLI OAuth.
+
+    The grok CLI stores an OIDC access_token in ~/.grok/auth.json with a
+    6-hour TTL. When it expires, the CLI falls back to the device-code flow
+    — which opens a browser authorization prompt. The CLI does NOT
+    auto-refresh using the stored refresh_token.
+
+    This function checks the token's expiry and, if it's expired or about
+    to expire (< 10 min TTL), refreshes it via the OAuth2 token endpoint
+    and rewrites auth.json in place. Called before every grok spawn.
+    """
+    auth_path = Path.home() / ".grok" / "auth.json"
+    if not auth_path.exists():
+        return  # never logged in; CLI will prompt on first use
+    try:
+        auth = json.loads(auth_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return
+
+    updated = False
+    for key, entry in auth.items():
+        if not isinstance(entry, dict) or "refresh_token" not in entry:
+            continue
+        expires_at = entry.get("expires_at", "")
+        if expires_at:
+            try:
+                from datetime import datetime, timezone
+                exp_dt = datetime.fromisoformat(
+                    expires_at.replace("Z", "+00:00")
+                )
+                now_dt = datetime.now(timezone.utc)
+                ttl = (exp_dt - now_dt).total_seconds()
+                if ttl > 600:  # >10 min remaining, skip
+                    continue
+            except (ValueError, TypeError):
+                pass  # can't parse — try refresh anyway
+
+        issuer = entry.get("oidc_issuer", "https://auth.x.ai")
+        client_id = entry.get("oidc_client_id", "")
+        refresh_token = entry.get("refresh_token", "")
+        if not client_id or not refresh_token:
+            continue
+
+        try:
+            import urllib.parse
+            data = urllib.parse.urlencode({
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": client_id,
+            }).encode()
+            req = urllib.request.Request(
+                f"{issuer}/oauth2/token",
+                data=data,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                token_resp = json.loads(resp.read())
+        except Exception as e:
+            log(f"grok token refresh failed for {key[:40]}: {e}")
+            continue
+
+        new_access = token_resp.get("access_token", "")
+        new_refresh = token_resp.get("refresh_token", "")
+        new_expires_in = token_resp.get("expires_in", 21600)
+        if not new_access:
+            continue
+
+        from datetime import datetime, timezone, timedelta
+        now_dt = datetime.now(timezone.utc)
+        entry["key"] = new_access
+        entry["expires_at"] = (
+            now_dt + timedelta(seconds=new_expires_in)
+        ).isoformat().replace("+00:00", "Z")
+        if new_refresh:
+            entry["refresh_token"] = new_refresh
+        updated = True
+        log(f"grok token refreshed for {key[:40]}: ttl={new_expires_in}s")
+
+    if updated:
+        try:
+            tmp = auth_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(auth, indent=2))
+            tmp.replace(auth_path)
+        except OSError as e:
+            log(f"grok token refresh write failed: {e}")
+
+
 def _resolve_grok_workspace(chat_id: str) -> str:
     """Per-agent workspace from tool_policy, else runtime workspace root."""
     workspace = str(env.get_runtime_workspace_root())
@@ -1579,6 +1673,10 @@ async def _run_grok_chat(
         f"mcp={len(_resolved_mcp)} denies={_deny_count} "
         f"home={'tmp' if _temp_grok_home else 'real'}"
     )
+
+    # Pre-flight: refresh OAuth token if expired to avoid device-code popup.
+    _refresh_grok_token_if_needed()
+
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -1610,124 +1708,185 @@ async def _run_grok_chat(
 
     assert proc.stdout is not None
     _parse_interrupted: BaseException | None = None
-    while True:
-        try:
-            line = await proc.stdout.readline()
-        except BaseException as _e_read:
-            _parse_interrupted = _e_read
-            log(f"grok parse loop interrupted: {type(_e_read).__name__}")
-            break
-        if not line:
-            break
-        line_str = line.decode(errors="replace").strip()
-        if not line_str:
-            continue
-        try:
-            event = json.loads(line_str)
-        except json.JSONDecodeError:
-            # Non-JSON noise — ignore
-            continue
+    _got_first_output = False
+    _first_output_timed_out = False
 
-        et = event.get("type", "")
+    async def _kill_reap_grok(reason: str) -> None:
+        """SIGKILL CLI immediately — never await wait() before kill.
 
-        if et == "thought":
-            chunk = event.get("data", "") or event.get("text", "") or ""
-            if chunk:
-                thinking_text += chunk
-                await _send_stream_event(chat_id, {"type": "thinking", "text": chunk})
-
-        elif et == "text":
-            chunk = event.get("data", "") or event.get("text", "") or ""
-            if chunk:
-                result_text += chunk
-                await _send_stream_event(chat_id, {"type": "text", "text": chunk})
-
-        elif et in {"tool_use", "tool_call", "tool"}:
-            tool_id = str(event.get("id") or event.get("tool_use_id") or uuid.uuid4())
-            name = event.get("name") or event.get("tool") or "tool"
-            inp = event.get("input") or event.get("arguments") or event.get("data") or ""
-            if not isinstance(inp, str):
-                try:
-                    inp = json.dumps(inp)[:2000]
-                except Exception:
-                    inp = str(inp)[:2000]
-            tool_evt = {"type": "tool_use", "id": tool_id, "name": name, "input": inp}
-            tool_events.append(tool_evt)
-            await _send_stream_event(chat_id, tool_evt)
-
-        elif et in {"tool_result", "tool_response"}:
-            tool_id = str(event.get("id") or event.get("tool_use_id") or uuid.uuid4())
-            content = event.get("content") or event.get("data") or event.get("output") or ""
-            if not isinstance(content, str):
-                try:
-                    content = json.dumps(content)[:2000]
-                except Exception:
-                    content = str(content)[:2000]
-            tool_evt = {
-                "type": "tool_result",
-                "id": tool_id,
-                "tool_use_id": tool_id,
-                "content": content[:2000],
-            }
-            tool_events.append(tool_evt)
-            await _send_stream_event(chat_id, tool_evt)
-
-        elif et == "error":
-            error_msg = str(event.get("message") or event.get("data") or "grok error")
-            await _send_stream_event(
-                chat_id,
-                {"type": "error", "message": _public_grok_error_message(error_msg), "retryable": True},
-            )
-
-        elif et == "end":
-            sid = event.get("sessionId") or event.get("session_id") or ""
-            if sid:
-                session_id = sid
-            usage = event.get("usage") or {}
-            tokens_in = int(usage.get("input_tokens") or usage.get("prompt_tokens") or tokens_in or 0)
-            tokens_out = int(usage.get("output_tokens") or usage.get("completion_tokens") or tokens_out or 0)
-
-        elif et == "usage":
-            tokens_in = int(event.get("input_tokens") or event.get("prompt_tokens") or tokens_in or 0)
-            tokens_out = int(event.get("output_tokens") or event.get("completion_tokens") or tokens_out or 0)
-
-        elif et == "start":
-            sid = event.get("sessionId") or event.get("session_id") or ""
-            if sid:
-                session_id = sid
+        Cancel used to catch CancelledError, then await proc.wait() without
+        killing first. Cancel only delivers once; wait hung forever and the
+        2s cancel drain abandoned the task with a live grok -r process (the
+        post-cancel resume hang).
+        """
+        log(f"grok kill ({reason}) pid={getattr(proc, 'pid', '?')}")
+        with contextlib.suppress(BaseException):
+            proc.kill()
+        with contextlib.suppress(BaseException):
+            await asyncio.wait_for(proc.wait(), timeout=5.0)
 
     try:
-        await proc.wait()
-    except BaseException as _e_wait:
-        # await proc.wait() got cancelled (WS disconnect / task cancel).
-        # Guarantee cleanup then re-raise so callers see the original exception.
-        log(f"grok wait interrupted, running cleanup: {type(_e_wait).__name__}")
-        with contextlib.suppress(BaseException):
-            proc.kill()
-        _do_cleanup()
-        raise
-    # If the parse loop was interrupted mid-stream (WS closed / task cancel),
-    # kill the subprocess so it doesn't linger, run cleanup, and re-raise the
-    # original interrupt for the caller.
+        while True:
+            try:
+                if (
+                    not _got_first_output
+                    and _GROK_FIRST_OUTPUT_TIMEOUT_S > 0
+                ):
+                    # Resume hangs: CLI auths then sits on a dead-but-ESTABLISHED
+                    # xAI socket with no streaming-json lines. Fresh one-shots are
+                    # fine — only resume path needs the heal, but the timeout
+                    # applies to both so a wedged fresh spawn fails closed.
+                    try:
+                        line = await asyncio.wait_for(
+                            proc.stdout.readline(),
+                            timeout=_GROK_FIRST_OUTPUT_TIMEOUT_S,
+                        )
+                    except asyncio.TimeoutError:
+                        _first_output_timed_out = True
+                        log(
+                            f"grok first-output timeout after "
+                            f"{_GROK_FIRST_OUTPUT_TIMEOUT_S:.0f}s: "
+                            f"session={scope_key[:24]} "
+                            f"resume={bool(existing_session)} "
+                            f"sid={(existing_session or '')[:8] or 'none'} "
+                            f"— killing process"
+                        )
+                        await _kill_reap_grok("first-output-timeout")
+                        break
+                else:
+                    line = await proc.stdout.readline()
+            except BaseException as _e_read:
+                _parse_interrupted = _e_read
+                log(f"grok parse loop interrupted: {type(_e_read).__name__}")
+                break
+            if not line:
+                break
+            line_str = line.decode(errors="replace").strip()
+            if not line_str:
+                continue
+            _got_first_output = True
+            try:
+                event = json.loads(line_str)
+            except json.JSONDecodeError:
+                # Non-JSON noise — ignore (still counts as liveness above)
+                continue
+
+            et = event.get("type", "")
+
+            if et == "thought":
+                chunk = event.get("data", "") or event.get("text", "") or ""
+                if chunk:
+                    thinking_text += chunk
+                    await _send_stream_event(chat_id, {"type": "thinking", "text": chunk})
+
+            elif et == "text":
+                chunk = event.get("data", "") or event.get("text", "") or ""
+                if chunk:
+                    result_text += chunk
+                    await _send_stream_event(chat_id, {"type": "text", "text": chunk})
+
+            elif et in {"tool_use", "tool_call", "tool"}:
+                tool_id = str(event.get("id") or event.get("tool_use_id") or uuid.uuid4())
+                name = event.get("name") or event.get("tool") or "tool"
+                inp = event.get("input") or event.get("arguments") or event.get("data") or ""
+                if not isinstance(inp, str):
+                    try:
+                        inp = json.dumps(inp)[:2000]
+                    except Exception:
+                        inp = str(inp)[:2000]
+                tool_evt = {"type": "tool_use", "id": tool_id, "name": name, "input": inp}
+                tool_events.append(tool_evt)
+                await _send_stream_event(chat_id, tool_evt)
+
+            elif et in {"tool_result", "tool_response"}:
+                tool_id = str(event.get("id") or event.get("tool_use_id") or uuid.uuid4())
+                content = event.get("content") or event.get("data") or event.get("output") or ""
+                if not isinstance(content, str):
+                    try:
+                        content = json.dumps(content)[:2000]
+                    except Exception:
+                        content = str(content)[:2000]
+                tool_evt = {
+                    "type": "tool_result",
+                    "id": tool_id,
+                    "tool_use_id": tool_id,
+                    "content": content[:2000],
+                }
+                tool_events.append(tool_evt)
+                await _send_stream_event(chat_id, tool_evt)
+
+            elif et == "error":
+                error_msg = str(event.get("message") or event.get("data") or "grok error")
+                await _send_stream_event(
+                    chat_id,
+                    {"type": "error", "message": _public_grok_error_message(error_msg), "retryable": True},
+                )
+
+            elif et == "end":
+                sid = event.get("sessionId") or event.get("session_id") or ""
+                if sid:
+                    session_id = sid
+                usage = event.get("usage") or {}
+                tokens_in = int(usage.get("input_tokens") or usage.get("prompt_tokens") or tokens_in or 0)
+                tokens_out = int(usage.get("output_tokens") or usage.get("completion_tokens") or tokens_out or 0)
+
+            elif et == "usage":
+                tokens_in = int(event.get("input_tokens") or event.get("prompt_tokens") or tokens_in or 0)
+                tokens_out = int(event.get("output_tokens") or event.get("completion_tokens") or tokens_out or 0)
+
+            elif et == "start":
+                sid = event.get("sessionId") or event.get("session_id") or ""
+                if sid:
+                    session_id = sid
+    except BaseException as _e_outer:
+        # CancelledError during stream-event send (outside readline try)
+        if _parse_interrupted is None:
+            _parse_interrupted = _e_outer
+            log(f"grok loop outer interrupt: {type(_e_outer).__name__}")
+
+    # Kill BEFORE wait on any interrupt. Never block on a live CLI after cancel.
     if _parse_interrupted is not None:
-        with contextlib.suppress(BaseException):
-            proc.kill()
+        await _kill_reap_grok(f"interrupt:{type(_parse_interrupted).__name__}")
         _do_cleanup()
         raise _parse_interrupted
-    stderr_data = await proc.stderr.read() if proc.stderr else b""
-    if proc.returncode not in (0, None) and not result_text:
-        err_msg = error_msg or (
-            stderr_data.decode(errors="replace")[:500]
-            if stderr_data
-            else f"grok exited with code {proc.returncode}"
-        )
+
+    if not _first_output_timed_out:
+        try:
+            await proc.wait()
+        except BaseException as _e_wait:
+            log(f"grok wait interrupted, running cleanup: {type(_e_wait).__name__}")
+            await _kill_reap_grok(f"wait-interrupt:{type(_e_wait).__name__}")
+            _do_cleanup()
+            raise
+
+    stderr_data = b""
+    if proc.stderr and not _first_output_timed_out:
+        with contextlib.suppress(BaseException):
+            stderr_data = await asyncio.wait_for(proc.stderr.read(), timeout=2.0)
+    elif proc.stderr:
+        with contextlib.suppress(BaseException):
+            # Best-effort; process already reaped on timeout path
+            stderr_data = await asyncio.wait_for(proc.stderr.read(), timeout=0.5)
+    if (proc.returncode not in (0, None) and not result_text) or _first_output_timed_out:
+        if _first_output_timed_out:
+            err_msg = error_msg or (
+                f"grok produced no output within {_GROK_FIRST_OUTPUT_TIMEOUT_S:.0f}s "
+                f"(likely hung xAI connection on resume)"
+            )
+        else:
+            err_msg = error_msg or (
+                stderr_data.decode(errors="replace")[:500]
+                if stderr_data
+                else f"grok exited with code {proc.returncode}"
+            )
         log(f"grok process error: {err_msg}")
 
-        # Resume failure → clear session and retry fresh once
+        # Resume failure (exit or first-output timeout) → clear session, retry fresh once
         if existing_session:
             log(
                 f"grok resume failed, retrying fresh: session={scope_key[:24]} "
-                f"sid={existing_session[:8]}"
+                f"sid={existing_session[:8]} "
+                f"reason={'first-output-timeout' if _first_output_timed_out else 'exit'}"
             )
             _grok_sessions.pop(scope_key, None)
             _grok_session_turns.pop(scope_key, None)
