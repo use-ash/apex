@@ -693,7 +693,7 @@ Deferred: best fix for cold `npx` cost; not required for correctness. Note under
 | **P0 / PR1a** ✅ **MERGED** | Extract SoT; shim parity; no intentional behavior change | `60bdd1f` |
 | **P0b / PR1b** ✅ **MERGED** | Turn workspace rewrite; dual-track `servers_for_level`; Claude L2 execute_code regression; guide inject keep | main `578b737` / dev `c84c9a9` |
 | **P1 / PR2** ✅ **MERGED** | Grok (`xai`) projector | multi-turn smoke PASS 2026-07-10 (`dfb03525`) |
-| **P2 / PR3** ✅ **MERGED** | Codex projector (nested `-c`) | smoke PASS 2026-07-10; CLI route + persist |
+| **P2 / PR3** ✅ **MERGED** | Codex projector (nested `-c`) | main `60067f1`+fixes; smoke PASS |
 | **P3 / PR4** | Debug endpoint, config packs, tool_loop root gap plan | Admin auth verified |
 | **P4** | Attachments | Separate design |
 
@@ -810,6 +810,7 @@ Deferred: best fix for cold `npx` cost; not required for correctness. Note under
 | Codex API-key auth home | **`~/.codex/auth.json` via `CODEX_HOME` only.** No `CODEX_CONFIG_DIR` in binary. `~/.codex-api` empty/dead. API key: `OPENAI_API_KEY`/`CODEX_API_KEY` or `login --with-api-key`. |
 
 ### PR3 — Codex (P2) ✅ **MERGED 2026-07-10**
+- **SHAs:** main `60067f1` / `8e7f2c7` / `4f5a8eb` (docs `6bea065`); dev `e333039` / `6735533` / `57f7c20`
 - **Deps:** PR0 ✅, PR1b ✅, PR2 ✅  
 - **Files:** `project_codex`; `resolve_for_codex`; `_run_codex_chat`; CLI route in `ws_handler`; drop dead `CODEX_CONFIG_DIR`/`~/.codex-api`; L1 `enabled_tools`; gate-test fail-closed; `tests/test_tool_surface_codex.py`  
 - **Description:** Home-preserving nested `-c` inject; core pack; real `CODEX_HOME`; persist duration/tools/thinking.  
