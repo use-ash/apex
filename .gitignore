@@ -106,3 +106,6 @@ claude-commands/
 deploy-phase3.sh
 APEX.md
 v3/
+
+# Agent memory artifacts — personal / session, never OSS
+memory/
