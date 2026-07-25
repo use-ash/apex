@@ -308,6 +308,7 @@ def _queued_turn_payload(entry: dict) -> dict:
     return {
         "msg_id": stream_id,
         "stream_id": stream_id,
+        "client_msg_id": str(data.get("client_msg_id") or ""),
         "preview": _queue_preview_text(data.get("prompt", "")),
         "agent": str(entry.get("profile_id") or "") or None,
     }
@@ -465,11 +466,13 @@ async def _emit_stream_queued(
     websocket: WebSocket,
     group_agent: dict | None,
     position: int,
+    client_msg_id: str = "",
 ) -> None:
     payload = {
         "type": "stream_queued",
         "chat_id": chat_id,
         "stream_id": stream_id,
+        "client_msg_id": client_msg_id,
         "position": position,
         "queued_label": (
             f"Queued for {group_agent['name']}"
@@ -1225,6 +1228,7 @@ async def _handle_send_action(
             websocket=websocket,
             group_agent=group_agent,
             position=position,
+            client_msg_id=str(data.get("client_msg_id") or ""),
         )
         await _emit_queue_update(chat_id)
         return
