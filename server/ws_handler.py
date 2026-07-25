@@ -384,6 +384,21 @@ def _purge_queued_turns_for_ws(websocket: WebSocket) -> tuple[int, set[str]]:
     return removed, affected_chat_ids
 
 
+def _persist_canceled_queue_entry(entry: dict) -> None:
+    # A queued turn returns from _kick_assistant_turn before _save_message ever
+    # runs, so dropping it here is the only chance to keep the user's text.
+    data = entry.get("data") or {}
+    chat_id = str(entry.get("chat_id") or "")
+    prompt = str(data.get("prompt") or "")
+    refs = _attachment_ref_payload(data.get("attachments"))
+    if not chat_id or (not prompt.strip() and not refs):
+        return
+    try:
+        _save_message(chat_id, "user", prompt, attachments=json.dumps(refs))
+    except Exception as e:
+        log(f"canceled queue persist failed chat={chat_id[:8]}: {e}")
+
+
 def _cancel_queued_turn(chat_id: str, msg_id: str) -> bool:
     if not chat_id or not msg_id:
         return False
@@ -398,6 +413,7 @@ def _cancel_queued_turn(chat_id: str, msg_id: str) -> bool:
             if not removed and entry_chat_id == chat_id and entry_msg_id == msg_id:
                 removed = True
                 changed = True
+                _persist_canceled_queue_entry(entry)
                 continue
             kept.append(entry)
         if changed:
@@ -416,8 +432,13 @@ def _clear_queued_turns(chat_id: str) -> int:
     removed = 0
     empty_keys: list[str] = []
     for lock_key, queue in list(_queued_turns.items()):
-        kept = deque(item for item in queue if str(item.get("chat_id") or "") != chat_id)
-        removed += len(queue) - len(kept)
+        kept = deque()
+        for item in queue:
+            if str(item.get("chat_id") or "") != chat_id:
+                kept.append(item)
+                continue
+            _persist_canceled_queue_entry(item)
+            removed += 1
         if kept:
             _queued_turns[lock_key] = kept
         else:
