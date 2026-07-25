@@ -19,6 +19,26 @@ let lastSubmittedPrompt = '';
 const activeStreams = new Map(); // stream_id -> {name, avatar, profile_id}
 let queuedMessages = []; // [{msg_id, stream_id, preview, agent}]
 let _stopMenuConfirmKey = '';
+// Client-generated send nonces. A message the client sends is echoed back as
+// user_message_added to every *other* socket on the chat. After an iOS
+// refresh/resume the socket is swapped, so the server's "not the sender
+// socket" exclusion fails and the device receives its own message on the new
+// (current) socket — producing a phantom duplicate bubble. We tag each send
+// with a nonce (survives the queue) and skip echoes we recognize as our own.
+const _ownSendIds = new Map(); // client_msg_id -> ts
+function _makeClientMsgId() {
+  try { if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID(); } catch (e) {}
+  return 'cmid-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+}
+function _rememberOwnSend(id) {
+  if (!id) return;
+  const now = Date.now();
+  _ownSendIds.set(String(id), now);
+  for (const [k, ts] of _ownSendIds) { if (now - ts > 120000) _ownSendIds.delete(k); }
+}
+function _isOwnSend(id) {
+  return Boolean(id) && _ownSendIds.has(String(id));
+}
 // Per-stream context: supports concurrent agent streams without clobbering"""
 
 _JS_STREAM_CONTEXT = """const _streamCtx = {};  // stream_id -> {bubble, speaker, toolPill, toolCalls, ...}
@@ -2307,8 +2327,23 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
       break;
 
     case 'user_message_added':
-      // Another client sent a message on this chat — show it
+      // Another client sent a message on this chat — show it. But skip echoes
+      // of our OWN send: after an iOS refresh/resume the socket swaps, so the
+      // server's sender-socket exclusion misses and we receive our own message
+      // on the new socket, appending a phantom duplicate bubble.
+      if (_isOwnSend(msg.client_msg_id)) {
+        dbg('skip user_message_added echo of own send', msg.client_msg_id);
+        break;
+      }
       if (msg.chat_id === currentChat && (msg.content || normalizeMessageAttachments(msg.attachments).length)) {
+        // DOM-level dedup: after an iOS refresh the nonce Map is wiped, so the
+        // own-send check above can't fire. Guard against re-appending a bubble
+        // that already exists as the last-rendered user message (history copy
+        // + echo of the same send).
+        if (_lastUserBubbleMatches(msg.content || '', msg.attachments || [])) {
+          dbg('skip user_message_added dup of last user bubble', msg.content);
+          break;
+        }
         addUserMsg(msg.content || '', msg.attachments || []);
       }
       break;
@@ -2547,6 +2582,17 @@ function buildMessageAttachments(raw) {
   return wrap;
 }
 
+function _lastUserBubbleMatches(text, attachments = []) {
+  const el = document.getElementById('messages');
+  if (!el) return false;
+  const last = el.lastElementChild;
+  if (!last || !last.classList.contains('user')) return false;
+  const bubbleText = last.querySelector('.msg-text');
+  const domText = bubbleText ? bubbleText.textContent : '';
+  const attCount = normalizeMessageAttachments(attachments).length;
+  const domAttCount = last.querySelectorAll('.msg-attachment, .attachment').length;
+  return domText === (text || '') && domAttCount === attCount;
+}
 function addUserMsg(text, attachments = []) {
   const el = document.getElementById('messages');
   const div = document.createElement('div');
@@ -3380,6 +3426,7 @@ function updateChatModelSelect() {
   // Build option list: cloud models + local models
   const cloudModels = [
     {id: 'claude-fable-5', name: 'Claude Fable 5'},
+    {id: 'claude-opus-5', name: 'Claude Opus 5'},
     {id: 'claude-opus-4-8', name: 'Claude Opus 4.8'},
     {id: 'claude-opus-4-7', name: 'Claude Opus 4.7'},
     {id: 'claude-opus-4-6', name: 'Claude Opus 4.6'},
@@ -4340,7 +4387,9 @@ async function send(options = {}) {
   _userScrolledUp = false;
   _hideNewContentPill();
   const attachmentSnapshot = pendingAttachments.map(att => ({...att}));
-  const msg = {action: 'send', chat_id: currentChat, prompt: text};
+  const clientMsgId = _makeClientMsgId();
+  _rememberOwnSend(clientMsgId);
+  const msg = {action: 'send', chat_id: currentChat, prompt: text, client_msg_id: clientMsgId};
   if (effectiveTargetAgent) msg.target_agent = effectiveTargetAgent;
   if (attachmentSnapshot.length > 0) {
     msg.attachments = attachmentSnapshot.map(a => ({id: a.id, type: a.type, name: a.name, url: a.url, ext: a.ext}));
@@ -5587,6 +5636,7 @@ async function showNewChatProfilePicker() {
   function getNewChatModelOptions() {
     const cloudModels = [
       {id: 'claude-fable-5', name: 'Claude Fable 5'},
+      {id: 'claude-opus-5', name: 'Claude Opus 5'},
       {id: 'claude-opus-4-8', name: 'Claude Opus 4.8'},
       {id: 'claude-opus-4-7', name: 'Claude Opus 4.7'},
       {id: 'claude-opus-4-6', name: 'Claude Opus 4.6'},
@@ -6337,6 +6387,7 @@ async function showChatSettings() {
 
     const cloudModels = [
       {id: 'claude-fable-5', name: 'Claude Fable 5'},
+      {id: 'claude-opus-5', name: 'Claude Opus 5'},
       {id: 'claude-opus-4-8', name: 'Claude Opus 4.8'},
       {id: 'claude-opus-4-7', name: 'Claude Opus 4.7'},
       {id: 'claude-opus-4-6', name: 'Claude Opus 4.6'},

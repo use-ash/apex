@@ -171,6 +171,7 @@ _MODEL_PRICING: dict[str, dict[str, Any]] = {
     "claude-sonnet-5": {"display": "Sonnet 5", "track": "subscription", "price_in": 2.00, "price_out": 10.00, "provider": "claude"},
     "claude-sonnet-4-6": {"display": "Sonnet 4.6", "track": "subscription", "price_in": 3.00, "price_out": 15.00, "provider": "claude"},
     "claude-fable-5": {"display": "Fable 5", "track": "subscription", "price_in": 10.00, "price_out": 50.00, "provider": "claude"},
+    "claude-opus-5": {"display": "Opus 5", "track": "subscription", "price_in": 5.00, "price_out": 25.00, "provider": "claude"},
     "claude-opus-4-8": {"display": "Opus 4.8", "track": "subscription", "price_in": 5.00, "price_out": 25.00, "provider": "claude"},
     "claude-opus-4-7": {"display": "Opus 4.7", "track": "subscription", "price_in": 5.00, "price_out": 25.00, "provider": "claude"},
     "claude-opus-4-6": {"display": "Opus 4.6", "track": "subscription", "price_in": 15.00, "price_out": 75.00, "provider": "claude"},
