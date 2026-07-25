@@ -1319,6 +1319,7 @@ async def _handle_send_action(
                             "chat_id": chat_id,
                             "content": display_prompt,
                             "attachments": attachment_refs,
+                            "client_msg_id": data.get("client_msg_id") or "",
                         },
                         chat_id=chat_id,
                     )
