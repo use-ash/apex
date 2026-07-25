@@ -21,6 +21,7 @@ MLX_BASE_URL = env.MLX_URL
 # ---------------------------------------------------------------------------
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-fable-5": 1_000_000,
+    "claude-opus-5": 1_000_000,
     "claude-opus-4-8": 1_000_000,
     "claude-opus-4-7": 1_000_000,
     "claude-opus-4-6": 1_000_000,
@@ -65,7 +66,8 @@ MODEL_CONTEXT_DEFAULT = 128_000  # fallback for local/unknown models
 # mapped fallback. Chain terminates at the first key not present in the map.
 # ---------------------------------------------------------------------------
 MODEL_FALLBACK_ON_RATE_LIMIT: dict[str, str] = {
-    "claude-fable-5":   "claude-opus-4-8",
+    "claude-fable-5":   "claude-opus-5",
+    "claude-opus-5":    "claude-opus-4-8",
     "claude-opus-4-8":  "claude-opus-4-7",
     "claude-opus-4-7":  "claude-sonnet-5",
     "claude-sonnet-5":  "claude-sonnet-4-6",
@@ -78,6 +80,7 @@ MODEL_FALLBACK_ON_RATE_LIMIT: dict[str, str] = {
 # ---------------------------------------------------------------------------
 MODEL_INPUT_PRICE: dict[str, float] = {
     "claude-fable-5": 10.0 / 1_000_000,         # $10/M input
+    "claude-opus-5": 5.0 / 1_000_000,           # $5/M input (same as Opus 4.8)
     "claude-opus-4-8": 5.0 / 1_000_000,         # $5/M input
     "claude-opus-4-7": 5.0 / 1_000_000,         # $5/M input
     "claude-opus-4-6": 15.0 / 1_000_000,        # $15/M input
@@ -92,6 +95,7 @@ MODEL_INPUT_PRICE: dict[str, float] = {
 }
 MODEL_OUTPUT_PRICE: dict[str, float] = {
     "claude-fable-5": 50.0 / 1_000_000,         # $50/M output
+    "claude-opus-5": 25.0 / 1_000_000,          # $25/M output (same as Opus 4.8)
     "claude-opus-4-8": 25.0 / 1_000_000,        # $25/M output
     "claude-opus-4-7": 25.0 / 1_000_000,        # $25/M output
     "claude-opus-4-6": 75.0 / 1_000_000,        # $75/M output
@@ -110,6 +114,7 @@ MODEL_OUTPUT_PRICE: dict[str, float] = {
 # ---------------------------------------------------------------------------
 REMOTE_MODEL_OPTIONS = [
     {"id": "claude-fable-5",        "displayName": "Claude Fable 5",   "provider": "anthropic", "local": False},
+    {"id": "claude-opus-5",         "displayName": "Claude Opus 5",    "provider": "anthropic", "local": False},
     {"id": "claude-opus-4-8",       "displayName": "Claude Opus 4.8",  "provider": "anthropic", "local": False},
     {"id": "claude-opus-4-7",       "displayName": "Claude Opus 4.7",  "provider": "anthropic", "local": False},
     {"id": "claude-opus-4-6",       "displayName": "Claude Opus 4.6",  "provider": "anthropic", "local": False},
