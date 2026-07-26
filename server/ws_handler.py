@@ -1334,20 +1334,24 @@ async def _handle_send_action(
         if not is_agent_handoff:
             _save_message(chat_id, "user", display_prompt, attachments=attachment_refs_json)
 
-            ws_set = _chat_ws.get(chat_id, set())
+            # Echo to the sender socket too. Clients dedupe by client_msg_id, and
+            # the echo is the only deterministic signal that retires an optimistic
+            # bubble — a stopped turn emits no reload, so without it the bubble is
+            # stranded until the next full reload.
+            ws_set = set(_chat_ws.get(chat_id, set()))
+            ws_set.add(websocket)
             for ows in ws_set:
-                if ows is not websocket:
-                    await _safe_ws_send_json(
-                        ows,
-                        {
-                            "type": "user_message_added",
-                            "chat_id": chat_id,
-                            "content": display_prompt,
-                            "attachments": attachment_refs,
-                            "client_msg_id": data.get("client_msg_id") or "",
-                        },
-                        chat_id=chat_id,
-                    )
+                await _safe_ws_send_json(
+                    ows,
+                    {
+                        "type": "user_message_added",
+                        "chat_id": chat_id,
+                        "content": display_prompt,
+                        "attachments": attachment_refs,
+                        "client_msg_id": data.get("client_msg_id") or "",
+                    },
+                    chat_id=chat_id,
+                )
 
             if chat["title"] in ("New Chat", "New Channel", "Quick thread"):
                 title_source = display_prompt or user_visible_prompt or prompt
