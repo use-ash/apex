@@ -1653,18 +1653,39 @@ async def _handle_send_action(
             if active_pid:
                 response_text = _extract_and_save_memories(response_text, active_pid, chat_id)
 
-            _save_message(
-                chat_id, "assistant", response_text,
-                tool_events=result.get("tool_events", "[]"),
-                thinking=result.get("thinking", ""),
-                cost_usd=result.get("cost_usd", 0),
-                tokens_in=result.get("tokens_in", 0),
-                tokens_out=result.get("tokens_out", 0),
-                duration_ms=result.get("duration_ms", 0),
-                speaker_id=group_agent["profile_id"] if group_agent else "",
-                speaker_name=group_agent["name"] if group_agent else "",
-                speaker_avatar=group_agent["avatar"] if group_agent else "",
+            # The guard above tests the pre-strip text, but what gets persisted is
+            # the post-strip value. A turn that was entirely <memory> tags (or an
+            # is_error with no text) otherwise lands as a contentless row, which
+            # renders as a bare cost footer with no bubble above it.
+            renderable = bool(
+                response_text
+                or result.get("thinking")
+                or result.get("tool_events", "[]") != "[]"
             )
+            if not renderable and result.get("is_error"):
+                # Error backends return empty text; the live stream event is
+                # transient, so persist the message or it vanishes on reload.
+                response_text = result.get("error", "") or "Request failed."
+                renderable = True
+            if not renderable:
+                log(
+                    f"assistant row skipped (nothing renderable after memory strip): "
+                    f"chat={chat_id[:8]} tokens_out={result.get('tokens_out', 0)} "
+                    f"cost={result.get('cost_usd', 0)}"
+                )
+            else:
+                _save_message(
+                    chat_id, "assistant", response_text,
+                    tool_events=result.get("tool_events", "[]"),
+                    thinking=result.get("thinking", ""),
+                    cost_usd=result.get("cost_usd", 0),
+                    tokens_in=result.get("tokens_in", 0),
+                    tokens_out=result.get("tokens_out", 0),
+                    duration_ms=result.get("duration_ms", 0),
+                    speaker_id=group_agent["profile_id"] if group_agent else "",
+                    speaker_name=group_agent["name"] if group_agent else "",
+                    speaker_avatar=group_agent["avatar"] if group_agent else "",
+                )
 
         # Clear active speaker now that response is persisted to DB
         if group_agent:
