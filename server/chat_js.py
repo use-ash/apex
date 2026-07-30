@@ -2383,6 +2383,8 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
     case 'system':
       if (msg.subtype === 'compaction') {
         addSystemMsg('⚡ ' + (msg.message || 'Session compacted.'), {});
+      } else if (msg.subtype === 'compaction_start') {
+        addSystemMsg('⏳ ' + (msg.message || 'Compacting session context…'), {});
       }
       break;
 

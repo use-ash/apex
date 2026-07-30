@@ -1177,6 +1177,19 @@ async def _maybe_compact_chat(
 
     log(f"compaction triggered: chat={chat_id} tokens_in={cumulative} threshold={effective_threshold} force={force}")
 
+    # Lazy import to avoid circular dependency
+    from streaming import _disconnect_client, _send_stream_event
+
+    # Compaction holds the chat lock for tens of seconds while the summary
+    # model runs.  Without a start event the client sees dead air and cannot
+    # distinguish it from a hung turn.
+    await _send_stream_event(chat_id, {
+        "type": "system",
+        "subtype": "compaction_start",
+        "message": f"Compacting session context ({cumulative:,} input tokens)… "
+                   f"the next reply will start once this finishes.",
+    })
+
     # Phase 1: classify session type before generating recovery context
     session_info = await asyncio.to_thread(_classify_session_type, chat_id)
     session_type = session_info["session_type"]
@@ -1218,8 +1231,6 @@ async def _maybe_compact_chat(
     _last_compacted_at[chat_id] = ts
     _persist_compaction_at(chat_id, ts)  # survive server restart
 
-    # Lazy import to avoid circular dependency
-    from streaming import _disconnect_client, _send_stream_event
     await _disconnect_client(chat_id)
     _update_chat(chat_id, claude_session_id=None)
     _clear_session_context(chat_id)

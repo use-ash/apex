@@ -4123,7 +4123,7 @@ async def api_sessions_compact(chat_id: str):
     """Force compaction on a chat session."""
     try:
         from context import _maybe_compact_chat
-        result = await _maybe_compact_chat(chat_id)
+        result = await _maybe_compact_chat(chat_id, force=True)
     except (ImportError, AttributeError):
         return _error(
             "_maybe_compact_chat not available in context module",
