@@ -470,6 +470,7 @@ async def _cancel_chat_streams(chat_id: str, stream_id: str = "") -> bool:
     if stream_id:
         active_entries = [item for item in active_entries if item[0] == stream_id]
     if not active_entries:
+        log(f"cancel no-op: chat={chat_id} sid={stream_id or '*'} — no active stream")
         return False
 
     client_keys: set[str] = set()
@@ -499,11 +500,12 @@ async def _cancel_chat_streams(chat_id: str, stream_id: str = "") -> bool:
     for ck in selected_keys:
         client = _clients.get(ck)
         if not client:
+            log(f"cancel: no SDK client for key={ck} (pool keys={list(_clients)})")
             continue
         try:
             await client.interrupt()
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"cancel: interrupt() FAILED key={ck} {type(e).__name__}: {e}")
 
     tasks_to_drain: list[asyncio.Task] = []
     for _, entry in active_entries:
@@ -513,7 +515,9 @@ async def _cancel_chat_streams(chat_id: str, stream_id: str = "") -> bool:
             tasks_to_drain.append(send_task)
 
     if tasks_to_drain:
-        await asyncio.wait(tasks_to_drain, timeout=2.0)
+        _, pending = await asyncio.wait(tasks_to_drain, timeout=2.0)
+        if pending:
+            log(f"cancel: {len(pending)} send task(s) did not drain within 2s chat={chat_id}")
 
     # Save partial results from cancelled turn so they persist across refresh
     try:
