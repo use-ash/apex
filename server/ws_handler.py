@@ -31,6 +31,7 @@ from db import (
     _get_recent_messages_text,
     _save_message,
     _get_latest_user_attachments,
+    _get_recent_user_attachments,
     _get_all_device_tokens,
 )
 from group_coordinator import (
@@ -92,7 +93,7 @@ from skills import (
 )
 from agent_sdk import (
     _build_turn_payload, _websocket_origin_allowed, _run_query_turn,
-    _load_attachment, RateLimitError,
+    _load_attachment, RateLimitError, UPLOAD_DIR,
 )
 from memory_extract import _extract_and_save_memories
 from backends import (
@@ -117,6 +118,16 @@ except ImportError:
 # Router
 # ---------------------------------------------------------------------------
 ws_router = APIRouter()
+
+
+def _upload_path_for(att: dict) -> str:
+    att_id = str(att.get("id", "")).strip().lower()
+    if len(att_id) != 8 or any(ch not in "0123456789abcdef" for ch in att_id):
+        return ""
+    matches = list(UPLOAD_DIR.glob(f"{att_id}.*"))
+    return str(matches[0]) if len(matches) == 1 else ""
+
+
 MAX_QUEUED_TURNS_PER_KEY = 2
 MAX_MENTION_DEPTH = 25
 _TOOL_LOOP_BACKENDS = frozenset({"ollama", "mlx", "deepseek", "zhipu", "google"})
@@ -369,6 +380,13 @@ def _purge_queued_turns_for_ws(websocket: WebSocket) -> tuple[int, set[str]]:
         removed_entries = [item for item in queue if item.get("websocket") is websocket]
         if removed_entries:
             removed += len(removed_entries)
+            for _e in removed_entries:
+                _persist_canceled_queue_entry(_e)
+                _p = str((_e.get("data") or {}).get("prompt") or "")
+                log(
+                    f"DIAG purge-drop chat={str(_e.get('chat_id') or '')[:8]} "
+                    f"persisted=True prompt={_p[:60]!r}"
+                )
             affected_chat_ids.update(
                 str(item.get("chat_id") or "")
                 for item in removed_entries
@@ -1196,6 +1214,17 @@ async def _handle_send_action(
             )
             if ref_lines:
                 prompt = (f"{prompt}\n\n{ref_lines}" if prompt else ref_lines).strip()
+    elif not attachments:
+        # 1:1 turns carry only their own attachments — history rehydration is
+        # text-only, so a screenshot from a turn that 502'd or was queue-canceled
+        # is invisible to the model. Point at the on-disk file so it can be read.
+        ref_lines = "\n".join(
+            f"[Attached on a recent turn: {a['name']} — {_upload_path_for(a)}]"
+            for a in _get_recent_user_attachments(chat_id)
+            if a.get("name") and _upload_path_for(a)
+        )
+        if ref_lines:
+            prompt = (f"{prompt}\n\n{ref_lines}" if prompt else ref_lines).strip()
 
     try:
         attachment_error = validate_backend_attachments(backend, attachments)
@@ -1479,10 +1508,18 @@ async def _handle_send_action(
                 return
         else:
             # --- Claude SDK path ---
+            _diag_compact_t0 = time.monotonic()
             try:
                 await _maybe_compact_chat(chat_id)
             except Exception as compact_err:
                 log(f"pre-flight compaction error: chat={chat_id} {compact_err}")
+            _diag_compact_ms = (time.monotonic() - _diag_compact_t0) * 1000.0
+            if _diag_compact_ms > 1000.0:
+                log(
+                    f"DIAG preflight-compaction chat={chat_id[:8]} "
+                    f"blocked_ms={_diag_compact_ms:.0f} lock_held=True "
+                    f"client_events_emitted_since_ack=0"
+                )
 
             try:
                 client = await _get_or_create_client(

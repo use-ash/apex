@@ -1841,6 +1841,32 @@ def _get_latest_user_attachments(chat_id: str) -> list[dict]:
     return _parse_message_attachments(row[0])
 
 
+def _get_recent_user_attachments(chat_id: str, lookback: int = 3) -> list[dict]:
+    """Attachments from the last `lookback` user messages, newest first.
+
+    Bounded by message count rather than "most recent with attachments" so a
+    screenshot from months ago can't be injected as if it were current.
+    """
+    with _db_lock:
+        conn = _get_db()
+        rows = conn.execute(
+            "SELECT attachments FROM messages "
+            "WHERE chat_id = ? AND role = 'user' "
+            "ORDER BY created_at DESC LIMIT ?",
+            (chat_id, max(1, lookback)),
+        ).fetchall()
+        conn.close()
+    out: list[dict] = []
+    seen: set[str] = set()
+    for row in rows:
+        for att in _parse_message_attachments(row[0]):
+            att_id = str(att.get("id") or "")
+            if att_id and att_id not in seen:
+                seen.add(att_id)
+                out.append(att)
+    return out
+
+
 def _get_messages(
     chat_id: str,
     days: int | None = None,
