@@ -46,6 +46,10 @@ _GROK_MAX_SESSION_TURNS = int(os.environ.get("APEX_GROK_MAX_TURNS", "12"))
 # kill + resume-failure retry heals them. 0 disables. Override via env.
 _GROK_FIRST_OUTPUT_TIMEOUT_S = float(os.environ.get("APEX_GROK_FIRST_OUTPUT_TIMEOUT_S", "60"))
 
+# asyncio's default StreamReader limit is 64 KiB; one NDJSON line carrying a
+# base64 image tool-result blows past it and readline() raises ValueError.
+_CLI_STREAM_LIMIT = int(os.environ.get("APEX_CLI_STREAM_LIMIT", str(32 * 1024 * 1024)))
+
 # Valid Codex sandbox modes (passed to -s flag)
 _VALID_CODEX_SANDBOX = {"read-only", "suggest", "full"}
 
@@ -627,6 +631,7 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=codex_env,
+        limit=_CLI_STREAM_LIMIT,
     )
     _codex_started_at = time.monotonic()
 
@@ -1172,9 +1177,16 @@ def _public_grok_error_message(err_msg: str) -> str:
             "Grok CLI is not authenticated. Run `grok login` in a terminal, "
             "or set XAI_API_KEY in Credentials / .env, then retry."
         )
-    if "not found" in lower or "no such file" in lower:
+    # Only claim "not installed" when the *binary* failed to launch — a bare
+    # "not found" substring also matches CLI-side tool errors mid-turn.
+    if "command not found" in lower or "no such file or directory" in lower:
         return (
             "Grok CLI not found. Install with: curl -fsSL https://x.ai/cli/install.sh | bash"
+        )
+    if "chunk exceed the limit" in lower or "separator is not found" in lower:
+        return (
+            "Grok CLI sent a response chunk too large for Apex to read. "
+            "Retry; if it repeats, raise APEX_CLI_STREAM_LIMIT."
         )
     return "Grok CLI hit an internal error while preparing the response. Retry the turn."
 
@@ -1723,6 +1735,7 @@ async def _run_grok_chat(
         stderr=asyncio.subprocess.PIPE,
         env=grok_env,
         cwd=workspace,
+        limit=_CLI_STREAM_LIMIT,
     )
     _started = time.monotonic()
 
