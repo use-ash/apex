@@ -1264,6 +1264,37 @@ def _slice_history_this_turn(rows: list[dict]) -> list[dict]:
     return rows[last_user + 1 :]
 
 
+def _grok_tool_output_text(raw, _depth: int = 0) -> str:
+    """Flatten a Grok tool output into display text.
+
+    Grok nests results a few envelopes deep — {"Content": {"content": "..."}}
+    and {"content": {"type": "text", "text": "..."}} both occur — so unwrap
+    recursively rather than showing the raw JSON envelope in the UI.
+    """
+    if isinstance(raw, str):
+        return raw
+    if raw is None:
+        return ""
+    if _depth < 5:
+        if isinstance(raw, dict):
+            inner = raw.get("Content") if isinstance(raw.get("Content"), dict) else raw
+            for key in ("content", "text", "output"):
+                val = inner.get(key)
+                if val is not None and val is not raw:
+                    text = _grok_tool_output_text(val, _depth + 1)
+                    if text:
+                        return text
+        if isinstance(raw, list):
+            parts = [_grok_tool_output_text(p, _depth + 1) for p in raw]
+            joined = "\n".join(p for p in parts if p)
+            if joined:
+                return joined
+    try:
+        return json.dumps(raw)
+    except Exception:
+        return str(raw)
+
+
 def _rows_to_tool_events(rows: list[dict]) -> list[dict]:
     """Convert history rows to interleaved tool_use / tool_result events."""
     events: list[dict] = []
@@ -1444,9 +1475,18 @@ def _collect_tool_events_from_history(
     if not all_events:
         return 0
     seen_ids = {e.get("id") for e in already_recorded if e.get("type") == "tool_use"}
+    seen_results = {
+        e.get("tool_use_id") or e.get("id")
+        for e in already_recorded
+        if e.get("type") == "tool_result"
+    }
     added = 0
     for evt in all_events:
         if evt.get("type") == "tool_use" and evt.get("id") in seen_ids:
+            continue
+        if evt.get("type") == "tool_result" and (
+            evt.get("tool_use_id") or evt.get("id")
+        ) in seen_results:
             continue
         already_recorded.append(evt)
         added += 1
@@ -1839,9 +1879,26 @@ async def _run_grok_chat(
                     await _send_stream_event(chat_id, {"type": "text", "text": chunk})
 
             elif et in {"tool_use", "tool_call", "tool"}:
-                tool_id = str(event.get("id") or event.get("tool_use_id") or uuid.uuid4())
-                name = event.get("name") or event.get("tool") or "tool"
-                inp = event.get("input") or event.get("arguments") or event.get("data") or ""
+                tool_id = str(
+                    event.get("id")
+                    or event.get("tool_use_id")
+                    or event.get("toolCallId")
+                    or uuid.uuid4()
+                )
+                name = (
+                    event.get("name")
+                    or event.get("toolName")
+                    or event.get("title")
+                    or event.get("tool")
+                    or "tool"
+                )
+                inp = (
+                    event.get("input")
+                    or event.get("rawInput")
+                    or event.get("arguments")
+                    or event.get("data")
+                    or ""
+                )
                 if not isinstance(inp, str):
                     try:
                         inp = json.dumps(inp)[:2000]
@@ -1851,14 +1908,27 @@ async def _run_grok_chat(
                 tool_events.append(tool_evt)
                 await _send_stream_event(chat_id, tool_evt)
 
-            elif et in {"tool_result", "tool_response"}:
-                tool_id = str(event.get("id") or event.get("tool_use_id") or uuid.uuid4())
-                content = event.get("content") or event.get("data") or event.get("output") or ""
-                if not isinstance(content, str):
-                    try:
-                        content = json.dumps(content)[:2000]
-                    except Exception:
-                        content = str(content)[:2000]
+            elif et in {"tool_result", "tool_response", "tool_call_update"}:
+                # Grok streams progress pings with status=null before the real
+                # terminal update; only the terminal one carries the output.
+                if et == "tool_call_update" and str(
+                    event.get("status") or ""
+                ).lower() not in {"completed", "error", "failed", "cancelled", "canceled"}:
+                    continue
+                tool_id = str(
+                    event.get("id")
+                    or event.get("tool_use_id")
+                    or event.get("toolCallId")
+                    or uuid.uuid4()
+                )
+                content = (
+                    event.get("content")
+                    or event.get("rawOutput")
+                    or event.get("data")
+                    or event.get("output")
+                    or ""
+                )
+                content = _grok_tool_output_text(content)
                 tool_evt = {
                     "type": "tool_result",
                     "id": tool_id,
