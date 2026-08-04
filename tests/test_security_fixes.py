@@ -1735,6 +1735,44 @@ class SecurityFixTests(unittest.TestCase):
         err = backends.validate_backend_attachments("ollama", [attachment])
         self.assertIsNone(err)
 
+    def test_validate_backend_attachments_allows_images_for_xai(self) -> None:
+        png = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+            b"\x90wS\xde"
+            b"\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x01\x01\x01\x00"
+            b"\x18\xdd\x8d\xb1"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        attachment = self._create_uploaded_attachment("png", png, kind="image")
+        err = backends.validate_backend_attachments("xai", [attachment])
+        self.assertIsNone(err)
+
+    def test_validate_backend_attachments_rejects_text_for_xai(self) -> None:
+        attachment = self._create_uploaded_attachment("txt", b"notes")
+        err = backends.validate_backend_attachments("xai", [attachment])
+        self.assertEqual(
+            err,
+            "Text attachments are not supported for Grok CLI chats yet. Image attachments still work.",
+        )
+
+    def test_grok_attachment_prompt_suffix_includes_image_path(self) -> None:
+        png = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+            b"\x90wS\xde"
+            b"\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x01\x01\x01\x00"
+            b"\x18\xdd\x8d\xb1"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        attachment = self._create_uploaded_attachment("png", png, kind="image", name="chart.png")
+        suffix = backends._grok_attachment_prompt_suffix([attachment])
+        self.assertIn("User attached image: chart.png", suffix)
+        self.assertIn("read_file", suffix)
+        self.assertIn(attachment["id"], suffix)
+
     def test_websocket_send_rejects_codex_attachments_before_backend_dispatch(self) -> None:
         chat_id = self._create_direct_chat(model="codex:gpt-5.4")
         attachment = self._create_uploaded_attachment("txt", b"notes")

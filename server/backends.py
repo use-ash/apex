@@ -263,14 +263,47 @@ def validate_backend_attachments(backend: str, attachments: list[dict] | None) -
     if backend == "codex":
         return "Attachments are not supported for Codex chats yet. Switch this chat to Claude to send files."
 
-    if backend == "xai":
-        return "Attachments are not supported for Grok CLI chats yet. Switch this chat to Claude to send files."
+    # Grok CLI: images via on-disk path + read_file (CLI multimodal path).
+    # Text files still blocked — same surface as Ollama-family backends.
+    if backend == "xai" and any(item["type"] == "text" for item in loaded):
+        return "Text attachments are not supported for Grok CLI chats yet. Image attachments still work."
 
     if backend in {"ollama", "deepseek", "zhipu", "google", "mlx"} and any(item["type"] == "text" for item in loaded):
         label = _BACKEND_LABELS.get(backend, backend)
         return f"Text attachments are not supported for {label} chats yet. Image attachments still work."
 
     return None
+
+
+def _grok_attachment_prompt_suffix(attachments: list[dict] | None) -> str:
+    """Build prompt lines pointing Grok at on-disk image paths for read_file.
+
+    Grok CLI does not take base64 image blocks on -p; vision works by reading
+    image files from disk. Absolute upload paths are stable and already used
+    by history-rehydrate refs for non-Claude backends.
+    """
+    if not attachments:
+        return ""
+    lines: list[str] = []
+    for att in attachments:
+        try:
+            item = _load_attachment(att)
+        except Exception as e:
+            log(f"grok attachment load error: {e}")
+            continue
+        if item["type"] != "image":
+            continue
+        path = item.get("path") or ""
+        name = item.get("name") or "image"
+        if not path:
+            continue
+        lines.append(
+            f"[User attached image: {name} — {path}]\n"
+            "Use read_file on that filesystem path to view the image before answering."
+        )
+    if not lines:
+        return ""
+    return "\n\n" + "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -1418,10 +1451,17 @@ async def _run_grok_chat(
 
     Mirrors Codex: session resume, context injection on fresh turns, tool events
     emitted when present. Grok CLI owns its own tools/sandbox/MCP.
+    Image attachments are injected as absolute on-disk paths so the agent can
+    read_file them (CLI has no base64 image blocks on -p).
     """
     effective_model = model or "grok-4.5"
     cli_model = effective_model  # ids already match CLI (grok-4.5, grok-4.3, …)
     grok_bin = _resolve_grok_cli()
+
+    att_suffix = _grok_attachment_prompt_suffix(attachments)
+    if att_suffix:
+        prompt = f"{prompt}{att_suffix}" if prompt else att_suffix.strip()
+        log(f"grok attachments: injected path refs for {len(attachments or [])} item(s)")
 
     existing_session, session_turns, scope_key = _get_grok_session_state(chat_id)
 
