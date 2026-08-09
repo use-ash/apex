@@ -1703,9 +1703,11 @@ async def _run_grok_chat(
     except Exception as _e_pol:
         log(f"grok policy lookup: {_e_pol}")
     _grok_extras = resolve_profile_extra_tools(_profile_id_pr1c or None) if _profile_id_pr1c else None
-    # PR2: CLI default pack is core (filesystem/fetch/memory). Full pack
-    # is Claude/tool_loop; do not silently attach F-tier MCPs on Grok.
-    _grok_pack = "core"
+    # Full pack for Grok so Apex MCP parity with Claude on L2+ chats
+    # (tradingview, playwright, gdrive, code-review-graph). Still subject to
+    # admit_server: execute_code remains CLI L3+; computer_use/interceptor
+    # stay CLI-default-deny. Core pack was blocking TV list/chart tools.
+    _grok_pack = "full"
     _resolved_mcp = tool_surface.resolve_for_grok(
         chat_id,
         workspace=workspace,
