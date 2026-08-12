@@ -28,6 +28,7 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-sonnet-5": 1_000_000,
     "claude-sonnet-4-6": 200_000,
     "claude-haiku-4-5-20251001": 200_000,
+    "grok-4.6": 500_000,
     "grok-4.5": 500_000,
     "grok-4.3": 1_000_000,
     "grok-4": 2_000_000,
@@ -87,6 +88,7 @@ MODEL_INPUT_PRICE: dict[str, float] = {
     "claude-sonnet-5": 2.0 / 1_000_000,         # $2/M input (intro thru 2026-08-31; then $3/M)
     "claude-sonnet-4-6": 3.0 / 1_000_000,       # $3/M input
     "claude-haiku-4-5-20251001": 0.80 / 1_000_000,  # $0.80/M input
+    "grok-4.6": 2.0 / 1_000_000,                # $2/M input
     "grok-4.5": 2.0 / 1_000_000,                # $2/M input
     "grok-4.3": 1.25 / 1_000_000,               # $1.25/M input
     "grok-4": 3.0 / 1_000_000,                  # $3/M input
@@ -102,6 +104,7 @@ MODEL_OUTPUT_PRICE: dict[str, float] = {
     "claude-sonnet-5": 10.0 / 1_000_000,        # $10/M output (intro thru 2026-08-31; then $15/M)
     "claude-sonnet-4-6": 15.0 / 1_000_000,      # $15/M output
     "claude-haiku-4-5-20251001": 4.0 / 1_000_000,   # $4/M output
+    "grok-4.6": 6.0 / 1_000_000,                # $6/M output
     "grok-4.5": 6.0 / 1_000_000,                # $6/M output
     "grok-4.3": 2.50 / 1_000_000,               # $2.50/M output
     "grok-4": 15.0 / 1_000_000,                 # $15/M output
@@ -121,6 +124,7 @@ REMOTE_MODEL_OPTIONS = [
     {"id": "claude-sonnet-5",       "displayName": "Claude Sonnet 5",  "provider": "anthropic", "local": False},
     {"id": "claude-sonnet-4-6",     "displayName": "Claude Sonnet 4.6","provider": "anthropic", "local": False},
     {"id": "claude-haiku-4-5-20251001", "displayName": "Claude Haiku 4.5", "provider": "anthropic", "local": False},
+    {"id": "grok-4.6",              "displayName": "Grok 4.6",         "provider": "xai",       "local": False},
     {"id": "grok-4.5",              "displayName": "Grok 4.5",         "provider": "xai",       "local": False},
     {"id": "grok-4.3",              "displayName": "Grok 4.3",         "provider": "xai",       "local": False},
     {"id": "grok-4",                "displayName": "Grok 4",           "provider": "xai",       "local": False},

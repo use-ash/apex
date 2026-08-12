@@ -499,10 +499,24 @@ async def api_update_chat_settings(chat_id: str, request: Request):
         return JSONResponse({"error": "Chat not found"}, status_code=404)
     current_settings = _get_chat_settings(chat_id)
     data = await request.json()
-    allowed = {"agent_mentions_enabled", "auto_title", "notification_level", "auto_reply", "shared_memory", "coordination_protocol", "relay_step_mode", "subconscious_disabled", "max_relay_rounds", "hub_profile_id"}
+    allowed = {
+        "agent_mentions_enabled", "auto_title", "notification_level", "auto_reply",
+        "shared_memory", "coordination_protocol", "relay_step_mode",
+        "subconscious_disabled", "max_relay_rounds", "hub_profile_id",
+        "reasoning_effort",
+    }
     filtered = {k: v for k, v in data.items() if k in allowed}
     if not filtered:
         return JSONResponse({"error": f"No valid settings. Allowed: {', '.join(sorted(allowed))}"}, status_code=400)
+    if "reasoning_effort" in filtered:
+        effort = str(filtered.get("reasoning_effort") or "").strip().lower()
+        # Grok CLI: xhigh|high|medium|low. Claude adaptive uses high/medium primarily.
+        if effort not in {"xhigh", "high", "medium", "low"}:
+            return JSONResponse(
+                {"error": "reasoning_effort must be one of: xhigh, high, medium, low"},
+                status_code=400,
+            )
+        filtered["reasoning_effort"] = effort
     if "max_relay_rounds" in filtered:
         raw = filtered["max_relay_rounds"]
         if raw in (None, "", 0):

@@ -183,6 +183,7 @@ _MODEL_PRICING: dict[str, dict[str, Any]] = {
     "codex:gpt-5.4": {"display": "Codex GPT-5.4", "track": "subscription", "price_in": 1.50, "price_out": 6.00, "provider": "codex"},
     "codex:gpt-5.4-mini": {"display": "Codex GPT-5.4 Mini", "track": "subscription", "price_in": 0.30, "price_out": 1.20, "provider": "codex"},
     "codex:o3": {"display": "Codex o3", "track": "subscription", "price_in": 2.00, "price_out": 8.00, "provider": "codex"},
+    "grok-4.6": {"display": "Grok 4.6", "track": "api", "price_in": 2.00, "price_out": 6.00, "provider": "xai"},
     "grok-4.5": {"display": "Grok 4.5", "track": "api", "price_in": 2.00, "price_out": 6.00, "provider": "xai"},
     "grok-4.3": {"display": "Grok 4.3", "track": "api", "price_in": 1.25, "price_out": 2.50, "provider": "xai"},
     "grok-4": {"display": "Grok 4", "track": "api", "price_in": 5.00, "price_out": 15.00, "provider": "xai"},

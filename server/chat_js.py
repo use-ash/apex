@@ -3435,6 +3435,7 @@ function updateChatModelSelect() {
     {id: 'claude-sonnet-5', name: 'Claude Sonnet 5'},
     {id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6'},
     {id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5'},
+    {id: 'grok-4.6', name: 'Grok 4.6'},
     {id: 'grok-4.5', name: 'Grok 4.5'},
     {id: 'grok-4.3', name: 'Grok 4.3'},
     {id: 'grok-4', name: 'Grok 4'},
@@ -5645,6 +5646,7 @@ async function showNewChatProfilePicker() {
       {id: 'claude-sonnet-5', name: 'Claude Sonnet 5'},
       {id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6'},
       {id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5'},
+      {id: 'grok-4.6', name: 'Grok 4.6'},
       {id: 'grok-4.5', name: 'Grok 4.5'},
       {id: 'grok-4.3', name: 'Grok 4.3'},
       {id: 'grok-4', name: 'Grok 4'},
@@ -6396,6 +6398,7 @@ async function showChatSettings() {
       {id: 'claude-sonnet-5', name: 'Claude Sonnet 5'},
       {id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6'},
       {id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5'},
+      {id: 'grok-4.6', name: 'Grok 4.6'},
       {id: 'grok-4.5', name: 'Grok 4.5'},
       {id: 'grok-4.3', name: 'Grok 4.3'},
       {id: 'grok-4', name: 'Grok 4'},
@@ -6454,6 +6457,55 @@ async function showChatSettings() {
       } catch(e) { dbg('model change error:', e); }
     };
     modelCard.appendChild(modelSelect);
+
+    // Reasoning effort — shared across Claude / Grok / Codex (GPT):
+    //   Claude: SDK effort= (xhigh maps → high)
+    //   Grok:   --reasoning-effort
+    //   Codex:  -c model_reasoning_effort=
+    const effortLabel = document.createElement('div');
+    effortLabel.className = 'gs-pref-hint';
+    effortLabel.style.marginTop = '10px';
+    effortLabel.textContent = 'Thinking effort (Claude · Grok · GPT)';
+    modelCard.appendChild(effortLabel);
+    const effortSelect = document.createElement('select');
+    effortSelect.className = 'gs-select';
+    effortSelect.style.marginTop = '4px';
+    [
+      {id: 'high', name: 'High (default)'},
+      {id: 'medium', name: 'Medium'},
+      {id: 'low', name: 'Low'},
+      {id: 'xhigh', name: 'Extra high (Grok/GPT)'},
+    ].forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.id; opt.textContent = m.name;
+      effortSelect.appendChild(opt);
+    });
+    effortSelect.value = 'high';
+    fetch(`/api/chats/${chatId}/settings`, {credentials: 'same-origin'})
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        const e = d && d.settings && d.settings.reasoning_effort;
+        if (e && ['xhigh','high','medium','low'].includes(e)) effortSelect.value = e;
+      })
+      .catch(() => {});
+    effortSelect.onchange = async () => {
+      const val = effortSelect.value;
+      try {
+        const r = await fetch(`/api/chats/${chatId}/settings`, {
+          method: 'PATCH',
+          credentials: 'same-origin',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({reasoning_effort: val}),
+        });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          gsToast('Effort failed: ' + (err.error || r.status));
+          return;
+        }
+        gsToast('Thinking → ' + val);
+      } catch (e) { dbg('effort change error:', e); }
+    };
+    modelCard.appendChild(effortSelect);
 
     // If there are local Ollama models, surface the list as a hint — parity
     // with the old slide panel's "Local Models" section.

@@ -1036,6 +1036,27 @@ def _make_sdk_pre_tool_use_hook(
     return _hook
 
 
+def _resolve_reasoning_effort(chat_id: str | None) -> str:
+    """Per-chat thinking depth from chats.settings.reasoning_effort.
+
+    Claude SDK effort= accepts low|medium|high (xhigh → high).
+    Grok/Codex accept xhigh|high|medium|low via their own backends.
+    Defaults to high.
+    """
+    if not chat_id:
+        return "high"
+    try:
+        from db import _get_chat_settings
+        raw = str((_get_chat_settings(chat_id) or {}).get("reasoning_effort") or "").strip().lower()
+        if raw == "xhigh":
+            return "high"  # Anthropic adaptive has no xhigh
+        if raw in {"high", "medium", "low"}:
+            return raw
+    except Exception:
+        pass
+    return "high"
+
+
 def _make_options(
     model: str | None = None,
     session_id: str | None = None,
@@ -1088,12 +1109,13 @@ def _make_options(
         # Extended thinking for Opus 4.7:
         #   - 4.7 defaults thinking.display="omitted" → empty pills.
         #   - {"type":"enabled",budget_tokens:N} returns 400 on 4.7 — use
-        #     adaptive; effort="high" tunes depth (GA, no beta header).
+        #     adaptive; effort tunes depth (GA, no beta header).
         #   - `display` isn't a first-class SDK field yet, so route via
         #     extra_args → bundled CLI's hidden --thinking-display flag
         #     (requires CLI >= 2.1.111 / claude-agent-sdk >= 0.1.60).
+        # Per-chat override: chats.settings.reasoning_effort (high|medium|low|xhigh).
         thinking={"type": "adaptive"},
-        effort="high",
+        effort=_resolve_reasoning_effort(chat_id),
         extra_args={"thinking-display": "summarized"},
         can_use_tool=_make_sdk_tool_gate(
             permission_level,

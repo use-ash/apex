@@ -325,6 +325,17 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
     }
     cli_model = _CODEX_CLI_MODEL_ALIASES.get(cli_model, cli_model)
 
+    # Per-chat thinking depth → Codex config override (same key as ~/.codex/config.toml).
+    # Valid: xhigh | high | medium | low. Default high.
+    _effort = "high"
+    try:
+        _raw_effort = str((_get_chat_settings(chat_id) or {}).get("reasoning_effort") or "").strip().lower()
+        if _raw_effort in {"xhigh", "high", "medium", "low"}:
+            _effort = _raw_effort
+    except Exception:
+        pass
+    _effort_c_args = ["-c", f"model_reasoning_effort={_effort}"]
+
     # Models that require OpenAI API key (not available on ChatGPT OAuth)
     _API_KEY_MODELS = {"o3", "o4-mini"}
     use_api_key = cli_model in _API_KEY_MODELS
@@ -464,6 +475,7 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
         cmd = [
             CODEX_CLI, "exec",
             *_codex_c_args,
+            *_effort_c_args,
             "resume", existing_thread,
             "--json", "--skip-git-repo-check",
             "-m", cli_model, "-",
@@ -598,10 +610,13 @@ async def _run_codex_chat(chat_id: str, prompt: str, model: str | None = None,
         cmd = [
             CODEX_CLI, "exec",
             *_codex_c_args,
+            *_effort_c_args,
             "--json",
             "--skip-git-repo-check",
             "-m", cli_model, "-s", codex_sandbox, "-C", codex_workspace, "-",
         ]
+
+    log(f"codex effort: chat={chat_id[:8]} model={cli_model} effort={_effort}")
 
     # Spawn codex CLI — always real CODEX_HOME (~/.codex). API-key models
     # (o3/o4-mini) authenticate via OPENAI_API_KEY / CODEX_API_KEY env or
@@ -1506,9 +1521,20 @@ async def _run_grok_chat(
     Image attachments are injected as absolute on-disk paths so the agent can
     read_file them (CLI has no base64 image blocks on -p).
     """
-    effective_model = model or "grok-4.5"
-    cli_model = effective_model  # ids already match CLI (grok-4.5, grok-4.3, …)
+    effective_model = model or "grok-4.6"
+    cli_model = effective_model  # ids already match CLI (grok-4.6, grok-4.5, …)
     grok_bin = _resolve_grok_cli()
+
+    # Per-chat reasoning depth (chat settings → CLI --reasoning-effort).
+    # Valid: xhigh | high | medium | low. Default high to match prior Apex behavior.
+    _effort = "high"
+    try:
+        from db import _get_chat_settings
+        _raw_effort = str((_get_chat_settings(chat_id) or {}).get("reasoning_effort") or "").strip().lower()
+        if _raw_effort in {"xhigh", "high", "medium", "low"}:
+            _effort = _raw_effort
+    except Exception:
+        pass
 
     att_suffix = _grok_attachment_prompt_suffix(attachments)
     if att_suffix:
@@ -1570,6 +1596,7 @@ async def _run_grok_chat(
             "--permission-mode", "bypassPermissions",
             "--no-plan",
             "-m", cli_model,
+            "--reasoning-effort", _effort,
             "--cwd", workspace,
             "--max-turns", "30",
         ]
@@ -1652,10 +1679,12 @@ async def _run_grok_chat(
             "--permission-mode", "bypassPermissions",
             "--no-plan",
             "-m", cli_model,
+            "--reasoning-effort", _effort,
             "--cwd", workspace,
             "--max-turns", "30",
             "--no-memory",  # Apex owns memory injection
         ]
+    log(f"grok effort: chat={chat_id[:8]} model={cli_model} effort={_effort}")
 
     grok_env = {**os.environ}
     # Prefer SuperGrok / OIDC subscription via ~/.grok/auth.json — do NOT inject
