@@ -240,8 +240,20 @@ class ApexWS:
 
 
 # ---- REST helper ---------------------------------------------------------
-def new_chat(port: int = DEV_PORT, cert_dir: str | None = None, model: str = "") -> str:
-    """Create a scratch chat via REST so tests never touch a real one."""
+def new_chat(
+    port: int = DEV_PORT,
+    cert_dir: str | None = None,
+    model: str = "",
+    *,
+    lite: bool = True,
+) -> str:
+    """Create a scratch chat via REST so tests never touch a real one.
+
+    By default ``lite=True`` sets ``subconscious_disabled`` so smoke turns skip
+    whisper + memory retrieval (keeps token count low; use Chat Settings
+    "Subconscious Injection" off semantics). Pass ``lite=False`` to test the
+    full injection path.
+    """
     import urllib.request
 
     d = resolve_cert_dir(port, cert_dir)
@@ -258,6 +270,16 @@ def new_chat(port: int = DEV_PORT, cert_dir: str | None = None, model: str = "")
     cid = str(payload.get("chat_id") or payload.get("id") or "")
     if not cid:
         raise SystemExit(f"could not parse chat_id from {payload}")
+    if lite:
+        patch = json.dumps({"subconscious_disabled": True}).encode()
+        preq = urllib.request.Request(
+            f"https://127.0.0.1:{port}/api/chats/{cid}/settings",
+            data=patch,
+            headers={"Content-Type": "application/json"},
+            method="PATCH",
+        )
+        with urllib.request.urlopen(preq, context=ctx, timeout=15) as resp:
+            resp.read()
     return cid
 
 
