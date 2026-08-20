@@ -25,7 +25,7 @@ import tool_surface as _tool_surface
 
 from fastapi import WebSocket
 
-from db import _get_db, _get_chat, _update_chat, _get_chat_tool_policy, _get_profile_tool_policy
+from db import _get_db, _get_chat, _update_chat, _get_chat_tool_policy, _get_profile_tool_policy, _save_message
 from log import log
 from tool_access import (
     tool_access_decision,
@@ -463,6 +463,147 @@ def _remove_active_send_task(chat_id: str, stream_id: str, task: asyncio.Task | 
 # Stream cancellation
 # ---------------------------------------------------------------------------
 
+_CANCEL_TOOL_RESULT_CAP = 5000
+
+
+def _snapshot_stream_payloads(chat_id: str) -> list[dict]:
+    """Copy in-memory stream events; fall back to the on-disk journal."""
+    payloads: list[dict] = []
+    for _seq, payload in list(_stream_buffers.get(chat_id) or ()):
+        if isinstance(payload, dict):
+            payloads.append(dict(payload))
+    if payloads:
+        return payloads
+    return [dict(evt) for _i, evt in _load_journal_events(chat_id) if isinstance(evt, dict)]
+
+
+def _partial_from_stream_payloads(payloads: list[dict], *, stream_id: str = "") -> dict:
+    """Rebuild cancel-save fields from streamed thinking / text / tool events.
+
+    Tool events match the Claude SDK shape so `_normalizeToolEvents` can
+    render pills on reload. Unpaired `tool_use` (in-flight at cancel) is kept.
+    """
+    texts: list[str] = []
+    thinks: list[str] = []
+    tools: list[dict] = []
+    pending: dict[str, dict] = {}
+    for ev in payloads:
+        if not isinstance(ev, dict):
+            continue
+        ev_sid = str(ev.get("stream_id") or "")
+        if stream_id and ev_sid and ev_sid != stream_id:
+            continue
+        et = ev.get("type")
+        if et == "text" and ev.get("text"):
+            texts.append(str(ev["text"]))
+        elif et == "thinking" and ev.get("text"):
+            thinks.append(str(ev["text"]))
+        elif et == "tool_use":
+            tid = str(ev.get("id") or "")
+            item = {
+                "id": tid,
+                "name": ev.get("name") or "tool",
+                "input": ev.get("input") if ev.get("input") is not None else {},
+            }
+            tools.append(item)
+            if tid:
+                pending[tid] = item
+        elif et == "tool_result":
+            tid = str(ev.get("tool_use_id") or ev.get("id") or "")
+            raw = ev.get("content")
+            content = "" if raw is None else str(raw)
+            orig_len = len(content)
+            if orig_len > _CANCEL_TOOL_RESULT_CAP:
+                content = content[:_CANCEL_TOOL_RESULT_CAP] + f"\n\n[... truncated from {orig_len} chars]"
+            result = {
+                "tool_use_id": tid,
+                "content": content,
+                "is_error": bool(ev.get("is_error")),
+            }
+            item = pending.get(tid)
+            if item is not None:
+                item["result"] = result
+            else:
+                tools.append({
+                    "id": tid,
+                    "name": ev.get("name") or "tool",
+                    "input": ev.get("input") if ev.get("input") is not None else {},
+                    "result": result,
+                })
+    return {
+        "text": "".join(texts),
+        "thinking": "".join(thinks),
+        "tool_events": tools,
+    }
+
+
+def _merge_cancel_partial(stream_partial: dict, sdk_partial: dict | None) -> dict:
+    """Prefer the live stream snapshot; fill gaps from Claude SDK partials."""
+    out = {
+        "text": stream_partial.get("text") or "",
+        "thinking": stream_partial.get("thinking") or "",
+        "tool_events": list(stream_partial.get("tool_events") or []),
+    }
+    if not sdk_partial:
+        return out
+    if not out["text"] and sdk_partial.get("text"):
+        out["text"] = str(sdk_partial.get("text") or "")
+    if not out["thinking"] and sdk_partial.get("thinking"):
+        out["thinking"] = str(sdk_partial.get("thinking") or "")
+    if not out["tool_events"] and sdk_partial.get("tool_events"):
+        out["tool_events"] = list(sdk_partial.get("tool_events") or [])
+    return out
+
+
+def _pop_sdk_partial(chat_id: str, extra_keys: set[str] | None = None) -> dict | None:
+    try:
+        from agent_sdk import _partial_results
+    except ImportError:
+        return None
+    keys = {chat_id}
+    if extra_keys:
+        keys.update(extra_keys)
+    first: dict | None = None
+    for key in keys:
+        got = _partial_results.pop(key, None)
+        if got and first is None:
+            first = got
+    return first
+
+
+def _persist_canceled_partial(
+    chat_id: str,
+    partial: dict,
+    *,
+    duration_ms: int,
+    speaker_id: str = "",
+    speaker_name: str = "",
+    speaker_avatar: str = "",
+) -> bool:
+    text = partial.get("text") or ""
+    thinking = partial.get("thinking") or ""
+    tool_events = partial.get("tool_events") or []
+    if not text and not thinking and not tool_events:
+        return False
+    if not text:
+        text = "[Response canceled]"
+    _save_message(
+        chat_id, "assistant", text,
+        tool_events=json.dumps(tool_events),
+        thinking=thinking,
+        duration_ms=duration_ms,
+        speaker_id=speaker_id,
+        speaker_name=speaker_name,
+        speaker_avatar=speaker_avatar,
+        canceled=True,
+    )
+    log(
+        f"cancel-save: chat={chat_id} text={len(text)}chars "
+        f"thinking={len(thinking)}chars tools={len(tool_events)} duration={duration_ms}ms"
+    )
+    return True
+
+
 async def _cancel_chat_streams(chat_id: str, stream_id: str = "") -> bool:
     if not chat_id:
         return False
@@ -472,6 +613,21 @@ async def _cancel_chat_streams(chat_id: str, stream_id: str = "") -> bool:
     if not active_entries:
         log(f"cancel no-op: chat={chat_id} sid={stream_id or '*'} — no active stream")
         return False
+
+    # Snapshot before cancelling — `_finalize_stream` wipes the buffer/journal.
+    snap = _snapshot_stream_payloads(chat_id)
+    speaker_id = ""
+    speaker_name = ""
+    speaker_avatar = ""
+    started_at: float | None = None
+    for _, entry in active_entries:
+        speaker_id = str(entry.get("profile_id") or "") or speaker_id
+        speaker_name = str(entry.get("name") or "") or speaker_name
+        speaker_avatar = str(entry.get("avatar") or "") or speaker_avatar
+        sa = entry.get("started_at")
+        if isinstance(sa, (int, float)) and sa > 0:
+            if started_at is None or sa < started_at:
+                started_at = float(sa)
 
     client_keys: set[str] = set()
     for _, entry in active_entries:
@@ -519,37 +675,23 @@ async def _cancel_chat_streams(chat_id: str, stream_id: str = "") -> bool:
         if pending:
             log(f"cancel: {len(pending)} send task(s) did not drain within 2s chat={chat_id}")
 
-    # Save partial results from cancelled turn so they persist across refresh
+    # Persist thinking + tool chain for every backend (Claude SDK *and* Ollama).
     try:
-        from agent_sdk import _partial_results
-        partial = _partial_results.pop(chat_id, None)
-        if partial and (partial.get("text") or partial.get("thinking") or partial.get("tool_events")):
-            from db import _save_message
-            duration_ms = int((time.monotonic() - partial.get("start", time.monotonic())) * 1000)
-            tool_events_json = json.dumps(partial.get("tool_events", []))
-            text = partial.get("text", "")
-            if not text:
-                text = "[Response canceled]"
-            # Extract speaker info from the active entry
-            speaker_id = ""
-            speaker_name = ""
-            speaker_avatar = ""
-            for _, entry in active_entries:
-                speaker_id = str(entry.get("profile_id") or "")
-                speaker_name = str(entry.get("name") or "")
-                speaker_avatar = str(entry.get("avatar") or "")
-                break
-            _save_message(
-                chat_id, "assistant", text,
-                tool_events=tool_events_json,
-                thinking=partial.get("thinking", ""),
-                duration_ms=duration_ms,
-                speaker_id=speaker_id,
-                speaker_name=speaker_name,
-                speaker_avatar=speaker_avatar,
-                canceled=True,
-            )
-            log(f"cancel-save: chat={chat_id} text={len(text)}chars thinking={len(partial.get('thinking',''))}chars tools={len(partial.get('tool_events',[]))} duration={duration_ms}ms")
+        sdk_partial = _pop_sdk_partial(chat_id, selected_keys)
+        reconstructed = _partial_from_stream_payloads(snap, stream_id=stream_id)
+        partial = _merge_cancel_partial(reconstructed, sdk_partial)
+        start = started_at
+        if start is None and sdk_partial and isinstance(sdk_partial.get("start"), (int, float)):
+            start = float(sdk_partial["start"])
+        duration_ms = int((time.monotonic() - start) * 1000) if start else 0
+        _persist_canceled_partial(
+            chat_id,
+            partial,
+            duration_ms=duration_ms,
+            speaker_id=speaker_id,
+            speaker_name=speaker_name,
+            speaker_avatar=speaker_avatar,
+        )
     except Exception as e:
         log(f"cancel-save FAILED: chat={chat_id} {type(e).__name__}: {e}")
 

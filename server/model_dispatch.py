@@ -34,6 +34,10 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "grok-4": 2_000_000,
     "grok-4-fast": 2_000_000,
     "qwen3.5:35b-a3b": 128_000,
+    "qwen3.8:27b": 131_072,
+    "qwen3.8-abliterated:27b": 131_072,
+    "Qwen3.8-abliterated:27b": 131_072,
+    "huihui_ai/Qwen3.8-abliterated:27b": 131_072,
     "mlx:mlx-community/Qwen3.5-35B-A3B-4bit": 128_000,
     "codex:gpt-5.6-sol": 1_050_000,
     "codex:gpt-5.6": 1_050_000,  # alias → Sol
@@ -184,6 +188,19 @@ def _get_model_backend(model: str) -> str:
         return "ollama"
 
 
+# Friendly picker labels for local Ollama tags (id stays the raw tag).
+_OLLAMA_DISPLAY_NAMES = {
+    "qwen3.8:27b": "Qwen 3.8 27B",
+    "qwen3.8-abliterated:27b": "Qwen 3.8 Abliterated 27B",
+    "Qwen3.8-abliterated:27b": "Qwen 3.8 Abliterated 27B",
+    "huihui_ai/qwen3.8-abliterated:27b": "Qwen 3.8 Abliterated 27B",
+}
+
+
+def _ollama_display_name(name: str) -> str:
+    return _OLLAMA_DISPLAY_NAMES.get(name) or _OLLAMA_DISPLAY_NAMES.get(name.lower()) or name
+
+
 def _get_ollama_models() -> list[dict]:
     """Query Ollama for available local models."""
     try:
@@ -194,7 +211,12 @@ def _get_ollama_models() -> list[dict]:
         for m in data.get("models", []):
             name = m.get("name", "")
             size_gb = round(m.get("size", 0) / 1e9, 1)
-            models.append({"id": name, "displayName": name, "sizeGb": size_gb, "local": True})
+            models.append({
+                "id": name,
+                "displayName": _ollama_display_name(name),
+                "sizeGb": size_gb,
+                "local": True,
+            })
         return models
     except Exception as e:
         log(f"ollama model list failed: {e}")
