@@ -55,6 +55,34 @@ def _set_pty_size(fd: int, cols: int, rows: int) -> None:
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
+def _make_pty_preexec(slave_path: str):
+    """Build a preexec_fn that gives the child the PTY as its *controlling*
+    terminal.
+
+    The kernel only delivers SIGWINCH to the foreground process group of a
+    controlling terminal. setsid() alone leaves the child with none, so every
+    TIOCSWINSZ from _set_pty_size was silently ignored and the session stayed
+    at its 80x24 spawn size no matter what the client reported — the terminal
+    rendered into the top-left corner of the viewport.
+
+    The slave is opened by name rather than reusing fd 0: under the event
+    loop, fd 0 is not the PTY when preexec_fn runs (isatty() is False there),
+    so a TIOCSCTTY on it fails with ENODEV. Opening the slave while we are a
+    session leader with no controlling terminal claims it as the controlling
+    terminal, and re-duping it onto 0/1/2 guarantees the child's standard
+    streams are the terminal regardless of what it was handed.
+    """
+    def _preexec() -> None:
+        os.setsid()
+        fd = os.open(slave_path, os.O_RDWR)
+        os.dup2(fd, 0)
+        os.dup2(fd, 1)
+        os.dup2(fd, 2)
+        if fd > 2:
+            os.close(fd)
+    return _preexec
+
+
 _TMUX_CONF = os.path.join(os.path.dirname(__file__), "tmux.conf")
 
 
@@ -115,7 +143,7 @@ async def _spawn(tmux_session: Optional[str]) -> tuple[int, asyncio.subprocess.P
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-        preexec_fn=os.setsid,
+        preexec_fn=_make_pty_preexec(os.ttyname(slave_fd)),
         close_fds=True,
         env=safe_env,
     )
