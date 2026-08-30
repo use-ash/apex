@@ -42,8 +42,12 @@ class _Session:
     chat_id: str
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
-    # Set/cleared on each WS attach. Old read task self-exits when this changes.
+    # Set/cleared on each WS attach. The reader forwards to whatever is current.
     active_ws: object = None
+    # One reader owns the PTY for the session's whole life. Per-WS readers raced:
+    # a superseded reader stayed parked in os.read, woke on the next chunk, and
+    # dropped it on the floor — so a reconnecting client saw a blank screen.
+    reader_task: object = None
 
 
 _sessions: dict[str, _Session] = {}
@@ -155,8 +159,16 @@ async def _cleanup(chat_id: str) -> None:
     sess = _sessions.pop(chat_id, None)
     if not sess:
         return
+    sess.active_ws = None
+    if sess.reader_task is not None:
+        sess.reader_task.cancel()
+    # Closing the master also breaks the executor thread out of its blocking
+    # os.read, which cancel() alone cannot do.
     with contextlib.suppress(OSError):
         os.close(sess.master_fd)
+    if sess.reader_task is not None:
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await sess.reader_task
     with contextlib.suppress(OSError, ProcessLookupError):
         os.killpg(os.getpgid(sess.proc.pid), signal.SIGHUP)
     with contextlib.suppress(asyncio.TimeoutError, Exception):
@@ -165,18 +177,39 @@ async def _cleanup(chat_id: str) -> None:
     log(f"terminal: cleaned up chat={chat_id[:8]}")
 
 
-async def _pty_read(master_fd: int, ws: WebSocket, sess: _Session) -> None:
+async def _pty_read(sess: _Session) -> None:
+    """Forward PTY output for the life of the session.
+
+    Exactly one of these runs per session. It must not be tied to a single
+    WebSocket: os.read runs in an executor thread that cannot be cancelled, so
+    a per-WS reader outlives its socket, wakes on the next chunk, and discards
+    it. With two readers parked on the same fd after a reconnect, whichever won
+    the wake-up decided whether the new client saw the screen — which is why a
+    refreshed page was blank until the next keystroke produced more output.
+
+    Sending to a stale socket is harmless; the send fails and we keep going, so
+    the next client still gets everything after it.
+    """
     loop = asyncio.get_running_loop()
     try:
         while True:
-            data = await loop.run_in_executor(None, os.read, master_fd, 4096)
+            data = await loop.run_in_executor(None, os.read, sess.master_fd, 4096)
             if not data:
                 break
             sess.last_activity = time.time()
-            # Self-exit if a newer WS replaced us (only one reader per PTY at a time)
-            if sess.active_ws is not ws:
-                break
-            await ws.send_bytes(data)
+            ws = sess.active_ws
+            if ws is None:
+                # Nothing attached (e.g. mid page-refresh). Discard rather than
+                # buffer: what arrives here is tmux teardown — clear-screen and
+                # mode resets — and replaying it to the next client would blank
+                # the screen it just painted. The attach-time repaint below is
+                # what makes the new client whole.
+                continue
+            try:
+                await ws.send_bytes(data)
+            except Exception:
+                # Client went away mid-write; keep draining for the next one.
+                continue
     except (OSError, RuntimeError):
         pass
 
@@ -216,16 +249,40 @@ body{{
   border-top:1px solid rgba(255,255,255,0.08);
   padding-bottom:env(safe-area-inset-bottom,0px);
 }}
-/* Shortcut key row */
+/* Shortcut key row. The dismiss button sits OUTSIDE the scrolling strip: it
+   used to be the last of sixteen buttons inside #keys, so on a phone it was
+   scrolled out of sight and an accidentally-raised keyboard had no visible
+   way out. It must stay pinned and reachable at all times. */
+#keys-row{{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  padding:6px 8px 4px;
+  min-width:0;
+}}
 #keys{{
   display:flex;
+  flex:1 1 auto;
+  min-width:0;
   overflow-x:auto;
   -webkit-overflow-scrolling:touch;
   gap:6px;
-  padding:6px 8px 4px;
   scrollbar-width:none;
 }}
 #keys::-webkit-scrollbar{{display:none}}
+#kb-dismiss{{
+  flex-shrink:0;
+  padding:5px 10px;
+  background:#1f2937;
+  color:#d1d5db;
+  border:1px solid rgba(255,255,255,0.1);
+  border-radius:6px;
+  font-size:12px;
+  font-family:'SF Mono',monospace;
+  cursor:pointer;
+  white-space:nowrap;
+}}
+#kb-dismiss:active{{background:#374151}}
 #keys button{{
   flex-shrink:0;
   padding:5px 10px;
@@ -300,6 +357,7 @@ body{{
 <!-- Input bar: shortcut row + text input -->
 <div id="bar">
   <div id="status"><span id="dot"></span><span id="status-txt">connecting…</span></div>
+  <div id="keys-row">
   <div id="keys">
     <button data-k="3">Ctrl-C</button>
     <button data-k="4">Ctrl-D</button>
@@ -316,7 +374,8 @@ body{{
     <button data-k="21">Ctrl-U</button>
     <button data-k="12">Ctrl-L</button>
     <button data-k="13">Enter</button>
-    <button id="kb-dismiss" type="button" title="Hide keyboard">⌨ ▼</button>
+  </div>
+  <button id="kb-dismiss" type="button" title="Hide keyboard">⌨ ▼</button>
   </div>
   <form id="inp-row" onsubmit="event.preventDefault();sendInp();return false;">
     <input id="inp" type="text" placeholder="command…"
@@ -555,12 +614,21 @@ async def ws_terminal(websocket: WebSocket):
             return
         sess = _Session(master_fd=master_fd, proc=proc, chat_id=chat_id)
         _sessions[chat_id] = sess
+        # One reader for the session's whole life, started before any client is
+        # attached so no output is missed between spawn and the first attach.
+        sess.reader_task = asyncio.create_task(_pty_read(sess))
         log(f"terminal: spawned chat={chat_id[:8]} tmux={tmux_session or 'shell'} pid={proc.pid}")
     else:
-        # Existing session — kick the prior WS reader off this PTY.
+        # Existing session — the reader keeps running and simply retargets to
+        # the new socket once active_ws is reassigned below.
         # The tmux refresh is deferred until the first resize message lands
         # so tmux redraws at the new client's actual cols/rows, not the old.
         prior_ws = sess.active_ws
+        # Retarget the reader BEFORE closing the old socket. Closing awaits, and
+        # any output arriving in that window would otherwise be handed to a
+        # socket that is going away and lost — the tail of the race that made a
+        # refreshed page come up blank.
+        sess.active_ws = websocket
         if prior_ws is not None and prior_ws is not websocket:
             with contextlib.suppress(Exception):
                 await prior_ws.close(code=4001, reason="superseded")
@@ -569,7 +637,35 @@ async def ws_terminal(websocket: WebSocket):
     sess.active_ws = websocket
     needs_tmux_refresh = tmux_session is not None and sess.proc.returncode is None
     first_resize = True  # bypass rate limiter for critical initial sizing
-    read_task = asyncio.create_task(_pty_read(sess.master_fd, websocket, sess))
+
+    async def _tmux_repaint():
+        """Force tmux to redraw for the client that just attached.
+
+        Output produced while nothing was attached is dropped (see _pty_read),
+        so a fresh client can only be made whole by a repaint. Runs once per
+        attach; the resize path calls it as soon as dimensions are known.
+        """
+        nonlocal needs_tmux_refresh
+        if not needs_tmux_refresh:
+            return
+        needs_tmux_refresh = False
+        with contextlib.suppress(Exception):
+            refresh = await asyncio.create_subprocess_exec(
+                *_tmux_base(), "refresh-client", "-t", tmux_session,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(refresh.wait(), timeout=2)
+
+    async def _repaint_fallback():
+        # A client that never sends a resize would otherwise never trigger the
+        # repaint above and would sit on a blank screen until it happened to
+        # generate output. Repaint anyway once its dimensions have had time to
+        # arrive.
+        await asyncio.sleep(0.75)
+        await _tmux_repaint()
+
+    repaint_task = asyncio.create_task(_repaint_fallback())
 
     async def _idle_watch():
         while True:
@@ -600,24 +696,20 @@ async def ws_terminal(websocket: WebSocket):
                         rows = max(1, min(500, int(ctrl.get("rows", 24))))
                         _set_pty_size(sess.master_fd, cols, rows)
                         if needs_tmux_refresh:
-                            needs_tmux_refresh = False
                             await asyncio.sleep(0.08)  # let ioctl propagate before refresh
-                            with contextlib.suppress(Exception):
-                                refresh = await asyncio.create_subprocess_exec(
-                                    *_tmux_base(), "refresh-client", "-t", tmux_session,
-                                    stdout=asyncio.subprocess.DEVNULL,
-                                    stderr=asyncio.subprocess.DEVNULL,
-                                )
-                                await asyncio.wait_for(refresh.wait(), timeout=2)
+                            await _tmux_repaint()
                     elif t == "ping":
                         await websocket.send_text('{"type":"pong"}')
     except Exception:
         pass
     finally:
-        read_task.cancel()
         idle_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await read_task
+        repaint_task.cancel()
+        # The reader is owned by the session, not this socket — leave it running
+        # so output produced between disconnect and reconnect is still drained
+        # and cannot be delivered to a dead socket by a second reader.
+        if sess.active_ws is websocket:
+            sess.active_ws = None
         if sess.proc.returncode is not None:
             code = sess.proc.returncode
             await _cleanup(chat_id)
