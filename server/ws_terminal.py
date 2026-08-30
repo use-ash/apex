@@ -101,7 +101,15 @@ async def _spawn(tmux_session: Optional[str]) -> tuple[int, asyncio.subprocess.P
                 env=safe_env,
             )
             await mk.wait()
-        cmd = [*_tmux_base(), "attach-session", "-t", tmux_session]
+        # -d detaches any other client on this session. A tmux window has a
+        # single size shared by every attached client, so a second client always
+        # forces one of them to render wrong: the window follows the smallest
+        # client (or the most recent, per window-size), and a stale client that
+        # never detached pins everyone to its size indefinitely — an 80x24
+        # leftover clamps a 160-column browser to 80 columns forever.
+        # Detaching on attach makes the connecting client the only client, so it
+        # always gets its true dimensions, and evicts leaked clients for free.
+        cmd = [*_tmux_base(), "attach-session", "-d", "-t", tmux_session]
     else:
         cmd = [os.environ.get("SHELL", "/bin/bash"), "-l"]
     proc = await asyncio.create_subprocess_exec(
