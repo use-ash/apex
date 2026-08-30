@@ -116,6 +116,12 @@ _OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 _OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 _OAUTH_REFRESH_BUFFER_S = 5 * 60  # 5 minutes — match Claude Code's internal buffer
 _KEYCHAIN_SERVICE = "Claude Code-credentials"
+# Claude Code writes its Keychain row under the login account name. Older Apex
+# builds wrote back with `-a ""`, creating a second, account-less row that
+# `find-generic-password -s ... -w` would match first — so a browser reauth
+# (which lands on the account row) stayed invisible and the server served an
+# expired token until manual intervention. Always read/write account-scoped.
+_KEYCHAIN_ACCOUNT = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
 _TOKEN_CACHE = Path.home() / ".apex" / ".oauth_token"
 _OAUTH_CACHE = Path.home() / ".apex" / ".oauth_data.json"  # full OAuth blob
 
@@ -206,23 +212,64 @@ def _is_rate_limit_error(text: str) -> bool:
     return any(p in text for p in _RATE_LIMIT_PATTERNS)
 
 
+def _keychain_rows() -> list[dict]:
+    """Read every candidate Keychain row for the service.
+
+    Duplicate rows can exist for the same service under different accounts
+    (see _KEYCHAIN_ACCOUNT). Returns the parsed OAuth blobs, newest last.
+    """
+    import subprocess as _sp
+    seen: set[str] = set()
+    rows: list[dict] = []
+    # Account-scoped first (what Claude Code writes), then the legacy
+    # account-less row so existing installs keep working.
+    candidates = ([["-a", _KEYCHAIN_ACCOUNT]] if _KEYCHAIN_ACCOUNT else []) + [["-a", ""], []]
+    for extra in candidates:
+        try:
+            result = _sp.run(
+                ["security", "find-generic-password", "-s", _KEYCHAIN_SERVICE, *extra, "-w"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception:
+            continue
+        raw = result.stdout.strip() if result.returncode == 0 else ""
+        if not raw or raw in seen:
+            continue
+        seen.add(raw)
+        try:
+            oauth = json.loads(raw).get("claudeAiOauth", {})
+        except Exception:
+            continue
+        if oauth.get("accessToken"):
+            rows.append(oauth)
+    return rows
+
+
 def _read_keychain_oauth() -> dict:
-    """Read full OAuth data from macOS Keychain. Returns {} on failure."""
+    """Read full OAuth data from macOS Keychain. Returns {} on failure.
+
+    Picks the row with the latest expiry rather than whichever the Keychain
+    happens to match first — a stale duplicate must never shadow a fresh reauth.
+    """
     try:
-        import subprocess as _sp
-        result = _sp.run(
-            ["security", "find-generic-password", "-s", _KEYCHAIN_SERVICE, "-w"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            creds = json.loads(result.stdout.strip())
-            oauth = creds.get("claudeAiOauth", {})
+        rows = _keychain_rows()
+        if rows:
+            oauth = max(rows, key=lambda r: r.get("expiresAt", 0))
+            if len(rows) > 1:
+                log(f"OAuth: {len(rows)} Keychain rows found, using newest "
+                    f"(expiresAt={oauth.get('expiresAt', 0)})")
             # Keep cache file in sync so tmux/fallback path never serves stale token
             try:
+                # `compat` is imported in-scope: a module-level name was missing
+                # here, so the chmod raised NameError into the bare except below
+                # and the cache was left world-readable with a live refresh token.
+                from compat import safe_chmod
+                _OAUTH_CACHE.parent.mkdir(parents=True, exist_ok=True)
+                _OAUTH_CACHE.touch(mode=0o600, exist_ok=True)
                 _OAUTH_CACHE.write_text(json.dumps(oauth, separators=(",", ":")))
                 safe_chmod(_OAUTH_CACHE, 0o600)
-            except Exception:
-                pass
+            except Exception as e:
+                log(f"OAuth: failed to sync token cache: {e}")
             return oauth
     except Exception:
         pass
@@ -237,27 +284,37 @@ def _read_keychain_oauth() -> dict:
 
 def _write_keychain_oauth(oauth_data: dict) -> bool:
     """Write updated OAuth data back to macOS Keychain."""
+    if not _KEYCHAIN_ACCOUNT:
+        log("Keychain write skipped: no login account name available")
+        return False
     try:
         import subprocess as _sp
         # Read full credentials blob, update claudeAiOauth section
+        account = ["-a", _KEYCHAIN_ACCOUNT]
         result = _sp.run(
-            ["security", "find-generic-password", "-s", _KEYCHAIN_SERVICE, "-w"],
+            ["security", "find-generic-password", "-s", _KEYCHAIN_SERVICE, *account, "-w"],
             capture_output=True, text=True, timeout=5,
         )
-        if result.returncode != 0:
-            return False
-        creds = json.loads(result.stdout.strip())
+        creds = {}
+        if result.returncode == 0 and result.stdout.strip():
+            creds = json.loads(result.stdout.strip())
         creds["claudeAiOauth"] = oauth_data
         blob = json.dumps(creds, separators=(",", ":"))
-        # Delete + add (Keychain doesn't have an atomic update)
+        # Delete + add (Keychain doesn't have an atomic update). Scope the
+        # delete to our own account so a concurrent row is never clobbered.
         _sp.run(
-            ["security", "delete-generic-password", "-s", _KEYCHAIN_SERVICE],
+            ["security", "delete-generic-password", "-s", _KEYCHAIN_SERVICE, *account],
             capture_output=True, timeout=5,
         )
         _sp.run(
             ["security", "add-generic-password", "-s", _KEYCHAIN_SERVICE,
-             "-a", "", "-w", blob, "-U"],
+             *account, "-w", blob, "-U"],
             capture_output=True, timeout=5, check=True,
+        )
+        # Drop the legacy account-less duplicate so it can never shadow this row.
+        _sp.run(
+            ["security", "delete-generic-password", "-s", _KEYCHAIN_SERVICE, "-a", ""],
+            capture_output=True, timeout=5,
         )
         return True
     except Exception as e:
@@ -268,10 +325,14 @@ def _write_keychain_oauth(oauth_data: dict) -> bool:
 def _cache_oauth_data(oauth_data: dict, access_token: str) -> None:
     """Cache OAuth data and access token to disk."""
     try:
-        _TOKEN_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        _TOKEN_CACHE.write_text(access_token)
         from compat import safe_chmod
+        _TOKEN_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        # Create with 0600 *before* writing — writing first leaves a window
+        # where the token is on disk world-readable.
+        _TOKEN_CACHE.touch(mode=0o600, exist_ok=True)
+        _TOKEN_CACHE.write_text(access_token)
         safe_chmod(_TOKEN_CACHE, 0o600)
+        _OAUTH_CACHE.touch(mode=0o600, exist_ok=True)
         _OAUTH_CACHE.write_text(json.dumps(oauth_data, separators=(",", ":")))
         safe_chmod(_OAUTH_CACHE, 0o600)
     except Exception:
@@ -377,8 +438,15 @@ def _refresh_oauth_token() -> bool:
             log(f"OAuth: token refreshed OK, new expiry in {new_expires_in}s")
             return True
         else:
+            # Never cache or serve a token that is already past expiry — doing so
+            # rewrites the stale token to disk on every cycle and reports success,
+            # so the operator sees 401s with no indication the refresh is failing.
+            if expires_at and now_ms >= expires_at:
+                log("OAuth: refresh endpoint failed and current token is EXPIRED "
+                    f"(since {(now_ms - expires_at) / 1000:.0f}s ago) — "
+                    "re-auth required (`claude /login`)")
+                return False
             log("OAuth: refresh endpoint failed, falling back to current token")
-            # Still update env with current (possibly stale) token
             os.environ["ANTHROPIC_API_KEY"] = access_token
             _cache_oauth_data(oauth, access_token)
             return True

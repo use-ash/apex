@@ -75,22 +75,37 @@ def _get_oauth_credentials() -> tuple[str | None, str]:
     except (FileNotFoundError, json.JSONDecodeError, KeyError):
         pass
     if sys.platform == "darwin":
-        try:
-            import subprocess as _sp
-            r = _sp.run(
-                ["/usr/bin/security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if r.returncode == 0 and r.stdout.strip():
-                data = json.loads(r.stdout.strip())
-                oauth = data.get("claudeAiOauth", {})
-                token = oauth.get("accessToken")
-                if token:
-                    tier = oauth.get("rateLimitTier", "")
-                    plan = _PLAN_NAMES.get(tier, tier.replace("default_claude_", "").replace("_", " ").title())
-                    return token, plan
-        except Exception:
-            pass
+        # Duplicate Keychain rows can exist under different accounts; the
+        # account-less legacy row is often stale, so prefer the newest expiry
+        # instead of whichever `security` matches first.
+        import os as _os
+        account = _os.environ.get("USER") or _os.environ.get("LOGNAME") or ""
+        candidates = ([["-a", account]] if account else []) + [["-a", ""], []]
+        best: dict = {}
+        seen: set[str] = set()
+        for extra in candidates:
+            try:
+                import subprocess as _sp
+                r = _sp.run(
+                    ["/usr/bin/security", "find-generic-password",
+                     "-s", "Claude Code-credentials", *extra, "-w"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                raw = r.stdout.strip() if r.returncode == 0 else ""
+                if not raw or raw in seen:
+                    continue
+                seen.add(raw)
+                oauth = json.loads(raw).get("claudeAiOauth", {})
+                if oauth.get("accessToken") and \
+                        oauth.get("expiresAt", 0) >= best.get("expiresAt", 0):
+                    best = oauth
+            except Exception:
+                continue
+        token = best.get("accessToken")
+        if token:
+            tier = best.get("rateLimitTier", "")
+            plan = _PLAN_NAMES.get(tier, tier.replace("default_claude_", "").replace("_", " ").title())
+            return token, plan
     return None, ""
 
 
