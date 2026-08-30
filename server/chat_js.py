@@ -8458,12 +8458,22 @@ function _openTerminalChannel(chatId, tmuxSession) {
   // so we must manually track the visual viewport to keep the terminal
   // visible above the keyboard and eliminate the blank gap.
   if (window.visualViewport) {
+    // Keep clear of the topbar. The CSS reserves it via top:52px, but the
+    // inline top set below overrides that, and on desktop vv.offsetTop is 0 —
+    // so the overlay covered the topbar and swallowed the menu button. With
+    // the sidebar unpinned (its only pin control lives inside the sidebar),
+    // that left no way to reopen it at all.
+    const _topbarH = () => {
+      const tb = document.querySelector('.topbar');
+      return tb ? Math.round(tb.getBoundingClientRect().height) : 52;
+    };
     const _vvHandler = () => {
       const v = document.getElementById('_terminalView');
       if (!v) return;
       const vv = window.visualViewport;
-      v.style.top = vv.offsetTop + 'px';
-      v.style.height = vv.height + 'px';
+      const off = _topbarH();
+      v.style.top = (vv.offsetTop + off) + 'px';
+      v.style.height = Math.max(0, vv.height - off) + 'px';
       v.style.bottom = 'auto';
       // Refit terminal to new dimensions after layout settles
       requestAnimationFrame(() => {

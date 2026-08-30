@@ -21,8 +21,12 @@ body.theme-light{--bg:#F8FAFC;--surface:#FFFFFF;--card:#D8E1EB;--text:#0F172A;--
 --panel-input-bg:#F8FAFC;--debug-bg:#E2E8F0;--debug-border:#CBD5E1;--debug-state:#1D4ED8;--debug-log:#047857}
 
 /* Top bar */
+/* z-index keeps the topbar above .terminal-view (z-index:1). The menu button
+   lives here and is the only way to reopen an unpinned sidebar, so it must
+   never end up underneath a full-screen overlay. */
 .topbar{background:var(--surface);padding:12px 16px;padding-top:calc(12px + var(--sat));
 display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--card);min-height:52px;flex-shrink:0;
+position:relative;z-index:2;
 transition:margin-left .2s ease}
 .topbar h1{font-size:16px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 cursor:pointer;user-select:none;border-radius:6px;padding:2px 6px;margin:-2px -6px;transition:background .12s}
