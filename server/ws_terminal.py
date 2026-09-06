@@ -389,7 +389,7 @@ body{{
 
 <script src="/static/xterm.js"></script>
 <script src="/static/xterm-addon-fit.js"></script>
-<script src="/static/xterm-addon-web-links.js"></script>
+<script src="/static/apex-term-links.js"></script>
 <script>
 (function(){{
   var chatId = {chat_id_json};
@@ -434,8 +434,8 @@ body{{
       linkToast('Copy unavailable');
     }}
   }}
-  if (typeof WebLinksAddon !== 'undefined')
-    term.loadAddon(new WebLinksAddon.WebLinksAddon((ev, uri) => openLink(uri)));
+  if (typeof installApexTermLinks !== 'undefined')
+    installApexTermLinks(term, openLink);
   term.open(document.getElementById('t'));
 
   // Debounced fit + WS resize on viewport changes.

@@ -35,6 +35,7 @@ CHAT_HTML = (
     + """
 <script src="/static/xterm.js"></script>
 <script src="/static/xterm-addon-fit.js"></script>
+<script src="/static/apex-term-links.js"></script>
 <script nonce="{{CSP_NONCE}}">
 """
     + CHAT_JS

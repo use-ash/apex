@@ -25,7 +25,13 @@ misc_router = APIRouter()
 
 # Static assets directory (xterm.js, etc.)
 _STATIC_DIR = Path(__file__).parent / "static"
-_STATIC_ALLOW = {"xterm.js", "xterm-addon-fit.js", "xterm.css"}
+_STATIC_ALLOW = {
+    "xterm.js",
+    "xterm-addon-fit.js",
+    "xterm-addon-web-links.js",
+    "xterm.css",
+    "apex-term-links.js",
+}
 
 # ---------------------------------------------------------------------------
 # Config (re-derived from env or computed once at import)

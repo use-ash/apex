@@ -8645,8 +8645,8 @@ function _termConnect(chatId, tmuxSession, attempt) {
       term.loadAddon(fitAddon);
       // OAuth login URLs land in the terminal; make them tappable so Safari
       // can open them without needing text selection.
-      if (typeof WebLinksAddon !== 'undefined') {
-        term.loadAddon(new WebLinksAddon.WebLinksAddon((ev, uri) => _termOpenLink(uri)));
+      if (typeof installApexTermLinks !== 'undefined') {
+        installApexTermLinks(term, _termOpenLink);
       }
       term.onSelectionChange(() => {
         const sel = term.getSelection();
