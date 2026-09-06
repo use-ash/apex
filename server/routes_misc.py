@@ -28,7 +28,6 @@ _STATIC_DIR = Path(__file__).parent / "static"
 _STATIC_ALLOW = {
     "xterm.js",
     "xterm-addon-fit.js",
-    "xterm-addon-web-links.js",
     "xterm.css",
     "apex-term-links.js",
 }
