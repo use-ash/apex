@@ -638,15 +638,17 @@ async def ws_terminal(websocket: WebSocket):
     needs_tmux_refresh = tmux_session is not None and sess.proc.returncode is None
     first_resize = True  # bypass rate limiter for critical initial sizing
 
-    async def _tmux_repaint():
+    async def _tmux_repaint(force: bool = False):
         """Force tmux to redraw for the client that just attached.
 
         Output produced while nothing was attached is dropped (see _pty_read),
-        so a fresh client can only be made whole by a repaint. Runs once per
-        attach; the resize path calls it as soon as dimensions are known.
+        so a fresh client can only be made whole by a repaint. The resize path
+        calls this as soon as dimensions are known; the settle pass below calls
+        it with force so a repaint also lands *after* the reconnect has fully
+        quiesced, covering anything missed in between.
         """
         nonlocal needs_tmux_refresh
-        if not needs_tmux_refresh:
+        if not (needs_tmux_refresh or force):
             return
         needs_tmux_refresh = False
         with contextlib.suppress(Exception):
@@ -658,12 +660,14 @@ async def ws_terminal(websocket: WebSocket):
             await asyncio.wait_for(refresh.wait(), timeout=2)
 
     async def _repaint_fallback():
-        # A client that never sends a resize would otherwise never trigger the
-        # repaint above and would sit on a blank screen until it happened to
-        # generate output. Repaint anyway once its dimensions have had time to
-        # arrive.
+        # Unconditional settle pass. Two reasons it must not be skipped when the
+        # resize path already repainted: a client that never sends a resize
+        # would otherwise never be repainted at all, and a repaint triggered at
+        # resize time lands before the reconnect has settled, so output produced
+        # just after it can still be missed. Repainting once more here makes the
+        # visible screen correct regardless of what was dropped in between.
         await asyncio.sleep(0.75)
-        await _tmux_repaint()
+        await _tmux_repaint(force=True)
 
     repaint_task = asyncio.create_task(_repaint_fallback())
 
