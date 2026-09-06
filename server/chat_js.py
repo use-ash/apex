@@ -8643,6 +8643,17 @@ function _termConnect(chatId, tmuxSession, attempt) {
       });
       fitAddon = new FitAddon.FitAddon();
       term.loadAddon(fitAddon);
+      // OAuth login URLs land in the terminal; make them tappable so Safari
+      // can open them without needing text selection.
+      if (typeof WebLinksAddon !== 'undefined') {
+        term.loadAddon(new WebLinksAddon.WebLinksAddon((ev, uri) => _termOpenLink(uri)));
+      }
+      term.onSelectionChange(() => {
+        const sel = term.getSelection();
+        if (sel && navigator.clipboard) {
+          navigator.clipboard.writeText(sel).catch(() => {});
+        }
+      });
     } catch(e) {
       _termSetDot('', 'Init failed: ' + e.message);
       return;
@@ -8742,6 +8753,37 @@ function _termConnect(chatId, tmuxSession, attempt) {
       ws.send(new TextEncoder().encode(data).buffer);
     }
   });
+}
+
+function _termLinkToast(msg) {
+  const d = document.createElement('div');
+  d.textContent = msg;
+  d.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);'
+    + 'background:#7c3aed;color:#fff;padding:8px 14px;border-radius:8px;'
+    + 'font:13px -apple-system,sans-serif;z-index:99999;max-width:80vw;text-align:center';
+  document.body.appendChild(d);
+  setTimeout(() => d.remove(), 2600);
+}
+
+// The iOS app installs an `apexOpenURL` message handler that hands the URL to
+// Safari. In a plain browser there is no bridge, so try window.open and fall
+// back to the clipboard.
+function _termOpenLink(uri) {
+  try {
+    const bridge = window.webkit && window.webkit.messageHandlers
+      && window.webkit.messageHandlers.apexOpenURL;
+    if (bridge) { bridge.postMessage(uri); return; }
+  } catch (e) {}
+  let w = null;
+  try { w = window.open(uri, '_blank', 'noopener,noreferrer'); } catch (e) {}
+  if (w) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(uri)
+      .then(() => _termLinkToast('Link copied — paste into Safari'))
+      .catch(() => _termLinkToast('Copy failed'));
+  } else {
+    _termLinkToast('Copy unavailable');
+  }
 }
 
 function _termSetDot(color, label) {

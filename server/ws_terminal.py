@@ -389,6 +389,7 @@ body{{
 
 <script src="/static/xterm.js"></script>
 <script src="/static/xterm-addon-fit.js"></script>
+<script src="/static/xterm-addon-web-links.js"></script>
 <script>
 (function(){{
   var chatId = {chat_id_json};
@@ -404,6 +405,37 @@ body{{
   }});
   var fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
+  function linkToast(msg){{
+    var d = document.createElement('div');
+    d.textContent = msg;
+    d.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);'
+      + 'background:#7c3aed;color:#fff;padding:8px 14px;border-radius:8px;'
+      + 'font:13px -apple-system,sans-serif;z-index:9999;max-width:80vw;text-align:center';
+    document.body.appendChild(d);
+    setTimeout(function(){{ d.remove(); }}, 2600);
+  }}
+  // The iOS app installs an `apexOpenURL` message handler that hands the URL
+  // to Safari. Plain browsers have no bridge, so fall back to window.open and
+  // then the clipboard.
+  function openLink(uri){{
+    try {{
+      var bridge = window.webkit && window.webkit.messageHandlers
+        && window.webkit.messageHandlers.apexOpenURL;
+      if (bridge) {{ bridge.postMessage(uri); return; }}
+    }} catch (e) {{}}
+    var w = null;
+    try {{ w = window.open(uri, '_blank', 'noopener,noreferrer'); }} catch (e) {{}}
+    if (w) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {{
+      navigator.clipboard.writeText(uri)
+        .then(function(){{ linkToast('Link copied — paste into Safari'); }})
+        .catch(function(){{ linkToast('Copy failed'); }});
+    }} else {{
+      linkToast('Copy unavailable');
+    }}
+  }}
+  if (typeof WebLinksAddon !== 'undefined')
+    term.loadAddon(new WebLinksAddon.WebLinksAddon((ev, uri) => openLink(uri)));
   term.open(document.getElementById('t'));
 
   // Debounced fit + WS resize on viewport changes.
