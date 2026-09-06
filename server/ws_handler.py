@@ -234,8 +234,8 @@ def _public_backend_error_message(backend: str, err: Exception | str) -> str:
     # Auth errors — give the user something actionable
     _AUTH_HINTS = ("Not logged in", "Invalid API key", "auth error", "Please run /login")
     if any(h in raw for h in _AUTH_HINTS):
-        return ("Claude is not authenticated. Open Terminal and run: claude auth login — "
-                "then retry. If using an API key, check it in [Credentials](/admin/#models).")
+        return ("Claude is not authenticated. Tap Re-authenticate, open the link, "
+                "paste the code here, then retry. Or use [Models](/admin#models).")
     return "The request failed while generating a response. Retry the turn."
 
 
@@ -1564,6 +1564,8 @@ async def _handle_send_action(
                 existing_session = chat.get("claude_session_id") if chat else None
                 if DEBUG: log(f"DBG RECOVERY: attempting resume session={existing_session or 'NONE'}")
                 try:
+                    from agent_sdk import ensure_fresh_token as _ensure_fresh_token
+                    await asyncio.to_thread(_ensure_fresh_token)
                     options = _make_options(
                         model=chat_model,
                         session_id=existing_session,
@@ -1596,6 +1598,8 @@ async def _handle_send_action(
                     _clear_session_context(client_key)
                     if DEBUG: log(f"DBG RECOVERY: session_id NUKED, trying fresh...")
                     try:
+                        from agent_sdk import ensure_fresh_token as _ensure_fresh_token
+                        await asyncio.to_thread(_ensure_fresh_token)
                         options = _make_options(
                             model=chat_model,
                             session_id=None,
@@ -1632,6 +1636,7 @@ async def _handle_send_action(
                                     "type": "error",
                                     "message": message,
                                     "retryable": True,
+                                    "claude_login": "Claude is not authenticated" in message,
                                     "target_agent": group_agent["profile_id"] if group_agent else "",
                                     "stream_id": stream_id,
                                 },

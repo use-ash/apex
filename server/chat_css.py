@@ -165,6 +165,12 @@ background:var(--accent);margin-left:2px;animation:blink 1s infinite}
 .system-retry-btn{margin-top:10px;padding:6px 12px;border-radius:8px;border:1px solid rgba(14,165,233,0.35);
 background:rgba(14,165,233,0.12);color:var(--accent);font-size:12px;font-weight:600;cursor:pointer}
 .system-retry-btn:hover{background:rgba(14,165,233,0.18)}
+.claude-login{margin-top:12px;display:flex;flex-direction:column;gap:8px;max-width:420px}
+.claude-login a{color:var(--accent);word-break:break-all}
+.claude-login input{width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--card);
+background:var(--surface);color:var(--text);font-size:16px}
+.claude-login .claude-login-row{display:flex;gap:8px;flex-wrap:wrap}
+.claude-login .claude-login-status{font-size:12px;color:var(--text-dim)}
 
 /* Composer */
 .composer{background:var(--surface);padding:8px 12px;padding-bottom:calc(8px + var(--sab));

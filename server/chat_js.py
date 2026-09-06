@@ -2409,6 +2409,7 @@ _JS_EVENT_HANDLER = """function handleEvent(msg) {
       }
       addSystemMsg(errorText, {
         retryable: Boolean(msg.retryable),
+        claudeLogin: Boolean(msg.claude_login) || /Claude is not authenticated/i.test(errorText),
         targetAgent: msg.target_agent || '',
       });
       const isBusyError = _isBusyErrorMessage(errorText);
@@ -2627,6 +2628,114 @@ function _removeThinkingIndicator() {
   if (existing) existing.remove();
 }
 
+async function _claudeLoginFetch(path, opts = {}) {
+  const r = await fetch(path, {
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+    ...opts,
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok && !body.status) {
+    throw new Error(body.error || ('HTTP ' + r.status));
+  }
+  return body;
+}
+
+function _claudeLoginWidget() {
+  const wrap = document.createElement('div');
+  wrap.className = 'claude-login';
+  const startBtn = document.createElement('button');
+  startBtn.type = 'button';
+  startBtn.className = 'system-retry-btn';
+  startBtn.textContent = 'Re-authenticate';
+  const status = document.createElement('div');
+  status.className = 'claude-login-status';
+  wrap.appendChild(startBtn);
+  wrap.appendChild(status);
+
+  const render = (data) => {
+    wrap.querySelectorAll('.claude-login-link, .claude-login-row').forEach((n) => n.remove());
+    if (data.url && /^https:\/\//.test(data.url)) {
+      const link = document.createElement('a');
+      link.className = 'claude-login-link';
+      link.href = data.url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = 'Open Claude login';
+      wrap.insertBefore(link, status);
+    }
+    if (data.status === 'awaiting_code' || data.status === 'starting' || data.status === 'submitting') {
+      const row = document.createElement('div');
+      row.className = 'claude-login-row';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.autocomplete = 'off';
+      input.autocapitalize = 'off';
+      input.spellcheck = false;
+      input.placeholder = 'Paste code';
+      input.inputMode = 'text';
+      const submit = document.createElement('button');
+      submit.type = 'button';
+      submit.className = 'system-retry-btn';
+      submit.textContent = 'Submit code';
+      submit.onclick = async () => {
+        submit.disabled = true;
+        try {
+          const result = await _claudeLoginFetch('/api/claude-login/submit', {
+            method: 'POST',
+            body: JSON.stringify({ session_id: data.session_id, code: input.value }),
+          });
+          render(result);
+        } catch (err) {
+          status.textContent = err.message || 'Submit failed';
+        } finally {
+          submit.disabled = false;
+        }
+      };
+      row.appendChild(input);
+      row.appendChild(submit);
+      wrap.insertBefore(row, status);
+    }
+    if (data.status === 'ok') {
+      status.textContent = data.token_found ? 'Authenticated. Tap Retry.' : 'Login finished. Tap Retry.';
+      startBtn.textContent = 'Re-authenticate';
+      startBtn.disabled = false;
+      return;
+    }
+    if (data.status === 'error') {
+      status.textContent = data.error || 'Login failed';
+      startBtn.disabled = false;
+      return;
+    }
+    if (data.status === 'starting') status.textContent = 'Waiting for login URL…';
+    else if (data.status === 'awaiting_code') status.textContent = 'Open the link, then paste the code.';
+    else if (data.status === 'submitting') status.textContent = 'Submitting…';
+  };
+
+  startBtn.onclick = async () => {
+    startBtn.disabled = true;
+    status.textContent = 'Starting login…';
+    try {
+      const data = await _claudeLoginFetch('/api/claude-login/start', { method: 'POST', body: '{}' });
+      render(data);
+      if (data.status === 'starting') {
+        const t0 = Date.now();
+        const poll = async () => {
+          if (Date.now() - t0 > 20000) return;
+          const next = await _claudeLoginFetch('/api/claude-login/status');
+          render(next);
+          if (next.status === 'starting') setTimeout(poll, 400);
+        };
+        setTimeout(poll, 400);
+      }
+    } catch (err) {
+      status.textContent = err.message || 'Could not start login';
+      startBtn.disabled = false;
+    }
+  };
+  return wrap;
+}
+
 function addSystemMsg(text, options = {}) {
   const el = document.getElementById('messages');
   const div = document.createElement('div');
@@ -2651,6 +2760,9 @@ function addSystemMsg(text, options = {}) {
       }).catch(err => reportError('system retry', err));
     };
     bubble.appendChild(btn);
+  }
+  if (options.claudeLogin) {
+    bubble.appendChild(_claudeLoginWidget());
   }
   div.appendChild(bubble);
   el.appendChild(div);

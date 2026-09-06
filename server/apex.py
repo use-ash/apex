@@ -77,6 +77,7 @@ import context as _context_mod
 from ws_handler import ws_router
 import ws_handler as _ws_handler_mod
 from ws_terminal import terminal_router
+from claude_login import claude_login_router
 import env
 from premium_loader import PremiumLoader
 from mtls import has_verified_peer_cert, mtls_required
@@ -310,6 +311,7 @@ app.include_router(chat_router)
 app.include_router(tasks_router)
 app.include_router(ws_router)
 app.include_router(terminal_router)
+app.include_router(claude_login_router)
 
 
 # Routes that don't require client certificate.

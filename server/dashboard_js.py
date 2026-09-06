@@ -1356,6 +1356,82 @@ window.loadModels = loadModels;
 
 /* -- Render: Provider Status Cards ---------------------------------- */
 
+async function claudeLoginFetch(path, opts) {
+    const resp = await authFetch(path, Object.assign({
+        headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
+    }, opts || {}));
+    const body = await resp.json().catch(function () { return {}; });
+    if (!resp.ok && !body.status) throw new Error(body.error || ("HTTP " + resp.status));
+    return body;
+}
+
+function bindClaudeReauth() {
+    const btn = document.getElementById("btn-claude-reauth");
+    const panel = document.getElementById("claude-login-panel");
+    if (!btn || !panel || btn.dataset.bound === "1") return;
+    btn.dataset.bound = "1";
+    const paint = function (data) {
+        var html = "";
+        if (data.url && /^https:\/\//.test(data.url)) {
+            html += '<div><a href="' + esc(data.url) + '" target="_blank" rel="noopener noreferrer">Open Claude login</a></div>';
+        }
+        if (data.status === "awaiting_code" || data.status === "starting" || data.status === "submitting") {
+            html += '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">' +
+                '<input id="claude-login-code" type="text" autocomplete="off" placeholder="Paste code" style="flex:1;min-width:140px;padding:8px;font-size:16px">' +
+                '<button class="btn btn-ghost" type="button" id="btn-claude-code">Submit code</button></div>';
+        }
+        var msg = "";
+        if (data.status === "ok") msg = data.token_found ? "Authenticated." : "Login finished.";
+        else if (data.status === "error") msg = data.error || "Login failed";
+        else if (data.status === "starting") msg = "Waiting for login URL…";
+        else if (data.status === "awaiting_code") msg = "Open the link, then paste the code.";
+        else if (data.status === "submitting") msg = "Submitting…";
+        if (msg) html += '<div class="text-dim" style="margin-top:6px;font-size:12px">' + esc(msg) + "</div>";
+        panel.innerHTML = html;
+        var submit = document.getElementById("btn-claude-code");
+        if (submit) {
+            submit.onclick = async function () {
+                var input = document.getElementById("claude-login-code");
+                submit.disabled = true;
+                try {
+                    const result = await claudeLoginFetch("/api/claude-login/submit", {
+                        method: "POST",
+                        body: JSON.stringify({ session_id: data.session_id, code: input ? input.value : "" }),
+                    });
+                    paint(result);
+                    if (result.status === "ok") loadModels();
+                } catch (err) {
+                    panel.innerHTML += '<div class="text-red">' + esc(err.message || "Submit failed") + "</div>";
+                } finally {
+                    submit.disabled = false;
+                }
+            };
+        }
+    };
+    btn.onclick = async function () {
+        btn.disabled = true;
+        panel.textContent = "Starting login…";
+        try {
+            const data = await claudeLoginFetch("/api/claude-login/start", { method: "POST", body: "{}" });
+            paint(data);
+            if (data.status === "starting") {
+                const t0 = Date.now();
+                const poll = async function () {
+                    if (Date.now() - t0 > 20000) return;
+                    const next = await claudeLoginFetch("/api/claude-login/status");
+                    paint(next);
+                    if (next.status === "starting") setTimeout(poll, 400);
+                };
+                setTimeout(poll, 400);
+            }
+        } catch (err) {
+            panel.textContent = err.message || "Could not start login";
+        } finally {
+            btn.disabled = false;
+        }
+    };
+}
+
 function renderProviderCards(claude, ollama, grok, codex) {
     /* Claude */
     const claudeEl = document.getElementById("provider-claude-content");
@@ -1397,7 +1473,12 @@ function renderProviderCards(claude, ollama, grok, codex) {
             '<div class="stat-row">' +
                 '<span class="stat-label">Latency</span>' +
                 '<span class="stat-value">' + d.latency_ms + ' ms</span>' +
-            '</div>' : '');
+            '</div>' : '') +
+            '<div class="stat-row" style="margin-top:10px;flex-direction:column;align-items:stretch;gap:8px">' +
+                '<button class="btn btn-ghost" type="button" id="btn-claude-reauth">Re-authenticate</button>' +
+                '<div id="claude-login-panel"></div>' +
+            '</div>';
+        bindClaudeReauth();
     }
 
     /* Ollama */

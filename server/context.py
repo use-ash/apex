@@ -1020,7 +1020,11 @@ def _generate_recovery_context(transcript: str, session_type: str = "task",
             log(f"recovery (xAI) failed: {e}")
 
     # --- 2. Fallback: Haiku via Anthropic Messages API ---
+    # OAuth access tokens (sk-ant-oat*) are not x-api-key values. Sending one
+    # yields HTTP 401 "API key is invalid."
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if anthropic_key and "oat" in anthropic_key[:15]:
+        anthropic_key = ""
     if anthropic_key:
         _HAIKU_MODEL = "claude-haiku-4-5-20251001"
         payload = json.dumps({

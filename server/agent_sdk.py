@@ -191,6 +191,22 @@ def _is_oauth_token(token: str) -> bool:
     return "oat" in token[:15]
 
 
+def _put_api_key_env(token: str) -> None:
+    """Export ANTHROPIC_API_KEY only for real API keys.
+
+    `sk-ant-oat*` belongs in Keychain. The CLI treats it as an API key and
+    returns 'Not logged in · Please run /login'.
+    """
+    if token and _is_oauth_token(token):
+        current = os.environ.get("ANTHROPIC_API_KEY", "")
+        if current and _is_oauth_token(current):
+            del os.environ["ANTHROPIC_API_KEY"]
+            log("OAuth: refused to export Keychain OAuth token as ANTHROPIC_API_KEY")
+        return
+    if token:
+        os.environ["ANTHROPIC_API_KEY"] = token
+
+
 def _validate_oauth_expiry(oauth_data: dict) -> bool:
     """Check if an OAuth token has not expired. Returns True if still valid."""
     expires_at = oauth_data.get("expiresAt", 0)
@@ -203,8 +219,16 @@ def _validate_oauth_expiry(oauth_data: dict) -> bool:
 
 
 def _is_auth_error(text: str) -> bool:
-    """Check if SDK response text indicates an authentication failure."""
-    return any(p in text for p in _AUTH_ERROR_PATTERNS)
+    """True only for short SDK auth failures, not prose that mentions login.
+
+    Real CLI errors are a few dozen characters ('Not logged in · Please run /login').
+    Matching those substrings inside a long assistant reply false-triggers recovery,
+    which then exports the Keychain OAuth token as ANTHROPIC_API_KEY and 401s Haiku.
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 240:
+        return False
+    return any(p in t for p in _AUTH_ERROR_PATTERNS)
 
 
 def _is_rate_limit_error(text: str) -> bool:
@@ -383,9 +407,12 @@ def _refresh_oauth_token() -> bool:
     # --- Priority 1: shared token file ---
     shared = _read_shared_token()
     if shared:
+        if _is_oauth_token(shared):
+            _put_api_key_env(shared)
+            return False
         current_env = os.environ.get("ANTHROPIC_API_KEY", "")
         if current_env != shared:
-            os.environ["ANTHROPIC_API_KEY"] = shared
+            _put_api_key_env(shared)
             log(f"OAuth: loaded from shared token file ({_SHARED_TOKEN_PATH.name}, {len(shared)} chars)")
             return True
         return False  # already in sync
@@ -402,8 +429,11 @@ def _refresh_oauth_token() -> bool:
             if _TOKEN_CACHE.exists():
                 token = _TOKEN_CACHE.read_text().strip()
                 if token:
-                    os.environ["ANTHROPIC_API_KEY"] = token
-                    log("OAuth: re-synced from token cache (no Keychain access)")
+                    _put_api_key_env(token)
+                    if _is_oauth_token(token):
+                        log("OAuth: cache holds an OAuth token; CLI will use Keychain")
+                    else:
+                        log("OAuth: re-synced from token cache (no Keychain access)")
                     return True
         except Exception:
             pass
@@ -431,8 +461,8 @@ def _refresh_oauth_token() -> bool:
             if resp.get("scope"):
                 oauth["scopes"] = resp["scope"].split() if isinstance(resp["scope"], str) else resp["scope"]
 
-            # Persist everywhere
-            os.environ["ANTHROPIC_API_KEY"] = new_access
+            # Persist to Keychain/cache. Never export oat* as ANTHROPIC_API_KEY.
+            _put_api_key_env(new_access)
             _cache_oauth_data(oauth, new_access)
             _write_keychain_oauth(oauth)
             log(f"OAuth: token refreshed OK, new expiry in {new_expires_in}s")
@@ -447,19 +477,21 @@ def _refresh_oauth_token() -> bool:
                     "re-auth required (`claude /login`)")
                 return False
             log("OAuth: refresh endpoint failed, falling back to current token")
-            os.environ["ANTHROPIC_API_KEY"] = access_token
+            _put_api_key_env(access_token)
             _cache_oauth_data(oauth, access_token)
             return True
 
-    # Token is still valid — just ensure env var is in sync
+    # Token is still valid. OAuth stays in Keychain; only API keys go in env.
+    _put_api_key_env(access_token)
+    _cache_oauth_data(oauth, access_token)
+    remaining_s = max(0, (expires_at - now_ms) / 1000) if expires_at else 0
+    if _is_oauth_token(access_token):
+        log(f"OAuth: Keychain token valid ({remaining_s:.0f}s left); CLI uses Keychain")
+        return True
     current_env = os.environ.get("ANTHROPIC_API_KEY", "")
     if current_env != access_token:
-        os.environ["ANTHROPIC_API_KEY"] = access_token
-        _cache_oauth_data(oauth, access_token)
-        remaining_s = max(0, (expires_at - now_ms) / 1000) if expires_at else 0
         log(f"OAuth: env var re-synced from Keychain (expires in {remaining_s:.0f}s)")
         return True
-
     return False
 
 
@@ -543,6 +575,28 @@ def _evict_all_clients() -> None:
         for k in stale_keys:
             _clients.pop(k, None)
         log(f"OAuth: evicted {len(stale_keys)} stale SDK client(s)")
+
+
+def reload_oauth_after_login() -> dict:
+    """Re-read Keychain after `claude auth login` and drop stale SDK clients.
+
+    Must not refresh the previous token — that refresh already 400'd.
+    """
+    current_env = os.environ.get("ANTHROPIC_API_KEY", "")
+    if current_env and _is_oauth_token(current_env):
+        del os.environ["ANTHROPIC_API_KEY"]
+        log("OAuth: cleared expired OAuth token from ANTHROPIC_API_KEY after login")
+    oauth = _read_keychain_oauth()
+    token = oauth.get("accessToken", "") or ""
+    _evict_all_clients()
+    if token:
+        log(f"OAuth: reloaded Keychain token after login ({token[:12]}..., {len(token)} chars)")
+    else:
+        log("OAuth: login finished but Keychain has no access token yet")
+    return {
+        "token_found": bool(token),
+        "expires_at": oauth.get("expiresAt", 0),
+    }
 
 
 def validate_token_on_startup() -> None:
@@ -851,10 +905,8 @@ async def _run_query_turn(
     if result.get("stream_failed"):
         if DEBUG: log(f"DBG query_turn: chat={chat_id} STREAM FAILED: {result.get('error')}")
         raise RuntimeError(result.get("error") or "SDK stream failed")
-    # SDK auth recovery — trigger on auth error text regardless of token count.
-    # The SDK can consume tokens (thinking, tool calls) and still return auth
-    # error text if the OAuth token expires mid-turn or between client creation
-    # and query execution.
+    # SDK auth recovery — only on short CLI auth failures, not long replies
+    # that happen to mention /login or API keys.
     resp_text = result.get("text", "")
     if _is_auth_error(resp_text):
         log(f"SDK auth error: chat={chat_id} got '{resp_text.strip()[:60]}' (tokens_in={result.get('tokens_in',0)}), attempting recovery...")
