@@ -535,10 +535,6 @@ body{{
     'arrow-right': '\\x1b[C',
   }};
 
-  // Keys that act on the shell's current line, so pending field text must
-  // reach the PTY before the key does. 9=Tab, 13=Enter.
-  var FLUSH_FIRST = {{'9':1, '13':1}};
-
   // Wire up shortcut buttons
   document.querySelectorAll('#keys button[data-k]').forEach(function(btn){{
     btn.addEventListener('click', function(ev){{
@@ -547,20 +543,16 @@ body{{
       var seq;
       if(KEY_MAP[k]){{ seq = KEY_MAP[k]; }}
       else {{ seq = String.fromCharCode(parseInt(k,10)); }}
-      // The text field buffers locally, so the PTY's line editor is empty
-      // until Send. Flush pending text in the same write as Tab/Enter or
-      // readline has nothing to complete.
-      if(FLUSH_FIRST[k]){{
-        var inp=document.getElementById('inp');
-        if(inp && inp.value){{
-          if(send(inp.value + seq)){{ inp.value=''; }}
-          document.getElementById('inp').focus();
-          return;
-        }}
+      var inp=document.getElementById('inp');
+      // Field buffers locally (disableStdin), so Tab/Enter must carry pending
+      // text in the same PTY write or readline has nothing to complete.
+      if((k==='9'||k==='13') && inp && inp.value){{
+        if(send(inp.value + seq)){{ inp.value=''; }}
+        inp.focus();
+        return;
       }}
       send(seq);
-      // Bring input back into focus so user can keep typing
-      document.getElementById('inp').focus();
+      if(inp) inp.focus();
     }});
   }});
 
