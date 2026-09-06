@@ -359,6 +359,7 @@ body{{
   <div id="status"><span id="dot"></span><span id="status-txt">connecting…</span></div>
   <div id="keys-row">
   <div id="keys">
+    <button data-k="13">Enter</button>
     <button data-k="3">Ctrl-C</button>
     <button data-k="4">Ctrl-D</button>
     <button data-k="26">Ctrl-Z</button>
@@ -373,7 +374,6 @@ body{{
     <button data-k="11">Ctrl-K</button>
     <button data-k="21">Ctrl-U</button>
     <button data-k="12">Ctrl-L</button>
-    <button data-k="13">Enter</button>
   </div>
   <button id="kb-dismiss" type="button" title="Hide keyboard">⌨ ▼</button>
   </div>
