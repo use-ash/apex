@@ -130,6 +130,36 @@ def _upload_path_for(att: dict) -> str:
 
 MAX_QUEUED_TURNS_PER_KEY = 2
 MAX_MENTION_DEPTH = 25
+
+# --- Background-task wake -------------------------------------------------
+# A turn that launches run_in_background work ends with that work still
+# running.  The SDK stream closes at ResultMessage and nothing reopens it, so
+# the agent's "I'll notify you when it's done" could previously only be
+# delivered when the user happened to send another message.  After such a
+# turn we re-enter the same session on a delay so the agent can read its
+# background shells and report.
+#
+# Apex cannot see the background shell itself -- only the agent can, via
+# BashOutput -- so the agent is asked to check.  If work is still outstanding
+# that turn flags it again and this re-arms, bounded by BG_WAKE_MAX_DEPTH so a
+# task that never finishes cannot spin forever.
+BG_WAKE_MAX_DEPTH = int(os.environ.get("APEX_BG_WAKE_MAX_DEPTH", "3"))
+BG_WAKE_DELAY_S = int(os.environ.get("APEX_BG_WAKE_DELAY_S", "90"))
+# On disconnect (tab closed) the report is queued rather than dropped: wait
+# this long for any socket to reattach to the chat before giving up.
+BG_WAKE_ATTACH_WAIT_S = int(os.environ.get("APEX_BG_WAKE_ATTACH_WAIT_S", "600"))
+BG_WAKE_ATTACH_POLL_S = 5
+# Set APEX_BG_WAKE_MAX_DEPTH=0 to disable the feature entirely.
+# Wake tasks deliberately outlive the connection that spawned them -- a
+# closed tab is exactly the case BG_WAKE_ATTACH_WAIT_S queues for -- so they
+# are tracked here, not in websocket_endpoint's per-connection task set.
+_bg_wake_tasks: set[asyncio.Task] = set()
+BG_WAKE_PROMPT = (
+    "[system] Background work you started earlier may now be finished. Check it "
+    "with BashOutput and report the outcome to the user in your own words, as a "
+    "normal reply. If it is still running, say so in one line -- you will be "
+    "checked again automatically. Do not start unrelated new work."
+)
 _TOOL_LOOP_BACKENDS = frozenset({"ollama", "mlx", "deepseek", "zhipu", "google"})
 _NON_CLAUDE_BACKENDS = _TOOL_LOOP_BACKENDS | {"codex", "xai"}
 
@@ -186,6 +216,65 @@ async def _kick_assistant_turn(
     if origin not in {"user_ws", "autonomous"}:
         raise ValueError(f"Unsupported assistant-turn origin: {origin}")
     await _handle_send_action(websocket, data, origin=origin)
+
+
+async def _resolve_wake_ws(chat_id: str, preferred: WebSocket):
+    """Find a live socket to deliver an autonomous turn on, or None.
+
+    Prefers the socket that ran the original turn.  If it is gone (tab
+    closed) any other socket attached to the chat will do; if none is
+    attached the report is queued -- we wait for a reattach rather than
+    dropping it -- until BG_WAKE_ATTACH_WAIT_S elapses.
+    """
+    waited = 0
+    while True:
+        attached = _chat_ws.get(chat_id) or set()
+        if preferred in attached:
+            return preferred
+        if attached:
+            return next(iter(attached))
+        if waited >= BG_WAKE_ATTACH_WAIT_S:
+            return None
+        await asyncio.sleep(BG_WAKE_ATTACH_POLL_S)
+        waited += BG_WAKE_ATTACH_POLL_S
+
+
+async def _schedule_background_wake(
+    websocket: WebSocket,
+    chat_id: str,
+    data: dict,
+    depth: int,
+) -> None:
+    """Re-enter a chat after background work so the agent can report on it.
+
+    Runs as a detached task after the originating turn is persisted.  Goes
+    through _kick_assistant_turn, so it takes the same chat lock as a user
+    turn and can never interleave with one -- if the user is mid-turn this
+    simply queues behind them.
+    """
+    try:
+        await asyncio.sleep(BG_WAKE_DELAY_S)
+        target_ws = await _resolve_wake_ws(chat_id, websocket)
+        if target_ws is None:
+            log(f"background wake dropped (no socket reattached): chat={chat_id[:8]} depth={depth}")
+            return
+        wake_data = {
+            "chat_id": chat_id,
+            "prompt": BG_WAKE_PROMPT,
+            "attachments": [],
+            "stream_id": _make_stream_id(),
+            "_source": "background_wake",
+            "_suppress_user_message": True,
+            "_bg_wake_depth": depth + 1,
+        }
+        if data.get("target_agent"):
+            wake_data["target_agent"] = data["target_agent"]
+        log(f"background wake firing: chat={chat_id[:8]} depth={depth + 1}/{BG_WAKE_MAX_DEPTH}")
+        await _kick_assistant_turn(target_ws, wake_data, origin="autonomous")
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        log(f"background wake failed: chat={chat_id[:8]} {type(e).__name__}: {e}")
 
 
 def _resolve_effective_tool_policy(chat_id: str, chat: dict, group_agent: dict | None) -> dict:
@@ -1194,6 +1283,11 @@ async def _handle_send_action(
             mention_depth > 0 or handoff_source == "agent" or suppress_user_message
         )
     )
+    # An autonomous background wake carries a synthetic prompt the user never
+    # typed, so it must not be persisted or echoed as their message.
+    # is_agent_handoff only covers group chats, so 1:1 wakes -- the common
+    # case -- need their own suppression.
+    is_background_wake = handoff_source == "background_wake"
 
     # Inject attachment path refs into secondary-agent prompts.
     # Secondary agents are dispatched without the original attachments payload, so
@@ -1360,7 +1454,7 @@ async def _handle_send_action(
         if group_agent and mention_prompt != group_agent.get("clean_prompt", ""):
             display_prompt = mention_prompt
 
-        if not is_agent_handoff:
+        if not is_agent_handoff and not is_background_wake:
             _save_message(chat_id, "user", display_prompt, attachments=attachment_refs_json)
 
             # Echo to the sender socket too. Clients dedupe by client_msg_id, and
@@ -1728,6 +1822,24 @@ async def _handle_send_action(
                     speaker_id=group_agent["profile_id"] if group_agent else "",
                     speaker_name=group_agent["name"] if group_agent else "",
                     speaker_avatar=group_agent["avatar"] if group_agent else "",
+                )
+
+        # --- Background-task wake -----------------------------------------
+        # Scheduled after persistence so the wake turn reads a consistent
+        # history.  Fires for autonomous turns too, so a task still running
+        # at the first check gets re-armed -- bounded by BG_WAKE_MAX_DEPTH.
+        if result.get("background_pending"):
+            _bg_depth = int(data.get("_bg_wake_depth", 0) or 0)
+            if _bg_depth < BG_WAKE_MAX_DEPTH:
+                _wake_task = asyncio.create_task(
+                    _schedule_background_wake(original_ws, chat_id, data, _bg_depth)
+                )
+                _bg_wake_tasks.add(_wake_task)
+                _wake_task.add_done_callback(_bg_wake_tasks.discard)
+            else:
+                log(
+                    f"background wake capped: chat={chat_id[:8]} "
+                    f"depth={_bg_depth}/{BG_WAKE_MAX_DEPTH} — not re-arming"
                 )
 
         # Clear active speaker now that response is persisted to DB

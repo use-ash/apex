@@ -951,7 +951,7 @@ async def _stream_response(
         "session_id": None, "text": "", "thinking": "",
         "tool_events": "[]", "cost_usd": 0,
         "tokens_in": 0, "tokens_out": 0, "context_tokens_in": 0, "error": None,
-        "stream_failed": False, "is_error": False,
+        "stream_failed": False, "is_error": False, "background_pending": False,
     }
 
     async def _send(payload: dict) -> None:
@@ -1238,6 +1238,25 @@ async def _stream_response(
                     + last_assistant_usage.get("cache_read_input_tokens", 0)
                     + last_assistant_usage.get("cache_creation_input_tokens", 0)
                 ) if last_assistant_usage else 0
+                # A turn that launched run_in_background work ends while that
+                # work is still running.  The SDK closes this stream at
+                # ResultMessage and never reopens it, so nothing can deliver
+                # the agent's "I'll notify you when it's done" -- only the user
+                # sending another message would.  Flag it so ws_handler can
+                # schedule an autonomous wake.
+                # Only a background launch that actually succeeded leaves work
+                # outstanding.  A call blocked by tool policy or failing
+                # outright records run_in_background just the same, so without
+                # the is_error check a rejected launch would schedule a wake
+                # that has nothing to report.
+                _bg_pending = any(
+                    isinstance(ev.get("input"), dict)
+                    and ev["input"].get("run_in_background") is True
+                    and not (ev.get("result") or {}).get("is_error")
+                    for ev in tool_events
+                )
+                if _bg_pending:
+                    log(f"background work outstanding at turn end: chat={chat_id}")
                 result_info = {
                     "session_id": msg.session_id,
                     "text": final_text,
@@ -1252,6 +1271,7 @@ async def _stream_response(
                         + (msg.usage or {}).get("cache_creation_input_tokens", 0)
                     ),
                     "context_tokens_in": _exact_ctx,
+                    "background_pending": _bg_pending,
                     "tokens_out": (msg.usage or {}).get("output_tokens", 0),
                     "duration_ms": int(elapsed * 1000),
                     "error": None,
