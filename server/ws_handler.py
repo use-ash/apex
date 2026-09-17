@@ -1723,6 +1723,7 @@ async def _handle_send_action(
                     cost_usd=result.get("cost_usd", 0),
                     tokens_in=result.get("tokens_in", 0),
                     tokens_out=result.get("tokens_out", 0),
+                    context_tokens_in=result.get("context_tokens_in", 0),
                     duration_ms=result.get("duration_ms", 0),
                     speaker_id=group_agent["profile_id"] if group_agent else "",
                     speaker_name=group_agent["name"] if group_agent else "",

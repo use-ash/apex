@@ -21,7 +21,8 @@ from zoneinfo import ZoneInfo
 from db import (
     _get_db, _get_chat, _update_chat,
     _get_messages, _get_recent_messages_text, _get_cumulative_tokens_in,
-    _get_last_turn_tokens_in, _estimate_tokens, _get_last_turn_cost,
+    _get_last_turn_tokens_in, _get_last_turn_context_tokens,
+    _estimate_tokens, _get_last_turn_cost,
     _get_last_turn_cost_delta,
     _get_session_analysis_data, _get_continuity_pointers,
     _get_group_members, _get_persona_memories, _bump_memory_access,
@@ -565,6 +566,18 @@ def _compute_context_used(
     prompt, routes_chat `/api/chats/{id}/context`, agent_sdk SSE result)
     must use this helper so they never drift.
     """
+    # Measured context fill, when the backend reports per-message usage.
+    # This is not an estimator -- it is the prompt size the API actually saw
+    # on the last call -- so when present it wins outright and the three
+    # heuristics below are only diagnostics.
+    exact_tokens = _get_last_turn_context_tokens(chat_id)
+    if 0 < exact_tokens < context_window:
+        log(
+            f"fuel gauge [{chat_id[:8]}]: exact={exact_tokens:,}/"
+            f"{context_window:,} (measured) model={chat_model}"
+        )
+        return exact_tokens, 0, 0, exact_tokens
+
     sdk_tokens = _get_last_turn_tokens_in(chat_id)
     est_tokens = _estimate_tokens(chat_id, context_window=context_window)
     cost_tokens = _estimate_tokens_from_cost(chat_id, chat_model)
@@ -654,10 +667,13 @@ def _get_context_energy_prompt(chat_id: str) -> str:
         effective_threshold = max(COMPACTION_THRESHOLD, int(context_window * 0.75))
     cum_pct = (cumulative_in / effective_threshold) if effective_threshold > 0 else 0.0
 
-    # Phase is driven by whichever pressure is higher.  Compaction risk is
-    # what actually matters to the agent — surface it.  Nudges escalate with
-    # phase regardless of which meter is leading.
-    pressure_pct = max(pct, cum_pct)
+    # Phase is driven by context fill alone.  It used to be max(pct, cum_pct),
+    # but cum_pct sums prompt tokens across every API round-trip, so a single
+    # tool-heavy turn pushed a nearly empty context straight to "critical" and
+    # told the agent to stop work and checkpoint on turn one.  Compaction now
+    # triggers on context fill too (see maybe_compact_chat), so this matches
+    # the real trigger instead of a billing counter.
+    pressure_pct = pct
     if pressure_pct < 0.40:
         phase = "explore"
         nudge = ""
@@ -704,8 +720,9 @@ def _get_context_energy_prompt(chat_id: str) -> str:
     cum_pct_suffix = "+" if cum_pct > 9.99 else ""
     lines = [
         f"context_size:  {_fmt_k(context_used)} / {_fmt_k(context_window)} ({pct:.0%})  — next-call input",
-        f"cumulative_in: {_fmt_k(cumulative_in)} / {_fmt_k(effective_threshold)} ({cum_pct_display:.0%}{cum_pct_suffix})  — compaction trigger (Σ tokens_in since last compact)",
-        f"phase: {phase}  (driven by max of the two meters)",
+        f"context_size is the compaction trigger, at {_fmt_k(effective_threshold)}.",
+        f"billed_in: {_fmt_k(cumulative_in)} ({cum_pct_display:.0%}{cum_pct_suffix} of threshold)  — Σ prompt tokens incl. per-tool-call re-sends; cost signal, NOT context",
+        f"phase: {phase}  (driven by context_size)",
         f"est_turns_remaining: {turns_label}",
     ]
     if nudge:
@@ -1172,6 +1189,8 @@ async def _maybe_compact_chat(
     # the very first message.  Use 75% of the model's window instead, but
     # never go below COMPACTION_THRESHOLD.
     effective_threshold = COMPACTION_THRESHOLD
+    _chat_model = ""
+    _ctx_window = MODEL_CONTEXT_DEFAULT
     if COMPACTION_THRESHOLD > 0:
         try:
             _chat = await asyncio.to_thread(_get_chat, chat_id)
@@ -1182,14 +1201,23 @@ async def _maybe_compact_chat(
         except Exception:
             pass
 
-    cumulative = await asyncio.to_thread(_get_cumulative_tokens_in, chat_id)
+    # Trigger on actual context fill, not Σ tokens_in.  Σ tokens_in counts
+    # every API round-trip in a turn -- each tool call re-sends the whole
+    # conversation -- so a 12-tool turn at 55K context reports ~775K and trips
+    # a 750K threshold on turn one.  The units never matched: the threshold is
+    # derived from context_window, which is the size of ONE prompt.
+    # _compute_context_used returns the measured value where the backend
+    # reports per-message usage, and its heuristic signals otherwise.
+    _, _, _, cumulative = await asyncio.to_thread(
+        _compute_context_used, chat_id, _ctx_window, _chat_model
+    )
     if cumulative < effective_threshold and not force:
         return False
 
     if force and force_tokens > 0:
         cumulative = force_tokens  # use caller-provided count for accurate logging
 
-    log(f"compaction triggered: chat={chat_id} tokens_in={cumulative} threshold={effective_threshold} force={force}")
+    log(f"compaction triggered: chat={chat_id} context_used={cumulative} threshold={effective_threshold} force={force}")
 
     # Lazy import to avoid circular dependency
     from streaming import _disconnect_client, _send_stream_event

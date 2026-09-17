@@ -942,10 +942,15 @@ async def _stream_response(
     thinking_text = ""
     tool_events: list[dict] = []
     pending_tools: dict[str, dict] = {}
+    # Usage dict of the most recent AssistantMessage.  Each AssistantMessage
+    # carries the usage of ONE API call, so this ends the turn holding the
+    # final call's prompt size -- the real context fill.  ResultMessage.usage,
+    # by contrast, is summed across every round-trip in the turn.
+    last_assistant_usage: dict = {}
     result_info: dict = {
         "session_id": None, "text": "", "thinking": "",
         "tool_events": "[]", "cost_usd": 0,
-        "tokens_in": 0, "tokens_out": 0, "error": None,
+        "tokens_in": 0, "tokens_out": 0, "context_tokens_in": 0, "error": None,
         "stream_failed": False, "is_error": False,
     }
 
@@ -1079,6 +1084,10 @@ async def _stream_response(
                     await _send({"type": "system", "subtype": "init", "model": model_name})
 
             elif isinstance(msg, AssistantMessage):
+                # One AssistantMessage == one API call.  Keep the latest usage
+                # so the turn ends holding the final call's true prompt size.
+                if msg.usage:
+                    last_assistant_usage = msg.usage
                 for block in msg.content:
                     if isinstance(block, TextBlock):
                         result_text += block.text
@@ -1221,17 +1230,28 @@ async def _stream_response(
                         f"tools={[item.get('name') for item in claim_store_no_result_tools]}"
                     )
                 elapsed = time.monotonic() - _stream_start
+                # Exact context fill = prompt size of the turn's LAST API call.
+                # 0 when the backend reports no per-message usage; the fuel
+                # gauge then falls back to its heuristic signals.
+                _exact_ctx = (
+                    last_assistant_usage.get("input_tokens", 0)
+                    + last_assistant_usage.get("cache_read_input_tokens", 0)
+                    + last_assistant_usage.get("cache_creation_input_tokens", 0)
+                ) if last_assistant_usage else 0
                 result_info = {
                     "session_id": msg.session_id,
                     "text": final_text,
                     "thinking": thinking_text,
                     "tool_events": json.dumps(tool_events),
                     "cost_usd": msg.total_cost_usd or 0,
+                    # Σ prompt tokens across every round-trip. Correct for cost,
+                    # wrong for context — use context_tokens_in for that.
                     "tokens_in": (
                         (msg.usage or {}).get("input_tokens", 0)
                         + (msg.usage or {}).get("cache_read_input_tokens", 0)
                         + (msg.usage or {}).get("cache_creation_input_tokens", 0)
                     ),
+                    "context_tokens_in": _exact_ctx,
                     "tokens_out": (msg.usage or {}).get("output_tokens", 0),
                     "duration_ms": int(elapsed * 1000),
                     "error": None,
@@ -1246,6 +1266,11 @@ async def _stream_response(
                 _, _, _, _ctx_in = _compute_context_used(
                     chat_id, _ctx_window, _ctx_model
                 )
+                # Prefer this turn's measured value: its DB row is not written
+                # until ws_handler persists it, so the helper can only see
+                # prior turns and always lags by one.
+                if _exact_ctx > 0:
+                    _ctx_in = min(_exact_ctx, _ctx_window)
                 await _send({
                     "type": "result",
                     "is_error": result_is_error,

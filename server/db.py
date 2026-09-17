@@ -308,6 +308,14 @@ def _init_db() -> None:
     # Migration: canceled flag for partial results saved on stop/compaction
     with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("ALTER TABLE messages ADD COLUMN canceled INTEGER DEFAULT 0")
+    # Migration: true context fill, distinct from billed tokens_in.
+    # tokens_in is the SUM of prompt tokens across every API round-trip in a
+    # turn (each tool call re-sends the whole conversation), so a 12-tool turn
+    # at 55K context reports ~775K.  That number is correct for cost and wrong
+    # for every context decision.  context_tokens_in holds the prompt size of
+    # the turn's LAST API call -- i.e. actual context fill.
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.execute("ALTER TABLE messages ADD COLUMN context_tokens_in INTEGER DEFAULT 0")
     # Migration: add role column to channel_agent_memberships (owner/member)
     with contextlib.suppress(sqlite3.OperationalError):
         conn.execute("ALTER TABLE channel_agent_memberships ADD COLUMN role TEXT DEFAULT 'member'")
@@ -877,6 +885,41 @@ def _get_last_turn_tokens_in(chat_id: str) -> int:
                 "SELECT tokens_in FROM messages "
                 "WHERE chat_id = ? AND role = 'assistant' AND tokens_in > 0 "
                 "ORDER BY created_at DESC LIMIT 5",
+                (chat_id,),
+            ).fetchall()
+        conn.close()
+    return max((r[0] for r in rows), default=0)
+
+
+def _get_last_turn_context_tokens(chat_id: str) -> int:
+    """Exact current context fill, or 0 if unavailable.
+
+    Reads context_tokens_in -- the prompt size of the last API call of a turn,
+    taken straight from the SDK's per-message usage.  Unlike _get_last_turn_
+    tokens_in (which reads the multi-round-trip SUM) and the content/cost
+    estimators, this is measured, not inferred.
+
+    Returns 0 for backends that do not report per-message usage (Codex,
+    Ollama, xAI) and for rows written before the column existed -- callers
+    fall back to the heuristic signals in that case.
+
+    Scoped to messages after the last compaction, since context drops there.
+    """
+    since = _last_compacted_at.get(chat_id)
+    with _db_lock:
+        conn = _get_db()
+        if since:
+            rows = conn.execute(
+                "SELECT context_tokens_in FROM messages "
+                "WHERE chat_id = ? AND role = 'assistant' AND context_tokens_in > 0 "
+                "AND created_at > ? ORDER BY created_at DESC LIMIT 3",
+                (chat_id, since),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT context_tokens_in FROM messages "
+                "WHERE chat_id = ? AND role = 'assistant' AND context_tokens_in > 0 "
+                "ORDER BY created_at DESC LIMIT 3",
                 (chat_id,),
             ).fetchall()
         conn.close()
@@ -1796,17 +1839,18 @@ def _save_message(chat_id: str, role: str, content: str, tool_events: str = "[]"
                   tokens_out: int = 0, speaker_id: str = "", speaker_name: str = "",
                   speaker_avatar: str = "", visibility: str = "public",
                   group_turn_id: str = "", attachments: str = "[]",
-                  duration_ms: int = 0, canceled: bool = False) -> str:
+                  duration_ms: int = 0, canceled: bool = False,
+                  context_tokens_in: int = 0) -> str:
     mid = str(uuid.uuid4())[:12]
     with _db_lock:
         conn = _get_db()
         conn.execute(
             "INSERT INTO messages (id, chat_id, role, content, tool_events, thinking, cost_usd, "
             "tokens_in, tokens_out, speaker_id, speaker_name, speaker_avatar, visibility, "
-            "group_turn_id, attachments, duration_ms, canceled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "group_turn_id, attachments, duration_ms, canceled, context_tokens_in, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (mid, chat_id, role, content, tool_events, thinking, cost_usd, tokens_in, tokens_out,
              speaker_id, speaker_name, speaker_avatar, visibility, group_turn_id, attachments,
-             duration_ms, int(canceled), _now()))
+             duration_ms, int(canceled), context_tokens_in, _now()))
         conn.commit()
         conn.close()
     return mid
